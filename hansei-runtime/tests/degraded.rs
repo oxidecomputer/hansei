@@ -380,7 +380,11 @@ fn task_chain<'a, T: Target>(
 }
 
 /// The census's own view of one held future, by the local holding it.
-fn held_row(census: &census::FutureCensus, local: &str) -> (String, usize, ContinuationStatus) {
+fn held_row<'b>(
+    view: BundleView<'b>,
+    census: &census::FutureCensus,
+    local: &str,
+) -> (&'b str, usize, ContinuationStatus) {
     let held = census
         .held
         .iter()
@@ -388,7 +392,8 @@ fn held_row(census: &census::FutureCensus, local: &str) -> (String, usize, Conti
         .unwrap_or_else(|| panic!("no held `{local}` in {:#?}", census.held));
     assert!(held.state.is_none(), "{held:#?}");
     assert!(held.waiting_on.is_none(), "{held:#?}");
-    (held.future.clone(), held.depth, held.continuation.clone())
+    let future = view.ty(held.future).unwrap().name();
+    (future, held.depth, held.continuation.clone())
 }
 
 /// A held future whose box points nowhere is still *found* — the
@@ -406,7 +411,7 @@ fn test_a_held_future_with_an_unmapped_box_is_listed_as_its_slot() {
     let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
 
-    let (future, depth, continuation) = held_row(&degraded, "future1");
+    let (future, depth, continuation) = held_row(ctx.view, &degraded, "future1");
     assert!(future.starts_with("core::pin::Pin<"), "{future}");
     assert_eq!(depth, 1, "{future}");
     let ContinuationStatus::Incomplete {
@@ -438,7 +443,7 @@ fn test_a_held_future_with_a_garbage_vtable_is_listed_with_the_error() {
     let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
 
-    let (future, depth, continuation) = held_row(&degraded, "future1");
+    let (future, depth, continuation) = held_row(ctx.view, &degraded, "future1");
     assert_eq!(depth, 1, "{future}");
     assert!(future.contains("dyn "), "{future}");
     let ContinuationStatus::Incomplete {
@@ -1093,7 +1098,11 @@ fn test_a_dyn_box_resolves_through_its_poll_slot_alone() {
         .expect("the boxed future is found");
     assert!(held.depth > 0, "{held:#?}");
     assert!(
-        held.future.contains("do_async_thing"),
+        ctx.view
+            .ty(held.future)
+            .unwrap()
+            .name()
+            .contains("do_async_thing"),
         "the poll slot no longer resolves: {held:#?}"
     );
 }

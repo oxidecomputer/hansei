@@ -1248,7 +1248,7 @@ mod tests {
         // A set whose own count disagrees with its lists says so.
         {
             let set = &run.census.join_sets[0];
-            let set_ty = run.ctx.view.find_by_name(&set.ty).next().unwrap();
+            let set_ty = run.ctx.view.ty(set.ty).unwrap();
             let set_value = Value::read(&snapshot, set_ty, set.addr).unwrap();
             let length = run
                 .ctx
@@ -1290,9 +1290,9 @@ mod tests {
             .join_sets
             .iter()
             .find(|s| s.addr == set)
-            .map(|s| s.ty.as_str())
+            .map(|s| s.ty)
             .unwrap();
-        let set_ty = run.ctx.view.find_by_name(set_ty).next().unwrap();
+        let set_ty = run.ctx.view.ty(set_ty).unwrap();
         let set_value = Value::read(&snapshot, set_ty, set).unwrap();
         let lists = run
             .ctx
@@ -1416,12 +1416,7 @@ mod tests {
         let outer = nodes.iter().max_by_key(|n| n.len()).unwrap();
         let victim = outer[1];
         let node_ty = {
-            let set_ty = run
-                .ctx
-                .view
-                .find_by_name(&run.census.sets[0].ty)
-                .next()
-                .unwrap();
+            let set_ty = run.ctx.view.ty(run.census.sets[0].ty).unwrap();
             let set = Value::read(&snapshot, set_ty, run.census.sets[0].addr).unwrap();
             run.ctx
                 .walk(WalkRole::SetHeadAll)

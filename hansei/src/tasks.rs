@@ -6,10 +6,11 @@
 //! over it, plus the naming helpers every listing shares.
 
 use crate::runtimes::RowOwner;
+use crate::typenames::TypeNames;
 use crate::{Session, output, print_warnings, repl, summary};
 
 use anyhow::{Context as _, Result};
-use hansei_bundle::{BundleTypeId, BundleView, names};
+use hansei_bundle::{BundleTypeId, names};
 use hansei_runtime::tokio::assess::{
     ContinuationStatus, IncompleteReason, NotWaitingReason, ReadyReason, RunnableReason,
     WaitAssessment, WaitUnknownReason,
@@ -22,7 +23,6 @@ use hansei_runtime::tokio::{Lifecycle, RawInstant, attribution, bundle, census};
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
-use std::sync::RwLock;
 
 /// How a task is referred to in passing: by id, or by Header address
 /// when it has none.
@@ -414,7 +414,7 @@ pub(crate) struct Listing<'a> {
     pub(crate) nested: &'a HashMap<census::Via, Vec<Entry>>,
     pub(crate) list: &'a bundle::TaskList,
     pub(crate) polling: &'a HashMap<u64, u32>,
-    pub(crate) impls: &'a names::ImplFold,
+    pub(crate) names: &'a TypeNames<'a>,
 }
 
 /// Print one find and, indented under it, everything the census reached
@@ -453,7 +453,7 @@ pub(crate) fn print_future_entry(
                 "{pad}{mark}(frame {}, `{}`): {:#x}  ",
                 h.frame, h.local, h.addr
             );
-            let name = names::display_future_name(&h.future, listing.impls);
+            let name = listing.names.future(h.future);
             let taken = before.chars().count() + state.chars().count();
             let name = output::fit_name(&name, taken, listing.fit);
             writeln!(out, "{before}{name}{state}")?;
@@ -476,7 +476,7 @@ pub(crate) fn print_future_entry(
                 " at {:#x} (frame {}, `{}`): {live} child{plural} in flight{reaped}",
                 set.addr, set.frame, set.local
             );
-            let name = names::fold_type_name(&set.ty, listing.impls);
+            let name = listing.names.folded(set.ty);
             let taken = indent + 2 + after.chars().count();
             let name = output::fit_name(&name, taken, listing.fit);
             writeln!(out, "{pad}- {name}{after}")?;
@@ -495,7 +495,7 @@ pub(crate) fn print_future_entry(
                     .map(|s| format!("  {s}"))
                     .unwrap_or_default();
                 let before = format!("{pad}    {:#x}  ", child.node);
-                let name = names::display_future_name(future, listing.impls);
+                let name = listing.names.future(*future);
                 let taken = before.chars().count() + state.chars().count();
                 let name = output::fit_name(&name, taken, listing.fit);
                 writeln!(out, "{before}{name}{state}")?;
@@ -526,7 +526,7 @@ pub(crate) fn print_future_entry(
                 " at {:#x} (frame {}, `{}`): {held} task{plural}{short}",
                 set.addr, set.frame, set.local
             );
-            let name = names::fold_type_name(&set.ty, listing.impls);
+            let name = listing.names.folded(set.ty);
             let taken = indent + 2 + after.chars().count();
             let name = output::fit_name(&name, taken, listing.fit);
             writeln!(out, "{pad}- {name}{after}")?;
@@ -587,7 +587,7 @@ fn joined_task(child: &census::JoinedTask, listing: &Listing<'_>, indent: usize)
     };
     if let Some(task) = listing.list.tasks.iter().find(|t| t.addr.0 == child.task) {
         let state = task_state(task, listing.polling, listing.blocking_lwps);
-        let name = future_name(&task.future, listing.impls);
+        let name = future_name(&task.future, listing.names.impls());
         let taken = indent + who.chars().count() + 2 + 2 + state.chars().count();
         let name = output::fit_name(&name, taken, listing.fit);
         return format!("{who}  {name}  {state}");
@@ -739,7 +739,7 @@ pub(crate) fn base_rows<T: proc::Target>(
         &polling,
         &session.impl_fold,
         blocking_lwps(session),
-        &StopNames::of(session),
+        &TypeNames::of(session),
     )
 }
 
@@ -760,7 +760,7 @@ pub(crate) fn with_slots<T: proc::Target>(
         session.attribution(),
         session.registries.stopped,
         &|ty| view.ty(ty).map(|t| t.size()),
-        &StopNames::of(session),
+        &TypeNames::of(session),
         Some(&containers),
     );
     rows
@@ -775,7 +775,7 @@ pub(crate) fn build_rows(
     polling: &HashMap<u64, u32>,
     impls: &names::ImplFold,
     blocking_lwps: &HashMap<u64, u32>,
-    stops: &StopNames<'_>,
+    stops: &TypeNames<'_>,
 ) -> Vec<TaskRow> {
     list.tasks
         .iter()
@@ -843,7 +843,7 @@ pub(crate) fn apply_slots(
     slots: &attribution::Attributed,
     stopped: Option<RawInstant>,
     size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
-    stops: &StopNames<'_>,
+    stops: &TypeNames<'_>,
     containers: Option<&Containers<'_>>,
 ) {
     // Whose waker the sweep found at an address: a connection's caller
@@ -1214,7 +1214,7 @@ fn waiting_on(
     task: &bundle::Task,
     wait: Option<&rt_graph::TaskWait>,
     polling: &HashMap<u64, u32>,
-    stops: &StopNames<'_>,
+    stops: &TypeNames<'_>,
 ) -> String {
     // A blocking cell waits on a pool thread, not on a future — its
     // STATE says which; the cell has nothing to add.
@@ -1242,7 +1242,7 @@ fn waiting_on(
 /// of one reads as the wait it is. An unknown says what made it one
 /// ([`unknown_cell`]), and one whose stop holds futures none of which
 /// is armed counts them.
-pub(crate) fn assessment_cell(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> String {
+pub(crate) fn assessment_cell(wait: &rt_graph::TaskWait, stops: &TypeNames<'_>) -> String {
     match &wait.assessment {
         WaitAssessment::Waiting(verified) => verified.target().cell(),
         WaitAssessment::Set(set) => set.cell(),
@@ -1268,7 +1268,7 @@ pub(crate) fn assessment_cell(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) 
 /// reason where the chain did reach a primitive), and nothing for a
 /// task that waits on nothing — complete, runnable, never polled,
 /// returned — which is the empty bucket rather than a value.
-pub(crate) fn assessment_kind(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> Option<String> {
+pub(crate) fn assessment_kind(wait: &rt_graph::TaskWait, stops: &TypeNames<'_>) -> Option<String> {
     match &wait.assessment {
         WaitAssessment::Waiting(verified) => Some(verified.target().group_label()),
         WaitAssessment::Set(set) => Some(set.group_label()),
@@ -1304,7 +1304,7 @@ fn waits_on_something(assessment: &WaitAssessment) -> bool {
 /// words its bucket uses, since neither has a target to name: the
 /// type the chain stopped at, how it was cut short, or the reason a
 /// primitive's protocol declined.
-fn unknown_cell(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> String {
+fn unknown_cell(wait: &rt_graph::TaskWait, stops: &TypeNames<'_>) -> String {
     match &wait.assessment {
         WaitAssessment::Unknown(WaitUnknownReason::Continuation) => {
             continuation_bucket(&wait.continuation, stops).unwrap_or_else(|| "unknown".to_string())
@@ -1326,7 +1326,7 @@ fn unknown_cell(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> String {
 /// own. `None` for a finished or mid-poll end, which waits on nothing.
 pub(crate) fn continuation_bucket(
     continuation: &ContinuationStatus,
-    stops: &StopNames<'_>,
+    stops: &TypeNames<'_>,
 ) -> Option<String> {
     match continuation {
         ContinuationStatus::Primitive => Some("unknown".to_string()),
@@ -1342,138 +1342,6 @@ pub(crate) fn continuation_bucket(
         | ContinuationStatus::Returned
         | ContinuationStatus::Panicked
         | ContinuationStatus::ActivePoll => None,
-    }
-}
-
-/// How the listings name the type an unknown continuation stopped at:
-/// the bundle's spelling, folded for display and cut to its path.
-/// Built over the session's bundle; over none for a listing test laid
-/// out by hand, where every stop is nameless.
-pub(crate) struct StopNames<'a> {
-    view: Option<BundleView<'a>>,
-    impls: &'a names::ImplFold,
-    /// Labels by type id. A listing's stops are a few dozen types over
-    /// tens of thousands of rows, and each label is a fold pass over
-    /// the name — 0.4 s of wall time (0.9 s of CPU) across the nexus
-    /// core's futures rows uncached, against a 1.5 s launch.
-    labels: RwLock<HashMap<BundleTypeId, Option<String>>>,
-    /// The same types' full names, memoized the same way and for the
-    /// same reason: a name is folded once however many rows carry it.
-    names: RwLock<HashMap<BundleTypeId, Option<String>>>,
-}
-
-impl<'a> StopNames<'a> {
-    pub(crate) fn of<T: proc::Target>(session: &'a Session<'_, T>) -> Self {
-        StopNames {
-            view: Some(session.ctx.view),
-            impls: &session.impl_fold,
-            labels: RwLock::default(),
-            names: RwLock::default(),
-        }
-    }
-
-    /// No bundle to name a stop from.
-    #[cfg(test)]
-    pub(crate) fn none(impls: &'a names::ImplFold) -> Self {
-        StopNames {
-            view: None,
-            impls,
-            labels: RwLock::default(),
-            names: RwLock::default(),
-        }
-    }
-
-    /// Over a bundle built by hand, with no session around it.
-    #[cfg(test)]
-    pub(crate) fn over(view: BundleView<'a>, impls: &'a names::ImplFold) -> Self {
-        StopNames {
-            view: Some(view),
-            impls,
-            labels: RwLock::default(),
-            names: RwLock::default(),
-        }
-    }
-
-    /// The stop's label, or `None` where the type is not in the bundle.
-    fn label(&self, ty: BundleTypeId) -> Option<String> {
-        if let Some(label) = self.labels.read().unwrap().get(&ty) {
-            return label.clone();
-        }
-        let label = self
-            .view
-            .and_then(|view| view.ty(ty))
-            .map(|ty| stop_label(ty.name(), self.impls));
-        self.labels
-            .write()
-            .unwrap()
-            .entry(ty)
-            .or_insert(label)
-            .clone()
-    }
-
-    /// The type's name in full, for a line that names one future
-    /// rather than a bucket of them: `None` where the type is not in
-    /// the bundle.
-    fn name(&self, ty: BundleTypeId) -> Option<String> {
-        if let Some(name) = self.names.read().unwrap().get(&ty) {
-            return name.clone();
-        }
-        let name = self
-            .view
-            .and_then(|view| view.ty(ty))
-            .map(|ty| self.spell(ty.name()));
-        self.names
-            .write()
-            .unwrap()
-            .entry(ty)
-            .or_insert(name)
-            .clone()
-    }
-
-    /// Where the type is written, for the `type defined at:` line of
-    /// a member or an item: a hand-written future's or stream's `poll`,
-    /// or a coroutine's own `async fn` or block. `None` where the type
-    /// is not in the bundle or has no declaration recorded. Not
-    /// memoized, unlike the two above: those fold a name per call, and
-    /// this is two map probes at most.
-    fn site(&self, ty: BundleTypeId) -> Option<(String, u32)> {
-        let ty = self.view?.ty(ty)?;
-        let (file, line) = ty.implementation_site().or_else(|| ty.declaration_site())?;
-        Some((file.to_string(), line))
-    }
-
-    /// Where the coroutine `ty` declares its frame-resident local
-    /// `name` — the `let` or argument behind a `held in:` line's
-    /// backticked name, printed under it as `declared at:`. `None`
-    /// where the frame is no coroutine, or the bundle recorded no
-    /// declaration for the name.
-    fn local_site(&self, ty: BundleTypeId, name: &str) -> Option<(String, u32)> {
-        let (file, line) = self.view?.ty(ty)?.local_site(name)?;
-        Some((file.to_string(), line))
-    }
-
-    /// One type name as a line that names a future carries it: folded
-    /// for display, its generic arguments kept — they are what tells
-    /// one `select!` arm from the arm beside it — with a coroutine's
-    /// kind word in front, as [`stop_label`] puts one there.
-    fn spell(&self, name: &str) -> String {
-        let folded = names::fold_type_name(name, self.impls);
-        match names::coroutine_kind(name) {
-            Some(kind) => format!("{kind} {folded}"),
-            None => folded.into_owned(),
-        }
-    }
-}
-
-/// The label a stop type buckets under: its path folded for display
-/// and cut of its generic arguments — `futures_util::future::Map` —
-/// with a coroutine's kind word in front, as the listings spell one
-/// (`async fn app::serve`).
-pub(crate) fn stop_label(name: &str, impls: &names::ImplFold) -> String {
-    let path = names::outer_path(&names::fold_type_name(name, impls));
-    match names::coroutine_kind(name) {
-        Some(kind) => format!("{kind} {path}"),
-        None => path,
     }
 }
 
@@ -1519,7 +1387,7 @@ fn incomplete_word(reason: IncompleteReason) -> &'static str {
 /// is a dependency.
 pub(crate) fn wait_detail(
     wait: &rt_graph::TaskWait,
-    stops: &StopNames<'_>,
+    stops: &TypeNames<'_>,
     slots: &[&attribution::AttributedSlot],
     stopped: Option<RawInstant>,
     size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
@@ -1730,7 +1598,7 @@ fn frame_site(wait: &rt_graph::TaskWait, frame: usize) -> Option<String> {
 /// `None` where the frame is no coroutine or the bundle recorded no
 /// declaration for the name.
 fn declared_at(
-    stops: &StopNames<'_>,
+    stops: &TypeNames<'_>,
     frames: &[ValueKey],
     frame: usize,
     local: &str,
@@ -1758,7 +1626,7 @@ fn declared_at(
 fn slot_items(
     slots: &[&attribution::AttributedSlot],
     wait: &rt_graph::TaskWait,
-    stops: &StopNames<'_>,
+    stops: &TypeNames<'_>,
     stopped: Option<RawInstant>,
     detail: Detail<'_>,
 ) -> (Vec<String>, Vec<String>) {
@@ -1857,7 +1725,7 @@ fn slot_items(
 /// found one there — a join set by its tasks, a set of futures by its
 /// children in flight, a find by the kind of wait its chain ends in
 /// and its type — else the type at the address.
-fn container_heading(key: ValueKey, stops: &StopNames<'_>, detail: Detail<'_>) -> String {
+fn container_heading(key: ValueKey, stops: &TypeNames<'_>, detail: Detail<'_>) -> String {
     if let Some(containers) = detail.containers {
         if let Some(set) = containers.join_set_at(key.addr) {
             return format!(
@@ -1876,7 +1744,13 @@ fn container_heading(key: ValueKey, stops: &StopNames<'_>, detail: Detail<'_>) -
         }
         if let Some((_, held)) = containers.held_index(key) {
             let kind = held.wait.map(|wait| wait.word()).unwrap_or("future");
-            return format!("{kind} {:#x}: {}", held.addr, stops.spell(&held.future));
+            return format!(
+                "{kind} {:#x}: {}",
+                held.addr,
+                stops
+                    .name(held.future)
+                    .unwrap_or_else(|| stops.folded(held.future))
+            );
         }
     }
     match stops.name(key.ty) {
@@ -1918,7 +1792,7 @@ fn slot_only_line(member: &WaitMember, within: Option<&str>) -> String {
 /// them because it collects every monomorphization ([`stop_label`]).
 /// `ty` is the branch's own type where the analysis recorded one;
 /// what it recorded as a name otherwise is worded the same way.
-fn member_future(member: &WaitMember, stops: &StopNames<'_>, ty: Option<BundleTypeId>) -> String {
+fn member_future(member: &WaitMember, stops: &TypeNames<'_>, ty: Option<BundleTypeId>) -> String {
     ty.and_then(|ty| stops.name(ty))
         .or_else(|| member.future.as_deref().map(|name| stops.spell(name)))
         .unwrap_or_default()
@@ -1942,7 +1816,7 @@ fn member_future(member: &WaitMember, stops: &StopNames<'_>, ty: Option<BundleTy
 /// on a task that is not idle ([`show_armed`]).
 fn member_line(
     member: &WaitMember,
-    stops: &StopNames<'_>,
+    stops: &TypeNames<'_>,
     armed_by: &[&attribution::AttributedSlot],
     stopped: Option<RawInstant>,
     detail: Detail<'_>,
@@ -2259,7 +2133,7 @@ pub(crate) fn unknown_reason(reason: WaitUnknownReason) -> &'static str {
 fn waiting_kind(
     task: &bundle::Task,
     wait: Option<&rt_graph::TaskWait>,
-    stops: &StopNames<'_>,
+    stops: &TypeNames<'_>,
 ) -> Option<String> {
     if task.is_blocking() || task.state.lifecycle() == Lifecycle::Running {
         return None;
@@ -2287,7 +2161,7 @@ fn row_cells(row: &TaskRow, futures: usize, groups: bool) -> Vec<String> {
 pub(crate) struct TaskView<'a> {
     pub(crate) list: &'a bundle::TaskList,
     pub(crate) rows: &'a [TaskRow],
-    pub(crate) impls: &'a names::ImplFold,
+    pub(crate) names: &'a TypeNames<'a>,
     /// The owner keys numbered as the listings print them.
     pub(crate) owners: &'a bundle::OwnerIndex,
     /// Each task's group — its runtime, or the local set that owns it
@@ -2421,7 +2295,7 @@ pub(crate) fn print_task_children(
         nested: &view.tree.nested,
         list: view.list,
         polling: view.polling,
-        impls: view.impls,
+        names: view.names,
     };
     let count = view.tree.counts.get(&index).copied().unwrap_or_default();
     print_finds(
@@ -2466,11 +2340,12 @@ fn with_task_view<T: proc::Target>(
     fit: Option<usize>,
     print: impl FnOnce(&TaskView<'_>) -> Result<()>,
 ) -> Result<()> {
+    let names = TypeNames::of(session);
     let polling = polling_map(session);
     let view = TaskView {
         list: &session.tasks,
         rows: rows(session),
-        impls: &session.impl_fold,
+        names: &names,
         owners: &session.owners,
         group_tags: &session.group_tags(),
         polling: &polling,
@@ -3229,6 +3104,7 @@ pub(crate) fn exec_census<T: proc::Target>(
         false => Vec::new(),
     };
     let runtimes = census_runtimes(session, sections.threads)?;
+    let names = TypeNames::of(session);
 
     let facts = summary::Facts {
         lwps: session.lwps.iter().map(|lwp| lwp.tid).collect(),
@@ -3239,7 +3115,7 @@ pub(crate) fn exec_census<T: proc::Target>(
         waits: analysis.map(|analysis| &analysis.waits[..]).unwrap_or(&[]),
         held: census.map(|census| &census.held[..]).unwrap_or(&[]),
         sets: census.map(|census| &census.sets[..]).unwrap_or(&[]),
-        impls: &session.impl_fold,
+        names: &names,
     };
     summary::print(&facts, sections, top, session.fit_width(theme), theme, out)
 }
@@ -3398,9 +3274,9 @@ fn optional<T>(read: Result<T>, what: &str) -> Result<Option<T>> {
 #[cfg(test)]
 mod table_tests {
     use super::{
-        Detail, StopNames, build_rows, listing_footer, member_line, print_task_table, stop_label,
-        wait_detail,
+        Detail, TypeNames, build_rows, listing_footer, member_line, print_task_table, wait_detail,
     };
+    use crate::typenames::stop_label;
 
     use hansei_bundle::{BundleTypeId, SemanticIssueKind};
     use hansei_runtime::tokio::assess::{
@@ -3489,7 +3365,7 @@ mod table_tests {
     #[test]
     fn test_defined_at_follows_the_verdict_on_every_kind_of_branch() {
         let impls = Default::default();
-        let stops = StopNames::none(&impls);
+        let stops = TypeNames::none(&impls);
         let line = |member: &WaitMember| member_line(member, &stops, &[], None, ARMED).join("\n");
         let arm = || Some(("qorb-0.4.1/src/pool.rs".to_string(), 286));
         let inspected = WaitMember {
@@ -3676,7 +3552,7 @@ mod table_tests {
 
         let bundle = sited_bundle();
         let impls = Default::default();
-        let stops = StopNames::over(BundleView::new(&bundle), &impls);
+        let stops = TypeNames::over(BundleView::new(&bundle), &impls);
         let site = "    type defined at: hyper-1.10.1/src/proto/h1/dispatch.rs:512";
         let arm = || Some(("src/bin/armed-select.rs".to_string(), 50));
 
@@ -3904,7 +3780,7 @@ mod table_tests {
             &polling,
             &hansei_bundle::names::ImplFold::default(),
             &Default::default(),
-            &StopNames::none(&Default::default()),
+            &TypeNames::none(&Default::default()),
         )
     }
 
@@ -3941,7 +3817,7 @@ mod table_tests {
             ..branch("m", WaitAssessment::Unresumed, true)
         };
         let impls = Default::default();
-        let stops = StopNames::none(&impls);
+        let stops = TypeNames::none(&impls);
         // A fan-out member arms nothing, so its block is the one line.
         let line = |member: &WaitMember| member_line(member, &stops, &[], None, ARMED).join("\n");
         for (listed, total) in [(3, 3), (8, 12), (1, 1), (0, 0)] {
@@ -4007,7 +3883,7 @@ mod table_tests {
         use hansei_runtime::tokio::wakers::Owner;
 
         let impls = Default::default();
-        let stops = StopNames::none(&impls);
+        let stops = TypeNames::none(&impls);
         let owner = Owner::Task {
             header: 0x1100,
             index: 0,
@@ -4554,7 +4430,7 @@ mod table_tests {
             &HashMap::new(),
             &hansei_bundle::names::ImplFold::default(),
             &HashMap::from([(0x1000 + 2 * 0x100, 42)]),
-            &StopNames::none(&Default::default()),
+            &TypeNames::none(&Default::default()),
         );
         assert_eq!(with_lwp[0].state, "blocking");
         assert_eq!(with_lwp[0].lwp, Some(42));
@@ -4952,7 +4828,7 @@ mod table_tests {
 
         let bundle = sited_bundle();
         let impls = Default::default();
-        let stops = StopNames::over(BundleView::new(&bundle), &impls);
+        let stops = TypeNames::over(BundleView::new(&bundle), &impls);
         // Eight frames, all the coroutine but frame 5 (index 2), a
         // hand-written future.
         let frames: Vec<ValueKey> = (0..8)
@@ -5050,7 +4926,7 @@ mod table_tests {
             ty: BundleTypeId(0),
             depth: 1,
             frames: Vec::new(),
-            future: "x::branch".to_string(),
+            future: crate::typenames::testing::named("x::branch"),
             state: None,
             waiting_on: None,
             wait: None,
@@ -5104,7 +4980,7 @@ mod table_tests {
     #[test]
     fn test_armed_prints_only_on_a_task_that_is_not_idle() {
         let impls = Default::default();
-        let stops = StopNames::none(&impls);
+        let stops = TypeNames::none(&impls);
         let member = select_branch(0, WaitAssessment::Unresumed, true);
         let idle = Detail {
             containers: None,
@@ -5211,7 +5087,7 @@ mod table_tests {
             reach: Reach::Unlocated,
         };
         let impls = Default::default();
-        let stops = StopNames::none(&impls);
+        let stops = TypeNames::none(&impls);
         let named = |cell: u64| {
             (cell == 0xd010)
                 .then(|| "child 3 of the set at 0xfeb66c0 (polled by task 621)".to_string())
@@ -5295,7 +5171,9 @@ mod table_tests {
                 local: "dependencies".to_string(),
                 via: None,
                 addr: 0xfeb66c0,
-                ty: "futures_util::stream::futures_unordered::FuturesUnordered<()>".to_string(),
+                ty: crate::typenames::testing::named(
+                    "futures_util::stream::futures_unordered::FuturesUnordered<()>",
+                ),
                 children: Vec::new(),
             }],
             Vec::new(),
@@ -5332,7 +5210,7 @@ mod table_tests {
             }
         }
         let impls = Default::default();
-        let stops = StopNames::none(&impls);
+        let stops = TypeNames::none(&impls);
         let mut rows = build_rows(
             list,
             &Default::default(),
@@ -6091,7 +5969,7 @@ mod census_listing_tests {
             ty: BundleTypeId(0),
             depth: 1,
             frames: Vec::new(),
-            future: "app::work".to_string(),
+            future: crate::typenames::testing::named("app::work"),
             state: None,
             waiting_on: None,
             wait: None,
@@ -6105,7 +5983,7 @@ mod census_listing_tests {
         census::SetChild {
             node: 0x4000,
             depth: 1,
-            future: future.map(str::to_string),
+            future: future.map(crate::typenames::testing::named),
             root: None,
             state: None,
             waiting_on: None,
@@ -6123,7 +6001,7 @@ mod census_listing_tests {
             local: "unordered".to_string(),
             via: None,
             addr: 0x2000,
-            ty: "FuturesUnordered".to_string(),
+            ty: crate::typenames::testing::named("FuturesUnordered"),
             children: vec![set_child(Some("app::child")), set_child(None)],
         }
     }
@@ -6145,7 +6023,7 @@ mod census_listing_tests {
             local: "workers".to_string(),
             via: None,
             addr: 0x3000,
-            ty: "JoinSet<()>".to_string(),
+            ty: crate::typenames::testing::named("JoinSet<()>"),
             length,
             children,
         }
@@ -6183,24 +6061,23 @@ mod census_listing_tests {
     /// it, all kept — on every row kind, and left whole with no width.
     #[test]
     fn test_a_fit_width_cuts_the_names_and_keeps_the_columns() {
-        let long = "app::a::very::long::module::path::down::to::the::future::in::question::\
-                    with::generic::arguments::spelled::out::in::full::Type";
+        use crate::typenames::testing::{LONG, LONG_JOIN_SET, LONG_SET, named};
+        let long = LONG;
         let mut held_future = held(0, None);
-        held_future.future = long.to_string();
+        held_future.future = named(LONG);
         held_future.state = Some("Suspend0 — app.rs:9".to_string());
         let held_list = [held_future];
         let mut set = future_set(0);
-        set.ty = format!("FuturesUnordered<{long}>");
-        set.children[0].future = Some(long.to_string());
+        set.ty = named(LONG_SET);
+        set.children[0].future = Some(named(LONG));
         let sets = [set];
         let mut joined_set = join_set(0, 0, vec![]);
-        joined_set.ty = format!("JoinSet<{long}>");
+        joined_set.ty = named(LONG_JOIN_SET);
         let join_sets = [joined_set];
         let nested = HashMap::new();
         let list = bundle::TaskList::new(vec![]);
         let polling = HashMap::new();
         let blocking = HashMap::new();
-        let impls = hansei_bundle::names::ImplFold::default();
         let show = |fit: Option<usize>| {
             let listing = Listing {
                 blocking_lwps: &blocking,
@@ -6213,7 +6090,7 @@ mod census_listing_tests {
                 nested: &nested,
                 list: &list,
                 polling: &polling,
-                impls: &impls,
+                names: crate::typenames::testing::type_names(),
             };
             let mut out = Vec::new();
             for entry in [Entry::Held(0), Entry::Set(0), Entry::JoinSet(0)] {
@@ -6272,7 +6149,6 @@ mod census_listing_tests {
         let list = bundle::TaskList::new(vec![]);
         let polling = HashMap::new();
         let blocking = HashMap::new();
-        let impls = hansei_bundle::names::ImplFold::default();
         let show = |set: &census::JoinSet| {
             let join_sets = std::slice::from_ref(set);
             let listing = Listing {
@@ -6286,7 +6162,7 @@ mod census_listing_tests {
                 nested: &nested,
                 list: &list,
                 polling: &polling,
-                impls: &impls,
+                names: crate::typenames::testing::type_names(),
             };
             let mut out = Vec::new();
             print_future_entry(Entry::JoinSet(0), &listing, 0, false, &mut out)

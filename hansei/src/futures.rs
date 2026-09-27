@@ -8,15 +8,16 @@
 
 use crate::runtimes::RowOwner;
 use crate::tasks::{
-    self, CensusTree, Cmp, EMPTY_BUCKET, Entry, Finds, Listing, StopNames, alternatives,
-    census_tree, listing_footer, resolve_rt, task_id,
+    self, CensusTree, Cmp, EMPTY_BUCKET, Entry, Finds, Listing, alternatives, census_tree,
+    listing_footer, resolve_rt, task_id,
 };
 use crate::trace::FutureAt;
+use crate::typenames::TypeNames;
 use crate::whatis::via_suffix;
 use crate::{Session, print_warnings, repl, summary};
 
 use anyhow::{Context as _, Result};
-use hansei_bundle::names;
+use hansei_bundle::BundleTypeId;
 use hansei_runtime::tokio::assess::ContinuationStatus;
 use hansei_runtime::tokio::{Lifecycle, RawInstant, attribution, bundle, census};
 
@@ -128,8 +129,7 @@ pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [Fut
             &session.tasks,
             &session.owners,
             session.census(),
-            &session.impl_fold,
-            &StopNames::of(session),
+            &TypeNames::of(session),
         );
         with_slots(
             rows,
@@ -344,8 +344,7 @@ pub(crate) fn build_rows(
     list: &bundle::TaskList,
     owners: &bundle::OwnerIndex,
     census: &census::FutureCensus,
-    impls: &names::ImplFold,
-    stops: &StopNames<'_>,
+    stops: &TypeNames<'_>,
 ) -> Vec<FutureRow> {
     let tree = census_tree(census.into());
     let rows = Rows {
@@ -353,7 +352,6 @@ pub(crate) fn build_rows(
         owners,
         census,
         tree: &tree,
-        impls,
         stops,
         task_at: list
             .tasks
@@ -388,9 +386,8 @@ struct Rows<'a> {
     owners: &'a bundle::OwnerIndex,
     census: &'a census::FutureCensus,
     tree: &'a CensusTree,
-    impls: &'a names::ImplFold,
     /// How an unknown continuation's stop is named for its bucket.
-    stops: &'a StopNames<'a>,
+    stops: &'a TypeNames<'a>,
     /// Task index by address, for the rows that wait on a task: a
     /// scan of the listing per row is a scan of megabytes per row.
     task_at: HashMap<u64, usize>,
@@ -431,17 +428,18 @@ impl Rows<'_> {
             }
             Entry::Set(set) => {
                 let s = &self.census.sets[set];
-                let live: Vec<(usize, &census::SetChild, &str)> = s
+                let live: Vec<(usize, &census::SetChild, BundleTypeId)> = s
                     .children
                     .iter()
                     .enumerate()
-                    .filter_map(|(child, c)| Some((child, c, c.future.as_deref()?)))
+                    .filter_map(|(child, c)| Some((child, c, c.future?)))
                     .collect();
-                let child_rows = |&(child, c, future): &(usize, &census::SetChild, &str)| {
-                    let mut out = vec![self.child(set, child, s, c, future)];
-                    out.extend(self.rows_under(census::Via::SetChild { set, child }));
-                    out
-                };
+                let child_rows =
+                    |&(child, c, future): &(usize, &census::SetChild, BundleTypeId)| {
+                        let mut out = vec![self.child(set, child, s, c, future)];
+                        out.extend(self.rows_under(census::Via::SetChild { set, child }));
+                        out
+                    };
                 if live.len() < PARALLEL_ROWS {
                     return live.iter().flat_map(child_rows).collect();
                 }
@@ -487,7 +485,7 @@ impl Rows<'_> {
             armed: false,
             wait_line: None,
             slot_lines: Vec::new(),
-            future: names::display_future_name(&h.future, self.impls),
+            future: self.stops.future(h.future),
             depth: h.depth,
             holds: inside.held,
             sets: inside.sets + inside.join_sets,
@@ -501,7 +499,7 @@ impl Rows<'_> {
         child: usize,
         s: &census::FutureSet,
         c: &census::SetChild,
-        future: &str,
+        future: BundleTypeId,
     ) -> FutureRow {
         let inside = self
             .tree
@@ -533,7 +531,7 @@ impl Rows<'_> {
             armed: false,
             wait_line: None,
             slot_lines: Vec::new(),
-            future: names::display_future_name(future, self.impls),
+            future: self.stops.future(future),
             depth: c.depth,
             holds: inside.held,
             sets: inside.sets + inside.join_sets,
@@ -569,7 +567,7 @@ fn waiting_kind(
     continuation: &ContinuationStatus,
     list: &bundle::TaskList,
     task_at: &HashMap<u64, usize>,
-    stops: &StopNames<'_>,
+    stops: &TypeNames<'_>,
 ) -> Option<String> {
     match wait {
         Some(bundle::WaitKind::Task { addr }) => Some(match task_at.get(&addr) {
@@ -649,7 +647,7 @@ struct Blocks<'a> {
     owners: &'a bundle::OwnerIndex,
     census: &'a census::FutureCensus,
     tree: &'a CensusTree,
-    impls: &'a names::ImplFold,
+    names: TypeNames<'a>,
     group_tags: Vec<String>,
     polling: HashMap<u64, u32>,
     blocking_lwps: &'a HashMap<u64, u32>,
@@ -698,7 +696,7 @@ impl Blocks<'_> {
                 writeln!(
                     out,
                     "    child of: {} at {:#x}, polled by {}{}",
-                    names::fold_type_name(&s.ty, self.impls),
+                    self.names.folded(s.ty),
                     s.addr,
                     tasks::task_label(self.list, row.owner),
                     via_suffix(self.census, row.via)
@@ -763,7 +761,7 @@ impl Blocks<'_> {
             nested: &self.tree.nested,
             list: self.list,
             polling: &self.polling,
-            impls: self.impls,
+            names: &self.names,
         };
         let inside = self
             .tree
@@ -799,7 +797,7 @@ fn blocks_for<'s, T: proc::Target>(
         owners: &session.owners,
         census: session.census(),
         tree: session.census_tree(),
-        impls: &session.impl_fold,
+        names: TypeNames::of(session),
         group_tags: session.group_tags(),
         polling: tasks::polling_map(session),
         blocking_lwps: tasks::blocking_lwps(session),
@@ -1318,7 +1316,7 @@ mod tests {
     use crate::trace::FutureAt;
 
     use crate::runtimes::{OwnerCounts, RowOwner, owner_label};
-    use crate::tasks::StopNames;
+    use crate::typenames::testing::{named, type_names};
     use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::assess::{ContinuationStatus, IncompleteReason};
     use hansei_runtime::tokio::bundle::{
@@ -1370,7 +1368,7 @@ mod tests {
             ty: BundleTypeId(0),
             depth: 2,
             frames: Vec::new(),
-            future: "app::work::{async_fn_env#0}".to_string(),
+            future: named("app::work::{async_fn_env#0}"),
             state: Some("Suspend1 — src/app.rs:9".to_string()),
             waiting_on: Some("a timer".to_string()),
             wait: Some(WaitKind::Timer { past_due: None }),
@@ -1384,7 +1382,7 @@ mod tests {
         census::SetChild {
             node,
             depth: 1,
-            future: future.map(str::to_string),
+            future: future.map(named),
             root: future.map(|_| census::FutureRoot {
                 addr: node + 0x10,
                 ty: BundleTypeId(0),
@@ -1405,7 +1403,7 @@ mod tests {
             local: "set".to_string(),
             via: None,
             addr: 0x2000,
-            ty: "FuturesUnordered<app::child>".to_string(),
+            ty: named("FuturesUnordered<app::child>"),
             children,
         }
     }
@@ -1428,7 +1426,7 @@ mod tests {
             local: "workers".to_string(),
             via: Some(via),
             addr: 0x2200,
-            ty: "JoinSet<()>".to_string(),
+            ty: named("JoinSet<()>"),
             length: 0,
             children: vec![],
         }
@@ -1441,13 +1439,7 @@ mod tests {
     }
 
     fn rows_of(census: &FutureCensus) -> Vec<FutureRow> {
-        build_rows(
-            &list(),
-            &owners(),
-            census,
-            &hansei_bundle::names::ImplFold::default(),
-            &StopNames::none(&Default::default()),
-        )
+        build_rows(&list(), &owners(), census, type_names())
     }
 
     /// The merge arms a find by the slots that sit in it and by the
@@ -2159,8 +2151,7 @@ mod tests {
     #[test]
     fn test_a_fit_cuts_the_wait_and_the_future_and_nothing_else() {
         let mut long = held(0, 0x5000, None);
-        long.future =
-            "app::a::very::long::module::path::to::the::work::{async_fn_env#0}".to_string();
+        long.future = named("app::a::very::long::module::path::to::the::work::{async_fn_env#0}");
         // A cell long enough to cut: what a chain stopped at, since a
         // kind word never is.
         long.waiting_on = None;

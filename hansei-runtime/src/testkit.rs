@@ -25,6 +25,56 @@ pub mod corrupt;
 pub mod delegation;
 pub mod heap;
 
+/// A bundle holding nothing but a type named each of `names`, the
+/// `i`th as `BundleTypeId(i)`: what a test that lays records out by
+/// hand gives the code naming their types, where no fixture's bundle
+/// carries the names it wants to see printed.
+pub fn named_types(names: &[&str]) -> Bundle {
+    use hansei_bundle::{
+        BundleTypeId, DynFutureTable, Encoding, FORMAT_VERSION, ImplTable, InfraTypes, Meta,
+        ProvenanceTable, StaticsTable, StringInterner, TaskTable, TypeDef, TypeTable, WalksTable,
+    };
+    let mut strings = StringInterner::new();
+    let types = names
+        .iter()
+        .map(|name| TypeDef::Base {
+            name: strings.intern(name),
+            size: 8,
+            encoding: Encoding::Unsigned,
+        })
+        .collect();
+    let any = BundleTypeId(0);
+    Bundle {
+        meta: Meta {
+            format_version: FORMAT_VERSION,
+            ..Default::default()
+        },
+        strings: strings.finish(),
+        types: TypeTable {
+            types,
+            ..Default::default()
+        },
+        tasks: TaskTable::default(),
+        dyn_futures: DynFutureTable::default(),
+        statics: StaticsTable::default(),
+        walks: WalksTable::default(),
+        infra: InfraTypes {
+            header: any,
+            vtable: any,
+            trailer: any,
+            context: any,
+            scheduler_handle: any,
+            mt_handle: any,
+            ct_handle: any,
+            location: any,
+            raw_waker_vtable: any,
+        },
+        provenance: ProvenanceTable::default(),
+        impls: ImplTable::default(),
+        semantics: Default::default(),
+    }
+}
+
 /// Explicit continuation bindings for the `walk-shapes` pair's two
 /// hand-written wrappers — `WrapS`, a plain struct whose `inner` is the
 /// future it polls, and `WrapE`, a named-variant enum whose `Running`
@@ -455,7 +505,7 @@ impl Run<'_> {
     /// [`expect::problems`] over this run.
     #[must_use]
     pub fn registry_problems(&self) -> Vec<String> {
-        expect::problems(self.ctx.proc, &self.census, &self.list)
+        expect::problems(self.ctx.proc, self.ctx.view, &self.census, &self.list)
     }
 }
 
@@ -648,6 +698,7 @@ pub mod expect {
     use crate::tokio::census::{FutureCensus, Via};
 
     use anyhow::{Context as _, Result, bail, ensure};
+    use hansei_bundle::BundleView;
     use proc::Target;
 
     use std::collections::BTreeMap;
@@ -773,14 +824,19 @@ pub mod expect {
     /// problem, not a skip; a target legitimately without a registry
     /// (a real core) simply never asks.
     #[must_use]
-    pub fn problems<T: Target>(target: &T, census: &FutureCensus, list: &TaskList) -> Vec<String> {
+    pub fn problems<T: Target>(
+        target: &T,
+        view: BundleView<'_>,
+        census: &FutureCensus,
+        list: &TaskList,
+    ) -> Vec<String> {
         match read_from(target) {
             None => vec!["the capture carries no census registry symbol".into()],
             Some(Err(e)) => vec![format!("the registry does not parse: {e:#}")],
             Some(Ok(expected)) if expected.is_empty() => {
                 vec!["the registry is empty; every registering fixture registers".into()]
             }
-            Some(Ok(expected)) => diff(&expected, census, list),
+            Some(Ok(expected)) => diff(&expected, view, census, list),
         }
     }
 
@@ -793,7 +849,13 @@ pub mod expect {
     /// are one-directional: each registered name must be a listed
     /// task, but unregistered tasks (the runtime's own machinery) are
     /// nobody's business. One line per problem; empty is clean.
-    pub fn diff(expected: &[Expectation], census: &FutureCensus, list: &TaskList) -> Vec<String> {
+    pub fn diff(
+        expected: &[Expectation],
+        view: BundleView<'_>,
+        census: &FutureCensus,
+        list: &TaskList,
+    ) -> Vec<String> {
+        let name_of = |id| view.ty(id).map_or("<unknown>", |ty| ty.name());
         let mut v = Vec::new();
         let errors: Vec<String> = census.errors.iter().map(|e| format!("{e:#}")).collect();
         let excused = |addr: u64| {
@@ -818,11 +880,11 @@ pub mod expect {
                     match row {
                         Some((i, h)) => {
                             held_claimed[i] = true;
-                            if !h.future.contains(name) {
+                            if !name_of(h.future).contains(name) {
                                 v.push(format!(
                                     "the held find at {slot:#x} is `{}`, \
                                      not the registered `{name}`",
-                                    h.future
+                                    name_of(h.future)
                                 ));
                             }
                         }
@@ -844,7 +906,9 @@ pub mod expect {
                         continue;
                     };
                     let row = census.held.iter().enumerate().find(|(i, h)| {
-                        !held_claimed[*i] && h.via == Some(Via::Held(p)) && h.future.contains(name)
+                        !held_claimed[*i]
+                            && h.via == Some(Via::Held(p))
+                            && name_of(h.future).contains(name)
                     });
                     match row {
                         Some((i, _)) => held_claimed[i] = true,
@@ -859,10 +923,9 @@ pub mod expect {
                         matches!(&list.tasks[h.owner].future,
                             FutureInfo::Known(k) if k.display_name.contains(task))
                     };
-                    let row =
-                        census.held.iter().enumerate().find(|(i, h)| {
-                            !held_claimed[*i] && owned_by(h) && h.future.contains(name)
-                        });
+                    let row = census.held.iter().enumerate().find(|(i, h)| {
+                        !held_claimed[*i] && owned_by(h) && name_of(h.future).contains(name)
+                    });
                     match row {
                         Some((i, _)) => held_claimed[i] = true,
                         None => v.push(format!(
@@ -942,7 +1005,9 @@ pub mod expect {
             if !held_claimed[i] {
                 v.push(format!(
                     "unregistered held find `{}` (local `{}`) at slot {:#x}",
-                    h.future, h.local, h.slot
+                    name_of(h.future),
+                    h.local,
+                    h.slot
                 ));
             }
         }
@@ -950,7 +1015,9 @@ pub mod expect {
             if !set_claimed[i] {
                 v.push(format!(
                     "unregistered set `{}` (local `{}`) at {:#x}",
-                    s.ty, s.local, s.addr
+                    name_of(s.ty),
+                    s.local,
+                    s.addr
                 ));
             }
         }
@@ -958,7 +1025,9 @@ pub mod expect {
             if !join_claimed[i] {
                 v.push(format!(
                     "unregistered join set `{}` (local `{}`) at {:#x}",
-                    s.ty, s.local, s.addr
+                    name_of(s.ty),
+                    s.local,
+                    s.addr
                 ));
             }
         }

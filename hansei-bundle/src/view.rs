@@ -318,6 +318,13 @@ impl<'a> BundleType<'a> {
         }
     }
 
+    /// This type as a future is named where no kind column carries its
+    /// kind: the kind word joined to the folded name — `async fn
+    /// foo::bar`, or `future tokio::time::Sleep` for a plain future.
+    pub fn future_display_name(&self, impls: &crate::names::ImplFold) -> String {
+        crate::names::display_future_name(self.name(), impls)
+    }
+
     /// The type's size in bytes.
     pub fn size(&self) -> u64 {
         match self.def() {

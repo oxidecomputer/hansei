@@ -14,6 +14,7 @@
 use crate::relations::Relations;
 use crate::summary::counted;
 use crate::tasks::{future_name, task_label};
+use crate::typenames::TypeNames;
 use crate::{Session, print_warnings};
 
 use anyhow::{Result, bail};
@@ -77,7 +78,7 @@ struct View<'a> {
     relations: &'a Relations,
     sets: &'a [census::FutureSet],
     join_sets: &'a [census::JoinSet],
-    impls: &'a names::ImplFold,
+    names: &'a TypeNames<'a>,
     /// The attributed waker slots, which name the channels.
     slots: &'a Attributed,
     /// A type's size, for the extent of a channel reached through a
@@ -97,13 +98,14 @@ pub(crate) fn exec_sync<T: proc::Target>(
     let census = session.census();
     let bundle_view = session.ctx.view;
     let size_of = |ty: BundleTypeId| bundle_view.ty(ty).map(|t| t.size());
+    let names = TypeNames::of(session);
     let view = View {
         list: &session.tasks,
         analysis,
         relations,
         sets: &census.sets,
         join_sets: &census.join_sets,
-        impls: &session.impl_fold,
+        names: &names,
         slots: session.attribution(),
         size_of: &size_of,
     };
@@ -112,7 +114,7 @@ pub(crate) fn exec_sync<T: proc::Target>(
     }
     if let Some(addr) = addr {
         let task_at = |addr: u64| session.extents().locate(addr).map(|(index, _)| index);
-        let references = |addr: u64| collect_references(session, view.impls, addr);
+        let references = |addr: u64| collect_references(session, view.names.impls(), addr);
         return print_addressed(&view, addr, &kinds, &task_at, &references, out);
     }
     if kinds.contains(&Kind::Address) {
@@ -142,7 +144,7 @@ fn print_listing(view: &View<'_>, kinds: &[Kind], out: &mut dyn io::Write) -> Re
     if wants(kinds, Kind::Semaphore) {
         for block in blocks(view.analysis).values() {
             sep(out)?;
-            print_semaphore(block, view.impls, out)?;
+            print_semaphore(block, view.names.impls(), out)?;
         }
     }
     if wants(kinds, Kind::Join) {
@@ -189,7 +191,7 @@ fn print_addressed(
     let channel = |kind: Kind| channel_blocks(view, kind).remove(&addr);
     match kinds {
         [Kind::Semaphore] => match semaphore {
-            Some(block) => print_semaphore(block, view.impls, out),
+            Some(block) => print_semaphore(block, view.names.impls(), out),
             None => bail!(
                 "no decoded semaphore at {addr:#x}; `sync` lists the ones \
                  the tasks' await chains reach"
@@ -206,7 +208,7 @@ fn print_addressed(
         [Kind::Address] => print_references(addr, &references(addr), out),
         [] => {
             if let Some(block) = semaphore {
-                return print_semaphore(block, view.impls, out);
+                return print_semaphore(block, view.names.impls(), out);
             }
             if set {
                 return print_set(view, addr, out);
@@ -296,7 +298,7 @@ fn print_task_scoped(
             let holds = block.locks.iter().any(|fl| fl.holder.addr.0 == addr);
             if blocked || holds {
                 sep(out)?;
-                print_semaphore(block, view.impls, out)?;
+                print_semaphore(block, view.names.impls(), out)?;
             }
         }
     }
@@ -533,7 +535,7 @@ fn print_join(view: &View<'_>, index: usize, out: &mut dyn io::Write) -> Result<
         out,
         "{} ({}): {state}",
         task_label(view.list, index),
-        future_name(&task.future, view.impls)
+        future_name(&task.future, view.names.impls())
     )?;
     let named = |tasks: &[usize]| {
         tasks
@@ -602,10 +604,7 @@ fn set_name(view: &View<'_>, addr: u64) -> String {
         .map(|s| &s.ty)
         .or_else(|| view.sets.iter().find(|s| s.addr == addr).map(|s| &s.ty));
     match ty {
-        Some(ty) => format!(
-            "a {} (set {addr:#x})",
-            names::fold_type_name(ty, view.impls)
-        ),
+        Some(ty) => format!("a {} (set {addr:#x})", view.names.folded(*ty)),
         None => format!("the set at {addr:#x}"),
     }
 }
@@ -994,7 +993,7 @@ mod sync_tests {
 
     use crate::relations::Relations;
 
-    use hansei_bundle::{BundleTypeId, names};
+    use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::assess::{
         ContinuationStatus, IncompleteReason, PollingBarrier, VerifiedWait, WaitAssessment,
         WaitUnknownReason,
@@ -1206,7 +1205,7 @@ mod sync_tests {
                 relations: &relations,
                 sets: &self.sets,
                 join_sets: &self.join_sets,
-                impls: &names::ImplFold::default(),
+                names: crate::typenames::testing::type_names(),
                 slots: &self.slots,
                 size_of: &size_of,
             };
@@ -1229,7 +1228,7 @@ mod sync_tests {
                 relations: &relations,
                 sets: &self.sets,
                 join_sets: &self.join_sets,
-                impls: &names::ImplFold::default(),
+                names: crate::typenames::testing::type_names(),
                 slots: &self.slots,
                 size_of: &size_of,
             };
@@ -1465,7 +1464,9 @@ mod sync_tests {
             local: "work".to_string(),
             via: None,
             addr: 0xd000,
-            ty: "futures_util::stream::futures_unordered::FuturesUnordered<()>".to_string(),
+            ty: crate::typenames::testing::named(
+                "futures_util::stream::futures_unordered::FuturesUnordered<()>",
+            ),
             children: Vec::new(),
         }];
         fixture.slots = Attributed::from_slots(vec![owner_slot(
@@ -1726,7 +1727,7 @@ mod sync_tests {
             local: "tasks".to_string(),
             via: None,
             addr: set_addr,
-            ty: "tokio::task::join_set::JoinSet<()>".to_string(),
+            ty: crate::typenames::testing::named("tokio::task::join_set::JoinSet<()>"),
             length: 1,
             children: vec![census::JoinedTask {
                 entry: 0xc000,
@@ -1768,7 +1769,9 @@ mod sync_tests {
             local: "work".to_string(),
             via: None,
             addr: 0xb000,
-            ty: "futures_util::stream::futures_unordered::FuturesUnordered<()>".to_string(),
+            ty: crate::typenames::testing::named(
+                "futures_util::stream::futures_unordered::FuturesUnordered<()>",
+            ),
             children: vec![census::SetChild {
                 node: 0xc100,
                 depth: 0,
@@ -1835,7 +1838,7 @@ mod sync_tests {
             local: "tasks".to_string(),
             via: None,
             addr: 0xb000,
-            ty: "tokio::task::join_set::JoinSet<()>".to_string(),
+            ty: crate::typenames::testing::named("tokio::task::join_set::JoinSet<()>"),
             length: 1,
             children: vec![census::JoinedTask {
                 entry: 0xc000,
@@ -1866,7 +1869,7 @@ mod sync_tests {
             local: "tasks".to_string(),
             via: None,
             addr: 0xb000,
-            ty: "tokio::task::join_set::JoinSet<()>".to_string(),
+            ty: crate::typenames::testing::named("tokio::task::join_set::JoinSet<()>"),
             length: 2,
             children: vec![
                 census::JoinedTask {
@@ -1907,12 +1910,16 @@ mod sync_tests {
             local: "work".to_string(),
             via: None,
             addr: 0xb000,
-            ty: "futures_util::stream::futures_unordered::FuturesUnordered<()>".to_string(),
+            ty: crate::typenames::testing::named(
+                "futures_util::stream::futures_unordered::FuturesUnordered<()>",
+            ),
             children: vec![
                 census::SetChild {
                     node: 0xc000,
                     depth: 1,
-                    future: Some("app::poll::{async_fn_env#0}".to_string()),
+                    future: Some(crate::typenames::testing::named(
+                        "app::poll::{async_fn_env#0}",
+                    )),
                     root: None,
                     state: None,
                     waiting_on: None,

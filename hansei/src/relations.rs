@@ -384,7 +384,7 @@ mod relations_tests {
             slot: 0xd000,
             addr: 0xd000,
             ty: BundleTypeId(0),
-            future: "tokio::runtime::task::join::JoinHandle<()>".to_string(),
+            future: hansei_bundle::BundleTypeId(1),
             state: None,
             waiting_on: None,
             wait: Some(WaitKind::Task { addr: addr(id).0 }),
@@ -401,7 +401,7 @@ mod relations_tests {
             local: "tasks".to_string(),
             via: None,
             addr: 0xb000,
-            ty: "tokio::task::join_set::JoinSet<()>".to_string(),
+            ty: hansei_bundle::BundleTypeId(2),
             length: ids.len() as u64,
             children: ids
                 .iter()

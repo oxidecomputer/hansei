@@ -6,6 +6,7 @@
 
 use crate::Session;
 use crate::tasks::{future_name, task_id, task_label};
+use crate::typenames::TypeNames;
 
 use anyhow::Result;
 use hansei_bundle::BundleView;
@@ -164,6 +165,7 @@ fn report_whatis(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let mut blocks = 0;
+    let type_names = TypeNames::over(*view, impls);
     let owned = |group: usize| {
         list.tasks
             .iter()
@@ -322,7 +324,7 @@ fn report_whatis(
         let child = &set.children[child_index];
         separate(&mut blocks, out)?;
         let future = match &child.future {
-            Some(future) => names::display_future_name(future, impls),
+            Some(future) => type_names.future(*future),
             None => "<completed, not yet reaped>".to_string(),
         };
         writeln!(out, "Future {:#x}: {future}", child.node)?;
@@ -339,7 +341,7 @@ fn report_whatis(
         writeln!(
             out,
             "    Child of: {} at {:#x} (frame {}, `{}`{})",
-            names::fold_type_name(&set.ty, impls),
+            type_names.folded(set.ty),
             set.addr,
             set.frame,
             set.local,
@@ -370,12 +372,7 @@ fn report_whatis(
     held.sort_by_key(|&(size, h)| (std::cmp::Reverse(size), h.addr));
     for (_, h) in held {
         separate(&mut blocks, out)?;
-        writeln!(
-            out,
-            "Future {:#x}: {}",
-            h.addr,
-            names::display_future_name(&h.future, impls)
-        )?;
+        writeln!(out, "Future {:#x}: {}", h.addr, type_names.future(h.future))?;
         writeln!(out, "    At: offset {:#x} in the future", addr - h.addr)?;
         if let Some(state) = &h.state {
             writeln!(out, "    State: {state}")?;
@@ -404,11 +401,7 @@ fn report_whatis(
             0 => String::new(),
             n => format!(", {n} completed and not yet reaped"),
         };
-        writeln!(
-            out,
-            "Set {addr:#x}: {}",
-            names::fold_type_name(&set.ty, impls)
-        )?;
+        writeln!(out, "Set {addr:#x}: {}", type_names.folded(set.ty))?;
         writeln!(out, "    Children: {live} in flight{reaped}")?;
         writeln!(
             out,
@@ -820,10 +813,10 @@ mod whatis_tests {
                     shown.contains(&format!(
                         "Future {:#x}: {}",
                         future1.addr,
-                        hansei_bundle::names::display_future_name(
-                            &future1.future,
-                            &hansei_bundle::names::ImplFold::default()
-                        )
+                        t.view
+                            .ty(future1.future)
+                            .expect("the bundle carries the held future's type")
+                            .future_display_name(&hansei_bundle::names::ImplFold::default())
                     )),
                     "{shown}"
                 );
@@ -940,7 +933,7 @@ mod whatis_tests {
         let child = |future: Option<&str>| census::SetChild {
             node: 0x2000,
             depth: usize::from(future.is_some()),
-            future: future.map(str::to_string),
+            future: future.map(|_| hansei_bundle::BundleTypeId(0)),
             root: None,
             state: None,
             waiting_on: None,
@@ -955,7 +948,7 @@ mod whatis_tests {
             local: "set".to_string(),
             via: None,
             addr: 0xdead_0000,
-            ty: "FuturesUnordered<F>".to_string(),
+            ty: hansei_bundle::BundleTypeId(0),
             children: vec![child(Some("f::{async_fn_env#0}")), child(None), child(None)],
         });
         let target = Target {

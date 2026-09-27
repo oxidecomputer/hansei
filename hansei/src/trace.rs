@@ -6,6 +6,7 @@
 //! for a task by id or a lone future by address.
 
 use crate::tasks::{future_name, no_such_task, task_label};
+use crate::typenames::TypeNames;
 use crate::whatis::via_suffix;
 use crate::{Session, TraceOpts, TraceTarget, output};
 
@@ -187,6 +188,7 @@ fn exec_trace_future<T: proc::Target>(
     let ctx = &session.ctx;
     let list = &session.tasks;
     let census = session.census();
+    let type_names = TypeNames::of(session);
 
     let found = future_at(
         &ctx.view,
@@ -204,8 +206,7 @@ fn exec_trace_future<T: proc::Target>(
                 out,
                 "future {:#x}: {}",
                 h.addr,
-                opts.theme
-                    .type_name(&names::display_future_name(&h.future, &session.impl_fold))
+                opts.theme.type_name(&type_names.future(h.future))
             )?;
             writeln!(
                 out,
@@ -229,7 +230,7 @@ fn exec_trace_future<T: proc::Target>(
             let c = &s.children[child];
             let via = via_suffix(census, s.via);
             let future = match &c.future {
-                Some(future) => names::display_future_name(future, &session.impl_fold),
+                Some(future) => type_names.future(*future),
                 None => "<undecoded>".to_string(),
             };
             writeln!(
@@ -241,7 +242,7 @@ fn exec_trace_future<T: proc::Target>(
             writeln!(
                 out,
                 "Child of: {} at {:#x} (frame {}, `{}`{via}), polled by {} — {}",
-                names::fold_type_name(&s.ty, &session.impl_fold),
+                type_names.folded(s.ty),
                 s.addr,
                 s.frame,
                 s.local,
@@ -319,6 +320,10 @@ pub(crate) fn future_at(
     impls: &names::ImplFold,
     addr: u64,
 ) -> Result<FutureAt> {
+    let set_name = |ty| match view.ty(ty) {
+        Some(ty) => names::fold_type_name(ty.name(), impls).into_owned(),
+        None => format!("<type {} not in the tokio info>", ty.0),
+    };
     let size_of = |h: &census::HeldFuture| view.ty(h.ty).map_or(u64::MAX, |ty| ty.size());
     let exact = census
         .held
@@ -337,7 +342,7 @@ pub(crate) fn future_at(
                 "the child at {:#x} of the {} at {:#x} has completed; \
                  there is no future left to trace",
                 child.node,
-                names::fold_type_name(&set.ty, impls),
+                set_name(set.ty),
                 set.addr
             );
         }
@@ -350,7 +355,7 @@ pub(crate) fn future_at(
         anyhow::bail!(
             "{addr:#x} is the {} polled by {}, not one future; \
              trace one of its {} child node(s) (`futures` lists them)",
-            names::fold_type_name(&set.ty, impls),
+            set_name(set.ty),
             task_label(list, set.owner),
             set.children.len()
         );
@@ -2566,7 +2571,7 @@ mod future_trace_tests {
             assert!(
                 err.to_string()
                     .contains(&*hansei_bundle::names::fold_type_name(
-                        &set.ty,
+                        _ctx.view.ty(set.ty).unwrap().name(),
                         &hansei_bundle::names::ImplFold::default()
                     )),
                 "{err}"
@@ -2718,7 +2723,7 @@ mod future_trace_tests {
             &HashMap::new(),
             &hansei_bundle::names::ImplFold::default(),
             &Default::default(),
-            &crate::tasks::StopNames::none(&Default::default()),
+            &crate::typenames::TypeNames::none(&Default::default()),
         );
         let finds = Finds {
             held,
@@ -2730,7 +2735,7 @@ mod future_trace_tests {
         let view = TaskView {
             list,
             rows: &rows,
-            impls: &hansei_bundle::names::ImplFold::default(),
+            names: crate::typenames::testing::type_names(),
             owners: &owners,
             group_tags: &[],
             polling: &HashMap::new(),
@@ -2852,12 +2857,12 @@ mod future_trace_tests {
                 local: "pending".to_string(),
                 via: None,
                 addr: 0x1000,
-                ty: "FuturesUnordered<step::{async_fn_env#0}>".to_string(),
+                ty: crate::typenames::testing::named("FuturesUnordered<step::{async_fn_env#0}>"),
                 children: vec![
                     census::SetChild {
                         depth: 1,
                         node: 0x2000,
-                        future: Some("step::{async_fn_env#0}".to_string()),
+                        future: Some(crate::typenames::testing::named("step::{async_fn_env#0}")),
                         root: None,
                         state: Some("Suspend0 — step.rs:9".to_string()),
                         waiting_on: None,
@@ -2890,7 +2895,7 @@ mod future_trace_tests {
                 slot: 0x3000,
                 addr: 0x3000,
                 ty,
-                future: "Mutex::lock::{async_fn_env#0}".to_string(),
+                future: crate::typenames::testing::named("Mutex::lock::{async_fn_env#0}"),
                 state: None,
                 waiting_on: None,
                 wait: None,
@@ -2966,7 +2971,7 @@ mod future_trace_tests {
                 local: "set".to_string(),
                 via: None,
                 addr: 0x4000,
-                ty: "JoinSet<()>".to_string(),
+                ty: crate::typenames::testing::named("JoinSet<()>"),
                 length: 3,
                 children,
             }];

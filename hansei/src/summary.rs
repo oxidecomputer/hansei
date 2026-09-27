@@ -25,9 +25,9 @@
 
 use crate::output::{self, Theme};
 use crate::tasks::{future_name, listing_footer, row_state};
+use crate::typenames::TypeNames;
 
 use anyhow::Result;
-use hansei_bundle::names;
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::assess::{
     ContinuationStatus, NotWaitingReason, RunnableReason, WaitAssessment,
@@ -107,8 +107,8 @@ pub struct Facts<'a> {
     /// census of futures has nothing to say about them.
     pub held: &'a [HeldFuture],
     pub sets: &'a [FutureSet],
-    /// The bundle's impl-path substitutions for the display fold.
-    pub impls: &'a names::ImplFold,
+    /// How the census finds' types are named.
+    pub(crate) names: &'a TypeNames<'a>,
 }
 
 /// The one-line spelling of a fatal signal every surface shares:
@@ -654,7 +654,7 @@ fn tasks(
     let mut types: BTreeMap<String, (usize, Waits)> = BTreeMap::new();
     for (index, task) in list.tasks.iter().enumerate() {
         let (count, waits) = types
-            .entry(future_name(&task.future, facts.impls))
+            .entry(future_name(&task.future, facts.names.impls()))
             .or_default();
         *count += 1;
         if let Some(wait) = facts.waits.get(index) {
@@ -921,16 +921,14 @@ fn futures(
         .sets
         .iter()
         .flat_map(|s| &s.children)
-        .filter_map(|c| Some((c.future.as_ref()?, c.wait, &c.continuation)));
+        .filter_map(|c| Some((c.future?, c.wait, &c.continuation)));
     for (future, wait, continuation) in facts
         .held
         .iter()
-        .map(|h| (&h.future, h.wait, &h.continuation))
+        .map(|h| (h.future, h.wait, &h.continuation))
         .chain(children)
     {
-        let (count, waits) = types
-            .entry(names::display_future_name(future, facts.impls))
-            .or_default();
+        let (count, waits) = types.entry(facts.names.future(future)).or_default();
         *count += 1;
         waits.add_future(wait, continuation);
     }
@@ -1135,9 +1133,7 @@ mod tests {
     use hansei_runtime::tokio::graph::TaskRef;
     use hansei_runtime::tokio::{Location, RawInstant, TaskAddr, TaskState};
 
-    /// No impl substitutions: the fixtures spell no `{impl#N}` names.
-    static EMPTY_IMPLS: std::sync::LazyLock<names::ImplFold> =
-        std::sync::LazyLock::new(names::ImplFold::default);
+    use crate::typenames::testing::{named, type_names};
 
     const RUNNING: u64 = 0b1;
     const COMPLETE: u64 = 0b10;
@@ -1280,7 +1276,7 @@ mod tests {
             slot: 0x4000,
             addr: 0x4000,
             ty: BundleTypeId(0),
-            future: future.to_string(),
+            future: named(future),
             state: None,
             waiting_on: wait.map(|_| "something".to_string()),
             wait,
@@ -1301,7 +1297,7 @@ mod tests {
         SetChild {
             node: 0x2000,
             depth,
-            future: future.map(str::to_string),
+            future: future.map(named),
             root: None,
             state: None,
             waiting_on: wait.map(|_| "something".to_string()),
@@ -1391,7 +1387,7 @@ mod tests {
             waits,
             held: &[],
             sets: &[],
-            impls: &EMPTY_IMPLS,
+            names: type_names(),
         }
     }
 
@@ -2227,7 +2223,7 @@ mod tests {
             local: "pending".to_string(),
             via: None,
             addr: 0x5000,
-            ty: "FuturesUnordered<f>".to_string(),
+            ty: named("FuturesUnordered<f>"),
             children: vec![
                 child(Some("child::fut"), Some(WaitKind::Timer { past_due: None })),
                 child(None, None),
@@ -2280,7 +2276,7 @@ mod tests {
             local: "pending".to_string(),
             via: None,
             addr: 0x5000,
-            ty: "FuturesUnordered<f>".to_string(),
+            ty: named("FuturesUnordered<f>"),
             children: vec![
                 child(Some("hot::fut"), None),
                 with_leaf,

@@ -6,7 +6,8 @@
 //! conditional futurelock diagnosis.
 
 use crate::relations::{Edge, EdgeKind, Relations};
-use crate::tasks::{StopNames, assessment_cell, task_id};
+use crate::tasks::{assessment_cell, task_id};
+use crate::typenames::TypeNames;
 use crate::{Session, output, print_warnings};
 
 use anyhow::Result;
@@ -29,7 +30,7 @@ pub(crate) fn exec_graph<T: proc::Target>(
         &session.tasks,
         analysis,
         session.relations(),
-        &StopNames::of(session),
+        &TypeNames::of(session),
         limit,
         theme,
         out,
@@ -76,7 +77,7 @@ fn print_graph(
     list: &bundle::TaskList,
     analysis: &graph::Analysis,
     relations: &Relations,
-    stops: &StopNames<'_>,
+    stops: &TypeNames<'_>,
     limit: Option<usize>,
     theme: output::Theme,
     out: &mut dyn io::Write,
@@ -156,7 +157,7 @@ fn print_graph(
 struct GraphWalk<'a> {
     list: &'a bundle::TaskList,
     analysis: &'a graph::Analysis,
-    stops: &'a StopNames<'a>,
+    stops: &'a TypeNames<'a>,
     edges: &'a [Vec<Edge>],
     /// Every task already given a row, so one reached twice — two tasks
     /// blocked on the semaphore one acquire holds — is spelled out once
@@ -313,7 +314,7 @@ fn print_barrier(
 
 #[cfg(test)]
 mod graph_tests {
-    use super::{BarrierRelation, StopNames, names, print_barrier, print_graph};
+    use super::{BarrierRelation, TypeNames, names, print_barrier, print_graph};
 
     use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::assess::{
@@ -488,7 +489,7 @@ mod graph_tests {
             &list,
             &analysis,
             &relations,
-            &StopNames::none(&Default::default()),
+            &TypeNames::none(&Default::default()),
             limit,
             crate::output::Theme::plain(),
             &mut out,
@@ -505,7 +506,7 @@ mod graph_tests {
             local: "tasks".to_string(),
             via: None,
             addr: 0xb000,
-            ty: "tokio::task::join_set::JoinSet<()>".to_string(),
+            ty: hansei_bundle::BundleTypeId(2),
             length: ids.len() as u64,
             children: ids
                 .iter()
@@ -533,7 +534,7 @@ mod graph_tests {
             slot: 0xd000,
             addr: 0xd000,
             ty: BundleTypeId(0),
-            future: "tokio::runtime::task::join::JoinHandle<()>".to_string(),
+            future: hansei_bundle::BundleTypeId(1),
             state: None,
             waiting_on: None,
             wait: Some(WaitKind::Task { addr: addr(id).0 }),

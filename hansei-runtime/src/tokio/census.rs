@@ -217,7 +217,7 @@ pub struct FutureSet {
     pub via: Option<Via>,
     /// The set's address and full type name.
     pub addr: u64,
-    pub ty: String,
+    pub ty: BundleTypeId,
     pub children: Vec<SetChild>,
 }
 
@@ -244,7 +244,7 @@ pub struct JoinSet {
     pub via: Option<Via>,
     /// The set's address and full type name.
     pub addr: u64,
-    pub ty: String,
+    pub ty: BundleTypeId,
     /// The count the set keeps for itself, which the walk is checked
     /// against: they disagree only if the walk stopped early, and the
     /// error that says so is on the census.
@@ -292,7 +292,7 @@ pub struct SetChild {
     /// The child's concrete future type (dyn-resolved when it had to
     /// be), or `None` for an empty slot: a completed child the set has
     /// not reaped yet.
-    pub future: Option<String>,
+    pub future: Option<BundleTypeId>,
     /// Where the resident future's chain roots, so the child can be
     /// traced on its own; `None` exactly when `future` is.
     pub root: Option<FutureRoot>,
@@ -355,7 +355,7 @@ pub struct HeldFuture {
     /// tick) is known to be its without walking the chain again.
     pub frames: Vec<ValueKey>,
     /// The concrete future type, dyn-resolved when it had to be.
-    pub future: String,
+    pub future: BundleTypeId,
     /// Its suspend state, `Suspend1 — file:line` style.
     pub state: Option<String>,
     /// What its chain bottoms out in, when recognized.
@@ -525,13 +525,13 @@ impl FutureCensus {
         }
         let mut seen = HashSet::default();
         for set in &self.sets {
-            if !seen.insert((set.addr, set.ty.as_str())) {
+            if !seen.insert((set.addr, set.ty)) {
                 v.push(format!("the set at {:#x} is recorded twice", set.addr));
             }
         }
         let mut seen = HashSet::default();
         for set in &self.join_sets {
-            if !seen.insert((set.addr, set.ty.as_str())) {
+            if !seen.insert((set.addr, set.ty)) {
                 v.push(format!("the join set at {:#x} is recorded twice", set.addr));
             }
         }
@@ -1348,7 +1348,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
             local: local.to_string(),
             via,
             addr: value.addr,
-            ty: value.ty.name().to_string(),
+            ty: value.ty.id(),
             children: Vec::new(),
         };
         // A walk that fails part-way (an unmapped node, the bound)
@@ -1542,7 +1542,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
             local: local.to_string(),
             via,
             addr: value.addr,
-            ty: value.ty.name().to_string(),
+            ty: value.ty.id(),
             length,
             children,
         });
@@ -1801,7 +1801,7 @@ struct Summary {
     /// How many frames the chain ran to, which is what lets a count of
     /// futures be told apart from a count of the frames they stand on.
     depth: usize,
-    future: String,
+    future: BundleTypeId,
     state: Option<String>,
     waiting_on: Option<String>,
     wait: Option<WaitKind>,
@@ -1851,7 +1851,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         });
         Summary {
             depth: chain.frames.len(),
-            future: frame.future.ty.name().to_string(),
+            future: frame.future.ty.id(),
             state,
             waiting_on: target.as_ref().map(|t| t.to_string()),
             wait: target.as_ref().map(|t| t.kind()),
@@ -3495,7 +3495,9 @@ mod tests {
         let holder = delegation_case(&cases, "holder");
         let held = held_at(&full, "held");
         assert_eq!(held.addr, holder.child);
-        assert!(held.future.contains("{async_block"), "{}", held.future);
+        let (bundle, _) = testkit::load_any("delegation-cases");
+        let future = BundleView::new(&bundle).ty(held.future).unwrap().name();
+        assert!(future.contains("{async_block"), "{future}");
         assert_eq!(full.refused, 0);
 
         let freed = testkit::heap::FakeHeap::new().freed(holder.child..holder.child + 1);
@@ -3978,6 +3980,23 @@ mod tests {
 
     use anyhow::anyhow;
 
+    /// The type names the hand-laid rows below carry: a future `f`, the
+    /// sets `S` and `T`, and a join set `J`, each its position's id.
+    const NAMES: [&str; 4] = ["f", "S", "T", "J"];
+
+    /// The id [`names`] gives `name`.
+    fn named(name: &str) -> BundleTypeId {
+        let at = NAMES.iter().position(|n| *n == name).expect("a named type");
+        BundleTypeId(at as u32)
+    }
+
+    /// A bundle holding nothing but [`NAMES`], so what reads a row's type
+    /// by name can.
+    fn names() -> BundleView<'static> {
+        static BUNDLE: OnceLock<Bundle> = OnceLock::new();
+        BundleView::new(BUNDLE.get_or_init(|| testkit::named_types(&NAMES)))
+    }
+
     /// A list of `n` tasks at distinct addresses, for owners to name.
     fn task_list(n: usize) -> TaskList {
         TaskList::new(
@@ -4022,7 +4041,7 @@ mod tests {
             ty: BundleTypeId(0),
             depth: 1,
             frames: Vec::new(),
-            future: "f".to_string(),
+            future: named("f"),
             state: None,
             waiting_on: None,
             wait: None,
@@ -4044,7 +4063,7 @@ mod tests {
         SetChild {
             node,
             depth: 1,
-            future: Some("f".to_string()),
+            future: Some(named("f")),
             root: Some(FutureRoot {
                 addr: root,
                 ty: BundleTypeId(0),
@@ -4065,7 +4084,7 @@ mod tests {
             local: "set".to_string(),
             via: None,
             addr,
-            ty: ty.to_string(),
+            ty: named(ty),
             children,
         }
     }
@@ -4077,7 +4096,7 @@ mod tests {
             local: "set".to_string(),
             via: None,
             addr,
-            ty: "J".to_string(),
+            ty: named("J"),
             length,
             children,
         }
@@ -4563,7 +4582,10 @@ mod tests {
                 name: "demo::driver".to_string(),
             },
         ];
-        assert_eq!(diff(&expected, &census, &list), Vec::<String>::new());
+        assert_eq!(
+            diff(&expected, names(), &census, &list),
+            Vec::<String>::new()
+        );
     }
 
     /// A registered item with no row is an omission — unless an error
@@ -4576,17 +4598,20 @@ mod tests {
             slot: 0x1000,
             name: "f".to_string(),
         }];
-        let flagged = diff(&expected, &census, &list);
+        let flagged = diff(&expected, names(), &census, &list);
         assert_eq!(flagged.len(), 1, "{flagged:#?}");
         assert!(flagged[0].contains("no census row"), "{flagged:#?}");
 
         // An error about another address that merely begins with this
         // one's digits names nothing registered.
         census.errors.push(anyhow!("something failed at 0x10000"));
-        assert_eq!(diff(&expected, &census, &list).len(), 1);
+        assert_eq!(diff(&expected, names(), &census, &list).len(), 1);
 
         census.errors.push(anyhow!("something failed at 0x1000"));
-        assert_eq!(diff(&expected, &census, &list), Vec::<String>::new());
+        assert_eq!(
+            diff(&expected, names(), &census, &list),
+            Vec::<String>::new()
+        );
     }
 
     /// The reverse direction: a row nothing registered is a
@@ -4598,7 +4623,7 @@ mod tests {
         census.held.push(a_held(0, 0x1000));
         census.sets.push(a_set(0x4000, "S", Vec::new()));
         census.join_sets.push(a_join_set(0x6000, 0, Vec::new()));
-        let flagged = diff(&[], &census, &list);
+        let flagged = diff(&[], names(), &census, &list);
         assert_eq!(flagged.len(), 3, "{flagged:#?}");
         assert!(
             flagged[0].contains("unregistered held find"),
@@ -4628,7 +4653,7 @@ mod tests {
                 children: 3,
             },
         ];
-        let flagged = diff(&expected, &census, &list);
+        let flagged = diff(&expected, names(), &census, &list);
         assert_eq!(flagged.len(), 2, "{flagged:#?}");
         assert!(
             flagged[0].contains("not the registered `something_else`"),
@@ -4654,12 +4679,15 @@ mod tests {
             slot: 0x1000,
             name: "f".to_string(),
         }];
-        assert_eq!(diff(&expected, &census, &list), Vec::<String>::new());
+        assert_eq!(
+            diff(&expected, names(), &census, &list),
+            Vec::<String>::new()
+        );
         let by_referent = [Expectation::Held {
             slot: 0x9000,
             name: "f".to_string(),
         }];
-        assert_eq!(diff(&by_referent, &census, &list).len(), 2);
+        assert_eq!(diff(&by_referent, names(), &census, &list).len(), 2);
     }
 
     /// A future carried inside a registered held future is matched
@@ -4682,12 +4710,15 @@ mod tests {
                 name: "f".to_string(),
             },
         ];
-        assert_eq!(diff(&expected, &census, &list), Vec::<String>::new());
+        assert_eq!(
+            diff(&expected, names(), &census, &list),
+            Vec::<String>::new()
+        );
 
         // The same registration against a census that attributed the
         // carried future to the wrong parent — or to no parent — fails.
         census.held[1].via = None;
-        let flagged = diff(&expected, &census, &list);
+        let flagged = diff(&expected, names(), &census, &list);
         assert!(
             flagged
                 .iter()
@@ -4719,7 +4750,7 @@ mod tests {
                 name: "f".to_string(),
             },
         ];
-        let flagged = diff(&expected, &census, &list);
+        let flagged = diff(&expected, names(), &census, &list);
         assert_eq!(flagged.len(), 3, "{flagged:#?}");
         assert!(
             flagged[0].contains("registered set at 0x4000"),
@@ -4736,13 +4767,16 @@ mod tests {
 
         // An error naming some other address excuses nothing...
         census.errors.push(anyhow!("something failed at 0x9999"));
-        assert_eq!(diff(&expected, &census, &list).len(), 3);
+        assert_eq!(diff(&expected, names(), &census, &list).len(), 3);
 
         // ...and one error per named address excuses each in turn.
         census.errors.push(anyhow!("the set at 0x4000 broke"));
         census.errors.push(anyhow!("the join set at 0x6000 broke"));
         census.errors.push(anyhow!("the frame at 0x1000 broke"));
-        assert_eq!(diff(&expected, &census, &list), Vec::<String>::new());
+        assert_eq!(
+            diff(&expected, names(), &census, &list),
+            Vec::<String>::new()
+        );
     }
 
     /// A join set's member count is part of the registration, with the
@@ -4758,7 +4792,7 @@ mod tests {
             addr: 0x6000,
             members: 3,
         }];
-        let flagged = diff(&expected, &census, &list);
+        let flagged = diff(&expected, names(), &census, &list);
         assert_eq!(flagged.len(), 1, "{flagged:#?}");
         assert!(
             flagged[0].contains("1 members against the registered 3"),
@@ -4767,7 +4801,10 @@ mod tests {
 
         // An error naming the set stands in for the missing members.
         census.errors.push(anyhow!("the walk stopped at 0x6000"));
-        assert_eq!(diff(&expected, &census, &list), Vec::<String>::new());
+        assert_eq!(
+            diff(&expected, names(), &census, &list),
+            Vec::<String>::new()
+        );
     }
 
     /// A registration claims a row by address, never by position: a
@@ -4789,7 +4826,7 @@ mod tests {
                 members: 0,
             },
         ];
-        let flagged = diff(&expected, &census, &list);
+        let flagged = diff(&expected, names(), &census, &list);
         assert_eq!(flagged.len(), 4, "{flagged:#?}");
         assert!(
             flagged[0].contains("registered set at 0x4000"),
@@ -4816,11 +4853,11 @@ mod tests {
             name: "demo::worker".to_string(),
         };
         assert_eq!(
-            diff(std::slice::from_ref(&one), &census, &list),
+            diff(std::slice::from_ref(&one), names(), &census, &list),
             Vec::<String>::new()
         );
         let two = [one.clone(), one];
-        let flagged = diff(&two, &census, &list);
+        let flagged = diff(&two, names(), &census, &list);
         assert_eq!(flagged.len(), 1, "{flagged:#?}");
         assert!(
             flagged[0].contains("2 task(s) registered as `demo::worker`, but the listing shows 1"),
@@ -4884,12 +4921,12 @@ mod tests {
 
         let absent = target(registry(&[]), false);
         assert_eq!(
-            testkit::expect::problems(&absent, &census, &list),
+            testkit::expect::problems(&absent, names(), &census, &list),
             ["the capture carries no census registry symbol"]
         );
 
         let unparseable = target(registry(&[(9, 0, 0, "")]), true);
-        let problems = testkit::expect::problems(&unparseable, &census, &list);
+        let problems = testkit::expect::problems(&unparseable, names(), &census, &list);
         assert_eq!(problems.len(), 1, "{problems:#?}");
         assert!(
             problems[0].contains("the registry does not parse:"),
@@ -4898,12 +4935,12 @@ mod tests {
 
         let empty = target(registry(&[]), true);
         assert_eq!(
-            testkit::expect::problems(&empty, &census, &list),
+            testkit::expect::problems(&empty, names(), &census, &list),
             ["the registry is empty; every registering fixture registers"]
         );
 
         let registered = target(registry(&[(5, 0, 0, "task_name")]), true);
-        let problems = testkit::expect::problems(&registered, &census, &list);
+        let problems = testkit::expect::problems(&registered, names(), &census, &list);
         assert_eq!(
             problems,
             ["1 task(s) registered as `task_name`, but the listing shows 0"]

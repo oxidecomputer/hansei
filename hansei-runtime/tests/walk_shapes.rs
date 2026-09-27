@@ -112,10 +112,9 @@ fn test_the_chain_steps_through_hand_written_wrappers() {
     let census = testkit::census(&ctx, &list);
     let owner = task_by_name(&list, "chained");
     assert!(
-        census
-            .held
-            .iter()
-            .any(|h| h.owner == owner && h.future.contains("::deep::") && h.local == "inner"),
+        census.held.iter().any(|h| h.owner == owner
+            && ctx.view.ty(h.future).unwrap().name().contains("::deep::")
+            && h.local == "inner"),
         "{:#?}",
         census.held
     );

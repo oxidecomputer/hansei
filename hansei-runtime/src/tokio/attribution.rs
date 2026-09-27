@@ -5805,7 +5805,7 @@ mod reach_tests {
             ty: id(HOLDER),
             depth: 1,
             frames: Vec::new(),
-            future: "x::Holder".to_string(),
+            future: id(HOLDER),
             state: None,
             waiting_on: None,
             wait: None,

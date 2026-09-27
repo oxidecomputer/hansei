@@ -51,6 +51,7 @@ fn test_generated_pair_matches_its_registry() {
     // Triage happens far from the failing host, so a failure carries
     // the whole population the diff judged, not just its verdicts.
     if !problems.is_empty() {
+        let name = |id| r.ctx.view.ty(id).map_or("<unknown>", |ty| ty.name());
         for (i, t) in list.tasks.iter().enumerate() {
             let name = match &t.future {
                 hansei_runtime::tokio::bundle::FutureInfo::Known(k) => k.display_name.as_str(),
@@ -61,13 +62,19 @@ fn test_generated_pair_matches_its_registry() {
         for h in &census.held {
             println!(
                 "held: `{}` local `{}` slot {:#x} addr {:#x} via {:?} owner {} frame {}",
-                h.future, h.local, h.slot, h.addr, h.via, h.owner, h.frame
+                name(h.future),
+                h.local,
+                h.slot,
+                h.addr,
+                h.via,
+                h.owner,
+                h.frame
             );
         }
         for s in &census.sets {
             println!(
                 "set: `{}` local `{}` addr {:#x} children {} via {:?}",
-                s.ty,
+                name(s.ty),
                 s.local,
                 s.addr,
                 s.children.len(),
@@ -77,7 +84,7 @@ fn test_generated_pair_matches_its_registry() {
         for s in &census.join_sets {
             println!(
                 "join set: `{}` local `{}` addr {:#x} members {} via {:?}",
-                s.ty,
+                name(s.ty),
                 s.local,
                 s.addr,
                 s.children.len(),

@@ -45,6 +45,7 @@ mod sync;
 mod tasks;
 mod threads;
 mod trace;
+mod typenames;
 pub mod types;
 mod umem;
 mod whatis;

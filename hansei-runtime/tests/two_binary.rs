@@ -843,8 +843,10 @@ fn test_futurelock_census_offline() {
         .find(|h| h.local == "future1")
         .unwrap_or_else(|| panic!("no held `future1` in {:#?}", census.held));
     assert!(
-        future1
-            .future
+        ctx.view
+            .ty(future1.future)
+            .unwrap()
+            .name()
             .contains("futurelock::do_async_thing::{async_fn_env#0}"),
         "{future1:#?}"
     );
@@ -871,7 +873,7 @@ fn test_futurelock_census_offline() {
         .inspect_future(root, InspectionMode::Held, &ReadContext::none())
         .chain;
     let first = chain.frames.first().expect("the re-rooted chain decodes");
-    assert_eq!(first.future.ty.name(), future1.future, "{future1:#?}");
+    assert_eq!(first.future.ty.id(), future1.future, "{future1:#?}");
 }
 
 /// The ground-truth registry, diffed both directions over every pair.
@@ -1290,7 +1292,7 @@ fn test_a_node_address_locates_the_set_child_that_owns_it() {
         // size is the set's own node type's — read from the bundle
         // rather than written down, since it moves with the future the
         // set holds.
-        let size = node_size(&bundle, &set.ty);
+        let size = node_size(&bundle, BundleView::new(&bundle).ty(set.ty).unwrap().name());
         for (child_index, child) in set.children.iter().enumerate() {
             let here = Some((set_index, child_index, 0));
             // The node's own address, a little way into it, and its
