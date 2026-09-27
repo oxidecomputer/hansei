@@ -457,12 +457,12 @@ mod tests {
             holder: TaskAddr(0x9000),
             holder_id: Some(9),
             frame: 0,
-            frame_type: "h::fut".to_string(),
+            frame_type: hansei_bundle::BundleTypeId(1),
             state: "Suspend0".to_string(),
             await_loc: None,
             local: "held".to_string(),
             candidate: key(0x9100),
-            future: "h::acquire".to_string(),
+            future: hansei_bundle::BundleTypeId(2),
             owner: None,
             acquire: AcquireObservation {
                 future: key(0x9100),
@@ -474,7 +474,7 @@ mod tests {
                 queue_position: position,
             },
             primitive: key(0x9300),
-            terminal: "h::leaf".to_string(),
+            terminal: hansei_bundle::BundleTypeId(3),
             edges: Vec::new(),
         }
     }

@@ -11,7 +11,6 @@ use crate::typenames::TypeNames;
 use crate::{Session, output, print_warnings};
 
 use anyhow::Result;
-use hansei_bundle::names;
 use hansei_runtime::tokio::assess::PollingBarrier;
 use hansei_runtime::tokio::graph::{BarrierRelation, TaskRef};
 use hansei_runtime::tokio::{bundle, graph};
@@ -53,7 +52,7 @@ pub(crate) fn exec_graph<T: proc::Target>(
             addr: barrier.holder,
             task_id: barrier.holder_id,
         };
-        print_barrier(holder, barrier, &behind, &session.impl_fold, out)?;
+        print_barrier(holder, barrier, &behind, &TypeNames::of(session), out)?;
     }
     Ok(())
 }
@@ -246,7 +245,7 @@ fn print_barrier(
     holder: TaskRef,
     barrier: &PollingBarrier,
     behind: &[(TaskRef, BarrierRelation)],
-    impls: &names::ImplFold,
+    type_names: &TypeNames<'_>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let acq = &barrier.acquire;
@@ -267,7 +266,7 @@ fn print_barrier(
         out,
         "futurelock: {holder} holds {held} of {semaphore} in a future it cannot poll \
          until the {} it awaits completes:",
-        names::display_future_name(&barrier.terminal, impls)
+        type_names.future(barrier.terminal)
     )?;
     let loc = barrier
         .await_loc
@@ -278,12 +277,12 @@ fn print_barrier(
         out,
         "  `{}` ({})",
         barrier.local,
-        names::display_future_name(&barrier.future, impls)
+        type_names.future(barrier.future)
     )?;
     writeln!(
         out,
         "  held across {} state {}{loc}",
-        names::display_future_name(&barrier.frame_type, impls),
+        type_names.future(barrier.frame_type),
         barrier.state
     )?;
     let reserved: Vec<String> = behind
@@ -314,7 +313,7 @@ fn print_barrier(
 
 #[cfg(test)]
 mod graph_tests {
-    use super::{BarrierRelation, TypeNames, names, print_barrier, print_graph};
+    use super::{BarrierRelation, TypeNames, print_barrier, print_graph};
 
     use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::assess::{
@@ -425,12 +424,12 @@ mod graph_tests {
             holder: addr(holder),
             holder_id: Some(holder),
             frame: 0,
-            frame_type: "worker::{async_fn_env#0}".to_string(),
+            frame_type: crate::typenames::testing::named("worker::{async_fn_env#0}"),
             state: "Suspend0".to_string(),
             await_loc: None,
             local: "lock".to_string(),
             candidate: key(0xa000),
-            future: "Mutex::lock::{async_fn_env#0}".to_string(),
+            future: crate::typenames::testing::named("Mutex::lock::{async_fn_env#0}"),
             owner: Some("tokio::sync::Mutex"),
             acquire: AcquireObservation {
                 future: key(0xa000),
@@ -442,7 +441,7 @@ mod graph_tests {
                 queue_position: None,
             },
             primitive: key(0xb000),
-            terminal: "tokio::sync::batch_semaphore::Acquire".to_string(),
+            terminal: crate::typenames::testing::named("tokio::sync::batch_semaphore::Acquire"),
             edges: Vec::new(),
         }
     }
@@ -842,7 +841,7 @@ TASK                          STATE  WAITING ON
             holder,
             &barrier(51),
             &behind,
-            &names::ImplFold::default(),
+            crate::typenames::testing::type_names(),
             &mut out,
         )
         .unwrap();
@@ -870,7 +869,7 @@ TASK                          STATE  WAITING ON
             holder,
             &barrier(51),
             &[],
-            &names::ImplFold::default(),
+            crate::typenames::testing::type_names(),
             &mut out,
         )
         .unwrap();

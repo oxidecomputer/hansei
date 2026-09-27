@@ -144,7 +144,7 @@ fn print_listing(view: &View<'_>, kinds: &[Kind], out: &mut dyn io::Write) -> Re
     if wants(kinds, Kind::Semaphore) {
         for block in blocks(view.analysis).values() {
             sep(out)?;
-            print_semaphore(block, view.names.impls(), out)?;
+            print_semaphore(block, view.names, out)?;
         }
     }
     if wants(kinds, Kind::Join) {
@@ -191,7 +191,7 @@ fn print_addressed(
     let channel = |kind: Kind| channel_blocks(view, kind).remove(&addr);
     match kinds {
         [Kind::Semaphore] => match semaphore {
-            Some(block) => print_semaphore(block, view.names.impls(), out),
+            Some(block) => print_semaphore(block, view.names, out),
             None => bail!(
                 "no decoded semaphore at {addr:#x}; `sync` lists the ones \
                  the tasks' await chains reach"
@@ -208,7 +208,7 @@ fn print_addressed(
         [Kind::Address] => print_references(addr, &references(addr), out),
         [] => {
             if let Some(block) = semaphore {
-                return print_semaphore(block, view.names.impls(), out);
+                return print_semaphore(block, view.names, out);
             }
             if set {
                 return print_set(view, addr, out);
@@ -298,7 +298,7 @@ fn print_task_scoped(
             let holds = block.locks.iter().any(|fl| fl.holder.addr.0 == addr);
             if blocked || holds {
                 sep(out)?;
-                print_semaphore(block, view.names.impls(), out)?;
+                print_semaphore(block, view.names, out)?;
             }
         }
     }
@@ -861,7 +861,7 @@ fn blocks(analysis: &Analysis) -> BTreeMap<u64, SemaphoreBlock<'_>> {
 /// its wake queue in wake order.
 fn print_semaphore(
     block: &SemaphoreBlock<'_>,
-    impls: &names::ImplFold,
+    type_names: &TypeNames<'_>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     // The same spelling the trace's `waiting on` line and the graph's
@@ -894,8 +894,8 @@ fn print_semaphore(
     for lock in &block.locks {
         let barrier = lock.barrier;
         let acq = &barrier.acquire;
-        let future = names::display_future_name(&barrier.future, impls);
-        let terminal = names::display_future_name(&barrier.terminal, impls);
+        let future = type_names.future(barrier.future);
+        let terminal = type_names.future(barrier.terminal);
         if barrier.granted() {
             writeln!(
                 out,
@@ -1126,12 +1126,12 @@ mod sync_tests {
             holder: addr(holder),
             holder_id: Some(holder),
             frame: 0,
-            frame_type: "worker::{async_fn_env#0}".to_string(),
+            frame_type: crate::typenames::testing::named("worker::{async_fn_env#0}"),
             state: "Suspend0".to_string(),
             await_loc: None,
             local: "lock".to_string(),
             candidate: key(node),
-            future: "Mutex::lock::{async_fn_env#0}".to_string(),
+            future: crate::typenames::testing::named("Mutex::lock::{async_fn_env#0}"),
             owner: Some("tokio::sync::Mutex"),
             acquire: AcquireObservation {
                 future: key(node),
@@ -1143,7 +1143,7 @@ mod sync_tests {
                 queue_position: position,
             },
             primitive: key(0xb000),
-            terminal: "tokio::sync::batch_semaphore::Acquire".to_string(),
+            terminal: crate::typenames::testing::named("tokio::sync::batch_semaphore::Acquire"),
             edges: Vec::new(),
         }
     }

@@ -347,7 +347,9 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
             out,
             "barrier: task {holder} holds `{}` ({}), {grant} {} permit(s) of {}semaphore {}",
             barrier.local,
-            barrier.future,
+            ctx.view
+                .ty(barrier.future)
+                .map_or("<unknown>", |ty| ty.name()),
             acq.requested,
             owner,
             mask(&format!("{:#x}", acq.semaphore.addr)),

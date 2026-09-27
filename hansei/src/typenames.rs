@@ -232,6 +232,8 @@ pub(crate) mod testing {
         LONG_JOIN_SET,
         "app::a::very::long::module::path::to::the::work::{async_fn_env#0}",
         "a::very::long::module::path::to::some::future_type",
+        "worker::{async_fn_env#0}",
+        "tokio::sync::batch_semaphore::Acquire",
     ];
 
     /// A future's name long enough that any fit width cuts it, and the

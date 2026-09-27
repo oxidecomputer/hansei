@@ -47,7 +47,9 @@ use super::observe::{
 use super::waitset::{WaitMember, WaitSet};
 use super::{Lifecycle, TaskAddr, TaskState};
 
-use hansei_bundle::{AccessKind, FutureTarget, IoOperationKind, SemanticIssueKind, Step};
+use hansei_bundle::{
+    AccessKind, BundleTypeId, FutureTarget, IoOperationKind, SemanticIssueKind, Step,
+};
 use proc::Target;
 
 use foldhash::{HashMap, HashSet};
@@ -1941,14 +1943,14 @@ pub struct PollingBarrier {
     /// The on-chain coroutine frame holding it — its index from the
     /// root, its type — and that frame's state.
     pub frame: usize,
-    pub frame_type: String,
+    pub frame_type: BundleTypeId,
     pub state: String,
     pub await_loc: Option<(String, u32)>,
     /// The local, by name, and its identity.
     pub local: String,
     pub candidate: ValueKey,
     /// The held future's own type, past its adapters.
-    pub future: String,
+    pub future: BundleTypeId,
     /// The primitive wrapping the semaphore, when the held chain names
     /// it.
     pub owner: Option<&'static str>,
@@ -1958,7 +1960,7 @@ pub struct PollingBarrier {
     /// The owner chain's terminal, whose completion is the condition:
     /// its identity, and its type for the diagnosis to name.
     pub primitive: ValueKey,
-    pub terminal: String,
+    pub terminal: BundleTypeId,
     pub edges: Vec<BarrierEdge>,
 }
 
@@ -2091,13 +2093,12 @@ impl<'b, T: Target> Context<'b, T> {
                     .unwrap_or(&held.chain.frames[0])
                     .future
                     .ty
-                    .name()
-                    .to_owned();
+                    .id();
                 barriers.push(PollingBarrier {
                     holder: task.addr,
                     holder_id: task.task_id,
                     frame: index,
-                    frame_type: frame.future.ty.name().to_owned(),
+                    frame_type: frame.future.ty.id(),
                     state: state.name.to_owned(),
                     await_loc: state.await_loc.map(|(file, line)| (file.to_owned(), line)),
                     local: self.view.str(name).unwrap_or("<bad strref>").to_owned(),
@@ -2106,7 +2107,7 @@ impl<'b, T: Target> Context<'b, T> {
                     owner: semaphore_owner(&held.chain),
                     acquire,
                     primitive,
-                    terminal: terminal.ty.name().to_owned(),
+                    terminal: terminal.ty.id(),
                     edges: edges.clone(),
                 });
             }
@@ -3050,11 +3051,8 @@ mod tests {
         let barrier = &barriers[0];
         assert_eq!(barrier.holder, holder.addr);
         assert_eq!(barrier.local, "future1");
-        assert!(
-            barrier.future.contains("do_async_thing"),
-            "{}",
-            barrier.future
-        );
+        let future = ctx.view.ty(barrier.future).unwrap().name();
+        assert!(future.contains("do_async_thing"), "{future}");
         assert_eq!(barrier.owner, Some("tokio::sync::Mutex"));
         assert!(barrier.granted());
         assert!(barrier.acquire.queued);
@@ -4102,7 +4100,7 @@ mod tests {
             holder: holder.addr,
             holder_id: holder.task_id,
             frame: 0,
-            frame_type: String::new(),
+            frame_type: BundleTypeId(0),
             state: String::new(),
             await_loc: None,
             local: String::new(),
@@ -4110,7 +4108,7 @@ mod tests {
                 addr: 1,
                 ty: acquire_ty,
             },
-            future: String::new(),
+            future: BundleTypeId(0),
             owner: None,
             acquire: AcquireObservation {
                 future: ValueKey {
@@ -4131,7 +4129,7 @@ mod tests {
                 addr: 4,
                 ty: acquire_ty,
             },
-            terminal: String::new(),
+            terminal: BundleTypeId(0),
             edges: Vec::new(),
         };
         assert!(!barrier.granted());
