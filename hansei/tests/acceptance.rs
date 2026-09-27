@@ -3977,10 +3977,14 @@ fn test_wrong_binary_refused_by_build_id() {
 /// length to. Grouping by phase files the nine under four buckets, and
 /// a filter on the role keeps the servers.
 ///
-/// The rows are compared without their task cell and in sorted order.
-/// Every connection is parked by the time the core is taken — that is
-/// what `READY` waits for — but the ids tokio hands the parked
-/// request's tasks are not the fixture's to order: its
+/// The two clients awaiting a response name the task that sent their
+/// request, and no other row names a caller.
+///
+/// The rows are compared without their task cell, with the caller's id
+/// masked, and in sorted order. Every connection is parked by the
+/// time the core is taken — that is what `READY` waits for — but the
+/// ids tokio hands the parked request's tasks are not the fixture's to
+/// order: its
 /// connection task is spawned by hyper-util's client inside
 /// `client.request()` on the requester's worker, the server's by the
 /// accept loop on the other, and the client's pool spawns background
@@ -4012,13 +4016,35 @@ fn test_http_conns_connections_acceptance() {
             2 * usize::from(cfg!(target_os = "illumos")),
             "{out}"
         );
-        let mut rows: Vec<String> = out
+        let lines: Vec<Vec<&str>> = out
             .lines()
             .skip(1)
             .take(9)
-            .map(|line| {
-                let cells: Vec<&str> = line.split_whitespace().skip(1).collect();
-                let row = cells.join(" ");
+            .map(|line| line.split_whitespace().collect())
+            .collect();
+        // A caller is a task, one per request in flight, and never one
+        // that drives a connection.
+        let drivers: Vec<&str> = lines.iter().map(|cells| cells[0]).collect();
+        let mut callers: Vec<&str> = lines
+            .iter()
+            .map(|cells| cells[1])
+            .filter(|&caller| caller != "—")
+            .collect();
+        for caller in &callers {
+            assert!(caller.parse::<u64>().is_ok(), "{caller}: {out}");
+            assert!(!drivers.contains(caller), "{caller}: {out}");
+        }
+        callers.sort_unstable();
+        callers.dedup();
+        assert_eq!(callers.len(), 2, "{out}");
+        let mut rows: Vec<String> = lines
+            .iter()
+            .map(|cells| {
+                let caller = if cells[1] == "—" { "—" } else { "CALLER" };
+                let row = std::iter::once(caller)
+                    .chain(cells[2..].iter().copied())
+                    .collect::<Vec<&str>>()
+                    .join(" ");
                 let row = port.replace_all(&row, "127.0.0.1:PORT");
                 let row = deadline.replace_all(&row, "DEADLINE");
                 waited.replace_all(&row, "idle").into_owned()
@@ -4028,15 +4054,15 @@ fn test_http_conns_connections_acceptance() {
         assert_eq!(
             rows,
             [
-                "client awaiting response — 0/8192 127.0.0.1:PORT — GET http://127.0.0.1:PORT/park",
-                "client awaiting response — 0/8192 127.0.0.1:PORT — GET —",
-                "client idle — 0/8192 127.0.0.1:PORT — — —",
-                "client idle — 0/8192 — — — —",
-                "server handling request — 0/16326 — — GET /park",
-                "server handling request — 0/16339 — — GET /park",
-                "server idle DEADLINE 0/16302 — — — —",
-                "server idle DEADLINE 0/16343 — — — —",
-                "server negotiating — — — — — —",
+                "CALLER client awaiting response — 0/8192 127.0.0.1:PORT — GET http://127.0.0.1:PORT/park",
+                "CALLER client awaiting response — 0/8192 127.0.0.1:PORT — GET —",
+                "— client idle — 0/8192 127.0.0.1:PORT — — —",
+                "— client idle — 0/8192 — — — —",
+                "— server handling request — 0/16326 — — GET /park",
+                "— server handling request — 0/16339 — — GET /park",
+                "— server idle DEADLINE 0/16302 — — — —",
+                "— server idle DEADLINE 0/16343 — — — —",
+                "— server negotiating — — — — — —",
             ],
             "{out}"
         );

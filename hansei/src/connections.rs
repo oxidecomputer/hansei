@@ -5,9 +5,10 @@
 //! The `connections` listing: every HTTP connection the target holds,
 //! a row apiece, read from the connection resources the wait analysis
 //! and the census observed — the verdict's words and the facts beside
-//! them (the peer, the accepting server, the read buffer, an armed
-//! timer's deadline and how long an idle server has waited), which the
-//! task block does not have room to say.
+//! them (the peer, the accepting server, the task that sent a client's
+//! request, the read buffer, an armed timer's deadline and how long an
+//! idle server has waited), which the task block does not have room to
+//! say.
 
 use crate::runtimes::RowOwner;
 use crate::tasks::{Cmp, EMPTY_BUCKET, alternatives, distinct_values, listing_footer, task_id};
@@ -63,6 +64,10 @@ pub(crate) struct ConnRow {
     /// running for, or what the client's caller sent, where either was
     /// read.
     pub(crate) request: Option<RequestLine>,
+    /// The task that sent a client's request in flight, as `tasks`
+    /// names it: the task awaiting the response, or the one polling
+    /// the set whose child awaits it.
+    pub(crate) caller: Option<String>,
 }
 
 /// A request as the census read it: its method and its target's text,
@@ -226,15 +231,18 @@ fn row_of<T: proc::Target>(
         read_buf: None,
         deadline: None,
         request: None,
+        caller: None,
     };
     let request_of =
         |caller: &HttpCaller| caller_request_line(list, requests, session.attribution(), caller);
+    let caller_of = |caller: &HttpCaller| caller_task(list, census, session.attribution(), caller);
     conn_row(
         base,
         observation,
         header_read_deadline(census, observation),
         stopped,
         &request_of,
+        &caller_of,
         &census.pool_peers,
     )
 }
@@ -394,18 +402,43 @@ fn caller_request_line(
     requests.of_owner(owner)
 }
 
+/// The task a connection's caller is, or is polled by, as `tasks`
+/// names it: the caller itself where it is a task, the task polling
+/// the set where it is a set child the sweep placed. A caller nothing
+/// places — gone, never parked, a waker no slot covers — names none.
+fn caller_task(
+    list: &TaskList,
+    census: &census::FutureCensus,
+    slots: &attribution::Attributed,
+    caller: &HttpCaller,
+) -> Option<String> {
+    let index = match caller {
+        HttpCaller::Task(task) => list.tasks.iter().position(|t| t.addr == task.addr)?,
+        HttpCaller::NotATask {
+            cell: Some(cell), ..
+        } => match slots.at(*cell)?.owner {
+            Owner::Task { index, .. } => index,
+            Owner::Child { set, .. } => census.sets.get(set)?.owner,
+        },
+        _ => return None,
+    };
+    Some(task_id(list, index))
+}
+
 /// Fill `base` — the row's task cells — from the observation: the
 /// negotiating wrapper's address and phase, or the connection's words
 /// with the facts beside them. `held` is the deadline of the
 /// connection's own header-read timer, where the census found it;
-/// `pools` names a client connection's far end by the pool it belongs
-/// to.
+/// `request_of` and `caller_of` name what a client's caller sent and
+/// which task it is; `pools` names a client connection's far end by
+/// the pool it belongs to.
 fn conn_row(
     base: ConnRow,
     observation: &ResourceObservation,
     held: Option<RawInstant>,
     stopped: Option<RawInstant>,
     request_of: &dyn Fn(&HttpCaller) -> Option<RequestLine>,
+    caller_of: &dyn Fn(&HttpCaller) -> Option<String>,
     pools: &PoolPeers,
 ) -> Option<ConnRow> {
     match observation {
@@ -422,6 +455,7 @@ fn conn_row(
             read_buf: None,
             deadline: None,
             request: None,
+            caller: None,
             ..base
         }),
         ResourceObservation::HttpConn(http) => {
@@ -432,22 +466,26 @@ fn conn_row(
             .ok()
             .map(|(phase, _)| phase);
             let server = http.server.as_ref();
+            // A client's caller, while it has a request in flight: the
+            // one the response callback names, as the verdict names it.
+            let caller = match (http.role, phase) {
+                (
+                    HttpRole::Client,
+                    Some(HttpPhase::AwaitingResponse | HttpPhase::SendingBody(_)),
+                ) => http
+                    .client
+                    .as_ref()
+                    .and_then(|client| client.callback.as_ref())
+                    .map(http_caller),
+                _ => None,
+            };
             // The request: the handler's for a server, the caller's for a
-            // client with one in flight — the caller the response
-            // callback names, as the verdict names it.
+            // client.
             let request = match http.role {
                 HttpRole::Server => server
                     .and_then(|server| server.request.as_ref())
                     .map(RequestLine::from),
-                HttpRole::Client => match phase {
-                    Some(HttpPhase::AwaitingResponse | HttpPhase::SendingBody(_)) => http
-                        .client
-                        .as_ref()
-                        .and_then(|client| client.callback.as_ref())
-                        .map(http_caller)
-                        .and_then(|caller| request_of(&caller)),
-                    _ => None,
-                },
+                HttpRole::Client => caller.as_ref().and_then(request_of),
             };
             let armed = server.filter(|server| server.header_read_timer_running);
             let deadline = armed
@@ -487,6 +525,7 @@ fn conn_row(
                 read_buf: http.read_buf,
                 deadline,
                 request,
+                caller: caller.as_ref().and_then(caller_of),
                 ..base
             })
         }
@@ -540,6 +579,7 @@ fn row_cells(row: &ConnRow) -> Vec<String> {
     let dash = || "—".to_string();
     vec![
         row.task.clone(),
+        row.caller.clone().unwrap_or_else(dash),
         row.role_word().to_string(),
         row.phase_cell().unwrap_or_else(dash),
         row.deadline_cell().unwrap_or_else(dash),
@@ -551,10 +591,12 @@ fn row_cells(row: &ConnRow) -> Vec<String> {
     ]
 }
 
-/// Print the listing: one row per connection, the request last since a
-/// URL is the one cell that runs wide, its method just before it so the
-/// two read as the request line, and the count under it. The deadline
-/// follows the phase it times, the buffer the deadline. The
+/// Print the listing: one row per connection, the caller beside the
+/// task driving it so the two read as who asked and who carries it,
+/// the request last since a URL is the one cell that runs wide, its
+/// method just before it so the two read as the request line, and the
+/// count under it. The deadline follows the phase it times, the buffer
+/// the deadline. The
 /// runtime is the task's to say, under `tasks`: a target seldom holds
 /// more than one, so the column would repeat one value down the page.
 fn print_table(
@@ -566,7 +608,7 @@ fn print_table(
 ) -> Result<()> {
     let shown = limit.unwrap_or(rows.len()).min(rows.len());
     let header = [
-        "TASK", "ROLE", "PHASE", "DEADLINE", "BUF", "PEER", "SERVER", "METHOD", "REQUEST",
+        "TASK", "CALLER", "ROLE", "PHASE", "DEADLINE", "BUF", "PEER", "SERVER", "METHOD", "REQUEST",
     ];
     let columns = header.len();
     let mut table = output::Table::new(columns)
@@ -610,6 +652,8 @@ pub(crate) enum Field {
     Peer,
     /// The accepting server's context type.
     Server,
+    /// The task that sent a client's request in flight — exact.
+    Caller,
     /// The request behind the connection, as printed.
     Request,
     /// The bytes read and not yet parsed — compared.
@@ -617,7 +661,7 @@ pub(crate) enum Field {
 }
 
 impl Field {
-    const NAMES: [(&'static str, Field); 9] = [
+    const NAMES: [(&'static str, Field); 10] = [
         ("task", Field::Task),
         ("rt", Field::Rt),
         ("role", Field::Role),
@@ -625,6 +669,7 @@ impl Field {
         ("method", Field::Method),
         ("peer", Field::Peer),
         ("server", Field::Server),
+        ("caller", Field::Caller),
         ("request", Field::Request),
         ("buffered", Field::Buffered),
     ];
@@ -678,6 +723,7 @@ impl Field {
             Field::Method => row.method_word().map(str::to_string),
             Field::Peer => row.peer.clone(),
             Field::Server => row.server.clone(),
+            Field::Caller => row.caller.clone(),
             Field::Request => row.request_text().map(str::to_string),
             Field::Buffered => row.read_buf.map(|(len, _)| len.to_string()),
         }
@@ -707,7 +753,7 @@ pub(crate) fn field_values<T: proc::Target>(
 #[derive(Debug)]
 enum Matcher {
     Pattern(crate::pattern::Pattern),
-    /// Exact text: the task id, the owner cell.
+    /// Exact text: a task id, the owner cell.
     Exact(String),
     /// `'>N'` / `'<N'` / `'=N'`: the buffered count.
     Cmp(Cmp),
@@ -748,7 +794,7 @@ fn parse_clauses(with: &[String], without: &[String], handles: &[u64]) -> Result
 /// for them).
 fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
     Ok(match field {
-        Field::Task => Matcher::Exact(arg.to_string()),
+        Field::Task | Field::Caller => Matcher::Exact(arg.to_string()),
         Field::Rt => Matcher::Exact(crate::tasks::resolve_rt(arg, handles)?.cell()),
         Field::Buffered => Matcher::Cmp(Cmp::parse(arg)?),
         _ => Matcher::Pattern(crate::pattern::Pattern::new(arg)?),
@@ -867,10 +913,11 @@ mod tests {
 
     use hansei_runtime::tokio::TaskAddr;
     use hansei_runtime::tokio::assess::ContinuationStatus;
+    use hansei_runtime::tokio::bundle::OneshotState;
     use hansei_runtime::tokio::observe::{
         HttpClientObservation, HttpConnObservation, HttpNegotiatingObservation, HttpReading,
         HttpRequestObservation, HttpServerObservation, HttpWriting, JoinObservation, KeepAlive,
-        TimerObservation, TimerRegistrationState, ValueKey,
+        OneshotObservation, TimerObservation, TimerRegistrationState, ValueKey,
     };
 
     fn row(addr: u64, role: HttpRole, phase: Option<HttpPhase>) -> ConnRow {
@@ -888,6 +935,7 @@ mod tests {
             read_buf: Some((12, 8192)),
             deadline: None,
             request: None,
+            caller: None,
         }
     }
 
@@ -896,7 +944,10 @@ mod tests {
     #[test]
     fn test_clauses_select_by_every_field() {
         let rows = [
-            row(0x10, HttpRole::Client, Some(HttpPhase::AwaitingResponse)),
+            ConnRow {
+                caller: Some("17".to_string()),
+                ..row(0x10, HttpRole::Client, Some(HttpPhase::AwaitingResponse))
+            },
             // An idle server with its wait in the cell: the phase field
             // is the word alone.
             ConnRow {
@@ -936,6 +987,9 @@ mod tests {
         assert_eq!(select(&["peer", "fd00"]), [0x10, 0x20, 0x40]);
         assert_eq!(select(&["task", "7"]), [0x10, 0x20, 0x30]);
         assert_eq!(select(&["task", "17"]), [0x40]);
+        // The caller is exact too, and apart from the driving task.
+        assert_eq!(select(&["caller", "17"]), [0x10]);
+        assert_eq!(select(&["caller", "7"]), []);
         assert_eq!(select(&["rt", "0"]), [0x10, 0x20, 0x30]);
         assert_eq!(select(&["rt", "10"]), [0x40]);
         assert_eq!(select(&["buffered", ">0"]), [0x10, 0x20, 0x40]);
@@ -982,12 +1036,14 @@ mod tests {
     fn test_cells_print_the_row() {
         let full = ConnRow {
             request: Some(line(Some("GET"), Some("http://one/park"))),
+            caller: Some("621".to_string()),
             ..row(0x10, HttpRole::Client, Some(HttpPhase::AwaitingResponse))
         };
         assert_eq!(
             row_cells(&full),
             [
                 "7",
+                "621",
                 "client",
                 "awaiting response",
                 "—",
@@ -1011,7 +1067,7 @@ mod tests {
                 request: Some(request),
                 ..full.clone()
             };
-            assert_eq!(row_cells(&at)[7..], cells);
+            assert_eq!(row_cells(&at)[8..], cells);
         }
         let bare = ConnRow {
             method: None,
@@ -1025,6 +1081,7 @@ mod tests {
             row_cells(&bare),
             [
                 "7",
+                "—",
                 "server",
                 "—",
                 "+29.981s",
@@ -1049,7 +1106,7 @@ mod tests {
                 deadline: Some(text.to_string()),
                 ..bare.clone()
             };
-            assert_eq!(row_cells(&at)[3], cell);
+            assert_eq!(row_cells(&at)[4], cell);
         }
         assert_eq!(full.label(), "client task 7");
         assert_eq!(bare.label(), "server task 7");
@@ -1068,7 +1125,7 @@ mod tests {
             (HttpPhase::Idle, 4250, "idle (4.250s)"),
             (HttpPhase::HandlingRequest, 19, "handling request"),
         ] {
-            assert_eq!(row_cells(&waited(phase, ms))[2], cell);
+            assert_eq!(row_cells(&waited(phase, ms))[3], cell);
         }
     }
 
@@ -1153,6 +1210,7 @@ mod tests {
             read_buf: Some((1, 1)),
             deadline: Some("SENTINEL".to_string()),
             request: Some(line(Some("SENTINEL"), Some("SENTINEL"))),
+            caller: Some("SENTINEL".to_string()),
             ..row(0, HttpRole::Client, None)
         };
         let held = Some(RawInstant {
@@ -1160,7 +1218,10 @@ mod tests {
             tv_nsec: 981_000_000,
         });
         let stopped = Some(instant(100));
-        let none = |_: &HttpCaller| None;
+        // Every caller is task 621 and sent `GET /park`, so a row
+        // without them was not asked.
+        let request_of = |_: &HttpCaller| Some(line(Some("GET"), Some("/park")));
+        let caller_of = |_: &HttpCaller| Some("621".to_string());
         // A pool that names the connection whose receiver shares
         // `0xabc0`, and names it for a server too: a server's peer is
         // its service's, whatever a pool says.
@@ -1170,7 +1231,16 @@ mod tests {
         ]));
         let fill = |observation: HttpConnObservation, held, stopped| {
             let observation = ResourceObservation::HttpConn(Box::new(observation));
-            conn_row(base.clone(), &observation, held, stopped, &none, &pools).unwrap()
+            conn_row(
+                base.clone(),
+                &observation,
+                held,
+                stopped,
+                &request_of,
+                &caller_of,
+                &pools,
+            )
+            .unwrap()
         };
         let armed = fill(server_observation(true), held, stopped);
         assert_eq!(armed.addr, 0x7b78948);
@@ -1183,6 +1253,8 @@ mod tests {
         assert_eq!(armed.read_buf, Some((0, 8192)));
         assert_eq!(armed.deadline.as_deref(), Some("deadline +29.981s"));
         assert_eq!(armed.request, None);
+        // A server has no caller: its request is the handler's.
+        assert_eq!(armed.caller, None);
         // The task's cells come from the base.
         assert_eq!(armed.task, "7");
         // The timer disarmed or not held leaves no deadline and no
@@ -1226,6 +1298,30 @@ mod tests {
         );
         assert_eq!(fill(client(Some(0xdef0)), held, stopped).peer, None);
         assert_eq!(fill(client(None), held, stopped).peer, None);
+        // A client between exchanges has no caller and no request; one
+        // with a request in flight has the caller its callback names,
+        // and what that caller sent.
+        let idle = fill(client(Some(0xabc0)), held, stopped);
+        assert_eq!(idle.phase, Some(HttpPhase::Idle));
+        assert_eq!((idle.caller, idle.request), (None, None));
+        let mut in_flight = client(Some(0xabc0));
+        in_flight.client.as_mut().unwrap().callback = Some(OneshotObservation {
+            future: key(0x500),
+            arc: key(0x500),
+            inner: 0x510,
+            state: OneshotState {
+                word: 0,
+                value_present: Some(false),
+            },
+            rx_waker: None,
+            tx_waker: None,
+            rx_task_at: Some(0x520),
+            tx_task_at: Some(0x510),
+        });
+        let in_flight = fill(in_flight, held, stopped);
+        assert_eq!(in_flight.phase, Some(HttpPhase::AwaitingResponse));
+        assert_eq!(in_flight.caller.as_deref(), Some("621"));
+        assert_eq!(in_flight.request, Some(line(Some("GET"), Some("/park"))));
         let negotiating = conn_row(
             base.clone(),
             &ResourceObservation::HttpNegotiating(HttpNegotiatingObservation {
@@ -1233,7 +1329,8 @@ mod tests {
             }),
             held,
             stopped,
-            &none,
+            &request_of,
+            &caller_of,
             &pools,
         )
         .unwrap();
@@ -1247,12 +1344,24 @@ mod tests {
         assert_eq!(negotiating.read_buf, None);
         assert_eq!(negotiating.deadline, None);
         assert_eq!(negotiating.request, None);
+        assert_eq!(negotiating.caller, None);
         assert_eq!(negotiating.label(), "server task 7");
         let other = ResourceObservation::Join(JoinObservation {
             handle: key(0x1),
             header: TaskAddr(0x1),
         });
-        assert!(conn_row(base.clone(), &other, held, stopped, &none, &pools).is_none());
+        assert!(
+            conn_row(
+                base.clone(),
+                &other,
+                held,
+                stopped,
+                &request_of,
+                &caller_of,
+                &pools
+            )
+            .is_none()
+        );
     }
 
     /// A caller that is no task is placed by the waker sweep's slot at
@@ -1284,6 +1393,84 @@ mod tests {
         assert_eq!(request(Some(0x6010)).as_deref(), Some("GET /one"));
         assert_eq!(request(Some(0x7000)), None);
         assert_eq!(request(None), None);
+    }
+
+    /// The caller's task is the caller where it is a task, the task a
+    /// slot's owner is, or the task polling the set a placed child is
+    /// in; a task the list does not hold, a cell no slot covers, and a
+    /// caller with no waker to place name none.
+    #[test]
+    fn test_the_caller_is_its_task_or_the_one_polling_its_set() {
+        use hansei_runtime::tokio::TaskState;
+        use hansei_runtime::tokio::attribution::{Attributed, AttributedSlot, Attribution, Reach};
+        use hansei_runtime::tokio::bundle::{FutureInfo, OwnerResolution, Task, TaskKind};
+        use hansei_runtime::tokio::graph::TaskRef;
+
+        let task = |id: u64| Task {
+            addr: TaskAddr(0x1000 + id * 0x100),
+            state: TaskState(1 << 6),
+            owner_id: Some(1),
+            task_id: Some(id),
+            spawn_location: None,
+            future: FutureInfo::Unknown { poll_symbol: None },
+            kind: TaskKind::Async,
+            owner: OwnerResolution::Unknown,
+        };
+        let list = TaskList::new(vec![task(621), task(2438)]);
+        // Set 0 is polled by the second task, 2438.
+        let census = census::FutureCensus::from_finds(
+            vec![],
+            vec![census::FutureSet {
+                owner: 1,
+                frame: 0,
+                local: "set".to_string(),
+                via: None,
+                addr: 0x3000,
+                ty: "FuturesUnordered<app::Child>".to_string(),
+                children: Vec::new(),
+            }],
+            vec![],
+        );
+        let slot = |slot, owner| AttributedSlot {
+            hit: 0,
+            slot,
+            owner,
+            attribution: Attribution::Unknown,
+            within: None,
+            through: Vec::new(),
+            aliases: Vec::new(),
+            reach: Reach::Unlocated,
+        };
+        let slots = Attributed::from_slots(vec![
+            slot(0x6010, Owner::Child { set: 0, child: 3 }),
+            slot(
+                0x6020,
+                Owner::Task {
+                    header: 0x1000 + 621 * 0x100,
+                    index: 0,
+                },
+            ),
+        ]);
+        let of = |caller: HttpCaller| caller_task(&list, &census, &slots, &caller);
+        let parked = |id: u64| {
+            HttpCaller::Task(TaskRef {
+                addr: TaskAddr(0x1000 + id * 0x100),
+                task_id: Some(id),
+            })
+        };
+        let placed = |cell| HttpCaller::NotATask {
+            vtable: 0xeeb0,
+            cell,
+        };
+        assert_eq!(of(parked(621)).as_deref(), Some("621"));
+        assert_eq!(of(parked(9)), None);
+        assert_eq!(of(placed(Some(0x6010))).as_deref(), Some("2438"));
+        assert_eq!(of(placed(Some(0x6020))).as_deref(), Some("621"));
+        assert_eq!(of(placed(Some(0x7000))), None);
+        assert_eq!(of(placed(None)), None);
+        for unplaced in [HttpCaller::Gone, HttpCaller::Unparked, HttpCaller::Unread] {
+            assert_eq!(of(unplaced), None);
+        }
     }
 
     /// The deadline is the connection's own timer's, found at the
@@ -1549,6 +1736,13 @@ mod tests {
         let (tasks, pattern) = field_values(&session, "task").unwrap();
         assert!(!pattern);
         assert_eq!(tasks.len(), 9, "{tasks:?}");
+        // The two clients with a request in flight each name the task
+        // that sent it — never one driving a connection — as exact
+        // values.
+        let (callers, pattern) = field_values(&session, "caller").unwrap();
+        assert!(!pattern);
+        assert_eq!(callers.len(), 2, "{callers:?}");
+        assert!(callers.iter().all(|c| !tasks.contains(c)), "{callers:?}");
         // The one peer is the pool key of the client whose pool keeps a
         // reaper: the listener's loopback address.
         let (peers, pattern) = field_values(&session, "peer").unwrap();
@@ -1587,8 +1781,9 @@ mod tests {
         assert_eq!(Field::Buffered.values(&rows), None);
         assert!(Field::Peer.is_pattern());
         assert!(!Field::Task.is_pattern());
+        assert!(!Field::Caller.is_pattern());
         let names: Vec<&str> = Field::names().collect();
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 10);
         for name in names {
             assert_eq!(Field::parse(name).unwrap().name(), name);
         }

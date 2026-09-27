@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`connections --with request park` over illumos/http-conns"
 ---
-TASK  ROLE    PHASE              DEADLINE  BUF      PEER             SERVER  METHOD  REQUEST
-8     server  handling request   —         0/16339  —                —       GET     /park
-11    server  handling request   —         0/16326  —                —       GET     /park
-12    client  awaiting response  —         0/8192   127.0.0.1:56340  —       GET     http://127.0.0.1:56340/park
+TASK  CALLER  ROLE    PHASE              DEADLINE  BUF      PEER             SERVER  METHOD  REQUEST
+8     —       server  handling request   —         0/16339  —                —       GET     /park
+11    —       server  handling request   —         0/16326  —                —       GET     /park
+12    10      client  awaiting response  —         0/8192   127.0.0.1:56340  —       GET     http://127.0.0.1:56340/park
 [3 connections]
