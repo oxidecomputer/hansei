@@ -1464,15 +1464,14 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
     /// a pointer the owner holds already names.
     fn watch_of(&self, notify: u64, pointers: &[PointerMember]) -> Option<(u64, Reading)> {
         let mut seen: HashSet<u64> = HashSet::default();
+        let arcs = self.types.view.walk_roots(WalkRole::WatchSharedState);
         for p in pointers {
-            let ty = self.types.view.ty(p.pointee)?;
-            if !ty
-                .name()
-                .starts_with("alloc::sync::ArcInner<tokio::sync::watch::Shared<")
-                || !seen.insert(p.target)
-            {
+            if !arcs.contains(&p.pointee) || !seen.insert(p.target) {
                 continue;
             }
+            let Some(ty) = self.types.view.ty(p.pointee) else {
+                continue;
+            };
             let Ok(arc) = Value::read(self.proc, ty, p.target) else {
                 continue;
             };
@@ -1922,20 +1921,37 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
 
     /// Name a located slot: the owner-name table over the aggregates
     /// on its trail, outermost first, else the innermost aggregate
-    /// that is not a wrapper.
+    /// that is not a wrapper. A primitive owns a slot when its type is
+    /// one the walk roles reading it root at — the roles' binder chose
+    /// those types for this target's tokio, so the table follows
+    /// whatever that release calls them.
     fn name_slot(&self, path: SlotPath, trail: &[Step<'b>], validity: Validity) -> Attribution {
         let impls = self.sources.impls;
+        let view = self.types.view;
+        // A oneshot's `ArcInner<Inner<T>>`s are the state word's roots;
+        // the `Inner`s are what those hold as `data`.
+        let oneshot_arcs = view.walk_roots(WalkRole::OneshotState);
+        let is_oneshot_inner = |ty: BundleType<'b>| {
+            oneshot_arcs.iter().any(|&arc| {
+                view.ty(arc)
+                    .and_then(|arc| arc.member("data"))
+                    .is_some_and(|data| data.ty().id() == ty.id())
+            })
+        };
+        let chans = view.walk_roots(WalkRole::ChanTxCount);
+        let notifieds = view.walk_roots(WalkRole::NotifiedNotify);
         for (i, step) in trail.iter().enumerate() {
-            let name = step.holder.ty.name();
+            let ty = step.holder.ty;
+            let name = ty.name();
             let under = |member: &str| trail[i..].iter().any(|s| s.name == member);
-            let kind = if name.starts_with("tokio::sync::oneshot::Inner<") {
+            let kind = if is_oneshot_inner(ty) {
                 // The `ArcInner` the `Inner` sits in is the step before
                 // it on the trail; the receiver-rooted roles read from
                 // there.
                 let reading = trail[..i]
                     .iter()
                     .rev()
-                    .find(|s| s.holder.ty.name().starts_with("alloc::sync::ArcInner<"))
+                    .find(|s| oneshot_arcs.contains(&s.holder.ty.id()))
                     .and_then(|arc| self.oneshot_reading(arc.holder));
                 if under("rx_task") {
                     Some((OwnerKind::OneshotRx, step.holder.addr, reading))
@@ -1944,15 +1960,13 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                 } else {
                     None
                 }
-            } else if name.starts_with("tokio::sync::mpsc::chan::Chan<") {
+            } else if chans.contains(&ty.id()) {
                 Some((
                     OwnerKind::Mpsc,
                     step.holder.addr,
                     self.mpsc_reading(step.holder),
                 ))
-            } else if name.starts_with("tokio::sync::notify::Notified<")
-                || name == "tokio::sync::notify::Notified"
-            {
+            } else if notifieds.contains(&ty.id()) {
                 let notify = step
                     .holder
                     .try_member("notify")
