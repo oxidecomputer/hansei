@@ -14,6 +14,7 @@ use super::{
     Reach, ReachStep, Through, Want, find_unique, is_byte_array, is_unsigned_integer, raw_variant,
     reach, sole_param_target, struct_of, transparent, unique_member, zero_offset_member,
 };
+use crate::bundle::names::is_trait_object;
 use crate::bundle::{DisplayNode, Field, MapEntries, Notation, Selector, Step};
 use crate::extract::{Emitter, fq_name, ns_path};
 use crate::raw_types::RawType;
@@ -720,8 +721,7 @@ pub(super) fn dyn_tail_prefixes(
         return None;
     }
     let raw = reader.canonical_type(id)?;
-    if fq_name(reader, id).is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn "))
-    {
+    if fq_name(reader, id).is_some_and(|name| is_trait_object(&name)) {
         return Some(Vec::new());
     }
     let RawType::Struct(st) = raw else {

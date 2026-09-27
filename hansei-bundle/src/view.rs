@@ -700,8 +700,7 @@ impl<'a> BundleType<'a> {
         let vtable = self.member("vtable")?;
         vtable.ty().pointer_target()?;
         let pointee = data.ty().pointer_target()?;
-        let name = pointee.name();
-        if !(name.starts_with("dyn ") || name.starts_with("(dyn ")) {
+        if !crate::names::is_trait_object(pointee.name()) {
             return None;
         }
         Some(DynPointer {

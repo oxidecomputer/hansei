@@ -327,6 +327,15 @@ pub fn is_coroutine_candidate(name: &str) -> bool {
 /// zero-sized type behind a `dyn Future` wide pointer.
 pub const DYN_FUTURE: &str = "dyn core::future::future::Future<";
 
+/// Whether a type is a trait object — the unsized `dyn Trait` a wide
+/// pointer's data half targets, which rustc names `dyn …`, or `(dyn …)`
+/// with auto traits added. DWARF says so by the name alone; this is the
+/// one test the producer, the validator and the read side answer the
+/// question with.
+pub fn is_trait_object(name: &str) -> bool {
+    name.strip_prefix('(').unwrap_or(name).starts_with("dyn ")
+}
+
 /// Whether a dyn pointee *is* a future trait object — anchored at the
 /// front, past the parenthesized spelling, since any dyn whose generics
 /// merely mention a future (a `dyn FnOnce(..) -> BoxFuture`) would
@@ -648,6 +657,19 @@ mod tests {
         for name in ["app::Plain", "W<", "W<>", "W<a>b", "W<a<b>", "W<a,>"] {
             assert_eq!(super::generic_args(name), None, "{name}");
         }
+    }
+
+    #[test]
+    fn test_trait_objects_are_named_at_the_front() {
+        assert!(super::is_trait_object("dyn core::fmt::Debug"));
+        assert!(super::is_trait_object(
+            "(dyn core::any::Any + core::marker::Send)"
+        ));
+        assert!(!super::is_trait_object("app::dyn_thing::Holder"));
+        assert!(!super::is_trait_object(
+            "alloc::boxed::Box<dyn core::fmt::Debug>"
+        ));
+        assert!(!super::is_trait_object("dynamo::Table"));
     }
 
     #[test]

@@ -1206,7 +1206,7 @@ fn dyn_tail_depth(
         TypeDef::Struct { name, .. } | TypeDef::Opaque { name, .. } => bundle.strings.get(*name),
         _ => None,
     };
-    if name.is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn ")) {
+    if name.is_some_and(crate::names::is_trait_object) {
         return Some(0);
     }
     let TypeDef::Struct { members, .. } = def else {
