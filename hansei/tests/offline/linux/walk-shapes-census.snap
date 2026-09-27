@@ -5,10 +5,10 @@ description: "`census` over linux/walk-shapes"
 Threads: 3 lwps, 3 in 2 runtimes
 
 COUNT  RT  ROLE             STATE           LWPS
-    1  0   block_on thread  in driver       1988029
+    1  0   block_on thread  in driver       2780243
     0  0   blocking pool    0 idle, 0 busy  —
     0  1   blocking pool    0 idle, 0 busy  —
-    2  —   entered runtime  —               1988032, 1988031
+    2  —   entered runtime  —               2780246, 2780245
 [3 lwps]
 
 Tasks: 10 owned by 2 runtimes and 2 local sets

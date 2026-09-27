@@ -906,6 +906,31 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 fq_name(bundle, table.bucket)
             );
         }
+        if let Some(refcount) = &record.refcount {
+            let value = match refcount.value {
+                MemberRef::Named(name) => s(name).to_owned(),
+                MemberRef::Index(i) => format!("#{i}"),
+            };
+            let _ = write!(line, " refcount rule {} value {value}", refcount.rule.0);
+        }
+        if let Some(lock) = &record.lock {
+            let _ = write!(
+                line,
+                " lock rule {} word {}+{} mask {:#x}",
+                lock.rule.0, lock.word.offset, lock.word.size, lock.word.locked_mask
+            );
+        }
+        if let Some(acquires) = &record.acquires_for {
+            let _ = write!(
+                line,
+                " acquires-for rule {} {}",
+                acquires.rule.0,
+                s(acquires.primitive)
+            );
+        }
+        if let Some(kind) = record.coroutine_kind {
+            let _ = write!(line, " kind rule {}", kind.0);
+        }
         if let Some(select) = &record.select {
             let branches: Vec<String> = select
                 .branches

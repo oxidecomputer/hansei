@@ -134,6 +134,43 @@ pub fn rustc_dyn_future_abi_convention(producer: &str) -> Option<&'static RustcC
     rustc_convention(producer, &[&RUSTC_DYN_FUTURE_ABI_V1_97])
 }
 
+/// std's refcounted allocation headers as rustc 1.97 and 1.98 ship
+/// them, reviewed against `library/alloc/src/sync.rs` and `rc.rs` (the
+/// two headers identical across the range but for comments):
+/// `ArcInner<T> { strong, weak, data: T }` and `RcInner<T> { strong,
+/// weak, value: T }`, the counts first and the value after them — what
+/// an `Arc<T>` or `Rc<T>` points at, and what a path through one names
+/// a member of.
+pub const RUSTC_STD_REFCOUNT_V1_97: RustcConvention = RustcConvention {
+    family: "rustc-std-refcount-1.97",
+    floor: (1, 97),
+    ceiling: (1, 98),
+};
+
+/// The refcount header convention covering a producer, selected like
+/// [`rustc_coroutine_convention`].
+pub fn rustc_std_refcount_convention(producer: &str) -> Option<&'static RustcConvention> {
+    rustc_convention(producer, &[&RUSTC_STD_REFCOUNT_V1_97])
+}
+
+/// std's futex mutex as rustc 1.97 and 1.98 ship it, reviewed against
+/// `library/std/src/sys/sync/mutex/futex.rs` (identical across the
+/// range): `Mutex { futex }`, one futex word that reads `UNLOCKED` (0)
+/// while no thread holds the lock, `LOCKED` (1) or `CONTENDED` (2)
+/// while one does — held whenever the word is nonzero, whatever width
+/// the platform's futex word is.
+pub const RUSTC_STD_FUTEX_MUTEX_V1_97: RustcConvention = RustcConvention {
+    family: "rustc-std-futex-mutex-1.97",
+    floor: (1, 97),
+    ceiling: (1, 98),
+};
+
+/// The futex mutex convention covering a producer, selected like
+/// [`rustc_coroutine_convention`].
+pub fn rustc_std_futex_mutex_convention(producer: &str) -> Option<&'static RustcConvention> {
+    rustc_convention(producer, &[&RUSTC_STD_FUTEX_MUTEX_V1_97])
+}
+
 /// One reviewed third-party implementation: the crate, the family name
 /// the bundle's delegation origin records, the inclusive version range
 /// the implementation was read at, and the checksums of its reviewed
@@ -213,6 +250,27 @@ pub const TRACING_INSTRUMENTED_V0_1_40: LibraryConvention = LibraryConvention {
             ],
         ),
     ],
+};
+
+/// parking_lot's `raw_mutex::RawMutex` as 0.12.1 through 0.12.5 — the
+/// newest release at the review — implement it, `src/raw_mutex.rs`
+/// byte-identical across the range: `RawMutex { state: AtomicU8 }`,
+/// whose `LOCKED_BIT` (`0b01`) is set exactly while a thread holds the
+/// lock — `is_locked` reads it alone — and whose `PARKED_BIT` (`0b10`)
+/// says only that a thread waits for it. The origin is the type's own
+/// method declarations, which name that file.
+pub const PARKING_LOT_RAW_MUTEX_V0_12_1: LibraryConvention = LibraryConvention {
+    package: "parking_lot",
+    family: "parking_lot-raw-mutex-0.12.1",
+    floor: (0, 12, 1),
+    ceiling: (0, 12, 5),
+    checksums: &[(
+        "src/raw_mutex.rs",
+        [
+            0xc6, 0x3f, 0xda, 0xbc, 0x3c, 0x51, 0xef, 0x4b, 0x58, 0x5a, 0x91, 0xdb, 0xef, 0xbe,
+            0x8c, 0x52,
+        ],
+    )],
 };
 
 /// futures-util's `map`, `map_err` and `into_future` combinators as
@@ -2054,6 +2112,59 @@ pub const TOKIO_ONESHOT_RECV_STATE_V1_47: StateProtocol = StateProtocol {
     ceiling: (1, 53),
 };
 
+/// The tokio futures that acquire a batch semaphore on behalf of a
+/// primitive of their own module, tokio 1.47 through 1.53
+/// (`sync/mutex.rs`, `sync/rwlock.rs`, `sync/semaphore.rs` and
+/// `sync/mpsc/bounded.rs`, each primitive's acquire unchanged across
+/// the range): `Mutex::lock` and its owned forms await the mutex's
+/// `acquire`, `RwLock`'s read and write forms their `s.acquire(n)`,
+/// `Semaphore::acquire` and its many and owned forms `ll_sem.acquire`,
+/// and a bounded sender's `send` awaits `reserve`, which awaits
+/// `reserve_inner`'s acquire of one slot of the channel's capacity.
+/// Every such async fn lies in its primitive's module, so the module's
+/// path is the key; the primitive is named as a listing names it.
+pub const TOKIO_ACQUIRE_OWNERS_V1_47: AcquireOwners = AcquireOwners {
+    floor: (1, 47),
+    ceiling: (1, 53),
+    owners: &[
+        ("tokio::sync::mutex::", "tokio::sync::Mutex"),
+        ("tokio::sync::rwlock::", "tokio::sync::RwLock"),
+        ("tokio::sync::semaphore::", "tokio::sync::Semaphore"),
+        (
+            "tokio::sync::mpsc::bounded::",
+            "tokio::sync::mpsc bounded channel",
+        ),
+    ],
+};
+
+/// A reviewed map from the modules whose futures acquire a batch
+/// semaphore to the primitive each acquires for, over an inclusive
+/// range of tokio versions.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct AcquireOwners {
+    pub floor: (u64, u64),
+    pub ceiling: (u64, u64),
+    pub owners: &'static [(&'static str, &'static str)],
+}
+
+/// The primitive a future named `name` acquires a batch semaphore for,
+/// at a recovered tokio version: `None` for a future in no owner's
+/// module, and for any at all where no version was recovered or it
+/// falls outside the reviewed range.
+pub fn tokio_acquire_owner(name: &str, version: Option<&semver::Version>) -> Option<&'static str> {
+    let owners = &TOKIO_ACQUIRE_OWNERS_V1_47;
+    let version = version?;
+    let version = (version.major, version.minor);
+    if version < owners.floor || version > owners.ceiling {
+        return None;
+    }
+    owners
+        .owners
+        .iter()
+        .find(|(module, _)| name.starts_with(module))
+        .map(|(_, primitive)| *primitive)
+}
+
 /// The reviewed state protocol for a resource kind at a recovered tokio
 /// version: `None` when no version was recovered or it falls outside
 /// the protocol's range. A layout family is selected regardless; a
@@ -2373,5 +2484,36 @@ mod tests {
             }
             assert_eq!(tokio_state_protocol(kind, None), None, "{kind:?}");
         }
+    }
+
+    /// An acquire's owner is named by its module inside the reviewed
+    /// tokio range, floor and ceiling included, and for no version
+    /// outside it or unrecovered.
+    #[test]
+    fn test_acquire_owners_bind_only_inside_the_reviewed_tokio_range() {
+        let v = |s: &str| semver::Version::parse(s).unwrap();
+        let lock = "tokio::sync::mutex::{impl#3}::lock::{async_fn_env#0}<u32>";
+        for version in ["1.47.0", "1.49.0", "1.53.0", "1.53.9"] {
+            assert_eq!(
+                tokio_acquire_owner(lock, Some(&v(version))),
+                Some("tokio::sync::Mutex"),
+                "{version}"
+            );
+        }
+        for version in ["1.46.9", "1.54.0", "0.47.0", "2.47.0"] {
+            assert_eq!(
+                tokio_acquire_owner(lock, Some(&v(version))),
+                None,
+                "{version}"
+            );
+        }
+        assert_eq!(tokio_acquire_owner(lock, None), None);
+        let send = "tokio::sync::mpsc::bounded::{impl#3}::send::{async_fn_env#0}<u32>";
+        assert_eq!(
+            tokio_acquire_owner(send, Some(&v("1.52.4"))),
+            Some("tokio::sync::mpsc bounded channel")
+        );
+        let sleep = "tokio::time::sleep::Sleep";
+        assert_eq!(tokio_acquire_owner(sleep, Some(&v("1.52.4"))), None);
     }
 }

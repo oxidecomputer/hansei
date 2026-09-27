@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`tasks --with waiting-on caller:` over linux/http-conns"
 ---
 ID  STATE  FUT  AWAITING AT               WAITING ON    TYPE
-9   idle     0  src/bin/http-conns.rs:76  http1 client  async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-12  idle     0  —                         http1 client  future Pin<Box<(dyn Future<Output=()> + Send)>>
+7   idle     0  src/bin/http-conns.rs:76  http1 client  async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+11  idle     0  —                         http1 client  future Pin<Box<(dyn Future<Output=()> + Send)>>
 [2 tasks]

@@ -38,6 +38,10 @@ fn record(ty: BundleTypeId) -> TypeSemantics {
         request: None,
         table: None,
         pool: None,
+        refcount: None,
+        lock: None,
+        acquires_for: None,
+        coroutine_kind: None,
         issues: Vec::new(),
     }
 }
@@ -3434,4 +3438,151 @@ fn test_semantic_pool_binding_names_each_connection_by_key_and_want() {
     let mut wrong = b.clone();
     wrong.semantics.types[checkout_at].storage = StoragePolicy::Unavailable(issue());
     bad(&wrong, "unavailable storage carries a readable capability");
+}
+
+/// A rule of `kind` under the base's compiler origin, appended.
+fn compiler_rule(b: &mut Bundle, kind: SemanticRuleKind) -> SemanticRuleId {
+    b.semantics.rules.push(SemanticRule {
+        kind,
+        revision: 1,
+        origin: SemanticOriginId(0),
+    });
+    SemanticRuleId(b.semantics.rules.len() as u32 - 1)
+}
+
+/// A refcount header's value is one named member past the counts, under
+/// the std rule and no other.
+#[test]
+fn test_semantic_refcount_value_is_a_named_member_past_the_counts() {
+    let mut b = base();
+    let rule = compiler_rule(&mut b, SemanticRuleKind::StdRefcountHeader);
+    let mut header = record(PARENT);
+    header.future = None;
+    header.refcount = Some(RefcountBinding {
+        rule,
+        value: MemberRef::Named(FIELD),
+    });
+    b.semantics.types = vec![header];
+    b.validate().unwrap();
+
+    let mut wrong = b.clone();
+    wrong.semantics.types[0].refcount.as_mut().unwrap().rule = SemanticRuleId(0);
+    bad(&wrong, "incompatible capability");
+    let mut positional = b.clone();
+    positional.semantics.types[0]
+        .refcount
+        .as_mut()
+        .unwrap()
+        .value = MemberRef::Index(0);
+    bad(&positional, "addressed by name");
+    let mut missing = b.clone();
+    missing.semantics.types[0].refcount.as_mut().unwrap().value = MemberRef::Named(VARIANT);
+    bad(&missing, "no unique refcount value member");
+    // CHILD's one member sits at its start, where the counts are.
+    let mut at_start = b.clone();
+    at_start.semantics.types[0].ty = CHILD;
+    bad(&at_start, "past its counts");
+}
+
+/// A lock word is a whole integer inside the lock whose mask names a
+/// bit of it, under a lock rule.
+#[test]
+fn test_semantic_lock_word_lies_in_the_lock() {
+    let mut b = base();
+    let rule = compiler_rule(&mut b, SemanticRuleKind::StdFutexMutex);
+    let mut lock = record(CHILD);
+    lock.future = None;
+    lock.lock = Some(LockBinding {
+        rule,
+        word: LockWord {
+            offset: 0,
+            size: 4,
+            locked_mask: 0xffff_ffff,
+        },
+    });
+    b.semantics.types = vec![lock];
+    b.validate().unwrap();
+
+    fn word(b: &mut Bundle) -> &mut LockWord {
+        &mut b.semantics.types[0].lock.as_mut().unwrap().word
+    }
+    let mut odd = b.clone();
+    word(&mut odd).size = 3;
+    bad(&odd, "1, 2, 4 or 8 bytes");
+    let mut wide = b.clone();
+    word(&mut wide).locked_mask = 1 << 32;
+    bad(&wide, "names no bit");
+    let mut empty = b.clone();
+    word(&mut empty).locked_mask = 0;
+    bad(&empty, "names no bit");
+    let mut past = b.clone();
+    word(&mut past).offset = 6;
+    bad(&past, "past the lock");
+    let mut wrong = b.clone();
+    wrong.semantics.types[0].lock.as_mut().unwrap().rule = SemanticRuleId(0);
+    bad(&wrong, "incompatible capability");
+}
+
+/// A lock word reads held exactly when a masked bit is set, and not at
+/// all from bytes too short to hold it.
+#[test]
+fn test_lock_word_reads_its_masked_bits() {
+    let byte = LockWord {
+        offset: 0,
+        size: 1,
+        locked_mask: 0b01,
+    };
+    assert_eq!(byte.held(&[0b01]), Some(true));
+    assert_eq!(byte.held(&[0b10]), Some(false));
+    assert_eq!(byte.held(&[]), None);
+    let word = LockWord {
+        offset: 4,
+        size: 4,
+        locked_mask: 0xffff_ffff,
+    };
+    assert_eq!(word.held(&[0, 0, 0, 0, 0, 0, 0, 0]), Some(false));
+    assert_eq!(word.held(&[0, 0, 0, 0, 0, 0, 0, 2]), Some(true));
+    assert_eq!(word.held(&[0, 0, 0, 0, 1, 0, 0]), None);
+}
+
+/// An acquire's owner is a name on a future, under the tokio rule; a
+/// coroutine's kind is a coroutine rule, the one its layout names.
+#[test]
+fn test_semantic_owner_and_coroutine_kind_rules() {
+    let mut b = base();
+    b.semantics.origins.push(SemanticOrigin::LibraryLayout {
+        package: StrRef(8),
+        version: Some(StrRef(9)),
+        family: StrRef(10),
+        selection: LayoutSelection::ReviewedRange,
+    });
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::TokioAcquireOwner,
+        revision: 1,
+        origin: SemanticOriginId(1),
+    });
+    let owner = SemanticRuleId(b.semantics.rules.len() as u32 - 1);
+    let kind = compiler_rule(&mut b, SemanticRuleKind::RustcAsyncFn);
+    let mut acquirer = record(PARENT);
+    acquirer.acquires_for = Some(AcquiresForBinding {
+        rule: owner,
+        primitive: StrRef(3),
+    });
+    acquirer.coroutine_kind = Some(kind);
+    b.semantics.types = vec![acquirer];
+    b.validate().unwrap();
+
+    let mut no_future = b.clone();
+    no_future.semantics.types[0].future = None;
+    bad(&no_future, "needs a future");
+    let mut wrong_owner = b.clone();
+    wrong_owner.semantics.types[0]
+        .acquires_for
+        .as_mut()
+        .unwrap()
+        .rule = kind;
+    bad(&wrong_owner, "incompatible capability");
+    let mut wrong_kind = b.clone();
+    wrong_kind.semantics.types[0].coroutine_kind = Some(owner);
+    bad(&wrong_kind, "incompatible capability");
 }

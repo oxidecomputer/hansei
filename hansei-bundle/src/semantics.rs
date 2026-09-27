@@ -5,7 +5,7 @@
 //! Independent identity, storage, and polling facts. Absence of a capability
 //! is unknown; it does not establish that a value contains nothing of interest.
 
-use crate::{BundleTypeId, SourceLoc, Step, StrRef, TaskEntryId};
+use crate::{BundleTypeId, MemberRef, SourceLoc, Step, StrRef, TaskEntryId};
 
 use serde::{Deserialize, Serialize};
 
@@ -62,7 +62,67 @@ pub struct TypeSemantics {
     /// a hyper-util client pool's reaper or checkout under a reviewed
     /// range: what names a client connection's far end.
     pub pool: Option<HttpPoolBinding>,
+    /// Where the type is a refcounted allocation's header — an `Arc`'s
+    /// `ArcInner<T>`, an `Rc`'s `RcInner<T>` — the member holding the
+    /// value its counts guard: what a path through the pointer names.
+    pub refcount: Option<RefcountBinding>,
+    /// Where the type is a raw lock guarding a wait list: the word
+    /// that says whether it is held.
+    pub lock: Option<LockBinding>,
+    /// Where the future acquires a batch semaphore on behalf of a
+    /// primitive — `Mutex::lock`, `Semaphore::acquire`, a bounded
+    /// sender's `reserve` — the primitive it acquires for.
+    pub acquires_for: Option<AcquiresForBinding>,
+    /// Where the type is a coroutine rustc generated, the rule whose
+    /// kind says which: an async fn's, an async block's or an async
+    /// closure's.
+    pub coroutine_kind: Option<SemanticRuleId>,
     pub issues: Vec<SemanticIssue>,
+}
+
+/// The value a refcounted allocation's header holds.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RefcountBinding {
+    pub rule: SemanticRuleId,
+    /// The header's member holding the value, by name.
+    pub value: MemberRef,
+}
+
+/// A raw lock's state, as a reviewed implementation keeps it.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct LockBinding {
+    pub rule: SemanticRuleId,
+    pub word: LockWord,
+}
+
+/// Where a lock keeps its state and what says it is held: the
+/// little-endian word of `size` bytes at `offset` into the lock, held
+/// whenever any bit of `locked_mask` is set in it.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct LockWord {
+    pub offset: u64,
+    pub size: u8,
+    pub locked_mask: u64,
+}
+
+impl LockWord {
+    /// Whether `bytes`, the lock's own, say it is held: `None` where
+    /// they are too short to hold the word.
+    pub fn held(&self, bytes: &[u8]) -> Option<bool> {
+        let start = usize::try_from(self.offset).ok()?;
+        let word = bytes.get(start..start.checked_add(usize::from(self.size))?)?;
+        let mut buf = [0u8; 8];
+        buf.get_mut(..word.len())?.copy_from_slice(word);
+        Some(u64::from_le_bytes(buf) & self.locked_mask != 0)
+    }
+}
+
+/// The primitive a future acquires a batch semaphore for.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct AcquiresForBinding {
+    pub rule: SemanticRuleId,
+    /// The primitive, as a listing names it: `tokio::sync::Mutex`.
+    pub primitive: StrRef,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -693,6 +753,23 @@ pub enum SemanticRuleKind {
     /// hyper-util's legacy client `ResponseFuture` under a reviewed
     /// range, forwarding to the boxed future its `SyncWrapper` holds.
     HyperUtilResponseFuture,
+    /// rustc's async closure environment: a coroutine whose kind is
+    /// known by its name, and nothing reviewed about its states.
+    RustcAsyncClosure,
+    /// std's refcounted allocation headers — `alloc::sync::ArcInner<T>`
+    /// and `alloc::rc::RcInner<T>` (formerly `RcBox<T>`) — whose value
+    /// sits in one named member past the two counts.
+    StdRefcountHeader,
+    /// std's futex mutex, `std::sys::sync::mutex::futex::Mutex`: one
+    /// `u32` word, zero while unlocked.
+    StdFutexMutex,
+    /// parking_lot's `raw_mutex::RawMutex` under a reviewed range: one
+    /// state byte whose low bit is the lock.
+    ParkingLotRawMutex,
+    /// The tokio futures that acquire a batch semaphore for a primitive
+    /// of their own module — `Mutex`, `RwLock`, `Semaphore`, a bounded
+    /// mpsc channel's capacity — under the family's layout.
+    TokioAcquireOwner,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

@@ -145,7 +145,8 @@ impl<'a> Check<'a> {
         let package = match rule.kind {
             RustcAsyncFn | RustcAsyncBlock | DynFutureAbi | StdBoxAccess | StdMutRefAccess
             | StdPinBoxAccess | StdPinMutRefAccess | StdBoxPoll | StdMutRefPoll | StdPinBoxPoll
-            | StdPinMutRefPoll | CorePending => {
+            | StdPinMutRefPoll | CorePending | RustcAsyncClosure | StdRefcountHeader
+            | StdFutexMutex => {
                 return require(
                     matches!(origin, SemanticOrigin::Rustc { .. }),
                     "compiler rule needs a compiler origin",
@@ -176,6 +177,7 @@ impl<'a> Check<'a> {
             | ReqwestPendingRequest
             | ReqwestCookie
             | HttpRequest
+            | ParkingLotRawMutex
             | TokioSelect
             | TokioIntervalTick
             | FuturesUtilNext
@@ -195,6 +197,7 @@ impl<'a> Check<'a> {
                     ReqwestPendingRequest | ReqwestCookie => "reqwest",
                     TowerRetry => "tower",
                     HttpRequest => "http",
+                    ParkingLotRawMutex => "parking_lot",
                     // tokio's own macro and its own async fn, but read
                     // like a third-party rule: the declaration file is
                     // the evidence, and tokio's version comes off its
@@ -243,7 +246,8 @@ impl<'a> Check<'a> {
             | TokioNotified
             | TokioNotifiedState
             | TokioOneshotRecv
-            | TokioOneshotRecvState => "tokio",
+            | TokioOneshotRecvState
+            | TokioAcquireOwner => "tokio",
             // A layout rule whose version is read off the declarations
             // of hashbrown's map, where std's vendored copy has no cargo
             // registry path to be a delegation origin by.
@@ -653,6 +657,60 @@ impl<'a> Check<'a> {
         require(
             !binding.exclusive_pending || binding.state_rule.is_some(),
             "unreviewed exclusive-pending guarantee",
+        )
+    }
+
+    /// A refcount header's value is one member of its own struct, named
+    /// and unique, past the counts at its start.
+    fn refcount(&self, record: &TypeSemantics, binding: &RefcountBinding) -> Result<()> {
+        require(
+            matches!(record.storage, StoragePolicy::DeclaredMembers),
+            "refcount binding needs declared-member storage",
+        )?;
+        require(
+            matches!(binding.value, MemberRef::Named(_)),
+            "a refcount header's value is addressed by name",
+        )?;
+        let TypeDef::Struct { members, .. } = self.ty(record.ty)? else {
+            return Err(Error::Corrupt(
+                "semantics: a refcount header is not a struct".into(),
+            ));
+        };
+        let at = binding
+            .value
+            .resolve(members.len(), |i, name| members[i].name == name)
+            .ok_or_else(|| Error::Corrupt("semantics: no unique refcount value member".into()))?;
+        require(
+            members[at].offset > 0,
+            "a refcount header's value sits past its counts",
+        )
+    }
+
+    /// A lock word is a whole unsigned integer inside the lock, and its
+    /// mask names bits of it.
+    fn lock(&self, record: &TypeSemantics, word: &LockWord) -> Result<()> {
+        require(
+            matches!(record.storage, StoragePolicy::DeclaredMembers),
+            "lock binding needs declared-member storage",
+        )?;
+        require(
+            matches!(word.size, 1 | 2 | 4 | 8),
+            "a lock word is 1, 2, 4 or 8 bytes",
+        )?;
+        let bits = u32::from(word.size) * 8;
+        require(
+            word.locked_mask != 0 && (bits == 64 || word.locked_mask >> bits == 0),
+            "a lock's mask names no bit of its word",
+        )?;
+        let size = match self.ty(record.ty)? {
+            TypeDef::Struct { size, .. } | TypeDef::Union { size, .. } => *size,
+            _ => return Err(Error::Corrupt("semantics: a lock is not a struct".into())),
+        };
+        require(
+            word.offset
+                .checked_add(u64::from(word.size))
+                .is_some_and(|end| end <= size),
+            "a lock word lies past the lock",
         )
     }
 
@@ -1491,7 +1549,9 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                         && record.http.is_none()
                         && record.request.is_none()
                         && record.table.is_none()
-                        && record.pool.is_none(),
+                        && record.pool.is_none()
+                        && record.refcount.is_none()
+                        && record.lock.is_none(),
                     "unavailable storage carries a readable capability",
                 )?;
             }
@@ -1563,6 +1623,46 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                 "HTTP pool binding needs declared-member storage",
             )?;
             check.pool(record, pool)?;
+        }
+        if let Some(refcount) = &record.refcount {
+            check.rule(refcount.rule, &[SemanticRuleKind::StdRefcountHeader])?;
+            check.refcount(record, refcount)?;
+        }
+        if let Some(lock) = &record.lock {
+            check.rule(
+                lock.rule,
+                &[
+                    SemanticRuleKind::StdFutexMutex,
+                    SemanticRuleKind::ParkingLotRawMutex,
+                ],
+            )?;
+            check.lock(record, &lock.word)?;
+        }
+        if let Some(acquires) = &record.acquires_for {
+            check.rule(acquires.rule, &[SemanticRuleKind::TokioAcquireOwner])?;
+            check.string(acquires.primitive)?;
+            require(
+                record.future.is_some(),
+                "an acquire's owner binding needs a future",
+            )?;
+        }
+        if let Some(rule) = record.coroutine_kind {
+            check.rule(
+                rule,
+                &[
+                    SemanticRuleKind::RustcAsyncFn,
+                    SemanticRuleKind::RustcAsyncBlock,
+                    SemanticRuleKind::RustcAsyncClosure,
+                ],
+            )?;
+            // A layout is bound under the kind's own rule: one says what
+            // the coroutine is, and the other cannot say otherwise.
+            if let Some(layout) = &record.coroutine {
+                require(
+                    layout.rule == rule,
+                    "a coroutine's kind and layout name different rules",
+                )?;
+            }
         }
         if let Some(container) = &record.container {
             let kind = match container.kind {

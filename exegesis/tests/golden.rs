@@ -1647,12 +1647,14 @@ fn assert_adapter_programs(program: &str, bundle: &Bundle) {
         // tokio's as well, bound wherever the target keeps the
         // runtime's own `Coop<changed_impl<()>>`, and the family check
         // above holds it — as it does the tick's, bound wherever a
-        // `tick` is in flight.
+        // `tick` is in flight, and parking_lot's raw mutex, bound
+        // wherever tokio guards a wait list with it.
         if matches!(
             rule.kind,
             SemanticRuleKind::TokioSelect
                 | SemanticRuleKind::TokioCoop
                 | SemanticRuleKind::TokioIntervalTick
+                | SemanticRuleKind::ParkingLotRawMutex
         ) {
             continue;
         }
@@ -2043,6 +2045,68 @@ fn assert_delegation_programs(program: &str, bundle: &Bundle) {
     );
 }
 
+/// The per-type facts every fixture carries: each of std's refcount
+/// headers binds the member its value sits in, tokio's wait-list lock
+/// is parking_lot's with its low bit the lock, std's futex mutex binds
+/// its whole word where the target has one, and every coroutine
+/// whose states bind names its kind under the rule its layout does.
+fn assert_type_facts(program: &str, bundle: &Bundle) {
+    use hansei_bundle::MemberRef;
+    let s = |id| bundle.strings.get(id).unwrap();
+    let mut headers = 0;
+    let mut locks = 0;
+    for record in &bundle.semantics.types {
+        let name = type_name_of(bundle, record.ty);
+        if let Some(refcount) = &record.refcount {
+            headers += 1;
+            let MemberRef::Named(value) = refcount.value else {
+                panic!("{program}: {name}'s value is addressed by position");
+            };
+            let expected = if name.starts_with("alloc::sync::ArcInner<") {
+                "data"
+            } else {
+                assert!(name.starts_with("alloc::rc::RcInner<"), "{program}: {name}");
+                "value"
+            };
+            assert_eq!(s(value), expected, "{program}: {name}");
+        }
+        if let Some(lock) = &record.lock {
+            // Where std's own mutex is a futex's — Linux — and the
+            // target emits one, it binds too: the whole word is the
+            // lock.
+            let expected = match name.as_str() {
+                "parking_lot::raw_mutex::RawMutex" => {
+                    locks += 1;
+                    (1, 0b01)
+                }
+                "std::sys::sync::mutex::futex::Mutex" => (4, 0xffff_ffff),
+                other => panic!("{program}: {other} binds a lock"),
+            };
+            assert_eq!(
+                lock.word,
+                hansei_bundle::LockWord {
+                    offset: 0,
+                    size: expected.0,
+                    locked_mask: expected.1,
+                },
+                "{program}: {name}"
+            );
+        }
+        if let Some(layout) = &record.coroutine {
+            assert_eq!(
+                record.coroutine_kind,
+                Some(layout.rule),
+                "{program}: {name}'s kind is not its layout's rule"
+            );
+        }
+    }
+    assert!(headers > 0, "{program}: no refcount header binds");
+    assert_eq!(
+        locks, 1,
+        "{program}: tokio's wait-list lock is parking_lot's"
+    );
+}
+
 /// What every fixture's semantic bindings must satisfy: a layout rule
 /// per kind actually bound, every rule under a versioned tokio origin
 /// inside the reviewed range (or futures-util's unversioned one), every
@@ -2072,7 +2136,8 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 );
                 use exegesis::detect::semantics::{
                     RUSTC_CORE_PENDING_V1_97, RUSTC_COROUTINE_V1_97, RUSTC_DYN_FUTURE_ABI_V1_97,
-                    RUSTC_STD_ADAPTERS_V1_97,
+                    RUSTC_STD_ADAPTERS_V1_97, RUSTC_STD_FUTEX_MUTEX_V1_97,
+                    RUSTC_STD_REFCOUNT_V1_97,
                 };
                 assert!(
                     [
@@ -2080,6 +2145,8 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         RUSTC_STD_ADAPTERS_V1_97.family,
                         RUSTC_DYN_FUTURE_ABI_V1_97.family,
                         RUSTC_CORE_PENDING_V1_97.family,
+                        RUSTC_STD_REFCOUNT_V1_97.family,
+                        RUSTC_STD_FUTEX_MUTEX_V1_97.family,
                     ]
                     .contains(&s(*family)),
                     "{program}: unexpected compiler family {:?}",
@@ -2338,6 +2405,30 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         s(*version)
                     );
                     assert_eq!(program, "http-conns", "{program}");
+                }
+                // tokio's wait lists are guarded by parking_lot's raw
+                // mutex in every fixture, read off the type's own file.
+                "parking_lot" => {
+                    use exegesis::detect::semantics::PARKING_LOT_RAW_MUTEX_V0_12_1;
+                    let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
+                        unreachable!()
+                    };
+                    assert_eq!(
+                        s(*family),
+                        PARKING_LOT_RAW_MUTEX_V0_12_1.family,
+                        "{program}"
+                    );
+                    assert_eq!(
+                        PARKING_LOT_RAW_MUTEX_V0_12_1.select(&s(*version).parse().unwrap()),
+                        LayoutSelection::ReviewedRange,
+                        "{program}: parking_lot {} is outside the reviewed range",
+                        s(*version)
+                    );
+                    assert!(
+                        s(*source).ends_with("/src/raw_mutex.rs"),
+                        "{program}: {}",
+                        s(*source)
+                    );
                 }
                 other => panic!("{program}: unexpected delegation origin {other:?}"),
             },
@@ -4647,6 +4738,7 @@ fn run_golden(program: &str) {
     );
     assert_library_bindings(program, &bundle);
     assert_never_ready(program, &bundle);
+    assert_type_facts(program, &bundle);
     {
         use hansei_bundle::{ContainerKind, IoOperationKind, ResourceKind};
         match program {
@@ -4675,12 +4767,66 @@ fn run_golden(program: &str) {
                     "entry.<Traditional>.__0.inner.<Some>.__0.state.state.v.value.__0",
                 );
             }
-            "futurelock" => assert_resource(
-                program,
-                &bundle,
-                "tokio::sync::batch_semaphore::Acquire",
-                ResourceKind::SemaphoreAcquire,
-            ),
+            "futurelock" => {
+                assert_resource(
+                    program,
+                    &bundle,
+                    "tokio::sync::batch_semaphore::Acquire",
+                    ResourceKind::SemaphoreAcquire,
+                );
+                // `Mutex::lock` acquires the mutex's semaphore through
+                // its `acquire`; both are the mutex's.
+                let acquiring: Vec<String> = bundle
+                    .semantics
+                    .types
+                    .iter()
+                    .filter_map(|record| {
+                        let acquires = record.acquires_for.as_ref()?;
+                        assert_eq!(
+                            bundle.strings.get(acquires.primitive),
+                            Some("tokio::sync::Mutex"),
+                            "{program}"
+                        );
+                        Some(type_name_of(&bundle, record.ty))
+                    })
+                    .collect();
+                for method in ["::lock::{async_fn_env#0}", "::acquire::{async_fn_env#0}"] {
+                    assert!(
+                        acquiring
+                            .iter()
+                            .any(|name| name.starts_with("tokio::sync::mutex::")
+                                && name.contains(method)),
+                        "{program}: no{method} acquires for the mutex: {acquiring:#?}"
+                    );
+                }
+            }
+            "channels" => {
+                // A bounded sender's `send` reaches the channel's acquire
+                // through `reserve`; the receiver's `recv`, in the same
+                // module, reaches none and so acquires for nothing.
+                let owner = |method: &str| {
+                    let record = bundle
+                        .semantics
+                        .types
+                        .iter()
+                        .find(|record| {
+                            let name = type_name_of(&bundle, record.ty);
+                            name.starts_with("tokio::sync::mpsc::bounded::")
+                                && name.contains(method)
+                        })
+                        .unwrap_or_else(|| panic!("{program}: no{method} record"));
+                    record
+                        .acquires_for
+                        .as_ref()
+                        .map(|acquires| bundle.strings.get(acquires.primitive).unwrap())
+                };
+                assert_eq!(
+                    owner("::send::{async_fn_env#0}"),
+                    Some("tokio::sync::mpsc bounded channel"),
+                    "{program}"
+                );
+                assert_eq!(owner("::recv::{async_fn_env#0}"), None, "{program}");
+            }
             "local-set-io" => {
                 // The rendered table is what `tokio-info dump` prints and
                 // the matrix catalogs: pin its origin lines and one record

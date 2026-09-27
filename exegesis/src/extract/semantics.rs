@@ -26,17 +26,18 @@ use crate::TypeId;
 use crate::bundle::names::coroutine_kind;
 use crate::bundle::origin::registry_origin;
 use crate::bundle::{
-    AccessBinding, AccessKind, BundleTypeId, ContainerBinding, ContainerKind, Continuation,
-    CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence, FutureFacts,
-    FutureTarget, HashTableBinding, HttpClientBinding, HttpConnBinding, HttpPoolBinding,
-    HttpRequestBinding, HttpRequestTarget, HttpRole, HttpServerBinding, HttpServiceBinding,
-    IoOperationKind, LayoutSelection, MemberRef, PollAction, PollCase, PollProgram,
-    ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass, SelectBinding, Selector,
-    SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId, SemanticRule,
-    SemanticRuleId, SemanticRuleKind, SemanticTable, SourceFileEvidence, SourceLoc, Step,
-    StoragePolicy, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics,
-    TypeTable, TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles, container_routes,
-    required_resource_roles, required_resource_routes, scheduler_role, semantic_path_target,
+    AccessBinding, AccessKind, AcquiresForBinding, BundleTypeId, ContainerBinding, ContainerKind,
+    Continuation, CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence,
+    FutureFacts, FutureTarget, HashTableBinding, HttpClientBinding, HttpConnBinding,
+    HttpPoolBinding, HttpRequestBinding, HttpRequestTarget, HttpRole, HttpServerBinding,
+    HttpServiceBinding, IoOperationKind, LayoutSelection, LockBinding, LockWord, MemberRef,
+    PollAction, PollCase, PollProgram, RefcountBinding, ResourceBinding, ResourceKind,
+    SchedulerBinding, SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind,
+    SemanticOrigin, SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind,
+    SemanticTable, SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StringInterner,
+    TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome,
+    WalkRole, WalksTable, container_roles, container_routes, required_resource_roles,
+    required_resource_routes, scheduler_role, semantic_path_target,
 };
 use crate::detect::Family;
 use crate::detect::adapters::{
@@ -48,12 +49,14 @@ use crate::detect::semantics::{
     DROPSHOT_HANDLER_V0_17_0, DROPSHOT_SERVER_V0_17_0, FUTURES_UTIL_ADAPTERS_V0_3_30,
     HASHBROWN_TABLE_V0_12_3, HTTP_REQUEST_V1_0_0, HYPER_H1_CONN_V1_6_0,
     HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_POOL_V0_1_16, HYPER_UTIL_RESPONSE_V0_1_10,
-    HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention, REQWEST_COOKIE_V0_12_24,
-    REQWEST_PENDING_REQUEST_V0_12_0, RustcConvention, TOKIO_INTERVAL_TICK_V1_47,
-    TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
-    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2, TRACING_INSTRUMENTED_V0_1_40,
-    library_convention, rustc_core_pending_convention, rustc_coroutine_convention,
-    rustc_dyn_future_abi_convention, rustc_std_adapter_convention, tokio_state_protocol,
+    HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention, PARKING_LOT_RAW_MUTEX_V0_12_1,
+    REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0, RustcConvention,
+    TOKIO_INTERVAL_TICK_V1_47, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
+    TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2,
+    TRACING_INSTRUMENTED_V0_1_40, library_convention, rustc_core_pending_convention,
+    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
+    rustc_std_futex_mutex_convention, rustc_std_refcount_convention, tokio_acquire_owner,
+    tokio_state_protocol,
 };
 
 use std::borrow::Cow;
@@ -82,6 +85,8 @@ pub(super) enum Reviewed {
     StdAdapters,
     DynFutureAbi,
     CorePending,
+    StdRefcount,
+    StdFutexMutex,
 }
 
 impl Reviewed {
@@ -92,6 +97,8 @@ impl Reviewed {
             Reviewed::StdAdapters => rustc_std_adapter_convention(producer),
             Reviewed::DynFutureAbi => rustc_dyn_future_abi_convention(producer),
             Reviewed::CorePending => rustc_core_pending_convention(producer),
+            Reviewed::StdRefcount => rustc_std_refcount_convention(producer),
+            Reviewed::StdFutexMutex => rustc_std_futex_mutex_convention(producer),
         }
     }
 }
@@ -638,6 +645,11 @@ pub(super) struct Seed {
     /// hyper-util's pool reaper or checkout, where the type is one: a
     /// fact read wherever a frame holds a value of it.
     pool: Option<PoolSeed>,
+    /// A refcounted allocation's header, where the type is one: the
+    /// member its value sits in, and the verdict on its defining units.
+    refcount: Option<(&'static str, CompilerVerdict)>,
+    /// A raw lock of a reviewed implementation, where the type is one.
+    lock: Option<LockSeed>,
     /// core's `Pending<T>` as its screen saw it: the compiler verdict on
     /// its defining units, which is the whole of the rule's origin. The
     /// layout is the screen's; there is no member to route through.
@@ -663,7 +675,18 @@ impl Seed {
             || self.request.is_some()
             || self.table.is_some()
             || self.pool.is_some()
+            || self.refcount.is_some()
+            || self.lock.is_some()
     }
+}
+
+/// A raw lock as its screen saw it: whose implementation it is, which
+/// is what its origin is read from.
+pub(super) enum LockSeed {
+    /// std's futex mutex: the verdict on its defining units.
+    StdFutex(CompilerVerdict),
+    /// parking_lot's raw mutex: where its methods were declared.
+    ParkingLot(BTreeSet<PollSource>),
 }
 
 pub(super) type SemanticSeeds = BTreeMap<BundleTypeId, Seed>;
@@ -1012,6 +1035,14 @@ pub(super) fn collect_semantic_seeds(
             && let Some(seed) = http_seed(layout, bundle_id, &type_sources)
         {
             seeds.entry(ty).or_default().http = Some(seed);
+        } else if let Some(value) = refcount_value(name) {
+            seeds.entry(ty).or_default().refcount =
+                Some((value, verdict(raw, Reviewed::StdRefcount)));
+        } else if name == "std::sys::sync::mutex::futex::Mutex" {
+            seeds.entry(ty).or_default().lock =
+                Some(LockSeed::StdFutex(verdict(raw, Reviewed::StdFutexMutex)));
+        } else if name == "parking_lot::raw_mutex::RawMutex" {
+            seeds.entry(ty).or_default().lock = Some(LockSeed::ParkingLot(type_sources(raw)));
         } else if name.starts_with("reqwest::async_impl::client::PendingRequest")
             && let Some(layout) = adapters::reqwest_pending_request(reader, raw)
             && let Some(seed) = request_seed(layout, bundle_id, BTreeSet::new())
@@ -1668,6 +1699,12 @@ struct Draft {
     storage: Option<StoragePolicy>,
     coroutine: Option<CoroutineLayout>,
     coroutine_rule: Option<RuleKey>,
+    /// The rule naming which kind of coroutine a compiler candidate
+    /// is, where its verdict supports one.
+    coroutine_kind: Option<RuleKey>,
+    /// The primitive the future acquires a batch semaphore for, where
+    /// it is one of an owner's that reaches an acquire.
+    acquires_for: Option<&'static str>,
     issues: Vec<Decline>,
     evidence: BTreeSet<FutureEvidence>,
     resource: Option<ResourceKind>,
@@ -1696,6 +1733,10 @@ struct Draft {
     /// The pooled connections this value names, where its type is a
     /// hyper-util pool's reaper or checkout under a reviewed range.
     pool: Option<PoolPlan>,
+    /// The header's value member, with the rule it binds under.
+    refcount: Option<(RuleKey, MemberRef)>,
+    /// The lock's word, with the rule it binds under.
+    lock: Option<(RuleKey, LockWord)>,
     own_record: bool,
 }
 
@@ -1757,6 +1798,9 @@ pub(super) fn bind_semantics(
             draft
                 .evidence
                 .insert(FutureEvidence::PollSymbol(strings.intern(symbol)));
+        }
+        if seed.coroutine_candidate {
+            draft.coroutine_kind = coroutine_kind_rule(ty, seed, names);
         }
         let storage = if seed.coroutine_candidate {
             // A compiler candidate reads its states only under a reviewed
@@ -1892,6 +1936,22 @@ pub(super) fn bind_semantics(
                 Err(decline) => draft.issues.push(decline),
             }
         }
+        // A header's value and a lock's word are facts beside the
+        // record, read wherever a path or a wait list reaches a value
+        // of the type; an origin or a layout the review did not cover
+        // is an issue beside the record.
+        if readable && let Some((value, verdict)) = &seed.refcount {
+            match plan_refcount(ty, value, verdict, types, strings) {
+                Ok(plan) => draft.refcount = Some(plan),
+                Err(decline) => draft.issues.push(decline),
+            }
+        }
+        if readable && let Some(lock) = &seed.lock {
+            match plan_lock(ty, lock, types, strings) {
+                Ok(plan) => draft.lock = Some(plan),
+                Err(decline) => draft.issues.push(decline),
+            }
+        }
         draft.storage = Some(storage);
     }
 
@@ -1923,6 +1983,29 @@ pub(super) fn bind_semantics(
                 queue.push_back(child);
             }
         }
+    }
+
+    // The primitive an acquire is made for: a coroutine of an owner's
+    // module whose bound chain reaches a semaphore acquire. The module
+    // names the primitive; the chain is what says the future acquires
+    // at all — a bounded sender's `closed` lies in the same module and
+    // waits on no permit.
+    let acquires: BTreeSet<BundleTypeId> = drafts
+        .iter()
+        .filter(|(_, d)| d.resource == Some(ResourceKind::SemaphoreAcquire))
+        .map(|(&ty, _)| ty)
+        .collect();
+    let owned: Vec<(BundleTypeId, &'static str)> = seeds
+        .iter()
+        .filter(|(_, seed)| seed.coroutine_candidate)
+        .filter_map(|(&ty, _)| {
+            let name = names.get(ty.0 as usize)?.as_deref()?;
+            let primitive = tokio_acquire_owner(name, library.tokio_version)?;
+            reaches_any(ty, &drafts, &acquires).then_some((ty, primitive))
+        })
+        .collect();
+    for (ty, primitive) in owned {
+        drafts.entry(ty).or_default().acquires_for = Some(primitive);
     }
 
     // Phase C: which drafts become records. A seed with identity,
@@ -2277,6 +2360,26 @@ pub(super) fn bind_semantics(
             request,
             table,
             pool,
+            refcount: draft.refcount.map(|(rule, value)| RefcountBinding {
+                rule: rules.rule(&rule, strings, library),
+                value,
+            }),
+            lock: draft.lock.map(|(rule, word)| LockBinding {
+                rule: rules.rule(&rule, strings, library),
+                word,
+            }),
+            acquires_for: draft.acquires_for.map(|primitive| AcquiresForBinding {
+                rule: rules.rule(
+                    &RuleKey::Library(SemanticRuleKind::TokioAcquireOwner),
+                    strings,
+                    library,
+                ),
+                primitive: strings.intern(primitive),
+            }),
+            coroutine_kind: draft
+                .coroutine_kind
+                .as_ref()
+                .map(|key| rules.rule(key, strings, library)),
             issues,
         });
     }
@@ -4261,6 +4364,161 @@ fn expected_state(index: usize) -> (CoroutinePhase, String) {
         2 => (CoroutinePhase::Panicked, "Panicked".to_owned()),
         n => (CoroutinePhase::Suspended, format!("Suspend{}", n - 3)),
     }
+}
+
+/// Whether a planned chain from `root` reaches one of `targets`
+/// through the static children the plans delegate to, however deep —
+/// the chain being bounded by the plans themselves, and each type
+/// walked once.
+fn reaches_any(
+    root: BundleTypeId,
+    drafts: &BTreeMap<BundleTypeId, Draft>,
+    targets: &BTreeSet<BundleTypeId>,
+) -> bool {
+    let mut seen = BTreeSet::from([root]);
+    let mut queue = VecDeque::from([root]);
+    while let Some(ty) = queue.pop_front() {
+        let Some(plan) = drafts.get(&ty).and_then(|d| d.plan.as_ref()) else {
+            continue;
+        };
+        for child in plan.static_children() {
+            if targets.contains(&child) {
+                return true;
+            }
+            if seen.insert(child) {
+                queue.push_back(child);
+            }
+        }
+    }
+    false
+}
+
+/// Plan a refcount header's binding: the compiler verdict on its
+/// defining units, then the reviewed layout — the two counts first,
+/// `strong` at the start, and the named value member after them.
+fn plan_refcount(
+    ty: BundleTypeId,
+    value: &str,
+    verdict: &CompilerVerdict,
+    types: &TypeTable,
+    strings: &StringInterner,
+) -> Result<(RuleKey, MemberRef), Decline> {
+    let (producer, convention) = supported(verdict)?;
+    let layout = |detail: &str| (SemanticIssueKind::MissingLayout, detail.to_owned());
+    let (_, _, strong) =
+        member_named(types, strings, ty, "strong").ok_or_else(|| layout("no strong count"))?;
+    let (_, _, weak) =
+        member_named(types, strings, ty, "weak").ok_or_else(|| layout("no weak count"))?;
+    let (name, _, at) = member_named(types, strings, ty, value)
+        .ok_or_else(|| layout(&format!("no unique {value} member")))?;
+    if strong != 0 || at <= weak {
+        return Err(layout("the value does not follow the counts"));
+    }
+    Ok((
+        RuleKey::Rustc {
+            kind: SemanticRuleKind::StdRefcountHeader,
+            producer: producer.to_owned(),
+            family: convention.family,
+        },
+        MemberRef::Named(name),
+    ))
+}
+
+/// Plan a raw lock's binding: the origin — the compiler verdict on
+/// std's mutex, parking_lot's method declarations on a cargo registry
+/// path inside the reviewed range — then the one state word the
+/// reviewed implementation keeps, at the start of the lock, with the
+/// bits that say it is held: all of std's futex word, parking_lot's
+/// low bit.
+fn plan_lock(
+    ty: BundleTypeId,
+    seed: &LockSeed,
+    types: &TypeTable,
+    strings: &StringInterner,
+) -> Result<(RuleKey, LockWord), Decline> {
+    let (rule, member, mask) = match seed {
+        LockSeed::StdFutex(verdict) => {
+            let (producer, convention) = supported(verdict)?;
+            let rule = RuleKey::Rustc {
+                kind: SemanticRuleKind::StdFutexMutex,
+                producer: producer.to_owned(),
+                family: convention.family,
+            };
+            (rule, "futex", None)
+        }
+        LockSeed::ParkingLot(sources) => {
+            let origin = delegation_origin(sources, &PARKING_LOT_RAW_MUTEX_V0_12_1, "method")?;
+            let rule = RuleKey::Delegation {
+                kind: SemanticRuleKind::ParkingLotRawMutex,
+                origin,
+            };
+            (rule, "state", Some(0b01))
+        }
+    };
+    let layout = |detail: String| (SemanticIssueKind::MissingLayout, detail);
+    let (_, word_ty, offset) = member_named(types, strings, ty, member)
+        .ok_or_else(|| layout(format!("no unique {member} member")))?;
+    let size = match types.get(word_ty) {
+        Some(TypeDef::Base { size, .. } | TypeDef::Struct { size, .. }) => *size,
+        _ => return Err(layout(format!("{member} is no word"))),
+    };
+    if offset != 0 || members_of(types, ty).len() != 1 || !matches!(size, 1 | 2 | 4 | 8) {
+        return Err(layout(format!("{member} is not the lock's one word")));
+    }
+    let bits = size * 8;
+    let whole = if bits == 64 {
+        u64::MAX
+    } else {
+        (1 << bits) - 1
+    };
+    Ok((
+        rule,
+        LockWord {
+            offset,
+            size: size as u8,
+            locked_mask: mask.unwrap_or(whole),
+        },
+    ))
+}
+
+/// The member a refcounted allocation's header keeps its value in,
+/// where `name` is one of std's two headers: an `Arc`'s `ArcInner<T>`
+/// keeps it in `data`, an `Rc`'s `RcInner<T>` in `value`.
+fn refcount_value(name: &str) -> Option<&'static str> {
+    if name.starts_with("alloc::sync::ArcInner<") {
+        Some("data")
+    } else if name.starts_with("alloc::rc::RcInner<") {
+        Some("value")
+    } else {
+        None
+    }
+}
+
+/// The rule saying which kind of coroutine a compiler candidate is —
+/// an async fn's, block's or closure's environment, as its generated
+/// name says — under the verdict on its defining units. A producer no
+/// reviewed convention covers names nothing, and neither does a
+/// candidate of a kind with no rule.
+fn coroutine_kind_rule(ty: BundleTypeId, seed: &Seed, names: &[Option<String>]) -> Option<RuleKey> {
+    let Some(CompilerVerdict::Supported {
+        producer,
+        convention,
+    }) = &seed.compiler
+    else {
+        return None;
+    };
+    let name = names.get(ty.0 as usize)?.as_deref()?;
+    let kind = match coroutine_kind(name)? {
+        "async fn" => SemanticRuleKind::RustcAsyncFn,
+        "async block" => SemanticRuleKind::RustcAsyncBlock,
+        "async closure" => SemanticRuleKind::RustcAsyncClosure,
+        _ => return None,
+    };
+    Some(RuleKey::Rustc {
+        kind,
+        producer: producer.clone(),
+        family: convention.family,
+    })
 }
 
 /// Bind a compiler candidate's states under its reviewed convention, or
@@ -7929,5 +8187,175 @@ mod tests {
             })
         ));
         assert!(plan.static_children().is_empty());
+    }
+
+    /// A struct named `name` of unsigned members, each `(name, size,
+    /// offset)`, as the last type of `types`; its id.
+    fn words(
+        types: &mut TypeTable,
+        strings: &mut StringInterner,
+        name: &str,
+        members: &[(&str, u64, u64)],
+    ) -> BundleTypeId {
+        let base = |size: u64, strings: &mut StringInterner| TypeDef::Base {
+            name: strings.intern(&format!("u{}", size * 8)),
+            size,
+            encoding: crate::bundle::Encoding::Unsigned,
+        };
+        let members = members
+            .iter()
+            .map(|&(member, size, offset)| {
+                let ty = BundleTypeId(types.types.len() as u32);
+                types.types.push(base(size, strings));
+                MemberDef {
+                    name: strings.intern(member),
+                    ty,
+                    offset,
+                }
+            })
+            .collect();
+        let size = 24;
+        types.types.push(TypeDef::Struct {
+            name: strings.intern(name),
+            size,
+            members,
+        });
+        BundleTypeId(types.types.len() as u32 - 1)
+    }
+
+    /// A refcount header binds its value only past both counts, with
+    /// `strong` at its start: a header whose counts or value sit
+    /// otherwise, or whose verdict declined, binds nothing.
+    #[test]
+    fn test_a_refcount_value_follows_the_counts() {
+        use crate::detect::semantics::RUSTC_STD_REFCOUNT_V1_97;
+        let verdict = CompilerVerdict::Supported {
+            producer: "rustc 1.97.1".to_owned(),
+            convention: &RUSTC_STD_REFCOUNT_V1_97,
+        };
+        let plan = |members: &[(&str, u64, u64)]| {
+            let (mut types, mut strings) = (TypeTable::default(), StringInterner::new());
+            let ty = words(
+                &mut types,
+                &mut strings,
+                "alloc::sync::ArcInner<u64>",
+                members,
+            );
+            plan_refcount(ty, "data", &verdict, &types, &strings)
+        };
+        let (rule, value) = plan(&[("strong", 8, 0), ("weak", 8, 8), ("data", 8, 16)]).unwrap();
+        assert!(
+            matches!(
+                rule,
+                RuleKey::Rustc {
+                    kind: SemanticRuleKind::StdRefcountHeader,
+                    ..
+                }
+            ),
+            "{rule:?}"
+        );
+        assert!(matches!(value, MemberRef::Named(_)), "{value:?}");
+        for members in [
+            // The counts swapped: the value still follows both.
+            [("weak", 8, 0), ("strong", 8, 8), ("data", 8, 16)],
+            // `strong` first, but the value between the counts.
+            [("strong", 8, 0), ("data", 8, 8), ("weak", 8, 16)],
+        ] {
+            let (kind, detail) = plan(&members).unwrap_err();
+            assert_eq!(kind, SemanticIssueKind::MissingLayout, "{members:?}");
+            assert_eq!(
+                detail, "the value does not follow the counts",
+                "{members:?}"
+            );
+        }
+        let (mut types, mut strings) = (TypeTable::default(), StringInterner::new());
+        let ty = words(&mut types, &mut strings, "alloc::sync::ArcInner<u64>", &[]);
+        let declined = CompilerVerdict::Declined("no reviewed producer".to_owned());
+        let (kind, _) = plan_refcount(ty, "data", &declined, &types, &strings).unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
+    }
+
+    /// A lock binds the one word it is — a whole integer at its start,
+    /// and nothing beside it — held when any of std's futex bits is set;
+    /// a word elsewhere, a word with company, or a word of no integer's
+    /// size binds nothing.
+    #[test]
+    fn test_a_lock_word_is_the_whole_lock() {
+        use crate::detect::semantics::RUSTC_STD_FUTEX_MUTEX_V1_97;
+        let seed = LockSeed::StdFutex(CompilerVerdict::Supported {
+            producer: "rustc 1.97.1".to_owned(),
+            convention: &RUSTC_STD_FUTEX_MUTEX_V1_97,
+        });
+        let name = "std::sys::sync::mutex::futex::Mutex";
+        let plan = |members: &[(&str, u64, u64)]| {
+            let (mut types, mut strings) = (TypeTable::default(), StringInterner::new());
+            let ty = words(&mut types, &mut strings, name, members);
+            plan_lock(ty, &seed, &types, &strings)
+        };
+        let (_, word) = plan(&[("futex", 4, 0)]).unwrap();
+        assert_eq!(
+            word,
+            LockWord {
+                offset: 0,
+                size: 4,
+                locked_mask: 0xffff_ffff
+            }
+        );
+        for members in [
+            // The one word, but not at the lock's start.
+            &[("futex", 4, 4)][..],
+            // At the start, but with a second member beside it.
+            &[("futex", 4, 0), ("poison", 1, 4)],
+            // Alone at the start, but three bytes wide.
+            &[("futex", 3, 0)],
+        ] {
+            let (kind, detail) = plan(members).unwrap_err();
+            assert_eq!(kind, SemanticIssueKind::MissingLayout, "{members:?}");
+            assert_eq!(detail, "futex is not the lock's one word", "{members:?}");
+        }
+    }
+
+    /// Each kind of coroutine environment binds under its own rule, the
+    /// async closure's included; a coroutine of no async kind, and any
+    /// candidate whose verdict declined, binds under none.
+    #[test]
+    fn test_each_coroutine_kind_has_its_rule() {
+        let seed = Seed {
+            compiler: Some(CompilerVerdict::Supported {
+                producer: "rustc 1.97.1".to_owned(),
+                convention: &crate::detect::semantics::RUSTC_COROUTINE_V1_97,
+            }),
+            ..Seed::default()
+        };
+        let kind_of = |name: &str, seed: &Seed| match coroutine_kind_rule(
+            BundleTypeId(0),
+            seed,
+            &[Some(name.to_owned())],
+        ) {
+            Some(RuleKey::Rustc { kind, .. }) => Some(kind),
+            other => {
+                assert!(other.is_none(), "{name}: {other:?}");
+                None
+            }
+        };
+        for (name, kind) in [
+            ("app::run::{async_fn_env#0}", SemanticRuleKind::RustcAsyncFn),
+            (
+                "app::main::{async_block_env#1}",
+                SemanticRuleKind::RustcAsyncBlock,
+            ),
+            (
+                "app::main::{async_closure_env#0}",
+                SemanticRuleKind::RustcAsyncClosure,
+            ),
+        ] {
+            assert_eq!(kind_of(name, &seed), Some(kind), "{name}");
+        }
+        assert_eq!(kind_of("app::gen::{coroutine_env#0}", &seed), None);
+        let declined = Seed {
+            compiler: Some(CompilerVerdict::Declined("no reviewed producer".to_owned())),
+            ..Seed::default()
+        };
+        assert_eq!(kind_of("app::run::{async_fn_env#0}", &declined), None);
     }
 }

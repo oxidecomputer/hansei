@@ -36,7 +36,7 @@ ports: std::collections::hash::map::HashMap<u64, u32, std::hash::random::RandomS
       80: 1,
   }
 seen: std::collections::hash::set::HashSet<u32, std::hash::random::RandomState, alloc::alloc::Global> {
-      7,
       9,
+      7,
   }
 first: u32 = 41

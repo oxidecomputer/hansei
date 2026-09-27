@@ -698,9 +698,10 @@ fn test_delegation_cases_offline() {
     assert_summary("delegation-cases");
 }
 
-/// The captured bundle's origins, without exegesis: the one delegation
-/// origin is tracing's, naming the pinned version on a registry path
-/// with the `Instrumented` rule under it, and the `Coop` rule — bound
+/// The captured bundle's origins, without exegesis: beside parking_lot's
+/// raw mutex, the one delegation origin is tracing's, naming the pinned
+/// version on a registry path with the `Instrumented` rule under it,
+/// and the `Coop` rule — bound
 /// on its layout, with no declaration read — sits under tokio's layout
 /// origin at the fixture's tokio version.
 fn exegesis_free_origin_check(bundle: &Bundle) {
@@ -729,8 +730,18 @@ fn exegesis_free_origin_check(bundle: &Bundle) {
             _ => None,
         })
         .collect();
+    // tokio's wait-list lock is parking_lot's, read off its own file:
+    // an origin beside tracing's in every fixture.
+    let (lock, delegations): (Vec<_>, Vec<_>) = delegations
+        .into_iter()
+        .partition(|(_, package, ..)| *package == "parking_lot");
+    let [(_, _, _, lock_family, lock_source, _)] = lock.as_slice() else {
+        panic!("expected one parking_lot delegation origin: {lock:?}");
+    };
+    assert_eq!(*lock_family, "parking_lot-raw-mutex-0.12.1");
+    assert!(lock_source.ends_with("/src/raw_mutex.rs"), "{lock_source}");
     let [(index, package, version, family, source, checksums)] = delegations.as_slice() else {
-        panic!("expected the tracing delegation origin alone: {delegations:?}");
+        panic!("expected the tracing delegation origin beside it: {delegations:?}");
     };
     let expected = ("tracing", "0.1.40", "tracing-instrumented-0.1.40");
     assert_eq!((*package, *version, *family), expected);

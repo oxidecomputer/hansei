@@ -4680,6 +4680,10 @@ mod synthetic_tests {
                 request: None,
                 table: None,
                 pool: None,
+                refcount: None,
+                lock: None,
+                acquires_for: None,
+                coroutine_kind: None,
                 issues: Vec::new(),
             }],
             ..Default::default()
