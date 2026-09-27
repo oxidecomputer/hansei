@@ -8,7 +8,7 @@
 
 use crate::Session;
 
-use hansei_bundle::{BundleTypeId, BundleView, names};
+use hansei_bundle::{BundleType, BundleTypeId, BundleView, names};
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::RwLock;
@@ -44,18 +44,6 @@ impl<'a> TypeNames<'a> {
         }
     }
 
-    /// No bundle to name a stop from.
-    #[cfg(test)]
-    pub(crate) fn none(impls: &'a names::ImplFold) -> Self {
-        TypeNames {
-            view: None,
-            impls,
-            labels: RwLock::default(),
-            names: RwLock::default(),
-            futures: RwLock::default(),
-        }
-    }
-
     /// Over a bundle view and its impl fold, with no session around them.
     pub(crate) fn over(view: BundleView<'a>, impls: &'a names::ImplFold) -> Self {
         TypeNames {
@@ -81,7 +69,7 @@ impl<'a> TypeNames<'a> {
         let label = self
             .view
             .and_then(|view| view.ty(ty))
-            .map(|ty| stop_label(ty.name(), self.impls));
+            .map(|ty| stop_label(ty, self.impls));
         self.labels
             .write()
             .unwrap()
@@ -100,7 +88,7 @@ impl<'a> TypeNames<'a> {
         let name = self
             .view
             .and_then(|view| view.ty(ty))
-            .map(|ty| self.spell(ty.name()));
+            .map(|ty| self.spell(ty));
         self.names
             .write()
             .unwrap()
@@ -168,9 +156,9 @@ impl<'a> TypeNames<'a> {
     /// for display, its generic arguments kept — they are what tells
     /// one `select!` arm from the arm beside it — with a coroutine's
     /// kind word in front, as [`stop_label`] puts one there.
-    pub(crate) fn spell(&self, name: &str) -> String {
-        let folded = names::fold_type_name(name, self.impls);
-        match names::coroutine_kind(name) {
+    fn spell(&self, ty: BundleType<'_>) -> String {
+        let folded = names::fold_type_name(ty.name(), self.impls);
+        match ty.coroutine_word() {
             Some(kind) => format!("{kind} {folded}"),
             None => folded.into_owned(),
         }
@@ -260,9 +248,9 @@ fn absent(ty: BundleTypeId) -> String {
 /// and cut of its generic arguments — `futures_util::future::Map` —
 /// with a coroutine's kind word in front, as the listings spell one
 /// (`async fn app::serve`).
-pub(crate) fn stop_label(name: &str, impls: &names::ImplFold) -> String {
-    let path = names::outer_path(&names::fold_type_name(name, impls));
-    match names::coroutine_kind(name) {
+pub(crate) fn stop_label(ty: BundleType<'_>, impls: &names::ImplFold) -> String {
+    let path = names::outer_path(&names::fold_type_name(ty.name(), impls));
+    match ty.coroutine_word() {
         Some(kind) => format!("{kind} {path}"),
         None => path,
     }
@@ -275,12 +263,14 @@ pub(crate) fn stop_label(name: &str, impls: &names::ImplFold) -> String {
 pub(crate) mod testing {
     use super::TypeNames;
 
-    use hansei_bundle::{Bundle, BundleTypeId, BundleView, names};
+    use hansei_bundle::{Bundle, BundleTypeId, BundleView, SemanticRuleKind, names};
 
     use std::sync::LazyLock;
 
     /// Every type name a hand-laid find carries.
     const NAMES: &[&str] = &[
+        // First, as the tasks tables' own hand-built bundle has it.
+        "x::branch",
         "app::work::{async_fn_env#0}",
         "app::child",
         "FuturesUnordered<app::child>",
@@ -291,7 +281,7 @@ pub(crate) mod testing {
         "tokio::task::join_set::JoinSet<()>",
         "step::{async_fn_env#0}",
         "FuturesUnordered<step::{async_fn_env#0}>",
-        "x::branch",
+        "x::skipped",
         "app::work",
         "FuturesUnordered",
         "child::fut",
@@ -341,6 +331,10 @@ pub(crate) mod testing {
                                             the::future::in::question::with::generic::arguments::\
                                             spelled::out::in::full::Type>";
 
+    /// An id the test bundle carries no type at: a stop no bundle
+    /// names.
+    pub(crate) const NAMELESS: BundleTypeId = BundleTypeId(u32::MAX);
+
     /// The id the test bundle gives `name`.
     pub(crate) fn named(name: &str) -> BundleTypeId {
         let at = NAMES
@@ -351,7 +345,25 @@ pub(crate) mod testing {
     }
 
     static IMPLS: LazyLock<names::ImplFold> = LazyLock::new(names::ImplFold::default);
-    static TYPES: LazyLock<Bundle> = LazyLock::new(|| hansei_runtime::testkit::named_types(NAMES));
+    /// The bundle, each coroutine environment's kind recorded as
+    /// extraction records it for a reviewed compiler.
+    static TYPES: LazyLock<Bundle> = LazyLock::new(|| {
+        let mut bundle = hansei_runtime::testkit::named_types(NAMES);
+        let kinds: Vec<(BundleTypeId, SemanticRuleKind)> = NAMES
+            .iter()
+            .enumerate()
+            .filter_map(|(at, name)| {
+                let kind = match names::coroutine_kind(name)? {
+                    "async fn" => SemanticRuleKind::RustcAsyncFn,
+                    "async block" => SemanticRuleKind::RustcAsyncBlock,
+                    _ => SemanticRuleKind::RustcAsyncClosure,
+                };
+                Some((BundleTypeId(at as u32), kind))
+            })
+            .collect();
+        hansei_runtime::testkit::coroutine_kinds(&mut bundle, &kinds);
+        bundle
+    });
     static TYPE_NAMES: LazyLock<TypeNames<'static>> =
         LazyLock::new(|| TypeNames::over(BundleView::new(&TYPES), &IMPLS));
 

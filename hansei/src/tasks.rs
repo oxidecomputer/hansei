@@ -1794,7 +1794,7 @@ fn slot_only_line(member: &WaitMember, within: Option<&str>) -> String {
 /// what it recorded as a name otherwise is worded the same way.
 fn member_future(member: &WaitMember, stops: &TypeNames<'_>, ty: Option<BundleTypeId>) -> String {
     ty.and_then(|ty| stops.name(ty))
-        .or_else(|| member.future.as_deref().map(|name| stops.spell(name)))
+        .or_else(|| member.future.and_then(|future| stops.name(future)))
         .unwrap_or_default()
 }
 
@@ -3325,9 +3325,9 @@ mod table_tests {
             },
             key: Some(ValueKey {
                 addr: 0x6000,
-                ty: BundleTypeId(0),
+                ty: crate::typenames::testing::named("x::branch"),
             }),
-            future: Some("x::branch".to_string()),
+            future: Some(crate::typenames::testing::named("x::branch")),
             assessment: Some(assessment),
             notes: Vec::new(),
             armed: armed.then_some(SlotRef::Protocol),
@@ -3341,11 +3341,11 @@ mod table_tests {
         WaitMember {
             route: MemberRoute::Disabled {
                 index,
-                ty: BundleTypeId(0),
+                ty: crate::typenames::testing::named("x::skipped"),
                 arm: None,
             },
             key: None,
-            future: Some("x::skipped".to_string()),
+            future: Some(crate::typenames::testing::named("x::skipped")),
             assessment: None,
             notes: Vec::new(),
             armed: None,
@@ -3372,9 +3372,8 @@ mod table_tests {
     /// entry never carries one.
     #[test]
     fn test_defined_at_follows_the_verdict_on_every_kind_of_branch() {
-        let impls = Default::default();
-        let stops = TypeNames::none(&impls);
-        let line = |member: &WaitMember| member_line(member, &stops, &[], None, ARMED).join("\n");
+        let stops = crate::typenames::testing::type_names();
+        let line = |member: &WaitMember| member_line(member, stops, &[], None, ARMED).join("\n");
         let arm = || Some(("qorb-0.4.1/src/pool.rs".to_string(), 286));
         let inspected = WaitMember {
             route: MemberRoute::Select {
@@ -3412,7 +3411,7 @@ mod table_tests {
         let off = WaitMember {
             route: MemberRoute::Disabled {
                 index: 2,
-                ty: BundleTypeId(0),
+                ty: crate::typenames::testing::named("x::skipped"),
                 arm: arm(),
             },
             ..disabled(2)
@@ -3469,7 +3468,7 @@ mod table_tests {
         let n_tasks = strings.intern("tasks");
         let strings = strings.finish();
         let ty = BundleTypeId(0);
-        Bundle {
+        let mut bundle = Bundle {
             meta: Meta {
                 format_version: FORMAT_VERSION,
                 ..Default::default()
@@ -3547,7 +3546,16 @@ mod table_tests {
             provenance: Default::default(),
             impls: Default::default(),
             semantics: Default::default(),
-        }
+        };
+        // The coroutine's kind, as extraction records it.
+        hansei_runtime::testkit::coroutine_kinds(
+            &mut bundle,
+            &[(
+                BundleTypeId(2),
+                hansei_bundle::SemanticRuleKind::RustcAsyncFn,
+            )],
+        );
+        bundle
     }
 
     #[test]
@@ -3652,7 +3660,12 @@ mod table_tests {
             format!("m: x::branch\n{site}\n    entries:")
         );
         let off = WaitMember {
-            future: Some("x::branch".to_string()),
+            route: MemberRoute::Disabled {
+                index: 2,
+                ty: BundleTypeId(0),
+                arm: None,
+            },
+            future: Some(BundleTypeId(0)),
             ..disabled(2)
         };
         assert_eq!(line(&off), format!("branch 2: x::branch: disabled\n{site}"));
@@ -3711,7 +3724,7 @@ mod table_tests {
         WaitAssessment::Set(WaitSet {
             at: Some(ValueKey {
                 addr: 0x5000,
-                ty: BundleTypeId(7),
+                ty: crate::typenames::testing::NAMELESS,
             }),
             reason: Some(SemanticIssueKind::NoRule),
             members,
@@ -3787,7 +3800,7 @@ mod table_tests {
             &waits,
             &polling,
             &Default::default(),
-            &TypeNames::none(&Default::default()),
+            crate::typenames::testing::type_names(),
         )
     }
 
@@ -3823,10 +3836,9 @@ mod table_tests {
             entries: Some(hansei_runtime::tokio::waitset::Fanout { listed, total }),
             ..branch("m", WaitAssessment::Unresumed, true)
         };
-        let impls = Default::default();
-        let stops = TypeNames::none(&impls);
+        let stops = crate::typenames::testing::type_names();
         // A fan-out member arms nothing, so its block is the one line.
-        let line = |member: &WaitMember| member_line(member, &stops, &[], None, ARMED).join("\n");
+        let line = |member: &WaitMember| member_line(member, stops, &[], None, ARMED).join("\n");
         for (listed, total) in [(3, 3), (8, 12), (1, 1), (0, 0)] {
             assert_eq!(
                 line(&fanning(listed, total)),
@@ -3847,7 +3859,7 @@ mod table_tests {
                 entry(0, Some("7"), None),
             ]),
         );
-        let lines = wait_detail(&wait, &stops, &[], None, &|_| None, ARMED).awaiting;
+        let lines = wait_detail(&wait, stops, &[], None, &|_| None, ARMED).awaiting;
         // The `select!` branch and the entries reached through it sit
         // under the heading, the entries two steps under the branch and
         // the uninspected count after them; the entry of the stop
@@ -3889,8 +3901,7 @@ mod table_tests {
         use hansei_runtime::tokio::bundle::IoSlot;
         use hansei_runtime::tokio::wakers::Owner;
 
-        let impls = Default::default();
-        let stops = TypeNames::none(&impls);
+        let stops = crate::typenames::testing::type_names();
         let owner = Owner::Task {
             header: 0x1100,
             index: 0,
@@ -3941,7 +3952,7 @@ mod table_tests {
         // The slot names the primitive the chain route never reached,
         // and still says where the waker sits.
         assert_eq!(
-            member_line(&cannot_name, &stops, &[&channel], None, ARMED),
+            member_line(&cannot_name, stops, &[&channel], None, ARMED),
             [
                 "inner: x::branch",
                 "    armed: yes",
@@ -3951,7 +3962,7 @@ mod table_tests {
         // A registry slot answers the same way, and having been named
         // on the line above it adds only its detail below.
         assert_eq!(
-            member_line(&cannot_name, &stops, &[&reader], None, ARMED),
+            member_line(&cannot_name, stops, &[&reader], None, ARMED),
             [
                 "inner: x::branch",
                 "    armed: yes",
@@ -3961,7 +3972,7 @@ mod table_tests {
         );
         // Both, one line each, sorted.
         assert_eq!(
-            member_line(&cannot_name, &stops, &[&channel, &reader], None, ARMED)
+            member_line(&cannot_name, stops, &[&channel, &reader], None, ARMED)
                 .iter()
                 .filter(|line| line.starts_with("    awaiting on: "))
                 .collect::<Vec<_>>(),
@@ -3972,7 +3983,7 @@ mod table_tests {
         );
         // With no slot to ask, the chain route's own word stands.
         assert_eq!(
-            member_line(&cannot_name, &stops, &[], None, ARMED)
+            member_line(&cannot_name, stops, &[], None, ARMED)
                 .last()
                 .unwrap(),
             "    awaiting on: unknown"
@@ -3992,7 +4003,7 @@ mod table_tests {
             false,
         );
         assert_eq!(
-            member_line(&named, &stops, &[&channel], None, ARMED),
+            member_line(&named, stops, &[&channel], None, ARMED),
             [
                 "inner: x::branch",
                 "    armed: yes",
@@ -4005,7 +4016,7 @@ mod table_tests {
         // line is the slot whole, not the detail a lifted slot is
         // left with.
         assert_eq!(
-            member_line(&named, &stops, &[&reader], None, ARMED),
+            member_line(&named, stops, &[&reader], None, ARMED),
             [
                 "inner: x::branch",
                 "    armed: yes",
@@ -4043,14 +4054,14 @@ mod table_tests {
             },
         );
         assert_eq!(
-            member_line(&named, &stops, &[&read], None, ARMED)
+            member_line(&named, stops, &[&read], None, ARMED)
                 .last()
                 .unwrap(),
             "    waker: mpsc rx 0x9000 (1 sender, capacity 4, 0 unread)"
         );
         let unpolled = branch("inner", WaitAssessment::Unresumed, false);
         assert_eq!(
-            member_line(&unpolled, &stops, &[&read], None, ARMED),
+            member_line(&unpolled, stops, &[&read], None, ARMED),
             [
                 "inner: x::branch",
                 "    armed: yes",
@@ -4072,7 +4083,7 @@ mod table_tests {
         stopped.continuation = ContinuationStatus::Unknown {
             at: ValueKey {
                 addr: 0x5000,
-                ty: BundleTypeId(7),
+                ty: crate::typenames::testing::NAMELESS,
             },
             reason: SemanticIssueKind::NoRule,
         };
@@ -4099,25 +4110,24 @@ mod table_tests {
         }
 
         let impls = hansei_bundle::names::ImplFold::default();
-        assert_eq!(
-            stop_label(
-                "futures_util::future::map::Map<hyper::client::conn::Connection<A, B>, \
-                 hyper_util::client::legacy::{closure_env#3}>",
-                &impls
-            ),
-            "futures_util::future::map::Map"
+        let mut bundle = hansei_runtime::testkit::named_types(&[
+            "futures_util::future::map::Map<hyper::client::conn::Connection<A, B>, \
+             hyper_util::client::legacy::{closure_env#3}>",
+            "app::serve::{async_fn_env#0}",
+            "core::future::poll_fn::PollFn<app::run::{async_fn_env#0}::{closure_env#1}>",
+        ]);
+        hansei_runtime::testkit::coroutine_kinds(
+            &mut bundle,
+            &[(
+                BundleTypeId(1),
+                hansei_bundle::SemanticRuleKind::RustcAsyncFn,
+            )],
         );
-        assert_eq!(
-            stop_label("app::serve::{async_fn_env#0}", &impls),
-            "async fn app::serve"
-        );
-        assert_eq!(
-            stop_label(
-                "core::future::poll_fn::PollFn<app::run::{async_fn_env#0}::{closure_env#1}>",
-                &impls
-            ),
-            "core::future::poll_fn::PollFn"
-        );
+        let view = hansei_bundle::BundleView::new(&bundle);
+        let label = |id| stop_label(view.ty(BundleTypeId(id)).unwrap(), &impls);
+        assert_eq!(label(0), "futures_util::future::map::Map");
+        assert_eq!(label(1), "async fn app::serve");
+        assert_eq!(label(2), "core::future::poll_fn::PollFn");
     }
 
     /// A wait set's cell is its armed members, sorted and comma-joined — the
@@ -4169,7 +4179,7 @@ mod table_tests {
         held.continuation = ContinuationStatus::Unknown {
             at: ValueKey {
                 addr: 0x5000,
-                ty: BundleTypeId(7),
+                ty: crate::typenames::testing::NAMELESS,
             },
             reason: SemanticIssueKind::NoRule,
         };
@@ -4276,7 +4286,7 @@ mod table_tests {
         held.continuation = ContinuationStatus::Unknown {
             at: ValueKey {
                 addr: 0x5000,
-                ty: BundleTypeId(7),
+                ty: crate::typenames::testing::NAMELESS,
             },
             reason: SemanticIssueKind::NoRule,
         };
@@ -4443,7 +4453,7 @@ mod table_tests {
             &[],
             &HashMap::new(),
             &HashMap::from([(0x1000 + 2 * 0x100, 42)]),
-            &TypeNames::none(&Default::default()),
+            crate::typenames::testing::type_names(),
         );
         assert_eq!(with_lwp[0].state, "blocking");
         assert_eq!(with_lwp[0].lwp, Some(42));
@@ -4722,7 +4732,7 @@ mod table_tests {
         };
         let container = |addr: u64| ValueKey {
             addr,
-            ty: BundleTypeId(0),
+            ty: crate::typenames::testing::NAMELESS,
         };
         let held = |addr: u64, frame: usize, local: &str| Holding {
             container: container(addr),
@@ -4992,8 +5002,7 @@ mod table_tests {
     /// is for.
     #[test]
     fn test_armed_prints_only_on_a_task_that_is_not_idle() {
-        let impls = Default::default();
-        let stops = TypeNames::none(&impls);
+        let stops = crate::typenames::testing::type_names();
         let member = select_branch(0, WaitAssessment::Unresumed, true);
         let idle = Detail {
             containers: None,
@@ -5003,7 +5012,7 @@ mod table_tests {
             request_of: None,
         };
         assert_eq!(
-            member_line(&member, &stops, &[], None, idle),
+            member_line(&member, stops, &[], None, idle),
             [
                 "branch 0 (borrowed): x::branch",
                 "    awaiting on: never polled",
@@ -5011,7 +5020,7 @@ mod table_tests {
             ]
         );
         assert_eq!(
-            member_line(&member, &stops, &[], None, ARMED),
+            member_line(&member, stops, &[], None, ARMED),
             [
                 "branch 0 (borrowed): x::branch",
                 "    armed: yes",
@@ -5099,8 +5108,7 @@ mod table_tests {
             aliases: Vec::new(),
             reach: Reach::Unlocated,
         };
-        let impls = Default::default();
-        let stops = TypeNames::none(&impls);
+        let stops = crate::typenames::testing::type_names();
         let named = |cell: u64| {
             (cell == 0xd010)
                 .then(|| "child 3 of the set at 0xfeb66c0 (polled by task 621)".to_string())
@@ -5115,7 +5123,7 @@ mod table_tests {
             };
             wait_detail(
                 &wait(1, Some(conn(caller))),
-                &stops,
+                stops,
                 &[&slot],
                 None,
                 &|_| None,
@@ -5222,17 +5230,16 @@ mod table_tests {
                 hansei_runtime::tokio::waitset::fold_wait(task, wait, &owned, None, size_of);
             }
         }
-        let impls = Default::default();
-        let stops = TypeNames::none(&impls);
+        let stops = crate::typenames::testing::type_names();
         let mut rows = build_rows(
             list,
             &Default::default(),
             waits,
             &HashMap::new(),
             &Default::default(),
-            &stops,
+            stops,
         );
-        super::apply_slots(&mut rows, list, waits, slots, None, size_of, &stops, None);
+        super::apply_slots(&mut rows, list, waits, slots, None, size_of, stops, None);
         rows
     }
 

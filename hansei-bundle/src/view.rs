@@ -13,7 +13,9 @@ use crate::schema::{
     Bundle, BundleTypeId, MemberDef, Provenance, SymbolLookup, TaskEntryId, TypeDef, VariantDef,
     VariantShape, WalkOutcome, WalkRole,
 };
-use crate::semantics::{CoroutineLayout, CoroutinePhase, LockWord, TypeSemantics};
+use crate::semantics::{
+    CoroutineLayout, CoroutinePhase, LockWord, SemanticRuleKind, TypeSemantics,
+};
 use crate::strings::StrRef;
 
 use std::fmt;
@@ -322,7 +324,42 @@ impl<'a> BundleType<'a> {
     /// kind: the kind word joined to the folded name — `async fn
     /// foo::bar`, or `future tokio::time::Sleep` for a plain future.
     pub fn future_display_name(&self, impls: &crate::names::ImplFold) -> String {
-        crate::names::display_future_name(self.name(), impls)
+        format!(
+            "{} {}",
+            self.kind_word(),
+            crate::names::fold_type_name(self.name(), impls)
+        )
+    }
+
+    /// Which kind of coroutine this type is — `async fn`, `async block`,
+    /// `async closure` — by the rule the bundle recorded its kind under:
+    /// `None` for a type that is no coroutine, and for one no reviewed
+    /// rule covers.
+    pub fn coroutine_kind(&self) -> Option<&'static str> {
+        let rule = self.semantics()?.coroutine_kind?;
+        match self.bundle.semantics.rules.get(rule.0 as usize)?.kind {
+            SemanticRuleKind::RustcAsyncFn => Some("async fn"),
+            SemanticRuleKind::RustcAsyncBlock => Some("async block"),
+            SemanticRuleKind::RustcAsyncClosure => Some("async closure"),
+            _ => None,
+        }
+    }
+
+    /// The word a listing puts before this type's name as a coroutine:
+    /// its [`coroutine_kind`](Self::coroutine_kind), or the neutral
+    /// `async` for a coroutine whose kind no reviewed rule records — a
+    /// coroutine by its layout, whatever its name says. `None` for a
+    /// type that is no coroutine.
+    pub fn coroutine_word(&self) -> Option<&'static str> {
+        self.coroutine_kind()
+            .or_else(|| self.is_coroutine().then_some("async"))
+    }
+
+    /// The word a listing puts before this type's name as a future: its
+    /// [`coroutine_word`](Self::coroutine_word), or `future` for a type
+    /// that is no coroutine.
+    pub fn kind_word(&self) -> &'static str {
+        self.coroutine_word().unwrap_or("future")
     }
 
     /// The type's size in bytes.

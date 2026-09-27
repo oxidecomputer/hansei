@@ -413,16 +413,10 @@ pub fn outer_path(name: &str) -> String {
     outer
 }
 
-/// A future's display name where no kind column carries the kind for
-/// it: the kind word joined to the folded name — `async fn foo::bar`,
-/// or `future tokio::time::Sleep` for a plain future.
-pub fn display_future_name(name: &str, impls: &ImplFold) -> String {
-    let kind = coroutine_kind(name).unwrap_or("future");
-    format!("{kind} {}", fold_type_name(name, impls))
-}
-
-/// Strip the kind word [`display_future_name`] joined, so a displayed
-/// name pasted whole into a lookup still names its type.
+/// Strip the kind word a future's display name leads with — see
+/// [`BundleType::future_display_name`](crate::BundleType::future_display_name)
+/// — so a displayed name pasted whole into a lookup still names its
+/// type.
 pub fn strip_kind_prefix(name: &str) -> &str {
     // "async fn " before "async ", or the neutral word would eat the
     // specific ones down to "fn ".
@@ -449,10 +443,6 @@ mod tests {
     /// The fold with no impl substitutions, which most cases exercise.
     fn fold_type_name(name: &str) -> Cow<'_, str> {
         super::fold_type_name(name, &ImplFold::default())
-    }
-
-    fn display_future_name(name: &str) -> String {
-        super::display_future_name(name, &ImplFold::default())
     }
 
     #[test]
@@ -705,6 +695,14 @@ mod tests {
             None
         );
         assert_eq!(coroutine_kind("tokio::time::sleep::Sleep"), None);
+        assert_eq!(
+            coroutine_kind("crate::Wrapper<T>::work::{async_fn_env#0}<U>"),
+            Some("async fn")
+        );
+        // The closure name needs both delimiters: a component that only
+        // starts like one, or only ends like one, is no closure.
+        assert_eq!(coroutine_kind("crate::{async_closure_env#1}tail"), None);
+        assert_eq!(coroutine_kind("crate::not_{async_closure_env#1}"), None);
         // An `fn` pointer argument's `->` leaves the list open, so
         // nothing after it leaks into the path the kind is read from.
         assert_eq!(
@@ -724,18 +722,6 @@ mod tests {
             "app::run::{async_fn_env#0}"
         );
         assert_eq!(outer_path("fn(u8) -> u8"), "fn(u8) -> u8");
-    }
-
-    #[test]
-    fn test_display_joins_the_kind_to_the_folded_name() {
-        assert_eq!(
-            display_future_name("futurelock::do_stuff::{async_fn_env#0}"),
-            "async fn futurelock::do_stuff"
-        );
-        assert_eq!(
-            display_future_name("tokio::time::sleep::Sleep"),
-            "future tokio::time::sleep::Sleep"
-        );
     }
 
     /// What display joined, a lookup strips — and only as the leading

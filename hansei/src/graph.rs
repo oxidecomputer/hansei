@@ -313,7 +313,7 @@ fn print_barrier(
 
 #[cfg(test)]
 mod graph_tests {
-    use super::{BarrierRelation, TypeNames, print_barrier, print_graph};
+    use super::{BarrierRelation, print_barrier, print_graph};
 
     use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::assess::{
@@ -488,7 +488,7 @@ mod graph_tests {
             &list,
             &analysis,
             &relations,
-            &TypeNames::none(&Default::default()),
+            crate::typenames::testing::type_names(),
             limit,
             crate::output::Theme::plain(),
             &mut out,

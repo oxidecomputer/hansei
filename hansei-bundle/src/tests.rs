@@ -2482,6 +2482,46 @@ mod view_tests {
         b
     }
 
+    /// A future's kind word is the rule its kind was recorded under;
+    /// a coroutine with none is the neutral `async`, and anything else
+    /// a `future`.
+    #[test]
+    fn test_kind_word_is_the_recorded_kind() {
+        use crate::semantics::{SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind};
+        let bare = coroutine_bundle();
+        let view = BundleView::new(&bare);
+        assert_eq!(view.ty(BundleTypeId(3)).unwrap().kind_word(), "async");
+        assert_eq!(view.ty(BundleTypeId(3)).unwrap().coroutine_kind(), None);
+        assert_eq!(view.ty(BundleTypeId(0)).unwrap().kind_word(), "future");
+        assert_eq!(view.ty(BundleTypeId(0)).unwrap().coroutine_word(), None);
+
+        let mut b = laid_out_coroutine_bundle();
+        b.semantics.rules.push(SemanticRule {
+            kind: SemanticRuleKind::RustcAsyncFn,
+            revision: 1,
+            origin: SemanticOriginId(0),
+        });
+        b.semantics.types[0].coroutine_kind = Some(SemanticRuleId(0));
+        let ty = BundleView::new(&b).ty(BundleTypeId(3)).unwrap();
+        assert_eq!(ty.coroutine_kind(), Some("async fn"));
+        assert_eq!(ty.kind_word(), "async fn");
+        assert_eq!(
+            ty.future_display_name(&crate::names::ImplFold::default()),
+            "async fn app::work"
+        );
+
+        // Each kind is its rule's alone: the name says nothing here.
+        for (kind, word) in [
+            (SemanticRuleKind::RustcAsyncBlock, "async block"),
+            (SemanticRuleKind::RustcAsyncClosure, "async closure"),
+        ] {
+            b.semantics.rules[0].kind = kind;
+            let ty = BundleView::new(&b).ty(BundleTypeId(3)).unwrap();
+            assert_eq!(ty.coroutine_kind(), Some(word));
+            assert_eq!(ty.kind_word(), word);
+        }
+    }
+
     /// Only a suspend state is at an await. The terminal states carry
     /// coordinates too — the body's opening line and closing brace —
     /// but those say where the coroutine is defined, not where it

@@ -25,6 +25,45 @@ pub mod corrupt;
 pub mod delegation;
 pub mod heap;
 
+/// Record each of `kinds` on `bundle`'s type as the coroutine kind a
+/// rule of that kind names — what extraction records for a coroutine
+/// a reviewed convention covers — for a test whose names a listing
+/// reads the kind word of.
+pub fn coroutine_kinds(
+    bundle: &mut Bundle,
+    kinds: &[(hansei_bundle::BundleTypeId, hansei_bundle::SemanticRuleKind)],
+) {
+    use hansei_bundle::{SemanticOriginId, SemanticRule, SemanticRuleId, TypeSemantics};
+    for &(ty, kind) in kinds {
+        let rule = SemanticRuleId(bundle.semantics.rules.len() as u32);
+        bundle.semantics.rules.push(SemanticRule {
+            kind,
+            revision: 1,
+            origin: SemanticOriginId(0),
+        });
+        bundle.semantics.types.push(TypeSemantics {
+            ty,
+            storage: hansei_bundle::StoragePolicy::DeclaredMembers,
+            future: None,
+            coroutine: None,
+            access: None,
+            resource: None,
+            container: None,
+            select: None,
+            http: None,
+            request: None,
+            table: None,
+            pool: None,
+            refcount: None,
+            lock: None,
+            acquires_for: None,
+            coroutine_kind: Some(rule),
+            issues: Vec::new(),
+        });
+    }
+    bundle.semantics.types.sort_by_key(|record| record.ty);
+}
+
 /// A bundle holding nothing but a type named each of `names`, the
 /// `i`th as `BundleTypeId(i)`: what a test that lays records out by
 /// hand gives the code naming their types, where no fixture's bundle

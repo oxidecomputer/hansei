@@ -607,7 +607,7 @@ pub(crate) fn print_frame<'b, T: proc::Target>(
     let kind = if adapter {
         "adapter"
     } else {
-        async_kind(frame.future.ty.name(), frame.future.ty.is_coroutine())
+        frame.future.ty.kind_word()
     };
     let dyn_marker = if frame.dyn_symbol.is_some() {
         " [dyn]"
@@ -803,10 +803,7 @@ fn print_frame_verbose<'b, T: proc::Target>(
             n => line.push_str(&format!(" ({n} locals)")),
         }
         if let Some(awaitee) = row.awaitee {
-            line.push_str(&format!(
-                " → {}",
-                names::display_future_name(awaitee, impls)
-            ));
+            line.push_str(&format!(" → {}", awaitee.future_display_name(impls)));
         }
         writeln!(out, "{ENTRY_INDENT}{}", theme.dim(&line))?;
     }
@@ -1236,7 +1233,7 @@ struct SuspendRow<'b> {
     /// the type alone can say.
     locals: usize,
     /// What the state awaits, from its `__awaitee` member.
-    awaitee: Option<&'b str>,
+    awaitee: Option<BundleType<'b>>,
     /// Whether this is the state the frame is parked in.
     active: bool,
 }
@@ -1274,7 +1271,7 @@ fn suspend_rows<'b>(frame: &bundle::AwaitFrame<'b>) -> Vec<SuspendRow<'b>> {
                 name,
                 loc: variant.await_loc(),
                 locals: state_locals(variant.ty).len(),
-                awaitee: variant.ty.member("__awaitee").map(|m| m.ty().name()),
+                awaitee: variant.ty.member("__awaitee").map(|m| m.ty()),
                 active,
             })
         })
@@ -1294,20 +1291,6 @@ fn state_locals(ty: BundleType<'_>) -> Vec<BundleMember<'_>> {
             m.ty().size() > 0 && !m.name().starts_with("__") && seen.insert((m.name(), m.offset()))
         })
         .collect()
-}
-
-/// Classify the outer future type from rustc's generated DWARF basename.
-/// The names are an implementation detail, so a state machine whose
-/// name is not recognized deliberately receives the neutral `async`
-/// label — a coroutine by its layout ([`BundleType::is_coroutine`]),
-/// never by what its states happen to be called, which an enum future
-/// is free to call anything. Always judged on the *raw* name, before
-/// display folding removes the very marker this reads.
-fn async_kind(name: &str, is_coroutine: bool) -> &'static str {
-    if let Some(kind) = names::coroutine_kind(name) {
-        return kind;
-    }
-    if is_coroutine { "async" } else { "future" }
 }
 
 /// A variable's declared type, as [`print_variable`] heads it.
@@ -2170,7 +2153,7 @@ nothing deeper is on the native stack
 
 #[cfg(test)]
 mod variable_format_tests {
-    use super::{Declared, async_kind, print_variable};
+    use super::{Declared, print_variable};
 
     /// A declared type the value rendered is of.
     fn own(name: &str) -> Declared<'_> {
@@ -2322,51 +2305,6 @@ mod variable_format_tests {
         assert_eq!(
             String::from_utf8(whole).unwrap(),
             format!("  v:\n    Point {{\n    x: 1,\n{big}\n}}\n")
-        );
-    }
-
-    #[test]
-    fn classifies_rustc_async_environment_names() {
-        assert_eq!(
-            async_kind("crate::work::{async_fn_env#0}<T>", true),
-            "async fn"
-        );
-        assert_eq!(
-            async_kind("crate::work::{async_block_env#2}", true),
-            "async block"
-        );
-        assert_eq!(
-            async_kind("crate::work::{async_closure_env#1}", true),
-            "async closure"
-        );
-        assert_eq!(async_kind("crate::unknown", true), "async");
-        // An enum future is no coroutine, whatever it calls its states.
-        assert_eq!(async_kind("crate::MaybeDone", false), "future");
-    }
-
-    #[test]
-    fn classifies_the_outer_future_not_its_type_arguments() {
-        assert_eq!(
-            async_kind("core::future::PollFn<crate::work::{async_fn_env#0}>", false),
-            "future"
-        );
-        assert_eq!(
-            async_kind("crate::Wrapper<T>::work::{async_fn_env#0}<U>", true),
-            "async fn"
-        );
-    }
-
-    /// The closure spelling needs both delimiters: a component that
-    /// only starts like one, or only ends like one, is no closure.
-    #[test]
-    fn test_half_spelled_closure_names_stay_futures() {
-        assert_eq!(
-            async_kind("crate::{async_closure_env#1}tail", false),
-            "future"
-        );
-        assert_eq!(
-            async_kind("crate::not_{async_closure_env#1}", false),
-            "future"
         );
     }
 }

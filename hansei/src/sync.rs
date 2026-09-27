@@ -727,7 +727,7 @@ fn collect_references<T: proc::Target>(
                 "{} (frame #{} {}{})",
                 task_label(&session.tasks, index),
                 chain.frames.len() - 1 - n,
-                names::display_future_name(value.ty.name(), impls),
+                value.ty.future_display_name(impls),
                 member.unwrap_or_default(),
             ));
         }

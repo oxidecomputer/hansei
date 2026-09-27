@@ -156,8 +156,8 @@ pub struct WaitMember {
     /// The branch's identity — the future past the adapters it was
     /// reached through — where there is one.
     pub key: Option<ValueKey>,
-    /// That future's type name, for a listing.
-    pub future: Option<String>,
+    /// That future's type, for a listing to name.
+    pub future: Option<BundleTypeId>,
     /// The engine's own verdict on the branch under the task's
     /// identity: what its chain ends in and what that resource's
     /// protocol says. `None` for a slot in no branch.
@@ -680,7 +680,7 @@ impl<'b, T: Target> Context<'b, T> {
                         arm: arm_at(index),
                     },
                     key: None,
-                    future: self.view.ty(ty).map(|t| t.name().to_string()),
+                    future: self.view.ty(ty).map(|t| t.id()),
                     assessment: None,
                     notes: Vec::new(),
                     armed: None,
@@ -861,7 +861,7 @@ impl<'b, T: Target> Context<'b, T> {
                 members.push(WaitMember {
                     route: branch.route,
                     key: Some(key),
-                    future: Some(branch.value.ty.name().to_string()),
+                    future: Some(branch.value.ty.id()),
                     assessment: None,
                     notes: Vec::new(),
                     armed: None,
@@ -952,7 +952,7 @@ impl<'b, T: Target> Context<'b, T> {
             members.push(WaitMember {
                 route,
                 key: Some(key),
-                future: Some(identity.future.ty.name().to_string()),
+                future: Some(identity.future.ty.id()),
                 assessment: Some(assessment),
                 notes: member_notes,
                 armed: None,
@@ -1527,10 +1527,7 @@ mod tests {
             "{member:#?}"
         );
         assert!(
-            member
-                .future
-                .as_deref()
-                .unwrap()
+            ctx.type_name(member.future.unwrap())
                 .starts_with("walk_shapes::WrapE"),
             "{member:#?}"
         );
@@ -2515,7 +2512,7 @@ mod tests {
                 borrowed: false,
             },
             key: Some(key(addr)),
-            future: Some("x::B".to_string()),
+            future: Some(BundleTypeId(1)),
             assessment: Some(WaitAssessment::Unknown(WaitUnknownReason::Continuation)),
             notes: Vec::new(),
             armed: None,
@@ -2619,7 +2616,7 @@ mod tests {
                 arm: None,
             },
             key: Some(key(0x6000 + index as u64 * 0x100)),
-            future: Some("x::B".to_string()),
+            future: Some(BundleTypeId(1)),
             assessment,
             notes: Vec::new(),
             armed: None,
@@ -2651,7 +2648,7 @@ mod tests {
                 arm: None,
             },
             key: None,
-            future: Some("x::D".to_string()),
+            future: Some(BundleTypeId(2)),
             assessment: None,
             notes: Vec::new(),
             armed: None,
@@ -2811,7 +2808,7 @@ mod tests {
         );
         let futures: Vec<&str> = members
             .iter()
-            .map(|m| m.future.as_deref().unwrap())
+            .map(|m| ctx.type_name(m.future.unwrap()))
             .collect();
         assert_eq!(futures[0], "core::future::pending::Pending<u32>");
         assert!(
