@@ -847,11 +847,15 @@ pub(crate) fn print_locals<'b, T: proc::Target>(
                 if opts.render.ugly {
                     disp = disp.ugly();
                 }
+                let declared = Declared {
+                    name: m.ty().name(),
+                    rendered: v.ty.id() == m.ty().id(),
+                };
                 print_variable(
                     out,
                     indent,
                     m.name(),
-                    Some(m.ty().name()),
+                    Some(declared),
                     &format_args!("{disp:#}"),
                 )?;
             }
@@ -1301,15 +1305,26 @@ fn async_kind(name: &str, is_coroutine: bool) -> &'static str {
     if is_coroutine { "async" } else { "future" }
 }
 
+/// A variable's declared type, as [`print_variable`] heads it.
+#[derive(Copy, Clone)]
+pub(crate) struct Declared<'a> {
+    /// The type's name.
+    pub name: &'a str,
+    /// Whether the value rendered is of this type itself, rather than
+    /// something peeling it reached: only then can a type name the
+    /// render opens with be this one, and so go unrepeated.
+    pub rendered: bool,
+}
+
 /// Print a named variable compactly when it fits on one line, or as a
 /// `name:` heading with the value's lines beneath it when the value is
 /// multi-line.
 ///
 /// With a declared type, the layout is Rust-declaration style instead:
-/// `name: ty = value`, with the type elided when the value's first
-/// line already opens with it (a struct render's `Type { … }`), and a
-/// multi-line value's first line joining the heading rather than
-/// dropping below it.
+/// `name: ty = value`, with the type elided when the value rendered is
+/// of that type and its first line already opens with it (a struct
+/// render's `Type { … }`), and a multi-line value's first line joining
+/// the heading rather than dropping below it.
 ///
 /// The value's own lines arrive final-form: a multi-line value must be
 /// rendered with a reify line prefix of this `indent` plus two spaces
@@ -1321,7 +1336,7 @@ pub(crate) fn print_variable(
     out: &mut dyn io::Write,
     indent: &str,
     name: &str,
-    ty: Option<&str>,
+    ty: Option<Declared<'_>>,
     value: &dyn fmt::Display,
 ) -> Result<()> {
     /// Whether the value's first line opens with the declared type name
@@ -1352,7 +1367,7 @@ pub(crate) fn print_variable(
         name: &'w str,
         /// The declared type printed after the name, elided when the
         /// value's own first line already opens with it.
-        ty: Option<&'w str>,
+        ty: Option<Declared<'w>>,
         /// The first line so far; `None` once a newline committed the
         /// heading layout.
         first: Option<String>,
@@ -1415,9 +1430,9 @@ pub(crate) fn print_variable(
             self.staged.push_str(self.name);
             self.staged.push_str(": ");
             if let Some(ty) = self.ty
-                && !opens_with(ty, first)
+                && !(ty.rendered && opens_with(ty.name, first))
             {
-                self.staged.push_str(ty);
+                self.staged.push_str(ty.name);
                 self.staged.push_str(" = ");
             }
             self.staged.push_str(first);
@@ -2151,7 +2166,15 @@ nothing deeper is on the native stack
 
 #[cfg(test)]
 mod variable_format_tests {
-    use super::{async_kind, print_variable};
+    use super::{Declared, async_kind, print_variable};
+
+    /// A declared type the value rendered is of.
+    fn own(name: &str) -> Declared<'_> {
+        Declared {
+            name,
+            rendered: true,
+        }
+    }
 
     #[test]
     fn scalar_stays_on_the_name_line() {
@@ -2186,7 +2209,7 @@ mod variable_format_tests {
     #[test]
     fn typed_scalar_reads_like_a_declaration() {
         let mut out = Vec::new();
-        print_variable(&mut out, "  ", "count", Some("u32"), &"3").unwrap();
+        print_variable(&mut out, "  ", "count", Some(own("u32")), &"3").unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "  count: u32 = 3\n");
     }
 
@@ -2200,7 +2223,7 @@ mod variable_format_tests {
             &mut out,
             "  ",
             "point",
-            Some("foo::bar::Point"),
+            Some(own("foo::bar::Point")),
             &"foo::bar::Point {\n        x: 1,\n    }",
         )
         .unwrap();
@@ -2219,7 +2242,7 @@ mod variable_format_tests {
             &mut out,
             "  ",
             "values",
-            Some("alloc::vec::Vec<u32>"),
+            Some(own("alloc::vec::Vec<u32>")),
             &"[\n        5,\n    ]",
         )
         .unwrap();
@@ -2235,11 +2258,42 @@ mod variable_format_tests {
     #[test]
     fn typed_prefix_must_end_at_a_delimiter() {
         let mut out = Vec::new();
-        print_variable(&mut out, "", "w", Some("Option<W>"), &"Option<W> = Some(1)").unwrap();
+        print_variable(
+            &mut out,
+            "",
+            "w",
+            Some(own("Option<W>")),
+            &"Option<W> = Some(1)",
+        )
+        .unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "w: Option<W> = Some(1)\n");
         let mut out = Vec::new();
-        print_variable(&mut out, "", "n", Some("u3"), &"u32max").unwrap();
+        print_variable(&mut out, "", "n", Some(own("u3")), &"u32max").unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "n: u3 = u32max\n");
+    }
+
+    /// A value peeled to another type renders that type's name, which
+    /// is not the declared one however it begins: here a type nested
+    /// under the declared type's path.
+    #[test]
+    fn a_peeled_render_keeps_the_declared_type() {
+        let mut out = Vec::new();
+        let peeled = Declared {
+            name: "app::Conn",
+            rendered: false,
+        };
+        print_variable(
+            &mut out,
+            "",
+            "c",
+            Some(peeled),
+            &"app::Conn::State { n: 1 }",
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "c: app::Conn = app::Conn::State { n: 1 }\n"
+        );
     }
 
     /// Streaming decides the layout at the first newline however the text
