@@ -381,17 +381,25 @@ pub fn generic_args(name: &str) -> Option<(&str, Vec<&str>)> {
 /// A type name with every generic argument list dropped: the path of
 /// the type itself, which is what groups its monomorphizations —
 /// `PollFn<a::{closure_env#1}>` and `PollFn<b::{closure_env#2}>` are
-/// one `core::future::poll_fn::PollFn`.
+/// one `core::future::poll_fn::PollFn`. As in [`generic_args`], the `>`
+/// of an `fn` pointer's `->` closes nothing.
 pub fn outer_path(name: &str) -> String {
     let mut outer = String::with_capacity(name.len());
     let mut generic_depth = 0usize;
+    let mut prev = '\0';
     for c in name.chars() {
         match c {
             '<' => generic_depth += 1,
+            '>' if prev == '-' => {
+                if generic_depth == 0 {
+                    outer.push(c);
+                }
+            }
             '>' => generic_depth = generic_depth.saturating_sub(1),
             _ if generic_depth == 0 => outer.push(c),
             _ => {}
         }
+        prev = c;
     }
     outer
 }
@@ -425,7 +433,7 @@ pub fn strip_kind_prefix(name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImplFold, coroutine_kind, impl_prefixes, strip_kind_prefix};
+    use super::{ImplFold, coroutine_kind, impl_prefixes, outer_path, strip_kind_prefix};
 
     use std::borrow::Cow;
 
@@ -675,6 +683,25 @@ mod tests {
             None
         );
         assert_eq!(coroutine_kind("tokio::time::sleep::Sleep"), None);
+        // An `fn` pointer argument's `->` leaves the list open, so
+        // nothing after it leaks into the path the kind is read from.
+        assert_eq!(
+            coroutine_kind("crate::work::{async_fn_env#0}<fn() -> u8>"),
+            Some("async fn")
+        );
+    }
+
+    #[test]
+    fn test_the_outer_path_drops_every_argument_list() {
+        assert_eq!(
+            outer_path("core::future::poll_fn::PollFn<a::{closure_env#1}>"),
+            "core::future::poll_fn::PollFn"
+        );
+        assert_eq!(
+            outer_path("app::run::{async_fn_env#0}<fn(u8) -> Vec<u8>, u16>"),
+            "app::run::{async_fn_env#0}"
+        );
+        assert_eq!(outer_path("fn(u8) -> u8"), "fn(u8) -> u8");
     }
 
     #[test]
