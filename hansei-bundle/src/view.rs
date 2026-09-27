@@ -635,6 +635,14 @@ impl<'a> BundleType<'a> {
         Some(self.semantics()?.lock.as_ref()?.word)
     }
 
+    /// The primitive a future of this type acquires a batch semaphore
+    /// for, as a listing names it — `tokio::sync::Mutex` — where the
+    /// bundle recorded one.
+    pub fn acquires_for(&self) -> Option<&'a str> {
+        let binding = self.semantics()?.acquires_for.as_ref()?;
+        Some(self.str(binding.primitive))
+    }
+
     /// The semantic record the bundle keeps for this type, if any.
     fn semantics(&self) -> Option<&'a TypeSemantics> {
         let records = &self.bundle.semantics.types;

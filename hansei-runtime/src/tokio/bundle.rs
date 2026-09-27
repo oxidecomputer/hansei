@@ -155,24 +155,8 @@ impl Candidate {
     }
 }
 
-/// Awaiter-frame prefixes naming the primitive whose semaphore an
-/// `Acquire` leaf is queued on.
-const SEMAPHORE_OWNERS: &[(&str, &str)] = &[
-    ("tokio::sync::mutex::", "tokio::sync::Mutex"),
-    ("tokio::sync::rwlock", "tokio::sync::RwLock"),
-    ("tokio::sync::semaphore", "tokio::sync::Semaphore"),
-    // A bounded sender's `send` → `reserve` → `reserve_inner` chain,
-    // queued on the channel's capacity semaphore: the frames are the
-    // `{impl#N}` blocks of the `bounded` module, so the module is the
-    // prefix. No receiver-side chain reaches an `Acquire`.
-    (
-        "tokio::sync::mpsc::bounded::",
-        "tokio::sync::mpsc bounded channel",
-    ),
-];
-
 /// The primitive wrapping an acquired semaphore, when a frame above the
-/// `Acquire` leaf names it.
+/// `Acquire` leaf is a future the bundle records acquiring for one.
 ///
 /// The search runs up the chain rather than reading the frame directly
 /// above the leaf: a wrapper the walk now follows (`Instrumented`, a
@@ -180,13 +164,28 @@ const SEMAPHORE_OWNERS: &[(&str, &str)] = &[
 /// awaits, and a fixed offset would read that wrapper and report a
 /// semaphore nobody owns.
 pub(crate) fn semaphore_owner(chain: &AwaitChain<'_>) -> Option<&'static str> {
-    chain.frames.iter().rev().skip(1).find_map(|frame| {
-        let name = frame.future.ty.name();
-        SEMAPHORE_OWNERS
-            .iter()
-            .find(|(prefix, _)| name.starts_with(prefix))
-            .map(|(_, owner)| *owner)
-    })
+    chain
+        .frames
+        .iter()
+        .rev()
+        .skip(1)
+        .find_map(|frame| frame.future.ty.acquires_for())
+        .map(primitive_label)
+}
+
+/// A primitive's name as the records that carry it by value keep it:
+/// the bundle's own string, kept once per distinct name for the life
+/// of the process. Only a reviewed rule records one, so what is kept is
+/// bounded by the rules' few names, not by the target.
+fn primitive_label(name: &str) -> &'static str {
+    static LABELS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut labels = LABELS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(label) = labels.iter().find(|label| **label == name) {
+        return label;
+    }
+    let label: &'static str = Box::leak(name.into());
+    labels.push(label);
+    label
 }
 
 /// A get-or-compute cache behind a `RefCell`, for the per-target
@@ -4820,6 +4819,19 @@ struct HeaderIdentity {
 
 #[cfg(test)]
 mod tests {
+    /// A primitive's name is kept once: the same name is the same
+    /// string whichever bundle it came from, and another name another.
+    #[test]
+    fn test_a_primitive_label_is_kept_once_per_name() {
+        let one = super::primitive_label(&String::from("tokio::sync::Mutex"));
+        let again = super::primitive_label(&String::from("tokio::sync::Mutex"));
+        assert_eq!(one, "tokio::sync::Mutex");
+        assert!(std::ptr::eq(one, again));
+        let other = super::primitive_label("tokio::sync::RwLock");
+        assert_eq!(other, "tokio::sync::RwLock");
+        assert!(!std::ptr::eq(one, other));
+    }
+
     /// A request's text is its bytes up to the limit, the limit
     /// included: an empty text is one, a longer one or bytes that are
     /// not UTF-8 are none.
