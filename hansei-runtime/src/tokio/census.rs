@@ -2465,8 +2465,9 @@ mod tests {
     use crate::heap::view::{GateCounts, HeapView};
     use crate::testkit;
 
-    use super::super::contract::{FUTURES_UNORDERED, JOIN_SET};
-    use hansei_bundle::{Bundle, BundleMember, BundleType, BundleView, DiscrValue, TypeDef};
+    use hansei_bundle::{
+        Bundle, BundleMember, BundleType, BundleView, ContainerKind, DiscrValue, TypeDef,
+    };
 
     use std::sync::OnceLock;
 
@@ -2499,6 +2500,15 @@ mod tests {
             .filter_map(|i| view.ty(BundleTypeId(i)))
             .find(|ty| pred(*ty))
             .expect("the fixture bundle has such a type")
+    }
+
+    /// Whether the bundle binds `ty` as a container of `kind`.
+    fn bound_as(bundle: &Bundle, ty: BundleType<'_>, kind: ContainerKind) -> bool {
+        bundle
+            .semantics
+            .types
+            .iter()
+            .any(|r| r.ty == ty.id() && r.container.as_ref().is_some_and(|c| c.kind == kind))
     }
 
     /// The facts a test hands the scan: the fixture bundle's own
@@ -2910,7 +2920,7 @@ mod tests {
             matches!(ty.def(), TypeDef::Pointer { .. })
                 && ty
                     .pointer_target()
-                    .is_some_and(|t| t.name().starts_with(FUTURES_UNORDERED))
+                    .is_some_and(|t| bound_as(bundle, t, ContainerKind::FuturesUnordered))
         })
     }
 
@@ -3089,7 +3099,9 @@ mod tests {
     #[test]
     fn test_a_set_screens_before_the_descent() {
         let bundle = unordered();
-        let ty = find_ty(bundle, |t| t.name().starts_with(FUTURES_UNORDERED));
+        let ty = find_ty(bundle, |t| {
+            bound_as(bundle, t, ContainerKind::FuturesUnordered)
+        });
         let bytes = vec![0u8; ty.size() as usize];
         let scanned = scan(Value::new(ty, AT, &bytes), &every_type(bundle));
         let [Find::Set(found)] = scanned.finds.as_slice() else {
@@ -3104,7 +3116,7 @@ mod tests {
     #[test]
     fn test_a_join_set_screens_before_the_descent() {
         let bundle = joinset();
-        let ty = find_ty(bundle, |t| t.name().starts_with(JOIN_SET));
+        let ty = find_ty(bundle, |t| bound_as(bundle, t, ContainerKind::JoinSet));
         let bytes = vec![0u8; ty.size() as usize];
         let scanned = scan(Value::new(ty, AT, &bytes), &every_type(bundle));
         let [Find::JoinSet(found)] = scanned.finds.as_slice() else {

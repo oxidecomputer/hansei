@@ -44,35 +44,8 @@ use reify::{ParseWithDbgInfo, Value};
 use std::fmt;
 
 // ---------------------------------------------------------------------------
-// Name keys shared by the walk and the leaf readers
+// Stage variants
 // ---------------------------------------------------------------------------
-
-/// `tokio::time::Sleep`'s leaf future.
-pub const SLEEP: &str = "tokio::time::sleep::Sleep";
-/// A join edge to another task.
-pub const JOIN_HANDLE: &str = "tokio::runtime::task::join::JoinHandle<";
-/// The future queued on the semaphore backing Mutex/RwLock/Semaphore.
-pub const ACQUIRE: &str = "tokio::sync::batch_semaphore::Acquire";
-/// The by-value type every `FuturesUnordered` is recognized as.
-pub const FUTURES_UNORDERED: &str = "futures_util::stream::futures_unordered::FuturesUnordered<";
-/// The by-value type every join set is recognized as.
-pub const JOIN_SET: &str = "tokio::task::join_set::JoinSet<";
-
-/// The spelling of a future trait object's pointee.
-pub const DYN_FUTURE: &str = hansei_bundle::names::DYN_FUTURE;
-
-/// Whether `name` is a type a leaf key names. A key ending in `<` is a
-/// generic: the prefix of every monomorphization's name. Any other key
-/// is an exact fully-qualified name — a bare prefix match would take
-/// lookalike siblings with it (`batch_semaphore::Acquire` is one
-/// character away from `AcquireError`).
-pub fn leaf_matches(key: &str, name: &str) -> bool {
-    if key.ends_with('<') {
-        name.starts_with(key)
-    } else {
-        name == key
-    }
-}
 
 /// `Stage<T>`'s variant names, as the stage decode matches them.
 pub const STAGE_RUNNING: &str = "Running";
@@ -1148,31 +1121,6 @@ mod tests {
         let shown = r.to_string();
         assert!(shown.contains("spelling 2 of 2"), "{shown}");
         assert!(shown.contains("family v1_49"), "{shown}");
-    }
-
-    /// An exact leaf key must not take lookalike siblings with it —
-    /// `AcquireError` shares `Acquire`'s prefix in a real sled-agent
-    /// bundle — while a `<`-terminated key spans its monomorphizations.
-    #[test]
-    fn test_leaf_matching_is_exact_unless_generic() {
-        assert!(leaf_matches(
-            ACQUIRE,
-            "tokio::sync::batch_semaphore::Acquire"
-        ));
-        assert!(!leaf_matches(
-            ACQUIRE,
-            "tokio::sync::batch_semaphore::AcquireError"
-        ));
-        assert!(leaf_matches(SLEEP, "tokio::time::sleep::Sleep"));
-        assert!(!leaf_matches(SLEEP, "tokio::time::sleep::Sleeper"));
-        assert!(leaf_matches(
-            JOIN_HANDLE,
-            "tokio::runtime::task::join::JoinHandle<()>"
-        ));
-        assert!(!leaf_matches(
-            JOIN_HANDLE,
-            "tokio::runtime::task::join::JoinHandleFoo"
-        ));
     }
 
     // -----------------------------------------------------------------------
