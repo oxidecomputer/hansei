@@ -6,7 +6,7 @@
 //! over it, plus the naming helpers every listing shares.
 
 use crate::runtimes::RowOwner;
-use crate::typenames::TypeNames;
+use crate::typenames::{self, TypeNames};
 use crate::{Session, output, print_warnings, repl, summary};
 
 use anyhow::{Context as _, Result};
@@ -685,6 +685,10 @@ pub(crate) struct TaskRow {
     pub(crate) will_wake: Vec<String>,
     /// The root future's display name, folded and never truncated.
     pub(crate) future: String,
+    /// The root future's type, where the symbol join resolved one:
+    /// what `--group type` buckets the row under.
+    #[serde(skip)]
+    pub(crate) future_ty: Option<BundleTypeId>,
     /// `Spawned at:` — where the target records one
     /// (`tokio_unstable` task instrumentation).
     pub(crate) spawned: Option<String>,
@@ -803,6 +807,10 @@ pub(crate) fn build_rows(
                 wait_detail: lines.awaiting,
                 will_wake: lines.wake,
                 future: future_name(&task.future, stops),
+                future_ty: match &task.future {
+                    bundle::FutureInfo::Known(known) => Some(known.future),
+                    _ => None,
+                },
                 spawned: task.spawn_location.as_ref().map(|loc| loc.to_string()),
                 defined: match &task.future {
                     bundle::FutureInfo::Known(known) => known
@@ -2940,9 +2948,9 @@ pub(crate) fn exec_tasks<T: proc::Target>(
 }
 
 /// `--group FIELD`: bucket the surviving rows by the field's spelled
-/// value and print `COUNT VALUE` rows, most numerous first (ties in
-/// value order), each with up to three member ids. `--limit` cuts
-/// buckets.
+/// value — `type` by the type itself ([`typenames::tally`]) — and print
+/// `COUNT VALUE` rows, most numerous first (ties in value order), each
+/// with up to three member ids. `--limit` cuts buckets.
 #[allow(clippy::too_many_arguments)]
 fn exec_group<T: proc::Target>(
     session: &Session<'_, T>,
@@ -2957,15 +2965,23 @@ fn exec_group<T: proc::Target>(
     print_warnings(&session.analysis().errors)?;
     let rows = rows(session);
     let survivors = survivors.unwrap_or_else(|| (0..rows.len()).collect());
-    let mut grouped: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for &index in &survivors {
-        let value = group_value(field, index, &rows[index], counts.as_ref())
-            .unwrap_or_else(|| EMPTY_BUCKET.to_string());
-        grouped.entry(value).or_default().push(index);
-    }
-    let mut buckets: Vec<(String, Vec<usize>)> = grouped.into_iter().collect();
-    // Count descending; the map already ordered ties by value, and the
-    // sort is stable.
+    let names = TypeNames::of(session);
+    let mut buckets = typenames::tally(
+        survivors.iter().map(|&index| {
+            let row = &rows[index];
+            let value = group_value(field, index, row, counts.as_ref())
+                .unwrap_or_else(|| EMPTY_BUCKET.to_string());
+            let ty = if field == Field::Type {
+                row.future_ty
+            } else {
+                None
+            };
+            (names.bucket(ty, &value), index)
+        }),
+        |members: &mut Vec<usize>, index| members.push(index),
+    );
+    // Count descending; the tally already ordered ties by value, and
+    // the sort is stable.
     buckets.sort_by_key(|(_, members)| std::cmp::Reverse(members.len()));
     let shown = cmd.limit.unwrap_or(buckets.len()).min(buckets.len());
 
@@ -4355,9 +4371,10 @@ mod table_tests {
 
         // The columns only the filters read: nothing recorded is
         // nothing to match, and a Known future's decl is the
-        // `defined` value.
+        // `defined` value and its type what `--group type` buckets.
         assert_eq!(rows[0].spawned, None);
         assert_eq!(rows[0].defined, None);
+        assert_eq!(rows[0].future_ty, None);
         let known = rows_of(
             vec![Task {
                 future: FutureInfo::Known(hansei_runtime::tokio::bundle::KnownFuture {
@@ -4373,6 +4390,12 @@ mod table_tests {
             HashMap::new(),
         );
         assert_eq!(known[0].defined.as_deref(), Some("src/app.rs:7"));
+        assert_eq!(
+            known[0].future_ty,
+            Some(crate::typenames::testing::named(
+                "app::work::{async_fn_env#0}"
+            ))
+        );
     }
 
     /// A ready resource's row says `ready` in the cell and, in its
@@ -5415,6 +5438,7 @@ mod filter_tests {
             wait_text: "—".to_string(),
             will_wake: Vec::new(),
             future: "async fn app::work".to_string(),
+            future_ty: None,
             spawned: None,
             defined: None,
             lwp: None,

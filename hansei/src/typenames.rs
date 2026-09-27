@@ -10,7 +10,7 @@ use crate::Session;
 
 use hansei_bundle::{BundleTypeId, BundleView, names};
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::RwLock;
 
 /// How the listings name a type they hold by id — a census find's
@@ -175,6 +175,80 @@ impl<'a> TypeNames<'a> {
             None => folded.into_owned(),
         }
     }
+
+    /// The bucket a row of type `ty` is tallied under, where `printed`
+    /// is what the row prints for it.
+    pub(crate) fn bucket(&self, ty: Option<BundleTypeId>, printed: &str) -> Bucket {
+        match ty.and_then(|ty| Some((ty, self.raw(ty)?))) {
+            Some((ty, raw)) => Bucket {
+                key: BucketKey::Type(raw.to_string()),
+                label: printed.to_string(),
+                ty: Some(ty),
+            },
+            None => Bucket {
+                key: BucketKey::Printed(printed.to_string()),
+                label: printed.to_string(),
+                ty: None,
+            },
+        }
+    }
+}
+
+/// What a tally of rows by their type keys each row under.
+///
+/// A type is keyed by its name as the bundle records it, unfolded:
+/// identical instantiations recorded under several ids are one type,
+/// while two types whose printed names agree — impls of one generic
+/// whose arguments the fold drops — are two. A row with no type is
+/// keyed by what it prints.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(crate) enum BucketKey {
+    Type(String),
+    Printed(String),
+}
+
+/// One row's bucket: its key, the label the row prints, and the type
+/// the key names — the lowest id carrying it, once merged.
+#[derive(Clone, Debug)]
+pub(crate) struct Bucket {
+    pub(crate) key: BucketKey,
+    pub(crate) label: String,
+    pub(crate) ty: Option<BundleTypeId>,
+}
+
+/// Tally `rows` into their buckets, each summed with `add`, and return
+/// the buckets labelled and in label order. A label two buckets share
+/// is joined by each one's type id, `(type N)` — the handle an
+/// ambiguous join's candidates carry — so that neither reads as the
+/// other.
+pub(crate) fn tally<R, V: Default>(
+    rows: impl IntoIterator<Item = (Bucket, R)>,
+    mut add: impl FnMut(&mut V, R),
+) -> Vec<(String, V)> {
+    let mut buckets: BTreeMap<BucketKey, (String, Option<BundleTypeId>, V)> = BTreeMap::new();
+    for (bucket, row) in rows {
+        let (_, ty, value) = buckets
+            .entry(bucket.key)
+            .or_insert_with(|| (bucket.label, bucket.ty, V::default()));
+        *ty = match (*ty, bucket.ty) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        add(value, row);
+    }
+    let mut shared: HashMap<String, usize> = HashMap::new();
+    for (label, ..) in buckets.values() {
+        *shared.entry(label.clone()).or_default() += 1;
+    }
+    let mut labelled: Vec<(String, V)> = buckets
+        .into_values()
+        .map(|(label, ty, value)| match ty {
+            Some(ty) if shared[&label] > 1 => (format!("{label} (type {})", ty.0), value),
+            _ => (label, value),
+        })
+        .collect();
+    labelled.sort_by(|(a, _), (b, _)| a.cmp(b));
+    labelled
 }
 
 /// What stands for the name of a type the bundle does not carry.
@@ -250,6 +324,10 @@ pub(crate) mod testing {
         "core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future>>",
         "dyn core::future::future::Future",
         "work::step::{async_fn_env#0}",
+        // Two types that print alike: the fold drops a default
+        // allocator written out.
+        "app::Wrap<u32>",
+        "app::Wrap<u32, alloc::alloc::Global>",
     ];
 
     /// A future's name long enough that any fit width cuts it, and the
@@ -285,9 +363,47 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::TypeNames;
+    use super::{TypeNames, tally};
 
     use hansei_bundle::{BundleTypeId, BundleView, names};
+
+    /// Two impls of one generic that print alike are two buckets, each
+    /// labelled with its id; one type recorded under two ids is one,
+    /// labelled plain and carrying the lower id; a row with no type is
+    /// bucketed by what it prints.
+    #[test]
+    fn test_a_tally_buckets_by_the_type_itself() {
+        let bundle = hansei_runtime::testkit::named_types(&[
+            "app::{impl#0}::run::{async_fn_env#0}",
+            "app::{impl#1}::run::{async_fn_env#0}",
+            "app::serve::{async_fn_env#0}",
+            "app::serve::{async_fn_env#0}",
+        ]);
+        let impls = names::ImplFold::default();
+        let names = TypeNames::over(BundleView::new(&bundle), &impls);
+        let row = |ty: Option<u32>, printed: &str| (names.bucket(ty.map(BundleTypeId), printed), 1);
+        let counted = tally(
+            [
+                row(Some(0), "async fn app::Foo::run"),
+                row(Some(1), "async fn app::Foo::run"),
+                row(Some(1), "async fn app::Foo::run"),
+                row(Some(3), "async fn app::serve"),
+                row(Some(2), "async fn app::serve"),
+                row(None, "<unknown>"),
+                row(None, "<unknown>"),
+            ],
+            |count: &mut usize, one| *count += one,
+        );
+        assert_eq!(
+            counted,
+            [
+                ("<unknown>".to_string(), 2),
+                ("async fn app::Foo::run (type 0)".to_string(), 1),
+                ("async fn app::Foo::run (type 1)".to_string(), 2),
+                ("async fn app::serve".to_string(), 2),
+            ]
+        );
+    }
 
     /// A type the bundle does not carry is named for its id and the
     /// fact, however it is asked for.

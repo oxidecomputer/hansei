@@ -25,7 +25,7 @@
 
 use crate::output::{self, Theme};
 use crate::tasks::{future_name, listing_footer, row_state};
-use crate::typenames::TypeNames;
+use crate::typenames::{self, TypeNames};
 
 use anyhow::Result;
 use hansei_runtime::tokio::Lifecycle;
@@ -33,8 +33,8 @@ use hansei_runtime::tokio::assess::{
     ContinuationStatus, NotWaitingReason, RunnableReason, WaitAssessment,
 };
 use hansei_runtime::tokio::bundle::{
-    BlockingPool, CtActivity, CtParkState, OwnerResolution, ParkState, ParkStates, Task, TaskList,
-    WaitKind,
+    BlockingPool, CtActivity, CtParkState, FutureInfo, OwnerResolution, ParkState, ParkStates,
+    Task, TaskList, WaitKind,
 };
 use hansei_runtime::tokio::census::{FutureSet, HeldFuture};
 use hansei_runtime::tokio::graph::TaskWait;
@@ -651,16 +651,27 @@ fn tasks(
     // are parked and where they were spawned are `tasks --group
     // awaiting` and `tasks --group spawned`, which rank the same sites
     // with the tasks behind each.
-    let mut types: BTreeMap<String, (usize, Waits)> = BTreeMap::new();
-    for (index, task) in list.tasks.iter().enumerate() {
-        let (count, waits) = types
-            .entry(future_name(&task.future, facts.names))
-            .or_default();
-        *count += 1;
-        if let Some(wait) = facts.waits.get(index) {
-            waits.add_task(task, wait);
-        }
-    }
+    // Tallied by the type itself ([`typenames::tally`]), so two impls
+    // of one generic that print alike are two rows, not one.
+    let types = typenames::tally(
+        list.tasks.iter().enumerate().map(|(index, task)| {
+            let ty = match &task.future {
+                FutureInfo::Known(known) => Some(known.future),
+                _ => None,
+            };
+            let name = future_name(&task.future, facts.names);
+            (
+                facts.names.bucket(ty, &name),
+                (task, facts.waits.get(index)),
+            )
+        }),
+        |(count, waits): &mut (usize, Waits), (task, wait)| {
+            *count += 1;
+            if let Some(wait) = wait {
+                waits.add_task(task, wait);
+            }
+        },
+    );
     let futures = types
         .into_iter()
         .map(|(name, (count, waits))| chained(name, count, &waits, top));
@@ -916,22 +927,29 @@ fn futures(
     // this section counts its depth and nothing else, and the future its
     // task runs is already a row of the tasks' own type tally. A reaped
     // slot is a future no longer, said above rather than counted here.
-    let mut types: BTreeMap<String, (usize, Waits)> = BTreeMap::new();
     let children = facts
         .sets
         .iter()
         .flat_map(|s| &s.children)
         .filter_map(|c| Some((c.future?, c.wait, &c.continuation)));
-    for (future, wait, continuation) in facts
+    let finds = facts
         .held
         .iter()
         .map(|h| (h.future, h.wait, &h.continuation))
-        .chain(children)
-    {
-        let (count, waits) = types.entry(facts.names.future(future)).or_default();
-        *count += 1;
-        waits.add_future(wait, continuation);
-    }
+        .chain(children);
+    let types = typenames::tally(
+        finds.map(|(future, wait, continuation)| {
+            let name = facts.names.future(future);
+            (
+                facts.names.bucket(Some(future), &name),
+                (wait, continuation),
+            )
+        }),
+        |(count, waits): &mut (usize, Waits), (wait, continuation)| {
+            *count += 1;
+            waits.add_future(wait, continuation);
+        },
+    );
     let futures = types
         .into_iter()
         .map(|(name, (count, waits))| chained(name, count, &waits, top));
@@ -2134,6 +2152,28 @@ mod tests {
             ),
             "{page}"
         );
+    }
+
+    /// Two types that print alike are two rows, each labelled with its
+    /// id, not one row counting both.
+    #[test]
+    fn test_types_that_print_alike_are_tallied_apart() {
+        let (plain, spelled) = ("app::Wrap<u32>", "app::Wrap<u32, alloc::alloc::Global>");
+        let list = TaskList::new(vec![
+            task(1, JOIN_INTEREST, plain, "a.rs"),
+            task(2, JOIN_INTEREST, spelled, "a.rs"),
+            task(3, JOIN_INTEREST, spelled, "a.rs"),
+        ]);
+        let waits = vec![wait(1, None, 1), wait(2, None, 1), wait(3, None, 1)];
+        let page = census(&facts(&list, &waits), 5);
+        for (name, count) in [(plain, 1), (spelled, 2)] {
+            let row = format!(
+                "    {count}  future app::Wrap<u32> (type {})\n",
+                named(name).0
+            );
+            assert!(page.contains(&row), "{row:?} in {page}");
+        }
+        assert!(page.contains("[2 types]\n"), "{page}");
     }
 
     /// Every type gets its breakdown, the tasks parked on futures no

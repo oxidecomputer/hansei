@@ -12,7 +12,7 @@ use crate::tasks::{
     listing_footer, resolve_rt, task_id,
 };
 use crate::trace::FutureAt;
-use crate::typenames::TypeNames;
+use crate::typenames::{self, TypeNames};
 use crate::whatis::via_suffix;
 use crate::{Session, print_warnings, repl, summary};
 
@@ -22,7 +22,7 @@ use hansei_runtime::tokio::assess::ContinuationStatus;
 use hansei_runtime::tokio::{Lifecycle, RawInstant, attribution, bundle, census};
 
 use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use std::io;
 
@@ -112,6 +112,8 @@ pub(crate) struct FutureRow {
     pub(crate) slot_lines: Vec<String>,
     /// The concrete future type, folded and never truncated.
     pub(crate) future: String,
+    /// That type: what `--group type` buckets the row under.
+    pub(crate) future_ty: BundleTypeId,
     /// How many frames its own chain ran to.
     pub(crate) depth: usize,
     /// What the census found inside it: the counts its block carries.
@@ -486,6 +488,7 @@ impl Rows<'_> {
             wait_line: None,
             slot_lines: Vec::new(),
             future: self.stops.future(h.future),
+            future_ty: h.future,
             depth: h.depth,
             holds: inside.held,
             sets: inside.sets + inside.join_sets,
@@ -532,6 +535,7 @@ impl Rows<'_> {
             wait_line: None,
             slot_lines: Vec::new(),
             future: self.stops.future(future),
+            future_ty: future,
             depth: c.depth,
             holds: inside.held,
             sets: inside.sets + inside.join_sets,
@@ -1195,9 +1199,9 @@ pub(crate) fn exec_futures<T: proc::Target>(
 }
 
 /// `--group FIELD`: bucket the surviving rows by the field's spelled
-/// value and print `COUNT VALUE` rows, most numerous first (ties in
-/// value order), each with up to three member addresses. `--limit`
-/// cuts buckets.
+/// value — `type` by the type itself ([`typenames::tally`]) — and print
+/// `COUNT VALUE` rows, most numerous first (ties in value order), each
+/// with up to three member addresses. `--limit` cuts buckets.
 fn exec_group<T: proc::Target>(
     session: &Session<'_, T>,
     cmd: &FuturesCmd,
@@ -1208,14 +1212,18 @@ fn exec_group<T: proc::Target>(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let rows = rows(session);
-    let mut grouped: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for &index in survivors {
-        let value = group_value(field, &rows[index]).unwrap_or_else(|| EMPTY_BUCKET.to_string());
-        grouped.entry(value).or_default().push(index);
-    }
-    let mut buckets: Vec<(String, Vec<usize>)> = grouped.into_iter().collect();
-    // Count descending; the map already ordered ties by value, and the
-    // sort is stable.
+    let names = TypeNames::of(session);
+    let mut buckets = typenames::tally(
+        survivors.iter().map(|&index| {
+            let row = &rows[index];
+            let value = group_value(field, row).unwrap_or_else(|| EMPTY_BUCKET.to_string());
+            let ty = (field == Field::Type).then_some(row.future_ty);
+            (names.bucket(ty, &value), index)
+        }),
+        |members: &mut Vec<usize>, index| members.push(index),
+    );
+    // Count descending; the tally already ordered ties by value, and
+    // the sort is stable.
     buckets.sort_by_key(|(_, members)| std::cmp::Reverse(members.len()));
     let shown = cmd.limit.unwrap_or(buckets.len()).min(buckets.len());
 
