@@ -34,11 +34,11 @@ use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
-    AccessKind, BundleType, BundleTypeId, BundleView, ContainerKind, Continuation, FutureKind,
-    HashTableBinding, IoOperationKind, MemberRef, PollAction, PollProgram, ResourceKind,
-    SchedulerClass, SelectBinding, StaticRole, Step, StoragePolicy, SymbolLookup, TaskEntryId,
-    TaskFutureEntry, TypeClass, TypeDef, TypeSemantics, TypedPath, WalkOutcome, WalkRole,
-    strip_build_prefix, strip_llvm_suffix,
+    AccessKind, BundleMember, BundleType, BundleTypeId, BundleView, ContainerKind, Continuation,
+    FutureKind, HashTableBinding, IoOperationKind, MemberRef, PollAction, PollProgram,
+    ResourceKind, SchedulerClass, SelectBinding, StaticRole, Step, StoragePolicy, SymbolLookup,
+    TaskEntryId, TaskFutureEntry, TypeClass, TypeDef, TypeSemantics, TypedPath, WalkOutcome,
+    WalkRole, strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -52,12 +52,6 @@ use std::collections::BTreeMap;
 /// memory (or a pathological program), and the walk must report it
 /// rather than hang.
 pub(crate) const MAX_AWAIT_DEPTH: usize = 64;
-
-/// The watch receiver a `changed` frame holds, whose `Shared` names
-/// the channel a `Notified` on one of its `Notify`s waits for.
-const WATCH_RECEIVER: &str = "tokio::sync::watch::Receiver<";
-/// The shared state itself, as `changed_impl` borrows it.
-const WATCH_SHARED: &str = "tokio::sync::watch::Shared<";
 
 /// Whether `addr` lies in `value`'s storage.
 pub(crate) fn contains(value: Value<'_>, addr: u64) -> bool {
@@ -113,41 +107,17 @@ pub fn option_present(value: Value<'_>) -> Option<bool> {
     }
 }
 
-/// The io resource types the fd join recognizes: the fully-qualified
-/// name a frame member (or its pointee) must bear, and the two walk
-/// roles rooted at that type — the route to its `ScheduledIo` (the io
-/// registry's join key) and to its fd.
-const IO_RESOURCES: &[(&str, WalkRole, WalkRole)] = &[
-    (
-        "tokio::net::tcp::stream::TcpStream",
-        WalkRole::TcpStreamShared,
-        WalkRole::TcpStreamFd,
-    ),
-    (
-        "tokio::net::tcp::listener::TcpListener",
-        WalkRole::TcpListenerShared,
-        WalkRole::TcpListenerFd,
-    ),
-    (
-        "tokio::net::udp::UdpSocket",
-        WalkRole::UdpSocketShared,
-        WalkRole::UdpSocketFd,
-    ),
-    (
-        "tokio::net::unix::stream::UnixStream",
-        WalkRole::UnixStreamShared,
-        WalkRole::UnixStreamFd,
-    ),
-    (
-        "tokio::net::unix::listener::UnixListener",
-        WalkRole::UnixListenerShared,
-        WalkRole::UnixListenerFd,
-    ),
-    (
-        "tokio::net::unix::datagram::socket::UnixDatagram",
-        WalkRole::UnixDatagramShared,
-        WalkRole::UnixDatagramFd,
-    ),
+/// The io resources the fd join recognizes, as the two walk roles
+/// rooted at each resource type — the route to its `ScheduledIo` (the
+/// io registry's join key) and to its fd. A frame member (or its
+/// pointee) is a resource when its type is one the first role roots at.
+const IO_RESOURCES: &[(WalkRole, WalkRole)] = &[
+    (WalkRole::TcpStreamShared, WalkRole::TcpStreamFd),
+    (WalkRole::TcpListenerShared, WalkRole::TcpListenerFd),
+    (WalkRole::UdpSocketShared, WalkRole::UdpSocketFd),
+    (WalkRole::UnixStreamShared, WalkRole::UnixStreamFd),
+    (WalkRole::UnixListenerShared, WalkRole::UnixListenerFd),
+    (WalkRole::UnixDatagramShared, WalkRole::UnixDatagramFd),
 ];
 
 /// One route's find, before the store takes it: a header some value
@@ -1577,12 +1547,13 @@ impl<'b, T: Target> Context<'b, T> {
     /// member, an unreadable pointee, a walk the bundle did not bind —
     /// is a silent `None`, and the io row spells the address instead.
     pub fn io_resource_fd(&self, frames: &[Value<'b>], scheduled_io: u64) -> Option<i32> {
-        let is_resource = |name: &str| IO_RESOURCES.iter().any(|(known, ..)| *known == name);
-        for value in self.frame_members(frames, &is_resource) {
-            let Some(&(_, shared, fd)) = IO_RESOURCES
+        let resource_of = |ty: BundleType<'b>| {
+            IO_RESOURCES
                 .iter()
-                .find(|(name, ..)| *name == value.ty.name())
-            else {
+                .find(|(shared, _)| self.view.walk_roots(*shared).contains(&ty.id()))
+        };
+        for value in self.frame_members(frames, &|ty| resource_of(ty).is_some()) {
+            let Some(&(shared, fd)) = resource_of(value.ty) else {
                 continue;
             };
             let Ok(Some(Walked::At(owned))) = self.walk(shared).try_walk(value) else {
@@ -1604,7 +1575,8 @@ impl<'b, T: Target> Context<'b, T> {
     /// the `Shared` a receiver in the frames already names, and every
     /// miss is a silent `None`.
     pub fn watch_target(&self, frames: &[Value<'b>], notify: u64) -> Option<WaitTarget> {
-        let is_receiver = |name: &str| name.starts_with(WATCH_RECEIVER);
+        let receivers = self.view.walk_roots(WalkRole::WatchReceiverShared);
+        let is_receiver = |ty: BundleType<'b>| receivers.contains(&ty.id());
         for receiver in self.frame_members(frames, &is_receiver) {
             let Ok(Some(Walked::At(ptr))) =
                 self.walk(WalkRole::WatchReceiverShared).try_walk(receiver)
@@ -1632,23 +1604,18 @@ impl<'b, T: Target> Context<'b, T> {
         // around that `Shared` is a type the shared-state roles root
         // at — the one whose `data` is this `Shared`'s type — and the
         // `Shared` sits at `data`'s offset into it.
-        let is_shared = |name: &str| name.starts_with(WATCH_SHARED);
-        let arcs = self
+        let arcs: Vec<(BundleType<'b>, BundleMember<'b>)> = self
             .view
-            .bundle()
-            .walks
-            .entries
-            .get(&WalkRole::WatchSharedState)
-            .map(|binding| binding.roots.as_slice())
-            .unwrap_or_default();
+            .walk_roots(WalkRole::WatchSharedState)
+            .iter()
+            .filter_map(|&root| {
+                let arc_ty = self.view.ty(root)?;
+                Some((arc_ty, arc_ty.member("data")?))
+            })
+            .collect();
+        let is_shared = |ty: BundleType<'b>| arcs.iter().any(|(_, data)| data.ty().id() == ty.id());
         for shared in self.frame_members(frames, &is_shared) {
-            for &root in arcs {
-                let Some(arc_ty) = self.view.ty(root) else {
-                    continue;
-                };
-                let Some(data) = arc_ty.member("data") else {
-                    continue;
-                };
+            for &(arc_ty, data) in &arcs {
                 if data.ty().id() != shared.ty.id() {
                     continue;
                 }
@@ -1689,7 +1656,11 @@ impl<'b, T: Target> Context<'b, T> {
     /// whose type `accept`s, or — for a reference member (`&mut
     /// UnixStream` in a `Read` future, `&mut Receiver` in `changed`) —
     /// whose pointee does, read from the target.
-    fn frame_members(&self, frames: &[Value<'b>], accept: &dyn Fn(&str) -> bool) -> Vec<Value<'b>> {
+    fn frame_members(
+        &self,
+        frames: &[Value<'b>],
+        accept: &dyn Fn(BundleType<'b>) -> bool,
+    ) -> Vec<Value<'b>> {
         let mut values = Vec::new();
         for frame in frames {
             for member in frame.ty.members() {
@@ -1702,10 +1673,10 @@ impl<'b, T: Target> Context<'b, T> {
                     continue;
                 };
                 let value = Value::new(member.ty(), frame.addr + member.offset(), bytes);
-                if accept(value.ty.name()) {
+                if accept(value.ty) {
                     values.push(value);
                 } else if let Some(target) = value.ty.pointer_target()
-                    && accept(target.name())
+                    && accept(target)
                     && let Ok(ptr) = value.parse::<u64>(self.proc)
                     && self.mappings.contains_addr(ptr)
                     && let Ok(pointee) = Value::read(self.proc, target, ptr)
@@ -6118,7 +6089,7 @@ mod tests {
             })
             .expect("a struct with a sized member past its start");
         let wanted = member.ty().name().to_string();
-        let accept = |name: &str| name == wanted;
+        let accept = |ty: BundleType<'_>| ty.id() == member.ty().id();
         let bytes = vec![0xab_u8; frame_ty.size() as usize];
         let base = 0x7000_0000;
         let frame = Value::new(frame_ty, base, &bytes);

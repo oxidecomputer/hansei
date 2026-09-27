@@ -11,7 +11,7 @@
 use crate::Encoding;
 use crate::schema::{
     Bundle, BundleTypeId, MemberDef, Provenance, SymbolLookup, TaskEntryId, TypeDef, VariantDef,
-    VariantShape,
+    VariantShape, WalkOutcome, WalkRole,
 };
 
 use std::fmt;
@@ -104,6 +104,18 @@ impl<'a> BundleView<'a> {
             bundle: self.bundle,
             id,
         })
+    }
+
+    /// The types `role`'s binding was resolved against — every type its
+    /// walk starts from — or none where the role did not bind. Which
+    /// types a role roots at is the extraction-time binder's call, made
+    /// per tokio family, so asking this rather than matching a type's
+    /// name keeps the read side on whatever this target's family says.
+    pub fn walk_roots(&self, role: WalkRole) -> &'a [BundleTypeId] {
+        match self.bundle.walks.entries.get(&role) {
+            Some(binding) if matches!(binding.outcome, WalkOutcome::Bound { .. }) => &binding.roots,
+            _ => &[],
+        }
     }
 
     /// All types whose fully-qualified name is exactly `name`.

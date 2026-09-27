@@ -1069,6 +1069,35 @@ fn test_validate_constrains_walk_binding_shape() {
     assert!(format!("{err}").contains("spelling"), "{err}");
 }
 
+/// A role roots at what it bound against, and nowhere where it did not
+/// bind — whatever an unvalidated entry records.
+#[test]
+fn test_walk_roots_are_a_bound_roles_alone() {
+    let mut b = walk_bundle(false);
+    let bound = b.walks.entries[&WalkRole::SleepDeadline].roots.clone();
+    assert!(!bound.is_empty());
+    assert_eq!(
+        crate::BundleView::new(&b).walk_roots(WalkRole::SleepDeadline),
+        bound.as_slice()
+    );
+    assert!(
+        crate::BundleView::new(&b)
+            .walk_roots(WalkRole::WakerData)
+            .is_empty()
+    );
+
+    b.walks
+        .entries
+        .get_mut(&WalkRole::SleepDeadline)
+        .unwrap()
+        .outcome = WalkOutcome::Broken { errors: Vec::new() };
+    assert!(
+        crate::BundleView::new(&b)
+            .walk_roots(WalkRole::SleepDeadline)
+            .is_empty()
+    );
+}
+
 /// Role names are the report's row labels; two roles sharing one would make
 /// the report ambiguous.
 #[test]
