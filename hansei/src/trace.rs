@@ -11,7 +11,9 @@ use crate::{Session, TraceOpts, TraceTarget, output};
 
 use anyhow::{Context as _, Result};
 use hansei_bundle::names;
-use hansei_bundle::{BundleMember, BundleType, BundleTypeId, BundleView, SymbolLookup};
+use hansei_bundle::{
+    BundleMember, BundleType, BundleTypeId, BundleView, CoroutinePhase, SymbolLookup,
+};
 use hansei_runtime::tokio::chain::{FutureInspection, InspectionMode};
 use hansei_runtime::tokio::graph::TaskWait;
 use hansei_runtime::tokio::observe::ReadContext;
@@ -600,10 +602,7 @@ pub(crate) fn print_frame<'b, T: proc::Target>(
     let kind = if adapter {
         "adapter"
     } else {
-        async_kind(
-            frame.future.ty.name(),
-            frame.state.as_ref().map(|state| state.name),
-        )
+        async_kind(frame.future.ty.name(), frame.future.ty.is_coroutine())
     };
     let dyn_marker = if frame.dyn_symbol.is_some() {
         " [dyn]"
@@ -696,7 +695,7 @@ fn frame_detail(
         let loc = state
             .await_loc
             .map(|(file, line)| theme.loc(&format!("{file}:{line}")).into_owned());
-        if state.name.starts_with("Suspend") {
+        if state.phase == Some(CoroutinePhase::Suspended) {
             let mut quals = state.name.to_string();
             // The count prints even at zero: its absence would read as
             // "no answer", not as "nothing live", and the two differ.
@@ -1254,12 +1253,12 @@ fn suspend_rows<'b>(frame: &bundle::AwaitFrame<'b>) -> Vec<SuspendRow<'b>> {
         .variants()
         .filter_map(|variant| {
             let name = variant.state_name();
-            let active = name == state.name;
+            let active = variant.ty.id() == state.payload.ty.id();
             // A terminal state is not a suspend point; it earns a row
             // only by being the one the frame is actually in, which it
             // is for a task parked before its first poll or holding an
             // unconsumed result.
-            if !active && !name.starts_with("Suspend") {
+            if !active && variant.phase() != Some(CoroutinePhase::Suspended) {
                 return None;
             }
             Some(SuspendRow {
@@ -1289,21 +1288,17 @@ fn state_locals(ty: BundleType<'_>) -> Vec<BundleMember<'_>> {
 }
 
 /// Classify the outer future type from rustc's generated DWARF basename.
-/// The names are an implementation detail, so an unrecognized state
-/// machine deliberately receives the neutral `async` label. Always
-/// judged on the *raw* name, before display folding removes the very
-/// marker this reads.
-fn async_kind(name: &str, state: Option<&str>) -> &'static str {
+/// The names are an implementation detail, so a state machine whose
+/// name is not recognized deliberately receives the neutral `async`
+/// label — a coroutine by its layout ([`BundleType::is_coroutine`]),
+/// never by what its states happen to be called, which an enum future
+/// is free to call anything. Always judged on the *raw* name, before
+/// display folding removes the very marker this reads.
+fn async_kind(name: &str, is_coroutine: bool) -> &'static str {
     if let Some(kind) = names::coroutine_kind(name) {
         return kind;
     }
-    if state.is_some_and(|state| {
-        state.starts_with("Suspend") || matches!(state, "Unresumed" | "Returned" | "Panicked")
-    }) {
-        "async"
-    } else {
-        "future"
-    }
+    if is_coroutine { "async" } else { "future" }
 }
 
 /// Print a named variable compactly when it fits on one line, or as a
@@ -2275,32 +2270,30 @@ mod variable_format_tests {
     #[test]
     fn classifies_rustc_async_environment_names() {
         assert_eq!(
-            async_kind("crate::work::{async_fn_env#0}<T>", Some("Suspend0")),
+            async_kind("crate::work::{async_fn_env#0}<T>", true),
             "async fn"
         );
         assert_eq!(
-            async_kind("crate::work::{async_block_env#2}", Some("Suspend0")),
+            async_kind("crate::work::{async_block_env#2}", true),
             "async block"
         );
         assert_eq!(
-            async_kind("crate::work::{async_closure_env#1}", Some("Suspend0")),
+            async_kind("crate::work::{async_closure_env#1}", true),
             "async closure"
         );
-        assert_eq!(async_kind("crate::unknown", Some("Suspend3")), "async");
-        assert_eq!(async_kind("crate::MaybeDone", Some("Done")), "future");
+        assert_eq!(async_kind("crate::unknown", true), "async");
+        // An enum future is no coroutine, whatever it calls its states.
+        assert_eq!(async_kind("crate::MaybeDone", false), "future");
     }
 
     #[test]
     fn classifies_the_outer_future_not_its_type_arguments() {
         assert_eq!(
-            async_kind("core::future::PollFn<crate::work::{async_fn_env#0}>", None),
+            async_kind("core::future::PollFn<crate::work::{async_fn_env#0}>", false),
             "future"
         );
         assert_eq!(
-            async_kind(
-                "crate::Wrapper<T>::work::{async_fn_env#0}<U>",
-                Some("Suspend0")
-            ),
+            async_kind("crate::Wrapper<T>::work::{async_fn_env#0}<U>", true),
             "async fn"
         );
     }
@@ -2310,11 +2303,11 @@ mod variable_format_tests {
     #[test]
     fn test_half_spelled_closure_names_stay_futures() {
         assert_eq!(
-            async_kind("crate::{async_closure_env#1}tail", None),
+            async_kind("crate::{async_closure_env#1}tail", false),
             "future"
         );
         assert_eq!(
-            async_kind("crate::not_{async_closure_env#1}", None),
+            async_kind("crate::not_{async_closure_env#1}", false),
             "future"
         );
     }

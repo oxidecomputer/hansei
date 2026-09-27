@@ -13,6 +13,8 @@ use crate::schema::{
     Bundle, BundleTypeId, MemberDef, Provenance, SymbolLookup, TaskEntryId, TypeDef, VariantDef,
     VariantShape, WalkOutcome, WalkRole,
 };
+use crate::semantics::{CoroutineLayout, CoroutinePhase};
+use crate::strings::StrRef;
 
 use std::fmt;
 
@@ -595,7 +597,20 @@ impl<'a> BundleType<'a> {
             await_site: def
                 .await_site
                 .and_then(|loc| Some((self.bundle.strings.get(loc.file)?, loc.line))),
+            owner: *self,
+            key: def.name,
         }
+    }
+
+    /// The coroutine layout the bundle recorded for this type: its
+    /// states, each with its stage and the locals it holds. `None` for
+    /// a type that is no coroutine, and for one no reviewed rule covers.
+    pub fn coroutine_layout(&self) -> Option<&'a CoroutineLayout> {
+        let records = &self.bundle.semantics.types;
+        let at = records
+            .binary_search_by_key(&self.id, |record| record.ty)
+            .ok()?;
+        records[at].coroutine.as_ref()
     }
 
     /// If this is a Rust enum, decode which variant `bytes` holds.
@@ -771,6 +786,11 @@ pub struct BundleVariant<'a> {
     /// Where a suspend point's await is written, when extraction found
     /// that `decl` names the macro it expanded from instead.
     pub await_site: Option<(&'a str, u32)>,
+    /// The enum this is a variant of.
+    owner: BundleType<'a>,
+    /// The variant member's interned name: what a coroutine layout's
+    /// states are keyed by.
+    key: StrRef,
 }
 
 /// The result of decoding a Rust enum's discriminant: the one variant of
@@ -784,19 +804,33 @@ impl<'a> BundleVariant<'a> {
         variant_name(self.name, self.ty)
     }
 
+    /// Which stage of a coroutine this variant is, by the layout the
+    /// bundle recorded for its enum. `None` for an ordinary enum's
+    /// variant, and for a coroutine no reviewed layout covers — whose
+    /// stages are then unknown, whatever its states are called.
+    pub fn phase(&self) -> Option<CoroutinePhase> {
+        self.owner
+            .coroutine_layout()?
+            .states
+            .iter()
+            .find(|state| state.variant == self.key)
+            .map(|state| state.stage)
+    }
+
     /// Where a coroutine suspend point's await sits in source: the place
     /// it is written, falling back to the coordinates the variant member
     /// carries when nothing better was recovered.
     ///
-    /// Only a `SuspendN` state is at an await. `Unresumed` has run no
+    /// Only a suspended state is at an await. `Unresumed` has run no
     /// instruction of the body and `Returned`/`Panicked` have finished
     /// it, so none of the three waits anywhere; the coordinates rustc
     /// records on them are the body's opening line and closing brace,
     /// and reporting those as an await site would claim the future is
     /// parked at a line it has never reached or has already left. They
-    /// answer `None`; the raw coordinates stay on `decl`.
+    /// answer `None`, as does a state whose [`phase`](Self::phase) is
+    /// unknown; the raw coordinates stay on `decl`.
     pub fn await_loc(&self) -> Option<(&'a str, u32)> {
-        if !self.state_name().starts_with("Suspend") {
+        if self.phase() != Some(CoroutinePhase::Suspended) {
             return None;
         }
         self.await_site.or(self.decl)

@@ -904,6 +904,10 @@ pub struct AwaitFrame<'b> {
 pub struct FrameState<'b> {
     /// The human-readable state name (`Unresumed`, `Suspend0`, …).
     pub name: &'b str,
+    /// The coroutine stage the state is, where the bundle recorded the
+    /// state enum's coroutine layout: `None` for an enum future's state
+    /// and for a coroutine no reviewed layout covers.
+    pub phase: Option<hansei_bundle::CoroutinePhase>,
     /// The awaited expression's source location, when the debug info
     /// recorded it.
     pub await_loc: Option<(&'b str, u32)>,

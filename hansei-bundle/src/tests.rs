@@ -2429,13 +2429,74 @@ mod view_tests {
         assert_eq!(v.decl, Some(("src/work.rs", 18)));
     }
 
+    /// `coroutine_bundle` with the coroutine layout a reviewed rule
+    /// records for its enum: each numbered variant keyed to its stage.
+    fn laid_out_coroutine_bundle() -> Bundle {
+        use crate::semantics::{
+            CoroutineLayout, CoroutinePhase, CoroutineState, SemanticRuleId, StoragePolicy,
+            TypeSemantics,
+        };
+        let mut b = coroutine_bundle();
+        let TypeDef::Enum { shape, .. } = &b.types.types[3] else {
+            panic!("the coroutine env is an enum");
+        };
+        let stages = [
+            CoroutinePhase::Unresumed,
+            CoroutinePhase::Returned,
+            CoroutinePhase::Suspended,
+            CoroutinePhase::Suspended,
+        ];
+        let states = shape
+            .variants
+            .iter()
+            .zip(stages)
+            .map(|(v, stage)| CoroutineState {
+                variant: v.name,
+                stage,
+                locals: vec![],
+                uncertain_locals: vec![],
+            })
+            .collect();
+        b.semantics.types.push(TypeSemantics {
+            ty: BundleTypeId(3),
+            storage: StoragePolicy::CoroutineStates,
+            future: None,
+            coroutine: Some(CoroutineLayout {
+                rule: SemanticRuleId(0),
+                states,
+            }),
+            access: None,
+            resource: None,
+            container: None,
+            select: None,
+            http: None,
+            request: None,
+            table: None,
+            pool: None,
+            issues: vec![],
+        });
+        b
+    }
+
     /// Only a suspend state is at an await. The terminal states carry
     /// coordinates too — the body's opening line and closing brace —
     /// but those say where the coroutine is defined, not where it
     /// waits, and `await_loc` must not hand them out as a site.
     #[test]
     fn test_await_loc_only_on_suspend_states() {
-        let b = coroutine_bundle();
+        // With no layout recorded the stages are unknown, and no state
+        // is taken for an await by what its payload is called.
+        let bare = coroutine_bundle();
+        let e = BundleView::new(&bare).ty(BundleTypeId(3)).unwrap();
+        let v = e
+            .active_variant(&[3, 0, 0, 0, 0, 0, 0, 0])
+            .unwrap()
+            .unwrap();
+        assert_eq!(v.state_name(), "Suspend0");
+        assert_eq!(v.phase(), None);
+        assert_eq!(v.await_loc(), None);
+
+        let b = laid_out_coroutine_bundle();
         let e = BundleView::new(&b).ty(BundleTypeId(3)).unwrap();
         let at = |tag: u8| {
             e.active_variant(&[tag, 0, 0, 0, 0, 0, 0, 0])

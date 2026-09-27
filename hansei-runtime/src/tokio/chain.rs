@@ -309,6 +309,7 @@ impl<'b, T: Target> Context<'b, T> {
                 };
                 let frame_state = FrameState {
                     name: active.state_name(),
+                    phase: active.phase(),
                     await_loc: active.await_loc(),
                     payload: Value::new(active.ty, state_value.addr + start, bytes),
                 };
@@ -962,6 +963,7 @@ mod tests {
         // address; the payload is sliced there, without peeling.
         assert_eq!(state.payload.addr, joiner.chain.frames[0].future.addr);
         assert!(state.name.starts_with("Suspend"), "{}", state.name);
+        assert_eq!(state.phase, Some(hansei_bundle::CoroutinePhase::Suspended));
         assert!(state.await_loc.is_some());
 
         let (bundle, snapshot) = load_any("futurelock");
