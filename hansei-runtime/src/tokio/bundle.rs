@@ -245,6 +245,14 @@ impl<K: Eq + std::hash::Hash, V: Clone> Memo<K, V> {
         self.0.borrow_mut().insert(key.to_owned(), value.clone());
         value
     }
+
+    fn get(&self, key: &K) -> Option<V> {
+        self.0.borrow().get(key).cloned()
+    }
+
+    fn insert(&self, key: K, value: V) {
+        self.0.borrow_mut().insert(key, value);
+    }
 }
 
 /// The longest request text a read takes as one: a URL or a path and
@@ -1459,38 +1467,78 @@ impl<'b, T: Target> Context<'b, T> {
     /// keeps has buckets that could hold one. A pointer no adapter is
     /// bound for is a word the scan never follows, so it ends the
     /// question there. A fact of the type, remembered per type.
+    ///
+    /// A table's buckets live on the heap, so a type can reach itself
+    /// through its own map (a trie's node keeping its children in a
+    /// `HashMap<_, Node>`): the question is asked of every type the
+    /// storage reaches, each once. A type met again adds nothing, and
+    /// where the answer is yes it is yes for every type the walk met,
+    /// which reach no further than the first.
     pub(crate) fn reference_inert(&self, ty: BundleType<'b>) -> bool {
-        self.reference_inert.get_or(&ty.id(), || {
-            let bound = self.type_semantics(ty.id()).is_some_and(|record| {
+        if let Some(known) = self.reference_inert.get(&ty.id()) {
+            return known;
+        }
+        let mut seen = HashSet::default();
+        let mut stack = vec![ty];
+        let mut inert = true;
+        while let Some(ty) = stack.pop() {
+            if !seen.insert(ty.id()) {
+                continue;
+            }
+            match self.reference_inert.get(&ty.id()) {
+                Some(true) => continue,
+                Some(false) => {
+                    inert = false;
+                    break;
+                }
+                None => {}
+            }
+            let record = self.type_semantics(ty.id());
+            if record.is_some_and(|record| {
                 record.resource.is_some()
                     || record.container.is_some()
                     || record.access.is_some()
                     || record.future.is_some()
                     || record.coroutine.is_some()
                     || matches!(record.storage, StoragePolicy::Unavailable(_))
-                    || record.table.as_ref().is_some_and(|table| {
-                        self.view
-                            .ty(table.bucket)
-                            .is_some_and(|bucket| !self.reference_inert(bucket))
-                    })
-            });
-            !bound
-                && match ty.classify() {
-                    TypeClass::Struct => ty
-                        .members()
-                        .all(|member| member.ty().size() == 0 || self.reference_inert(member.ty())),
-                    TypeClass::RustEnum => ty
-                        .variants()
-                        .all(|variant| self.reference_inert(variant.ty)),
-                    TypeClass::Array { element, .. } => !super::scan::holds_aggregates(element),
-                    TypeClass::Union
-                    | TypeClass::Pointer { .. }
-                    | TypeClass::Integer { .. }
-                    | TypeClass::Float { .. }
-                    | TypeClass::CEnum
-                    | TypeClass::Opaque => true,
+            }) {
+                inert = false;
+                break;
+            }
+            if let Some(table) = record.and_then(|record| record.table.as_ref())
+                && let Some(bucket) = self.view.ty(table.bucket)
+            {
+                stack.push(bucket);
+            }
+            match ty.classify() {
+                TypeClass::Struct => stack.extend(
+                    ty.members()
+                        .map(|member| member.ty())
+                        .filter(|member| member.size() != 0),
+                ),
+                TypeClass::RustEnum => stack.extend(ty.variants().map(|variant| variant.ty)),
+                TypeClass::Array { element, .. } => {
+                    if super::scan::holds_aggregates(element) {
+                        inert = false;
+                        break;
+                    }
                 }
-        })
+                TypeClass::Union
+                | TypeClass::Pointer { .. }
+                | TypeClass::Integer { .. }
+                | TypeClass::Float { .. }
+                | TypeClass::CEnum
+                | TypeClass::Opaque => {}
+            }
+        }
+        if inert {
+            for id in seen {
+                self.reference_inert.insert(id, true);
+            }
+        } else {
+            self.reference_inert.insert(ty.id(), false);
+        }
+        inert
     }
 
     /// The member a fan-out container keeps its entries in, as the

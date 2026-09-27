@@ -421,6 +421,12 @@ exclude_re = [
     # members it checks, and each is screened by `keeps_request` again,
     # so admitting every frame finds exactly the same request.
     "replace Context<'b, T>::may_hold_request -> bool with true",
+    # Equivalent mutants: the inertness walk's memo only saves walks.
+    # Never consulted, or never filled, every question is answered by
+    # a walk of its own, which its visited set bounds and which reaches
+    # the answer the memo would have held.
+    "replace Memo<K, V>::get -> Option<V> with None",
+    "replace Memo<K, V>::insert with \\(\\)",
     # Equivalent mutant: the `Pending` screen's name test is a
     # pre-screen that saves the walk, the same shape as the adapter
     # branch above it — `core_pending` itself checks the declaring
