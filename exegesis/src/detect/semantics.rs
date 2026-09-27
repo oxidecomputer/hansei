@@ -497,6 +497,96 @@ pub const HYPER_UTIL_TOKIO_SLEEP_V0_1_10: LibraryConvention = LibraryConvention 
     ],
 };
 
+/// hyper-util's legacy client pool as 0.1.16 through 0.1.20 lay it out,
+/// reviewed in `src/client/legacy/pool.rs` and `client.rs` of each
+/// release: `IdleTask { timer, duration, pool: WeakOpt<Mutex<PoolInner<
+/// T, K>>>, pool_drop_notifier }` (0.1.15 and before kept a `deadline`
+/// and the pinned sleep beside the pool, in a `pin_project!`),
+/// `PoolInner { .., idle: HashMap<K, Vec<Idle<T>>>, .. }`, `Idle {
+/// idle_at, value: T }`, `Pooled { value: Option<T>, is_reused, key: K,
+/// pool }`, and the client's `PoolClient { conn_info, tx: PoolTx<B> }`
+/// with `PoolTx::Http1(hyper::client::conn::http1::SendRequest<B>)`; the
+/// key is `(Scheme, Authority)`. What the review establishes: a reaper
+/// holds its pool weakly for as long as the pool lives, the idle map
+/// holds every connection waiting to be checked out under the key it
+/// was made for, and a checked-out connection keeps that key; the
+/// sender's `want::Giver` (hyper's `dispatch::Sender`) shares its
+/// `Arc<want::Inner>` with the one `Taker` of the receiver the
+/// connection's dispatcher reads — that pointer is the connection's
+/// identity on both sides.
+pub const HYPER_UTIL_POOL_V0_1_16: LibraryConvention = LibraryConvention {
+    package: "hyper-util",
+    family: "hyper-util-pool-0.1.16",
+    floor: (0, 1, 16),
+    ceiling: (0, 1, 20),
+    checksums: &[
+        // src/client/legacy/pool.rs, 0.1.16
+        (
+            "src/client/legacy/pool.rs",
+            [
+                0x0c, 0xd2, 0x72, 0x30, 0x99, 0x42, 0x63, 0x5c, 0xb9, 0x67, 0x9f, 0x37, 0xa3, 0x0c,
+                0xd1, 0x12,
+            ],
+        ),
+        // src/client/legacy/pool.rs, 0.1.17
+        (
+            "src/client/legacy/pool.rs",
+            [
+                0x6e, 0x25, 0x83, 0x2f, 0xe1, 0x79, 0x87, 0xf1, 0x0e, 0xb7, 0x3a, 0x85, 0x1f, 0xb6,
+                0x04, 0x85,
+            ],
+        ),
+        // src/client/legacy/pool.rs, 0.1.18 through 0.1.19
+        (
+            "src/client/legacy/pool.rs",
+            [
+                0xac, 0x50, 0x2b, 0x40, 0x37, 0xfa, 0x1d, 0x28, 0x06, 0x9a, 0x38, 0xeb, 0xeb, 0x5f,
+                0x95, 0x90,
+            ],
+        ),
+        // src/client/legacy/pool.rs, 0.1.20
+        (
+            "src/client/legacy/pool.rs",
+            [
+                0x35, 0x95, 0x25, 0x8e, 0x1b, 0x4e, 0x87, 0xe2, 0xe7, 0xe5, 0xde, 0x8b, 0x21, 0xbe,
+                0xf2, 0x5c,
+            ],
+        ),
+        // src/client/legacy/client.rs, 0.1.16
+        (
+            "src/client/legacy/client.rs",
+            [
+                0x86, 0xe1, 0xbc, 0x92, 0x61, 0xf4, 0x9b, 0x52, 0xb4, 0x6a, 0x6c, 0x9d, 0xe6, 0x03,
+                0xe5, 0x21,
+            ],
+        ),
+        // src/client/legacy/client.rs, 0.1.17
+        (
+            "src/client/legacy/client.rs",
+            [
+                0xb0, 0x0b, 0x75, 0xa5, 0xa7, 0xc2, 0x52, 0xbe, 0x65, 0xac, 0x88, 0x8a, 0xe0, 0xab,
+                0xf2, 0x63,
+            ],
+        ),
+        // src/client/legacy/client.rs, 0.1.18 through 0.1.19
+        (
+            "src/client/legacy/client.rs",
+            [
+                0x9b, 0x90, 0x83, 0xd8, 0x0b, 0xb8, 0xec, 0x56, 0x4e, 0xb7, 0x70, 0x93, 0x5b, 0x36,
+                0x59, 0x6d,
+            ],
+        ),
+        // src/client/legacy/client.rs, 0.1.20
+        (
+            "src/client/legacy/client.rs",
+            [
+                0xbe, 0x70, 0x4c, 0x6b, 0xf9, 0x58, 0x1d, 0x9a, 0xcc, 0xb4, 0x6f, 0x50, 0x80, 0xaa,
+                0x70, 0x07,
+            ],
+        ),
+    ],
+};
+
 /// dropshot's server as 0.17.0 and 0.17.1 implement it, reviewed in
 /// `src/server.rs` of each release (0.17.1 differs from 0.17.0 in import
 /// order and rustfmt reflow alone): the accept loop takes each
@@ -1921,6 +2011,12 @@ mod tests {
                 &HYPER_UTIL_AUTO_CONN_V0_1_10,
                 ["0.1.10", "0.1.12", "0.1.15", "0.1.20"].as_slice(),
                 "0.1.9",
+                "0.1.21",
+            ),
+            (
+                &HYPER_UTIL_POOL_V0_1_16,
+                ["0.1.16", "0.1.17", "0.1.18", "0.1.19", "0.1.20"].as_slice(),
+                "0.1.15",
                 "0.1.21",
             ),
             (

@@ -891,6 +891,164 @@ fn assert_request(
     assert!(seen > 0, "{program}: no type named {key}");
 }
 
+/// reqwest's hyper-util pool: its reaper and its checkout each bind
+/// under the pool rule, read off `pool.rs` in the reviewed range. The
+/// reaper reaches its pool's strong count and idle map through the weak
+/// reference, and from a bucket of the map the key's authority text and
+/// the idle list, whose element's sender carries the want pointer; the
+/// checkout reaches its own key and sender.
+fn assert_pool(program: &str, bundle: &Bundle) {
+    use exegesis::detect::semantics::HYPER_UTIL_POOL_V0_1_16;
+    use hansei_bundle::{HttpPoolBinding, LayoutSelection, SemanticOrigin, SemanticRuleKind};
+    const CLIENT: &str =
+        "hyper_util::client::legacy::client::PoolClient<reqwest::async_impl::body::Body>";
+    const KEY: &str = "(http::uri::scheme::Scheme, http::uri::authority::Authority)";
+    const WANT: &str = "*const alloc::sync::ArcInner<want::Inner>";
+    let s = |id| bundle.strings.get(id).unwrap();
+    let route = |path: &hansei_bundle::TypedPath| {
+        format!(
+            "{} -> {}",
+            route_text(bundle, path),
+            type_name_of(bundle, path.target)
+        )
+    };
+    let rule_of = |name: &str, rule: hansei_bundle::SemanticRuleId| {
+        let rule = &bundle.semantics.rules[rule.0 as usize];
+        assert_eq!(
+            rule.kind,
+            SemanticRuleKind::HyperUtilPool,
+            "{program}: {name}"
+        );
+        let origin = &bundle.semantics.origins[rule.origin.0 as usize];
+        let SemanticOrigin::LibraryDelegation {
+            package,
+            version,
+            family,
+            source,
+            ..
+        } = origin
+        else {
+            panic!("{program}: {name}: {origin:?}");
+        };
+        assert_eq!(s(*package), "hyper-util", "{program}: {name}");
+        assert_eq!(
+            s(*family),
+            HYPER_UTIL_POOL_V0_1_16.family,
+            "{program}: {name}"
+        );
+        assert!(
+            s(*source).ends_with("/src/client/legacy/pool.rs"),
+            "{program}: {name}: {}",
+            s(*source)
+        );
+        assert_eq!(
+            HYPER_UTIL_POOL_V0_1_16.select(&s(*version).parse().unwrap()),
+            LayoutSelection::ReviewedRange,
+            "{program}: {name}"
+        );
+    };
+    let reaper = format!("hyper_util::client::legacy::pool::IdleTask<{CLIENT}, {KEY}>");
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, &reaper) {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no semantic record"));
+        let Some(HttpPoolBinding::Reaper {
+            rule,
+            strong,
+            idle,
+            key_ptr,
+            key_len,
+            entries_ptr,
+            entries_len,
+            entry,
+            want,
+        }) = &record.pool
+        else {
+            panic!("{program}: {name} has no reaper binding: {record:?}");
+        };
+        rule_of(name, *rule);
+        let pool = "pool.__0.Some.__0.ptr.pointer.*";
+        assert_eq!(
+            route(strong),
+            format!("{pool}.strong -> core::sync::atomic::Atomic<usize>"),
+            "{program}: {name}"
+        );
+        assert_eq!(
+            route_text(bundle, idle),
+            format!("{pool}.data.data.value.idle"),
+            "{program}: {name}"
+        );
+        assert!(
+            type_name_of(bundle, idle.target)
+                .starts_with(&format!("std::collections::hash::map::HashMap<{KEY}, ")),
+            "{program}: {name}: {}",
+            type_name_of(bundle, idle.target)
+        );
+        assert_eq!(
+            [key_ptr, key_len, entries_ptr, entries_len].map(route),
+            [
+                "__0.__1.data.bytes.ptr -> *const u8",
+                "__0.__1.data.bytes.len -> usize",
+                "__1.buf.inner.ptr.pointer.pointer -> *const u8",
+                "__1.len -> usize",
+            ],
+            "{program}: {name}"
+        );
+        assert_eq!(
+            type_name_of(bundle, *entry),
+            format!("hyper_util::client::legacy::pool::Idle<{CLIENT}>"),
+            "{program}: {name}"
+        );
+        assert_eq!(
+            route(want),
+            format!("value.tx.Http1.__0.dispatch.giver.inner.ptr.pointer -> {WANT}"),
+            "{program}: {name}"
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no type named {reaper}");
+    // The description reads the key and the list from the bucket of the
+    // idle map's own table.
+    let table = exegesis::describe::describe_semantics(bundle);
+    let described: Vec<&str> = table
+        .lines()
+        .filter(|line| line.starts_with(&format!("{reaper} :: ")))
+        .collect();
+    assert!(!described.is_empty(), "{program}: no record for {reaper}");
+    for line in described {
+        assert!(
+            line.contains(" key __0.__1.data.bytes.ptr@+")
+                && line.contains(" entries __1.buf.inner.ptr.pointer.pointer@+"),
+            "{program}: {line}"
+        );
+    }
+    let checkout = format!("hyper_util::client::legacy::pool::Pooled<{CLIENT}, {KEY}>");
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, &checkout) {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no semantic record"));
+        let Some(HttpPoolBinding::Checkout {
+            rule,
+            key_ptr,
+            key_len,
+            want,
+        }) = &record.pool
+        else {
+            panic!("{program}: {name} has no checkout binding: {record:?}");
+        };
+        rule_of(name, *rule);
+        assert_eq!(
+            [key_ptr, key_len, want].map(route),
+            [
+                "key.__1.data.bytes.ptr -> *const u8".to_owned(),
+                "key.__1.data.bytes.len -> usize".to_owned(),
+                format!("value.Some.__0.tx.Http1.__0.dispatch.giver.inner.ptr.pointer -> {WANT}"),
+            ],
+            "{program}: {name}"
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no type named {checkout}");
+}
+
 fn type_name_of(bundle: &Bundle, id: hansei_bundle::BundleTypeId) -> String {
     use hansei_bundle::TypeDef;
     match bundle.types.get(id) {
@@ -1126,6 +1284,18 @@ fn assert_http_conn(program: &str, bundle: &Bundle, key: &str, client: bool) {
                         .starts_with("tokio::sync::mpsc::unbounded::UnboundedReceiver<"),
                     "{program}: {name}: {}",
                     name_of(dispatch.rx.target)
+                );
+                // The receiver's want handle, the pointer its sender's
+                // giver shares.
+                assert_eq!(
+                    route_text(bundle, &dispatch.want),
+                    "dispatch.rx.taker.inner.ptr.pointer",
+                    "{program}: {name}"
+                );
+                assert_eq!(
+                    type_name_of(bundle, dispatch.want.target),
+                    "*const alloc::sync::ArcInner<want::Inner>",
+                    "{program}: {name}"
                 );
             }
             None if !client => {}
@@ -1880,20 +2050,24 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                     );
                     assert_eq!(program, "watch-stream", "{program}");
                 }
-                // hyper-util's sleep over tokio's and its version-choosing
-                // server connection, which only the hyper fixture links,
-                // each read off its own file; whether a poll survives out
-                // of line for the origin to be recorded at all is the
-                // target's call (the Mach-O build inlines the sleep's).
+                // hyper-util's sleep over tokio's, its version-choosing
+                // server connection and its client pool, which only the
+                // hyper fixture links, each read off its own file; whether
+                // a poll survives out of line for the origin to be recorded
+                // at all is the target's call (the Mach-O build inlines the
+                // sleep's).
                 "hyper-util" => {
                     use exegesis::detect::semantics::{
-                        HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
+                        HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_POOL_V0_1_16,
+                        HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
                     };
                     let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
                         unreachable!()
                     };
                     let convention = if s(*family) == HYPER_UTIL_AUTO_CONN_V0_1_10.family {
                         &HYPER_UTIL_AUTO_CONN_V0_1_10
+                    } else if s(*family) == HYPER_UTIL_POOL_V0_1_16.family {
+                        &HYPER_UTIL_POOL_V0_1_16
                     } else {
                         assert_eq!(
                             s(*family),
@@ -3837,6 +4011,9 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "head.uri.path_and_query.data.bytes.ptr",
             "head.uri.path_and_query.data.bytes.len",
         );
+        // reqwest's pool, from its reaper and from a checkout: the key
+        // authority's text and the sender's want pointer.
+        assert_pool(program, bundle);
         // Each upgradeable connection matches on its `inner` option:
         // `Some` polls the dispatcher inside the connection — `inner`
         // on the client, `conn` on the server — exclusively; `None` is

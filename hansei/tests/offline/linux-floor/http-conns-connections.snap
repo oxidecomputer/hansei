@@ -3,11 +3,11 @@ source: hansei/src/offline.rs
 description: "`connections` over linux-floor/http-conns"
 ---
 TASK  ROLE    PHASE              DEADLINE                                      BUF      PEER  SERVER  METHOD  REQUEST
-4     client  idle               —                                             0/8192   —     —       —       —
-5     server  idle               TS on the target's monotonic clock  0/16302  —     —       —       —
-7     server  handling request   —                                             0/16339  —     —       GET     /park
-8     client  awaiting response  —                                             0/8192   —     —       GET     —
-10    server  handling request   —                                             0/16326  —     —       GET     /park
-11    client  awaiting response  —                                             0/8192   —     —       GET     http://127.0.0.1:34841/park
-12    server  negotiating        —                                             —        —     —       —       —
+4     server  idle               TS on the target's monotonic clock  0/16302  —     —       —       —
+5     client  idle               —                                             0/8192   —     —       —       —
+9     server  handling request   —                                             0/16339  —     —       GET     /park
+10    client  awaiting response  —                                             0/8192   —     —       GET     —
+12    server  handling request   —                                             0/16326  —     —       GET     /park
+13    client  awaiting response  —                                             0/8192   —     —       GET     http://127.0.0.1:46185/park
+14    server  negotiating        —                                             —        —     —       —       —
 [7 connections]

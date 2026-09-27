@@ -893,6 +893,9 @@ pub(crate) struct HttpClientLayout {
     pub(crate) no_retry: TypeId,
     /// `dispatch.rx.inner`, the `UnboundedReceiver<Envelope<..>>`.
     pub(crate) rx: TypeId,
+    /// `dispatch.rx.taker.inner.ptr.pointer`, the `*const
+    /// ArcInner<want::Inner>` the receiver shares with its sender.
+    pub(crate) want: TypeId,
 }
 
 /// The server dispatch as the raw screen saw it.
@@ -951,6 +954,12 @@ pub(crate) mod hyper_h1 {
     pub(crate) const RETRY: &str = "Retry";
     pub(crate) const NO_RETRY: &str = "NoRetry";
     pub(crate) const RX: &str = "rx";
+    /// The receiver's `want::Taker`, down to the `*const` its `Arc`
+    /// keeps: `taker.inner.ptr.pointer`.
+    pub(crate) const TAKER: &str = "taker";
+    pub(crate) const TAKER_PTR: [&str; 4] = [TAKER, INNER, PTR, POINTER];
+    pub(crate) const PTR: &str = "ptr";
+    pub(crate) const POINTER: &str = "pointer";
     pub(crate) const INNER: &str = "inner";
     pub(crate) const SOME: &str = "Some";
     pub(crate) const PAYLOAD: &str = "__0";
@@ -1138,11 +1147,13 @@ pub(crate) fn hyper_h1_dispatcher(
             {
                 return None;
             }
+            let want = want_pointer(reader, member_of(reader, receiver, TAKER)?, "Taker")?;
             Some(HttpClientLayout {
                 callback,
                 retry,
                 no_retry,
                 rx,
+                want,
             })
         }
     };
@@ -1677,6 +1688,224 @@ pub(crate) fn hash_table(reader: &DwReader<'_>, id: TypeId) -> Option<HashTableL
         bucket_mask,
         items,
         ctrl,
+    })
+}
+
+/// want's `Giver` or `Taker`, named `name`, down to the `*const` to the
+/// `ArcInner<want::Inner>` the two ends of one channel share:
+/// `inner.ptr.pointer`, want's `Arc<Inner>` through std's `NonNull`.
+fn want_pointer(reader: &DwReader<'_>, handle: TypeId, name: &str) -> Option<TypeId> {
+    use hyper_h1::{INNER, POINTER, PTR};
+    let st = declared_in(reader, handle, "want", name)?;
+    if st.name.map(|n| reader.strings.get(n)) != Some(name) {
+        return None;
+    }
+    let arc = member_of(reader, handle, INNER)?;
+    declared_in(reader, arc, "alloc::sync", "Arc<")?;
+    let non_null = member_of(reader, arc, PTR)?;
+    declared_in(reader, non_null, "core::ptr::non_null", "NonNull<")?;
+    let pointer = member_of(reader, non_null, POINTER)?;
+    let Some(RawType::Pointer(RawPointer { target_type_id, .. })) = reader.canonical_type(pointer)
+    else {
+        return None;
+    };
+    (fq_name(reader, *target_type_id).as_deref() == Some("alloc::sync::ArcInner<want::Inner>"))
+        .then_some(pointer)
+}
+
+/// The member names hyper-util's legacy client pool is read by, from
+/// its reaper and its checkout down to what names each connection.
+pub(crate) mod hyper_pool {
+    pub(crate) const POOL: &str = "pool";
+    pub(crate) const PAYLOAD: &str = "__0";
+    pub(crate) const SOME: &str = "Some";
+    pub(crate) const PTR: &str = "ptr";
+    pub(crate) const POINTER: &str = "pointer";
+    pub(crate) const STRONG: &str = "strong";
+    pub(crate) const DATA: &str = "data";
+    pub(crate) const VALUE: &str = "value";
+    pub(crate) const IDLE: &str = "idle";
+    pub(crate) const KEY: &str = "key";
+    pub(crate) const LEN: &str = "len";
+    pub(crate) const TX: &str = "tx";
+    pub(crate) const HTTP1: &str = "Http1";
+    /// The pool key `(Scheme, Authority)`'s authority, and its text:
+    /// `__1.data.bytes`, http's `ByteStr` over a `Bytes`.
+    pub(crate) const AUTHORITY: &str = "__1";
+    pub(crate) const BYTES: &str = "bytes";
+    /// A `Vec`'s buffer pointer, `buf.inner.ptr.pointer.pointer`.
+    pub(crate) const VEC_PTR: [&str; 5] = ["buf", "inner", PTR, POINTER, POINTER];
+    /// A pooled HTTP/1 sender's `want::Giver`, from `tx`'s `Http1`
+    /// payload: `__0.dispatch.giver.inner.ptr.pointer`.
+    pub(crate) const GIVER_PTR: [&str; 6] = [PAYLOAD, "dispatch", "giver", "inner", PTR, POINTER];
+}
+
+/// Where hyper-util's legacy pool is declared.
+const POOL_MODULE: &str = "hyper_util::client::legacy::pool";
+
+/// The pool's idle reaper, `IdleTask<T, K>`, as the raw screen saw it:
+/// the types at the end of each route its binding records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PoolReaperLayout {
+    /// The pool's `ArcInner` strong count.
+    pub(crate) strong: TypeId,
+    /// The idle map, `HashMap<K, Vec<Idle<T>>>`, and its bucket.
+    pub(crate) idle: TypeId,
+    pub(crate) bucket: TypeId,
+    /// The key authority's text, from the bucket.
+    pub(crate) key_ptr: TypeId,
+    pub(crate) key_len: TypeId,
+    /// The idle list's buffer pointer and length, from the bucket.
+    pub(crate) entries_ptr: TypeId,
+    pub(crate) entries_len: TypeId,
+    /// `Idle<T>`, and its sender's `want` pointer.
+    pub(crate) entry: TypeId,
+    pub(crate) want: TypeId,
+}
+
+/// A connection checked out of the pool, `Pooled<T, K>`, as the raw
+/// screen saw it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PoolCheckoutLayout {
+    pub(crate) key_ptr: TypeId,
+    pub(crate) key_len: TypeId,
+    pub(crate) want: TypeId,
+}
+
+/// The pool key `(Scheme, Authority)`'s authority text: the pointer and
+/// length of the `Bytes` under http's `ByteStr`.
+fn authority_text(reader: &DwReader<'_>, key: TypeId) -> Option<(TypeId, TypeId)> {
+    use hyper_pool::{AUTHORITY, BYTES, DATA};
+    let authority = member_of(reader, key, AUTHORITY)?;
+    declared_in(reader, authority, "http::uri::authority", "Authority")?;
+    let data = member_of(reader, authority, DATA)?;
+    declared_in(reader, data, "http::byte_str", "ByteStr")?;
+    bytes_text(reader, member_of(reader, data, BYTES)?)
+}
+
+/// hyper-util's `PoolClient<B>`, down to its HTTP/1 sender's `want`
+/// pointer: `tx`, the `PoolTx` enum, whose `Http1` holds hyper's
+/// `SendRequest`, whose `dispatch` is the `dispatch::Sender` keeping
+/// the `Giver`.
+fn pool_client_want(reader: &DwReader<'_>, client: TypeId) -> Option<TypeId> {
+    use hyper_pool::{HTTP1, PAYLOAD, TX};
+    declared_in(
+        reader,
+        client,
+        "hyper_util::client::legacy::client",
+        "PoolClient<",
+    )?;
+    let tx = member_of(reader, client, TX)?;
+    if !enum_declared_in_prefix(reader, tx, "hyper_util::client::legacy::client", "PoolTx<") {
+        return None;
+    }
+    let send = member_of(reader, variant_payload(reader, tx, HTTP1)?, PAYLOAD)?;
+    declared_in(reader, send, "hyper::client::conn::http1", "SendRequest<")?;
+    let sender = member_of(reader, send, "dispatch")?;
+    declared_in(reader, sender, "hyper::client::dispatch", "Sender<")?;
+    want_pointer(reader, member_of(reader, sender, "giver")?, "Giver")
+}
+
+/// Screen `id` as hyper-util's pool reaper, `IdleTask<T, K>`, declared
+/// in the pool's module: its `pool` is a `WeakOpt` over an `Option` of
+/// std's `Weak` to the `Mutex<PoolInner<T, K>>`, whose `idle` is std's
+/// `HashMap<K, Vec<Idle<T>>>` keyed by `(Scheme, Authority)`, and whose
+/// `Idle`'s `value` is the `PoolClient`.
+pub(crate) fn hyper_util_pool_reaper(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<PoolReaperLayout> {
+    use hyper_pool::*;
+    declared_in(reader, id, POOL_MODULE, "IdleTask<")?;
+    let weak_opt = member_of(reader, id, POOL)?;
+    declared_in(reader, weak_opt, POOL_MODULE, "WeakOpt<")?;
+    let option = member_of(reader, weak_opt, PAYLOAD)?;
+    let weak = member_of(reader, variant_payload(reader, option, SOME)?, PAYLOAD)?;
+    declared_in(reader, weak, "alloc::sync", "Weak<")?;
+    let non_null = member_of(reader, weak, PTR)?;
+    declared_in(reader, non_null, "core::ptr::non_null", "NonNull<")?;
+    let pointer = member_of(reader, non_null, POINTER)?;
+    let Some(RawType::Pointer(RawPointer { target_type_id, .. })) = reader.canonical_type(pointer)
+    else {
+        return None;
+    };
+    let arc_inner = reader.canonicalize(*target_type_id);
+    declared_in(reader, arc_inner, "alloc::sync", "ArcInner<")?;
+    let strong = member_of(reader, arc_inner, STRONG)?;
+    if !fq_name(reader, strong)?.starts_with("core::sync::atomic::Atomic") {
+        return None;
+    }
+    // std's `Mutex` has moved module between releases; what the route is
+    // reviewed against is the pool, so any `std::sync` mutex over an
+    // `UnsafeCell` of the pool's inner state is it.
+    let mutex = member_of(reader, arc_inner, DATA)?;
+    let st = struct_of(reader, mutex)?;
+    if !(st
+        .namespace
+        .is_some_and(|ns| ns_path(reader, ns).starts_with("std::sync"))
+        && st
+            .name
+            .is_some_and(|name| reader.strings.get(name).starts_with("Mutex<")))
+    {
+        return None;
+    }
+    let cell = member_of(reader, mutex, DATA)?;
+    declared_in(reader, cell, "core::cell", "UnsafeCell<")?;
+    let inner = member_of(reader, cell, VALUE)?;
+    declared_in(reader, inner, POOL_MODULE, "PoolInner<")?;
+    let idle = member_of(reader, inner, IDLE)?;
+    let table = hash_table(reader, idle)?;
+    if table.kind != HashTableKind::StdMap {
+        return None;
+    }
+    let (key_ptr, key_len) = authority_text(reader, table.key)?;
+    let list = declared_in(reader, table.value, "alloc::vec", "Vec<")?;
+    let entry = list
+        .template_params
+        .iter()
+        .find(|param| param.name.map(|n| reader.strings.get(n)) == Some("T"))
+        .map(|param| reader.canonicalize(param.type_id))?;
+    declared_in(reader, entry, POOL_MODULE, "Idle<")?;
+    let mut entries_ptr = table.value;
+    for member in VEC_PTR {
+        entries_ptr = member_of(reader, entries_ptr, member)?;
+    }
+    let entries_len = member_of(reader, table.value, LEN)?;
+    if !(is_byte_pointer(reader, entries_ptr) && super::is_unsigned_integer(reader, entries_len, 8))
+    {
+        return None;
+    }
+    let want = pool_client_want(reader, member_of(reader, entry, VALUE)?)?;
+    Some(PoolReaperLayout {
+        strong,
+        idle,
+        bucket: table.bucket,
+        key_ptr,
+        key_len,
+        entries_ptr,
+        entries_len,
+        entry,
+        want,
+    })
+}
+
+/// Screen `id` as a connection checked out of hyper-util's pool,
+/// `Pooled<T, K>`: its `value` an `Option` of the `PoolClient`, its
+/// `key` the `(Scheme, Authority)`.
+pub(crate) fn hyper_util_pool_checkout(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<PoolCheckoutLayout> {
+    use hyper_pool::*;
+    declared_in(reader, id, POOL_MODULE, "Pooled<")?;
+    let value = member_of(reader, id, VALUE)?;
+    let client = member_of(reader, variant_payload(reader, value, SOME)?, PAYLOAD)?;
+    let want = pool_client_want(reader, client)?;
+    let (key_ptr, key_len) = authority_text(reader, member_of(reader, id, KEY)?)?;
+    Some(PoolCheckoutLayout {
+        key_ptr,
+        key_len,
+        want,
     })
 }
 

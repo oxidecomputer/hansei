@@ -3,8 +3,8 @@ source: hansei/src/offline.rs
 description: "`connections --group phase` over linux-floor/http-conns"
 ---
 COUNT  PHASE              CONNECTIONS
-    2  awaiting response  client task 8, client task 11
-    2  handling request   server task 7, server task 10
-    2  idle               client task 4, server task 5
-    1  negotiating        server task 12
+    2  awaiting response  client task 10, client task 13
+    2  handling request   server task 9, server task 12
+    2  idle               server task 4, client task 5
+    1  negotiating        server task 14
 [4 groups]

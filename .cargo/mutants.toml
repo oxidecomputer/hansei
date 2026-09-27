@@ -407,14 +407,15 @@ exclude_re = [
     # under it (a `changed` wrapped in `Coop`); pin it there when a
     # fixture has one.
     "delete ! in Context<'b, T>::watch_target",
-    # Equivalent mutants: a request's text routes each running one step
-    # only cannot pass the checks above them. A one-step pointer route
-    # makes its member the byte pointer itself, and a route into that
-    # member reaches a byte, never the unsigned word a length must be;
-    # a one-step length route makes its member the word, which has no
-    # member for the pointer's route to take. (`&&` → `||` there is
-    # pinned by the two-holder case in the request binding's test.)
-    "replace > with >= in Check<'a>::request",
+    # Equivalent mutants: a text's routes (a request's target, a pool's
+    # key) each running one step only cannot pass the checks above
+    # them. A one-step pointer route makes its member the byte pointer
+    # itself, and a route into that member reaches a byte, never the
+    # unsigned word a length must be; a one-step length route makes its
+    # member the word, which has no member for the pointer's route to
+    # take. (`&&` → `||` there is pinned by the two-holder case in the
+    # request binding's test.)
+    "replace > with >= in Check<'a>::text",
     # Equivalent mutant: `may_hold_request` is a memoized pre-screen.
     # The frame's locals it spares are the same members and variant
     # members it checks, and each is screened by `keeps_request` again,
@@ -456,4 +457,12 @@ exclude_re = [
     # niche that `None` is stored as, so `<` and `<=` pass the same
     # words.
     "replace < with <= in Context<'b, T>::observe_http_conn",
+    # The pool reaper's screens on std's own layout: the pool's mutex
+    # is a `std::sync` `Mutex`, and the idle list's words are a byte
+    # pointer and an unsigned word. Every std in the reviewed range
+    # meets both halves of each, so weakening either to `||` passes
+    # the same types; the steps after each (the mutex's `UnsafeCell`,
+    # the validator's pointer and word checks) hold the rest of the
+    # layout either way.
+    "replace && with \\|\\| in hyper_util_pool_reaper",
 ]

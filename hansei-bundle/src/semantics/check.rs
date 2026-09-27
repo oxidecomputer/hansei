@@ -168,6 +168,7 @@ impl<'a> Check<'a> {
             TracingInstrumented
             | HyperUtilTokioSleep
             | HyperUtilAutoConn
+            | HyperUtilPool
             | HyperH1Conn
             | DropshotRequestHandler
             | DropshotRequestContext
@@ -181,7 +182,7 @@ impl<'a> Check<'a> {
             | TokioStreamStreamMap => {
                 let crate_name = match rule.kind {
                     TracingInstrumented => "tracing",
-                    HyperUtilTokioSleep | HyperUtilAutoConn => "hyper-util",
+                    HyperUtilTokioSleep | HyperUtilAutoConn | HyperUtilPool => "hyper-util",
                     HyperH1Conn => "hyper",
                     DropshotRequestHandler | DropshotRequestContext => "dropshot",
                     ReqwestPendingRequest => "reqwest",
@@ -312,6 +313,137 @@ impl<'a> Check<'a> {
             target == path.target,
             "path endpoint type differs from recorded target",
         )
+    }
+
+    /// A path from `root` that lands on a pointer.
+    fn pointer(&self, root: BundleTypeId, path: &TypedPath, what: &str) -> Result<()> {
+        self.path(root, path)?;
+        require(
+            matches!(self.ty(path.target)?, TypeDef::Pointer { .. }),
+            &format!("{what} is not reached by a pointer"),
+        )
+    }
+
+    /// A text's two words from `root`: a pointer to bytes and an
+    /// unsigned word beside it, entered through one member.
+    fn text(&self, root: BundleTypeId, ptr: &TypedPath, len: &TypedPath, what: &str) -> Result<()> {
+        self.pointer(root, ptr, what)?;
+        let byte = match self.ty(ptr.target)? {
+            TypeDef::Pointer { target, .. } => self.ty(*target)?,
+            _ => unreachable!("checked above"),
+        };
+        require(
+            matches!(
+                byte,
+                TypeDef::Base {
+                    encoding: crate::Encoding::Unsigned,
+                    size: 1,
+                    ..
+                }
+            ),
+            &format!("{what} pointer does not point at bytes"),
+        )?;
+        self.path(root, len)?;
+        require(
+            matches!(
+                self.ty(len.target)?,
+                TypeDef::Base {
+                    encoding: crate::Encoding::Unsigned,
+                    size: 8,
+                    ..
+                }
+            ),
+            &format!("{what} length is not an unsigned word"),
+        )?;
+        // The pointer and the length are read out of one value — the
+        // `Bytes` of a path, the `String` of a URL — so both routes
+        // enter the root through the member holding it; where they part
+        // below that is the holder's own layout (a `String`'s length
+        // sits beside its raw buffer, not beside the pointer).
+        require(
+            ptr.steps.len() > 1 && len.steps.len() > 1 && ptr.steps[0] == len.steps[0],
+            &format!("{what} pointer and length are not under one member"),
+        )
+    }
+
+    /// A pool binding: under the hyper-util pool rule, every connection
+    /// it names has a key text and a `want` pointer. A reaper's pool is
+    /// reached through a pointer to its strong count and its idle map,
+    /// which is a hash table whose bucket the key and the list are read
+    /// from, and whose list's element holds the pointer.
+    fn pool(&self, record: &TypeSemantics, binding: &HttpPoolBinding) -> Result<()> {
+        match binding {
+            HttpPoolBinding::Reaper {
+                rule,
+                strong,
+                idle,
+                key_ptr,
+                key_len,
+                entries_ptr,
+                entries_len,
+                entry,
+                want,
+            } => {
+                self.rule(*rule, &[SemanticRuleKind::HyperUtilPool])?;
+                self.path(record.ty, strong)?;
+                require(
+                    self.0.types.size_of(strong.target) == Some(crate::POINTER_SIZE),
+                    "HTTP pool strong count is not a word",
+                )?;
+                require(
+                    strong.steps.contains(&Step::Deref)
+                        && idle.steps.starts_with(
+                            &strong.steps[..=strong
+                                .steps
+                                .iter()
+                                .position(|s| *s == Step::Deref)
+                                .expect("checked above")],
+                        ),
+                    "HTTP pool map is not reached through the pool its count is",
+                )?;
+                self.path(record.ty, idle)?;
+                let table = self
+                    .0
+                    .semantics
+                    .types
+                    .binary_search_by_key(&idle.target, |r| r.ty)
+                    .ok()
+                    .and_then(|i| self.0.semantics.types[i].table.as_ref());
+                let Some(table) = table else {
+                    return require(false, "HTTP pool map carries no table binding");
+                };
+                self.text(table.bucket, key_ptr, key_len, "HTTP pool key")?;
+                self.pointer(table.bucket, entries_ptr, "HTTP pool idle list")?;
+                self.path(table.bucket, entries_len)?;
+                require(
+                    matches!(
+                        self.ty(entries_len.target)?,
+                        TypeDef::Base {
+                            encoding: crate::Encoding::Unsigned,
+                            size: 8,
+                            ..
+                        }
+                    ),
+                    "HTTP pool idle list length is not an unsigned word",
+                )?;
+                self.ty(*entry)?;
+                require(
+                    self.0.types.size_of(*entry).is_some_and(|size| size > 0),
+                    "HTTP pool idle entry is unsized",
+                )?;
+                self.pointer(*entry, want, "HTTP pool entry's want handle")
+            }
+            HttpPoolBinding::Checkout {
+                rule,
+                key_ptr,
+                key_len,
+                want,
+            } => {
+                self.rule(*rule, &[SemanticRuleKind::HyperUtilPool])?;
+                self.text(record.ty, key_ptr, key_len, "HTTP pool key")?;
+                self.pointer(record.ty, want, "HTTP pool checkout's want handle")
+            }
+        }
     }
 
     fn target(&self, root: BundleTypeId, target: &FutureTarget) -> Result<()> {
@@ -538,44 +670,11 @@ impl<'a> Check<'a> {
             matches!(self.ty(binding.method.target)?, TypeDef::Enum { .. }),
             "HTTP request method is not an enum",
         )?;
-        self.path(record.ty, &binding.target_ptr)?;
-        let byte = match self.ty(binding.target_ptr.target)? {
-            TypeDef::Pointer { target, .. } => self.ty(*target)?,
-            _ => return require(false, "HTTP request target is not reached by a pointer"),
-        };
-        require(
-            matches!(
-                byte,
-                TypeDef::Base {
-                    encoding: crate::Encoding::Unsigned,
-                    size: 1,
-                    ..
-                }
-            ),
-            "HTTP request target pointer does not point at bytes",
-        )?;
-        self.path(record.ty, &binding.target_len)?;
-        require(
-            matches!(
-                self.ty(binding.target_len.target)?,
-                TypeDef::Base {
-                    encoding: crate::Encoding::Unsigned,
-                    size: 8,
-                    ..
-                }
-            ),
-            "HTTP request target length is not an unsigned word",
-        )?;
-        // The pointer and the length are read out of one value — the
-        // `Bytes` of a path, the `String` of a URL — so both routes
-        // enter the record through the member holding it; where they
-        // part below that is the holder's own layout (a `String`'s
-        // length sits beside its raw buffer, not beside the pointer).
-        require(
-            binding.target_ptr.steps.len() > 1
-                && binding.target_len.steps.len() > 1
-                && binding.target_ptr.steps[0] == binding.target_len.steps[0],
-            "HTTP request target pointer and length are not under one member",
+        self.text(
+            record.ty,
+            &binding.target_ptr,
+            &binding.target_len,
+            "HTTP request target",
         )
     }
 
@@ -730,6 +829,7 @@ impl<'a> Check<'a> {
                 )?;
             }
             self.path(record.ty, &client.rx)?;
+            self.pointer(record.ty, &client.want, "HTTP receiver's want handle")?;
         }
         if let Some(server) = &binding.server {
             // The handler's `Option`, behind the pinned box the route
@@ -1366,7 +1466,8 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                         && record.select.is_none()
                         && record.http.is_none()
                         && record.request.is_none()
-                        && record.table.is_none(),
+                        && record.table.is_none()
+                        && record.pool.is_none(),
                     "unavailable storage carries a readable capability",
                 )?;
             }
@@ -1431,6 +1532,13 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                 "hash table binding needs declared-member storage",
             )?;
             check.table(record, table)?;
+        }
+        if let Some(pool) = &record.pool {
+            require(
+                matches!(record.storage, StoragePolicy::DeclaredMembers),
+                "HTTP pool binding needs declared-member storage",
+            )?;
+            check.pool(record, pool)?;
         }
         if let Some(container) = &record.container {
             let kind = match container.kind {

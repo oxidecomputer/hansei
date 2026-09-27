@@ -37,6 +37,7 @@ fn record(ty: BundleTypeId) -> TypeSemantics {
         http: None,
         request: None,
         table: None,
+        pool: None,
         issues: Vec::new(),
     }
 }
@@ -2244,6 +2245,12 @@ fn http_conn() -> (Bundle, HttpClientBinding, [TypedPath; 3]) {
         retry: sender_route(retry),
         no_retry: sender_route(no_retry),
         rx: route(vec![named(dispatch), named(rx), named(inner)], unbounded_t),
+        // The fixture's receiver keeps no taker; the unbounded
+        // receiver's own pointer stands in for the want handle's.
+        want: route(
+            vec![named(dispatch), named(rx), named(inner), named(inner)],
+            pointer,
+        ),
     };
     let mut r = record(dispatcher_t);
     r.future = None;
@@ -3142,5 +3149,289 @@ fn test_semantic_table_binding_routes_the_words_of_a_reviewed_release() {
     // A record with no readable storage keeps no binding.
     let mut wrong = b.clone();
     wrong.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
+    bad(&wrong, "unavailable storage carries a readable capability");
+}
+
+/// A pool's reaper and checkout over the table fixture's map: the
+/// reaper `{ pool: *const ArcInner { strong, idle: map } }`, whose map's
+/// bucket is re-pointed at `{ __0: Text { ptr, len }, __1: List { ptr,
+/// len } }` and whose entry is `Idle { want: *const u8 }`; the checkout
+/// `{ key: Text, want: *const u8 }`. Both bind under the pool rule at a
+/// hyper-util delegation origin, with a reqwest one beside it for the
+/// test to point the rule at.
+fn pool() -> (Bundle, HttpPoolBinding, HttpPoolBinding) {
+    let (mut b, _) = hash_table();
+    let mut strings = StringInterner::new();
+    for s in b.strings.iter() {
+        strings.intern(s);
+    }
+    let mut name = |s: &str| strings.intern(s);
+    let (hyper_util, version, family, source, reqwest, reqwest_source) = (
+        name("hyper-util"),
+        name("0.1.20"),
+        name("hyper-util-pool-0.1.16"),
+        name(
+            "registry/src/index.crates.io-1949cf8c6b5b557f/hyper-util-0.1.20/src/client/legacy/pool.rs",
+        ),
+        name("reqwest"),
+        name("registry/src/index.crates.io-1949cf8c6b5b557f/reqwest-0.1.20/src/lib.rs"),
+    );
+    let (text_name, list_name, bucket_name, entry_name, arc_name, reaper_name, checkout_name) = (
+        name("Text"),
+        name("List"),
+        name("Bucket"),
+        name("Idle"),
+        name("ArcInner"),
+        name("IdleTask"),
+        name("Pooled"),
+    );
+    let (pools_name, unit_name) = (name("Pools"), name("Unit"));
+    let (ptr, len, first, second, want, strong, idle, pool, other, key, pools) = (
+        name("ptr"),
+        name("len"),
+        name("__0"),
+        name("__1"),
+        name("want"),
+        name("strong"),
+        name("idle"),
+        name("pool"),
+        name("other"),
+        name("key"),
+        name("pools"),
+    );
+    b.strings = strings.finish();
+    let member = |name, ty, offset| MemberDef { name, ty, offset };
+    let strukt = |name, size, members| TypeDef::Struct {
+        name,
+        size,
+        members,
+    };
+    let word = BundleTypeId(0);
+    let map_t = b.semantics.types[0].ty;
+    let byte_ptr = b.semantics.types[0].table.as_ref().unwrap().ctrl.target;
+    let mut next = b.types.types.len() as u32;
+    let mut id = || {
+        next += 1;
+        BundleTypeId(next - 1)
+    };
+    let (text_t, list_t, bucket_t, entry_t, arc_t, arc_ptr, pools_t, reaper_t, checkout_t) =
+        (id(), id(), id(), id(), id(), id(), id(), id(), id());
+    b.types.types.extend([
+        strukt(
+            text_name,
+            16,
+            vec![member(ptr, byte_ptr, 0), member(len, word, 8)],
+        ),
+        strukt(
+            list_name,
+            16,
+            vec![member(ptr, byte_ptr, 0), member(len, word, 8)],
+        ),
+        strukt(
+            bucket_name,
+            32,
+            vec![member(first, text_t, 0), member(second, list_t, 16)],
+        ),
+        strukt(entry_name, 8, vec![member(want, byte_ptr, 0)]),
+        strukt(
+            arc_name,
+            40,
+            vec![member(strong, word, 0), member(idle, map_t, 8)],
+        ),
+        TypeDef::Pointer {
+            name: None,
+            target: arc_t,
+        },
+        // A holder of two pools, for a count and a map that enter
+        // through one member and part below it.
+        strukt(
+            pools_name,
+            16,
+            vec![member(pool, arc_ptr, 0), member(other, arc_ptr, 8)],
+        ),
+        // A second pointer to a pool of the same type, for a count
+        // read off another allocation than the map's.
+        strukt(
+            reaper_name,
+            32,
+            vec![
+                member(pool, arc_ptr, 0),
+                member(other, arc_ptr, 8),
+                member(pools, pools_t, 16),
+            ],
+        ),
+        strukt(
+            checkout_name,
+            24,
+            vec![member(key, text_t, 0), member(want, byte_ptr, 16)],
+        ),
+        strukt(unit_name, 0, Vec::new()),
+    ]);
+    b.semantics.types[0].table.as_mut().unwrap().bucket = bucket_t;
+    let origin = SemanticOriginId(b.semantics.origins.len() as u32);
+    for (package, source) in [(hyper_util, source), (reqwest, reqwest_source)] {
+        b.semantics.origins.push(SemanticOrigin::LibraryDelegation {
+            package,
+            version,
+            family,
+            source,
+            files: Vec::new(),
+        });
+    }
+    let rule = SemanticRuleId(b.semantics.rules.len() as u32);
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::HyperUtilPool,
+        revision: 1,
+        origin,
+    });
+    let route = |steps: &[Step], target| TypedPath {
+        steps: steps.to_vec(),
+        target,
+    };
+    let reaper = HttpPoolBinding::Reaper {
+        rule,
+        strong: route(&[named(pool), Step::Deref, named(strong)], word),
+        idle: route(&[named(pool), Step::Deref, named(idle)], map_t),
+        key_ptr: route(&[named(first), named(ptr)], byte_ptr),
+        key_len: route(&[named(first), named(len)], word),
+        entries_ptr: route(&[named(second), named(ptr)], byte_ptr),
+        entries_len: route(&[named(second), named(len)], word),
+        entry: entry_t,
+        want: route(&[named(want)], byte_ptr),
+    };
+    let checkout = HttpPoolBinding::Checkout {
+        rule,
+        key_ptr: route(&[named(key), named(ptr)], byte_ptr),
+        key_len: route(&[named(key), named(len)], word),
+        want: route(&[named(want)], byte_ptr),
+    };
+    for (ty, binding) in [(reaper_t, &reaper), (checkout_t, &checkout)] {
+        let mut r = record(ty);
+        r.future = None;
+        r.pool = Some(binding.clone());
+        b.semantics.types.push(r);
+    }
+    b.validate().unwrap();
+    (b, reaper, checkout)
+}
+
+/// The pool binding: under hyper-util's pool rule at a hyper-util
+/// origin, a reaper reaches a word-sized strong count and, through the
+/// same pointer, a map carrying a table binding, whose bucket holds the
+/// key's text and the idle list, and whose entry the want pointer; a
+/// checkout reaches its key's text and its want pointer.
+#[test]
+fn test_semantic_pool_binding_names_each_connection_by_key_and_want() {
+    let (b, reaper, _) = pool();
+    let mut bytes = Vec::new();
+    b.write_to(&mut bytes).unwrap();
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+
+    let (reaper_at, checkout_at) = (1, 2);
+    fn binding(b: &mut Bundle, at: usize) -> &mut HttpPoolBinding {
+        b.semantics.types[at].pool.as_mut().unwrap()
+    }
+    // The rule is the pool rule, at a hyper-util origin.
+    let mut wrong = b.clone();
+    match binding(&mut wrong, checkout_at) {
+        HttpPoolBinding::Checkout { rule, .. } => *rule = SemanticRuleId(0),
+        _ => unreachable!(),
+    }
+    bad(&wrong, "rule has an incompatible capability");
+    let HttpPoolBinding::Reaper { rule, .. } = &reaper else {
+        unreachable!()
+    };
+    let rule = rule.0 as usize;
+    let mut wrong = b.clone();
+    wrong.semantics.rules[rule].origin.0 += 1;
+    bad(&wrong, "third-party delegation needs source evidence");
+    // The key's text is a byte pointer and a word under one member.
+    let mut wrong = b.clone();
+    match binding(&mut wrong, checkout_at) {
+        HttpPoolBinding::Checkout {
+            key_ptr, key_len, ..
+        } => *key_ptr = key_len.clone(),
+        _ => unreachable!(),
+    }
+    bad(&wrong, "HTTP pool key is not reached by a pointer");
+    let mut wrong = b.clone();
+    match binding(&mut wrong, checkout_at) {
+        HttpPoolBinding::Checkout {
+            key_ptr, key_len, ..
+        } => *key_len = key_ptr.clone(),
+        _ => unreachable!(),
+    }
+    bad(&wrong, "HTTP pool key length is not an unsigned word");
+    // The want handle is a pointer.
+    let mut wrong = b.clone();
+    match binding(&mut wrong, checkout_at) {
+        HttpPoolBinding::Checkout { want, key_len, .. } => *want = key_len.clone(),
+        _ => unreachable!(),
+    }
+    bad(&wrong, "checkout's want handle is not reached by a pointer");
+    let mut wrong = b.clone();
+    match binding(&mut wrong, reaper_at) {
+        HttpPoolBinding::Reaper {
+            want, entries_len, ..
+        } => {
+            *want = entries_len.clone();
+        }
+        _ => unreachable!(),
+    }
+    // An entry-relative route that is the bucket's names no member of
+    // the entry.
+    bad(&wrong, "no unique member");
+    // The strong count is a word, and the map is reached through the
+    // pointer the count is: a map reached from the count's own member
+    // is some other allocation's.
+    let mut wrong = b.clone();
+    match binding(&mut wrong, reaper_at) {
+        HttpPoolBinding::Reaper { strong, idle, .. } => *strong = idle.clone(),
+        _ => unreachable!(),
+    }
+    bad(&wrong, "HTTP pool strong count is not a word");
+    let [pool, other, pools] = match b.types.get(b.semantics.types[reaper_at].ty) {
+        Some(TypeDef::Struct { members, .. }) => [0, 1, 2].map(|i| members[i].name),
+        other => panic!("{other:?}"),
+    };
+    let mut wrong = b.clone();
+    match binding(&mut wrong, reaper_at) {
+        HttpPoolBinding::Reaper { strong, .. } => strong.steps[0] = named(other),
+        _ => unreachable!(),
+    }
+    bad(&wrong, "is not reached through the pool its count is");
+    // The whole route to the pointer is shared, not only its first
+    // step: two pools one member holds are two allocations.
+    let mut wrong = b.clone();
+    match binding(&mut wrong, reaper_at) {
+        HttpPoolBinding::Reaper { strong, idle, .. } => {
+            strong.steps.splice(0..1, [named(pools), named(other)]);
+            idle.steps.splice(0..1, [named(pools), named(pool)]);
+        }
+        _ => unreachable!(),
+    }
+    bad(&wrong, "is not reached through the pool its count is");
+    // The map carries the table its buckets are read through.
+    let mut wrong = b.clone();
+    wrong.semantics.types[0].table = None;
+    bad(&wrong, "HTTP pool map carries no table binding");
+    // The entry is a sized type.
+    let mut wrong = b.clone();
+    match binding(&mut wrong, reaper_at) {
+        HttpPoolBinding::Reaper { entry, .. } => *entry = BundleTypeId(u32::MAX),
+        _ => unreachable!(),
+    }
+    bad(&wrong, "invalid type id");
+    let unit = BundleTypeId(b.types.types.len() as u32 - 1);
+    assert_eq!(b.types.size_of(unit), Some(0));
+    let mut wrong = b.clone();
+    match binding(&mut wrong, reaper_at) {
+        HttpPoolBinding::Reaper { entry, .. } => *entry = unit,
+        _ => unreachable!(),
+    }
+    bad(&wrong, "HTTP pool idle entry is unsized");
+    // A record with no readable storage keeps no binding.
+    let mut wrong = b.clone();
+    wrong.semantics.types[checkout_at].storage = StoragePolicy::Unavailable(issue());
     bad(&wrong, "unavailable storage carries a readable capability");
 }

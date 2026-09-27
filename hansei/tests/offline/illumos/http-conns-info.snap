@@ -5,10 +5,10 @@ description: "`info` over illumos/http-conns"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 32/32
-allocator evidence: libumem index (58 caches, 56 slabs)
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 239.1 KiB swept in 3867 chunks
-    hits: 22 task-pattern, 0 set-pattern; 17 admitted; 3 unlisted headers
-    by class: 1 task extent, 1 find, 15 umem live, 2 umem freed, 3 lwp stack
+allocator evidence: libumem index (58 caches, 55 slabs)
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 251.0 KiB swept in 3861 chunks
+    hits: 28 task-pattern, 0 set-pattern; 17 admitted; 4 unlisted headers
+    by class: 1 task extent, 1 find, 15 umem live, 2 umem freed, 9 lwp stack
     attributed: 9 by a registry, 6 by owner type, 0 by holding type, 2 from another task's side, 0 unknown; 0 stale
 process: not recorded by this target
 signal: none recorded

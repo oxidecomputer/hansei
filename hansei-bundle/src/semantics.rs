@@ -58,6 +58,10 @@ pub struct TypeSemantics {
     /// what a bucket holds. What reads the entries — as owned storage
     /// of the value — reads them through this.
     pub table: Option<HashTableBinding>,
+    /// The pooled HTTP connections this value names, where its type is
+    /// a hyper-util client pool's reaper or checkout under a reviewed
+    /// range: what names a client connection's far end.
+    pub pool: Option<HttpPoolBinding>,
     pub issues: Vec<SemanticIssue>,
 }
 
@@ -310,6 +314,11 @@ pub struct HttpClientBinding {
     /// `dispatch.rx.inner`: the unbounded mpsc receiver the connection
     /// takes requests from, parked on while idle.
     pub rx: TypedPath,
+    /// `dispatch.rx.taker.inner.ptr.pointer`: the `*const` to the
+    /// `ArcInner<want::Inner>` the receiver's `Taker` shares with the
+    /// one `Giver` of the sender that feeds it — what tells which pooled
+    /// sender is this connection's.
+    pub want: TypedPath,
 }
 
 /// The server dispatch's words: what a server connection is parked on.
@@ -405,6 +414,54 @@ pub struct HashTableBinding {
     /// What a bucket holds: the `(K, V)` a map stores, the `(T, ())` a
     /// set does.
     pub bucket: BundleTypeId,
+}
+
+/// hyper-util's legacy client pool as a reviewed range lays it out: the
+/// routes from one of its types to the connections it holds, each named
+/// by its pool key's authority and by the `want::Inner` its sender
+/// shares with the connection's receiver
+/// ([`HttpClientBinding::want`]). Every path names its members.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum HttpPoolBinding {
+    /// `IdleTask<T, K>`, the reaper a pool with an idle timeout spawns:
+    /// it holds the pool weakly, and the pool's idle map holds, per
+    /// key, the connections waiting to be checked out.
+    Reaper {
+        rule: SemanticRuleId,
+        /// From the reaper to the pool's `ArcInner` strong count,
+        /// `pool.__0.Some.__0.ptr.pointer.*.strong`: zero once the pool
+        /// is dropped, when the map behind it is no longer the pool's.
+        strong: TypedPath,
+        /// From the reaper to the idle map,
+        /// `…*.data.data.value.idle`: a `HashMap` whose record carries
+        /// the table binding its buckets are read through.
+        idle: TypedPath,
+        /// From a bucket of that map, `((Scheme, Authority),
+        /// Vec<Idle<T>>)`, to the key's authority text: its `Bytes`
+        /// pointer and length, `__0.__1.data.bytes.ptr` and `.len`.
+        key_ptr: TypedPath,
+        key_len: TypedPath,
+        /// From the bucket to the list's buffer pointer,
+        /// `__1.buf.inner.ptr.pointer.pointer`, and its length,
+        /// `__1.len`.
+        entries_ptr: TypedPath,
+        entries_len: TypedPath,
+        /// The list's element, `Idle<T>`, whose size is the stride.
+        entry: BundleTypeId,
+        /// From an entry to its sender's `want` pointer,
+        /// `value.tx.Http1.__0.dispatch.giver.inner.ptr.pointer`.
+        want: TypedPath,
+    },
+    /// `Pooled<T, K>`, a connection checked out of the pool: its key
+    /// and its sender, held by whoever checked it out.
+    Checkout {
+        rule: SemanticRuleId,
+        /// `key.__1.data.bytes.ptr` and `.len`: the authority's text.
+        key_ptr: TypedPath,
+        key_len: TypedPath,
+        /// `value.Some.__0.tx.Http1.__0.dispatch.giver.inner.ptr.pointer`.
+        want: TypedPath,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -619,6 +676,10 @@ pub enum SemanticRuleKind {
     /// hashbrown's map — a cargo registry release, or the one the
     /// toolchain vendors for std.
     HashbrownTable,
+    /// hyper-util's legacy client pool under a reviewed range: its idle
+    /// reaper and its checked-out connections, which name each pooled
+    /// connection by its key and its sender.
+    HyperUtilPool,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

@@ -28,27 +28,27 @@ use crate::bundle::origin::registry_origin;
 use crate::bundle::{
     AccessBinding, AccessKind, BundleTypeId, ContainerBinding, ContainerKind, Continuation,
     CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence, FutureFacts,
-    FutureTarget, HashTableBinding, HttpClientBinding, HttpConnBinding, HttpRequestBinding,
-    HttpRequestTarget, HttpRole, HttpServerBinding, HttpServiceBinding, IoOperationKind,
-    LayoutSelection, MemberRef, PollAction, PollCase, PollProgram, ResourceBinding, ResourceKind,
-    SchedulerBinding, SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind,
-    SemanticOrigin, SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind,
-    SemanticTable, SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StringInterner,
-    TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome,
-    WalkRole, WalksTable, container_roles, container_routes, required_resource_roles,
-    required_resource_routes, scheduler_role, semantic_path_target,
+    FutureTarget, HashTableBinding, HttpClientBinding, HttpConnBinding, HttpPoolBinding,
+    HttpRequestBinding, HttpRequestTarget, HttpRole, HttpServerBinding, HttpServiceBinding,
+    IoOperationKind, LayoutSelection, MemberRef, PollAction, PollCase, PollProgram,
+    ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass, SelectBinding, Selector,
+    SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId, SemanticRule,
+    SemanticRuleId, SemanticRuleKind, SemanticTable, SourceFileEvidence, SourceLoc, Step,
+    StoragePolicy, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics,
+    TypeTable, TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles, container_routes,
+    required_resource_roles, required_resource_routes, scheduler_role, semantic_path_target,
 };
 use crate::detect::Family;
 use crate::detect::adapters::{
     self, H1Role, HashTableLayout, HttpDispatcherLayout, HttpRequestKind, HttpRequestLayout,
     InstrumentedLayout, Pointee, PointerDecline, SelectLayout, StdAdapter, WidePointer, hash_table,
-    hyper_h1, request,
+    hyper_h1, hyper_pool, request,
 };
 use crate::detect::semantics::{
     DROPSHOT_HANDLER_V0_17_0, DROPSHOT_SERVER_V0_17_0, FUTURES_UTIL_ADAPTERS_V0_3_30,
     HASHBROWN_TABLE_V0_12_3, HTTP_REQUEST_V1_0_0, HYPER_H1_CONN_V1_6_0,
-    HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
-    REQWEST_PENDING_REQUEST_V0_12_0, RustcConvention, TOKIO_INTERVAL_TICK_V1_47,
+    HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_POOL_V0_1_16, HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
+    LibraryConvention, REQWEST_PENDING_REQUEST_V0_12_0, RustcConvention, TOKIO_INTERVAL_TICK_V1_47,
     TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
     TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40, library_convention,
     rustc_core_pending_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
@@ -434,6 +434,7 @@ struct HttpClientSeed {
     retry: BundleTypeId,
     no_retry: BundleTypeId,
     rx: BundleTypeId,
+    want: BundleTypeId,
 }
 
 /// The server dispatch by bundle id: the handler's pinned box — the
@@ -494,6 +495,69 @@ struct TableSeed {
     sources: BTreeSet<PollSource>,
 }
 
+/// hyper-util's pool as its screen saw it, by bundle id: the reaper's
+/// routes — the pool's strong count, its idle map and that map's
+/// bucket, the key text and the idle list from the bucket, the list's
+/// element and its sender's `want` pointer — or a checkout's key text
+/// and `want` pointer; and the type's own method declarations, which
+/// hyper-util's version is read off.
+#[derive(Clone, Debug)]
+enum PoolSeed {
+    Reaper {
+        strong: BundleTypeId,
+        idle: BundleTypeId,
+        bucket: BundleTypeId,
+        key_ptr: BundleTypeId,
+        key_len: BundleTypeId,
+        entries_ptr: BundleTypeId,
+        entries_len: BundleTypeId,
+        entry: BundleTypeId,
+        want: BundleTypeId,
+        sources: BTreeSet<PollSource>,
+    },
+    Checkout {
+        key_ptr: BundleTypeId,
+        key_len: BundleTypeId,
+        want: BundleTypeId,
+        sources: BTreeSet<PollSource>,
+    },
+}
+
+/// The screen's reaper layout by bundle id. `None` when a type it names
+/// was not emitted.
+fn pool_reaper_seed(
+    layout: adapters::PoolReaperLayout,
+    bundle_id: impl Fn(TypeId) -> Option<BundleTypeId>,
+    sources: BTreeSet<PollSource>,
+) -> Option<PoolSeed> {
+    Some(PoolSeed::Reaper {
+        strong: bundle_id(layout.strong)?,
+        idle: bundle_id(layout.idle)?,
+        bucket: bundle_id(layout.bucket)?,
+        key_ptr: bundle_id(layout.key_ptr)?,
+        key_len: bundle_id(layout.key_len)?,
+        entries_ptr: bundle_id(layout.entries_ptr)?,
+        entries_len: bundle_id(layout.entries_len)?,
+        entry: bundle_id(layout.entry)?,
+        want: bundle_id(layout.want)?,
+        sources,
+    })
+}
+
+/// The screen's checkout layout by bundle id.
+fn pool_checkout_seed(
+    layout: adapters::PoolCheckoutLayout,
+    bundle_id: impl Fn(TypeId) -> Option<BundleTypeId>,
+    sources: BTreeSet<PollSource>,
+) -> Option<PoolSeed> {
+    Some(PoolSeed::Checkout {
+        key_ptr: bundle_id(layout.key_ptr)?,
+        key_len: bundle_id(layout.key_len)?,
+        want: bundle_id(layout.want)?,
+        sources,
+    })
+}
+
 /// The screen's table layout by bundle id. `None` when a type it names
 /// was not emitted: the bucket is reached only through a `PhantomData`,
 /// so it is in the table only where the display program reserved it.
@@ -537,6 +601,9 @@ pub(super) struct Seed {
     /// A hash table, where the type is one: a fact read wherever a value
     /// of it is scanned as storage.
     table: Option<TableSeed>,
+    /// hyper-util's pool reaper or checkout, where the type is one: a
+    /// fact read wherever a frame holds a value of it.
+    pool: Option<PoolSeed>,
     /// core's `Pending<T>` as its screen saw it: the compiler verdict on
     /// its defining units, which is the whole of the rule's origin. The
     /// layout is the screen's; there is no member to route through.
@@ -561,6 +628,7 @@ impl Seed {
             || self.http.is_some()
             || self.request.is_some()
             || self.table.is_some()
+            || self.pool.is_some()
     }
 }
 
@@ -707,6 +775,7 @@ fn http_seed(
             retry: bundle_id(client.retry)?,
             no_retry: bundle_id(client.no_retry)?,
             rx: bundle_id(client.rx)?,
+            want: bundle_id(client.want)?,
         }),
         None => None,
     };
@@ -897,6 +966,16 @@ pub(super) fn collect_semantic_seeds(
             && let Some(seed) = request_seed(layout, bundle_id, type_sources(raw))
         {
             seeds.entry(ty).or_default().request = Some(seed);
+        } else if name.starts_with("hyper_util::client::legacy::pool::IdleTask<")
+            && let Some(layout) = adapters::hyper_util_pool_reaper(reader, raw)
+            && let Some(seed) = pool_reaper_seed(layout, bundle_id, type_sources(raw))
+        {
+            seeds.entry(ty).or_default().pool = Some(seed);
+        } else if name.starts_with("hyper_util::client::legacy::pool::Pooled<")
+            && let Some(layout) = adapters::hyper_util_pool_checkout(reader, raw)
+            && let Some(seed) = pool_checkout_seed(layout, bundle_id, type_sources(raw))
+        {
+            seeds.entry(ty).or_default().pool = Some(seed);
         } else if let Some(library) = library_seed(
             reader,
             raw,
@@ -1553,6 +1632,9 @@ struct Draft {
     /// The hash table this value keeps, where its type is one a
     /// reviewed range lays out.
     table: Option<TablePlan>,
+    /// The pooled connections this value names, where its type is a
+    /// hyper-util pool's reaper or checkout under a reviewed range.
+    pool: Option<PoolPlan>,
     own_record: bool,
 }
 
@@ -1739,6 +1821,13 @@ pub(super) fn bind_semantics(
         if readable && let Some(table) = &seed.table {
             match plan_table(ty, table, types, strings) {
                 Ok(plan) => draft.table = Some(plan),
+                Err(decline) => draft.issues.push(decline),
+            }
+        }
+        // And the pool: what names a pooled connection, beside the record.
+        if readable && let Some(pool) = &seed.pool {
+            match plan_pool(ty, pool, types, strings) {
+                Ok(plan) => draft.pool = Some(plan),
                 Err(decline) => draft.issues.push(decline),
             }
         }
@@ -2077,6 +2166,40 @@ pub(super) fn bind_semantics(
                 items: plan.items,
                 bucket: plan.bucket,
             });
+        let pool = draft.pool.filter(|_| readable).map(|plan| match plan {
+            PoolPlan::Reaper {
+                rule,
+                strong,
+                idle,
+                key_ptr,
+                key_len,
+                entries_ptr,
+                entries_len,
+                entry,
+                want,
+            } => HttpPoolBinding::Reaper {
+                rule: rules.rule(&rule, strings, library),
+                strong,
+                idle,
+                key_ptr,
+                key_len,
+                entries_ptr,
+                entries_len,
+                entry,
+                want,
+            },
+            PoolPlan::Checkout {
+                rule,
+                key_ptr,
+                key_len,
+                want,
+            } => HttpPoolBinding::Checkout {
+                rule: rules.rule(&rule, strings, library),
+                key_ptr,
+                key_len,
+                want,
+            },
+        });
         records.push(TypeSemantics {
             ty,
             storage,
@@ -2092,6 +2215,7 @@ pub(super) fn bind_semantics(
             http,
             request,
             table,
+            pool,
             issues,
         });
     }
@@ -2983,6 +3107,14 @@ fn plan_http(
                 retry: sender(strings, RETRY, client.retry)?,
                 no_retry: sender(strings, NO_RETRY, client.no_retry)?,
                 rx: route(strings, &[(M, DISPATCH), (M, RX), (M, INNER)], client.rx)?,
+                want: route(
+                    strings,
+                    &[(M, DISPATCH), (M, RX)]
+                        .into_iter()
+                        .chain(TAKER_PTR.map(|name| (M, name)))
+                        .collect::<Vec<_>>(),
+                    client.want,
+                )?,
             })
         }
         None => None,
@@ -3361,6 +3493,201 @@ fn table_release(
         )));
     }
     Ok(newest.to_string())
+}
+
+/// One level of a route a review names: a member, a variant, or the
+/// pointee of the pointer the route stands on.
+#[derive(Clone, Copy)]
+enum Hop<'a> {
+    Member(&'a str),
+    Variant(&'a str),
+    Deref,
+}
+
+/// A route from `root` as a run of hops, each level checked in the final
+/// table as it is entered, then held whole to the declared target.
+fn hop_route(
+    types: &TypeTable,
+    strings: &StringInterner,
+    root: BundleTypeId,
+    hops: &[Hop<'_>],
+    target: BundleTypeId,
+) -> Result<TypedPath, Decline> {
+    let mut steps = Vec::with_capacity(hops.len());
+    let mut current = root;
+    for hop in hops {
+        match *hop {
+            Hop::Member(name) => {
+                let (name, member_ty, _) = member_named(types, strings, current, name).ok_or((
+                    SemanticIssueKind::AmbiguousLayout,
+                    format!("no unique member {name:?}"),
+                ))?;
+                steps.push(Step::Member(MemberRef::Named(name)));
+                current = member_ty;
+            }
+            Hop::Variant(name) => {
+                let Some(TypeDef::Enum { shape, .. }) = types.get(current) else {
+                    return Err((
+                        SemanticIssueKind::MissingLayout,
+                        format!("no enum to select {name} from in the final table"),
+                    ));
+                };
+                let variant = shape
+                    .variants
+                    .iter()
+                    .find(|v| strings.get(v.name) == Some(name))
+                    .ok_or((
+                        SemanticIssueKind::MissingLayout,
+                        format!("no variant {name} in the final table"),
+                    ))?;
+                steps.push(Step::Variant(variant.name));
+                current = variant.payload.ty;
+            }
+            Hop::Deref => {
+                let Some(TypeDef::Pointer { target, .. }) = types.get(current) else {
+                    return Err((
+                        SemanticIssueKind::MissingLayout,
+                        "no pointer to follow in the final table".to_owned(),
+                    ));
+                };
+                steps.push(Step::Deref);
+                current = *target;
+            }
+        }
+    }
+    checked_path(types, root, steps, target)
+}
+
+enum PoolPlan {
+    Reaper {
+        rule: RuleKey,
+        strong: TypedPath,
+        idle: TypedPath,
+        key_ptr: TypedPath,
+        key_len: TypedPath,
+        entries_ptr: TypedPath,
+        entries_len: TypedPath,
+        entry: BundleTypeId,
+        want: TypedPath,
+    },
+    Checkout {
+        rule: RuleKey,
+        key_ptr: TypedPath,
+        key_len: TypedPath,
+        want: TypedPath,
+    },
+}
+
+/// Plan a pool binding: the origin first — the type's own method
+/// declarations in hyper-util, at a version inside the reviewed range —
+/// then the routes the screen described, by the reviewed layout's
+/// member names, held to the final table and landing on the types the
+/// screen saw. A reaper's routes start at the reaper, then at a bucket
+/// of its idle map and at an element of a bucket's list; a checkout's
+/// start at the checkout.
+fn plan_pool(
+    ty: BundleTypeId,
+    seed: &PoolSeed,
+    types: &TypeTable,
+    strings: &StringInterner,
+) -> Result<PoolPlan, Decline> {
+    use Hop::{Deref, Member, Variant};
+    use hyper_pool::*;
+    let (PoolSeed::Reaper { sources, .. } | PoolSeed::Checkout { sources, .. }) = seed;
+    let convention = &HYPER_UTIL_POOL_V0_1_16;
+    // A trait another crate implements on the type is declared in that
+    // crate's file, and says nothing about which hyper-util this is.
+    let own: BTreeSet<PollSource> = sources
+        .iter()
+        .filter(|source| {
+            registry_origin(&source.path).is_some_and(|origin| origin.package == convention.package)
+        })
+        .cloned()
+        .collect();
+    let sources = if own.is_empty() { sources } else { &own };
+    let origin = delegation_origin(sources, convention, "method")?;
+    let rule = RuleKey::Delegation {
+        kind: SemanticRuleKind::HyperUtilPool,
+        origin,
+    };
+    let route =
+        |root, hops: &[&[Hop<'_>]], target| hop_route(types, strings, root, &hops.concat(), target);
+    let giver: Vec<Hop<'_>> = GIVER_PTR.iter().map(|name| Member(name)).collect();
+    // The sender behind a `PoolClient`: `tx`'s `Http1`, down to its giver.
+    let client_want = [Member(TX), Variant(HTTP1)];
+    match seed {
+        PoolSeed::Reaper {
+            strong,
+            idle,
+            bucket,
+            key_ptr,
+            key_len,
+            entries_ptr,
+            entries_len,
+            entry,
+            want,
+            ..
+        } => {
+            let pool = [
+                Member(POOL),
+                Member(PAYLOAD),
+                Variant(SOME),
+                Member(PAYLOAD),
+                Member(PTR),
+                Member(POINTER),
+                Deref,
+            ];
+            // The bucket is `((Scheme, Authority), Vec<Idle<T>>)`.
+            let key = [
+                Member(PAYLOAD),
+                Member(AUTHORITY),
+                Member(DATA),
+                Member(BYTES),
+            ];
+            let list = [Member(AUTHORITY)];
+            let vec_ptr: Vec<Hop<'_>> = VEC_PTR.iter().map(|name| Member(name)).collect();
+            Ok(PoolPlan::Reaper {
+                rule,
+                strong: route(ty, &[&pool, &[Member(STRONG)]], *strong)?,
+                idle: route(
+                    ty,
+                    &[
+                        &pool,
+                        &[Member(DATA), Member(DATA), Member(VALUE), Member(IDLE)],
+                    ],
+                    *idle,
+                )?,
+                key_ptr: route(*bucket, &[&key, &[Member(PTR)]], *key_ptr)?,
+                key_len: route(*bucket, &[&key, &[Member(LEN)]], *key_len)?,
+                entries_ptr: route(*bucket, &[&list, &vec_ptr], *entries_ptr)?,
+                entries_len: route(*bucket, &[&list, &[Member(LEN)]], *entries_len)?,
+                entry: *entry,
+                want: route(*entry, &[&[Member(VALUE)], &client_want, &giver], *want)?,
+            })
+        }
+        PoolSeed::Checkout {
+            key_ptr,
+            key_len,
+            want,
+            ..
+        } => {
+            let key = [Member(KEY), Member(AUTHORITY), Member(DATA), Member(BYTES)];
+            Ok(PoolPlan::Checkout {
+                rule,
+                key_ptr: route(ty, &[&key, &[Member(PTR)]], *key_ptr)?,
+                key_len: route(ty, &[&key, &[Member(LEN)]], *key_len)?,
+                want: route(
+                    ty,
+                    &[
+                        &[Member(VALUE), Variant(SOME), Member(PAYLOAD)],
+                        &client_want,
+                        &giver,
+                    ],
+                    *want,
+                )?,
+            })
+        }
+    }
 }
 
 /// Plan a `select!`'s binding: the origin first — the closure

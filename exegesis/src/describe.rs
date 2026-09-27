@@ -634,8 +634,8 @@ fn describe_field(bundle: &Bundle, root: BundleTypeId, fld: &Field) -> String {
 /// order; then each task entry's scheduler class.
 pub fn describe_semantics(bundle: &Bundle) -> String {
     use hansei_bundle::{
-        Continuation, CoroutineState, FutureEvidence, FutureTarget, PollAction, PollProgram,
-        SemanticIssue, SemanticOrigin, StoragePolicy,
+        Continuation, CoroutineState, FutureEvidence, FutureTarget, HttpPoolBinding, PollAction,
+        PollProgram, SemanticIssue, SemanticOrigin, StoragePolicy,
     };
     use std::fmt::Write;
 
@@ -841,6 +841,59 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 path(record.ty, &request.method),
                 path(record.ty, &request.target_ptr)
             );
+        }
+        match &record.pool {
+            // The key and the list are read from a bucket of the idle
+            // map, the sender from an element of the list: each route is
+            // named from its own root.
+            Some(HttpPoolBinding::Reaper {
+                rule,
+                strong,
+                idle,
+                key_ptr,
+                entries_ptr,
+                entry,
+                want,
+                ..
+            }) => {
+                let bucket = bundle
+                    .semantics
+                    .types
+                    .iter()
+                    .find(|r| r.ty == idle.target)
+                    .and_then(|r| r.table.as_ref())
+                    .map(|table| table.bucket);
+                let from_bucket = |p| match bucket {
+                    Some(bucket) => path(bucket, p),
+                    None => "<no table>".to_owned(),
+                };
+                let _ = write!(
+                    line,
+                    " pool reaper rule {} strong {} idle {} key {} entries {} entry {} want {}",
+                    rule.0,
+                    path(record.ty, strong),
+                    path(record.ty, idle),
+                    from_bucket(key_ptr),
+                    from_bucket(entries_ptr),
+                    type_name(*entry),
+                    path(*entry, want)
+                );
+            }
+            Some(HttpPoolBinding::Checkout {
+                rule,
+                key_ptr,
+                want,
+                ..
+            }) => {
+                let _ = write!(
+                    line,
+                    " pool checkout rule {} key {} want {}",
+                    rule.0,
+                    path(record.ty, key_ptr),
+                    path(record.ty, want)
+                );
+            }
+            None => {}
         }
         if let Some(table) = &record.table {
             let _ = write!(

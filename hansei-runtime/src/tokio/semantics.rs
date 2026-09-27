@@ -54,6 +54,7 @@ mod tests {
             http: None,
             request: None,
             table: None,
+            pool: None,
             issues: Vec::new(),
         }
     }
