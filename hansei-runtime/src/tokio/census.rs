@@ -649,10 +649,9 @@ impl FutureCensus {
 
     /// Whether some recorded error's report names `addr`.
     fn some_error_names(&self, addr: u64) -> bool {
-        let spelled = format!("{addr:#x}");
         self.errors
             .iter()
-            .any(|e| format!("{e:#}").contains(&spelled))
+            .any(|e| names_address(&format!("{e:#}"), addr))
     }
 
     fn check_owner(
@@ -989,6 +988,19 @@ pub fn census_bounded<T: Target>(
         stats: walker.stats,
         pool_peers: walker.pool_peers,
     }
+}
+
+/// Whether `report` writes `addr` as an address of its own: `0x10` is
+/// not named by a report about `0x100`, nor by one about `0x0x10`'s
+/// tail — the digits must stand alone.
+pub(crate) fn names_address(report: &str, addr: u64) -> bool {
+    let written = format!("{addr:#x}");
+    report.match_indices(&written).any(|(at, _)| {
+        let before = report[..at].chars().next_back();
+        let after = report[at + written.len()..].chars().next();
+        !before.is_some_and(|c| c.is_ascii_alphanumeric())
+            && !after.is_some_and(|c| c.is_ascii_hexdigit())
+    })
 }
 
 /// The reports for any two sorted spans claiming one byte. No healthy
@@ -4209,6 +4221,13 @@ mod tests {
         census.spans = spans_of(&census.sets, 0x20);
         assert_flags(&census.audit_total(&list), "overlaps its predecessor");
 
+        // An error about another address that merely begins with this
+        // one's digits is no escape hatch.
+        census
+            .errors
+            .push(anyhow!("the set node at 0x50100 is unreadable"));
+        assert_flags(&census.audit_total(&list), "overlaps its predecessor");
+
         census
             .errors
             .push(anyhow!("the set nodes at 0x5000 and 0x5010 overlap"));
@@ -4217,6 +4236,16 @@ mod tests {
             !violations.iter().any(|v| v.contains("overlaps")),
             "{violations:#?}"
         );
+    }
+
+    #[test]
+    fn test_a_report_names_an_address_only_whole() {
+        assert!(names_address("the node at 0x10 is bent", 0x10));
+        assert!(names_address("0x10", 0x10));
+        assert!(names_address("nodes at 0x8, 0x10.", 0x10));
+        assert!(!names_address("the node at 0x100 is bent", 0x10));
+        assert!(!names_address("the node at 0x10a is bent", 0x10));
+        assert!(!names_address("the node at 0x0x10 is bent", 0x10));
     }
 
     /// The spans are searched by binary search, so their order is load-
@@ -4538,6 +4567,11 @@ mod tests {
         let flagged = diff(&expected, &census, &list);
         assert_eq!(flagged.len(), 1, "{flagged:#?}");
         assert!(flagged[0].contains("no census row"), "{flagged:#?}");
+
+        // An error about another address that merely begins with this
+        // one's digits names nothing registered.
+        census.errors.push(anyhow!("something failed at 0x10000"));
+        assert_eq!(diff(&expected, &census, &list).len(), 1);
 
         census.errors.push(anyhow!("something failed at 0x1000"));
         assert_eq!(diff(&expected, &census, &list), Vec::<String>::new());

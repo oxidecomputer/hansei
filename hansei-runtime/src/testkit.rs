@@ -799,7 +799,7 @@ pub mod expect {
         let excused = |addr: u64| {
             errors
                 .iter()
-                .any(|text| text.contains(&format!("{addr:#x}")))
+                .any(|text| crate::tokio::census::names_address(text, addr))
         };
 
         let mut held_claimed = vec![false; census.held.len()];
