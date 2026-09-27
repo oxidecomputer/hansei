@@ -50,11 +50,23 @@ task 5
       awaiting at src/bin/http-conns.rs:76 (Suspend0, 2 locals)
 
 task 7
-#0  future        hyper_util::client::legacy::client::ResponseFuture
+#0  future        tokio::sync::oneshot::Receiver<Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>>>>
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+#1  async block   hyper::client::conn::http1::SendRequest::try_send_request<http_body_util::empty::Empty<bytes::bytes::Bytes>>
+      awaiting at hyper-1.10.1/src/client/conn/http1.rs:250 (Suspend0, 1 local)
+#2  future        futures_util::future::either::Either<hyper::client::conn::http1::SendRequest::try_send_request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, hyper::client::conn::http2::SendRequest::try_send_request<http_body_util::empty::Empty<bytes::bytes::Bytes>>>
+      defined at futures-util-0.3.33/src/future/either.rs:106 (Left, 0 locals)
+#3  async fn      hyper_util::client::legacy::client::Client::try_send_request<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
+      awaiting at hyper-util-0.1.20/src/client/legacy/client.rs:324 (Suspend1, 3 locals)
+#4  async fn      hyper_util::client::legacy::client::Client::send_request<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>> [dyn]
+      awaiting at hyper-util-0.1.20/src/client/legacy/client.rs:249 (Suspend0, 4 locals)
+#5  future        Pin<Box<(dyn Future<Output=Result<http::response::Response<hyper::body::incoming::Incoming>, hyper_util::client::legacy::client::Error>> + Send)>>
+      (<no_state>, 1 local)
+#6  future        hyper_util::client::legacy::client::ResponseFuture
       defined at hyper-util-0.1.20/src/client/legacy/client.rs:757 (<no_state>, 1 local)
-#1  async fn      http_conns::get
+#7  async fn      http_conns::get
       awaiting at src/bin/http-conns.rs:166 (Suspend0, 0 locals)
-#2  async fn      http_conns::requester
+#8  async fn      http_conns::requester
       awaiting at src/bin/http-conns.rs:173 (Suspend0, 2 locals)
 
 task 8
@@ -114,7 +126,7 @@ task 12
       waiting on http1 client 0xADDR (GET sent, awaiting response headers)
       via oneshot tx 0xADDR (nothing sent, receiver alive)
       caller task 10
-      request GET http://127.0.0.1:45731/park
+      request GET http://127.0.0.1:36519/park
 #1  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>
       defined at hyper-1.10.1/src/client/conn/http1.rs:622 (Some, 0 locals)
 #2  future        futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>>

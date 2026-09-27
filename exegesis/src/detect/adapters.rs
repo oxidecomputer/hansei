@@ -1806,6 +1806,153 @@ fn pool_client_want(reader: &DwReader<'_>, client: TypeId) -> Option<TypeId> {
     want_pointer(reader, member_of(reader, sender, "giver")?, "Giver")
 }
 
+/// A two-way choice of future as the raw screen saw it: each variant's
+/// name, and the future its one member `__0` holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EitherLayout {
+    pub(crate) left: (String, TypeId),
+    pub(crate) right: (String, TypeId),
+}
+
+/// Screen `id` as futures-util's `future::Either<A, B>`: the enum
+/// `Left(A) | Right(B)`, each variant's payload one member `__0` holding
+/// the future its template parameter names.
+pub(crate) fn futures_util_either(reader: &DwReader<'_>, id: TypeId) -> Option<EitherLayout> {
+    if !enum_declared_in_prefix(reader, id, "futures_util::future::either", "Either<") {
+        return None;
+    }
+    let Some(RawType::Enum(en)) = reader.canonical_type(id) else {
+        return None;
+    };
+    let VariantShape::Many { variants, .. } = &en.shape else {
+        return None;
+    };
+    if variants.len() != 2 {
+        return None;
+    }
+    // rustc records an enum's template parameters on each variant's
+    // struct, not on the enum; each side's future is the one its
+    // parameter names, wherever the variant records it.
+    let side = |variant: &str, param_name: &str| {
+        let payload = variant_payload(reader, id, variant)?;
+        let future = member_of(reader, payload, "__0")?;
+        let param = struct_of(reader, payload)?
+            .template_params
+            .iter()
+            .find(|param| param.name.map(|n| reader.strings.get(n)) == Some(param_name))
+            .map(|param| reader.canonicalize(param.type_id));
+        param
+            .is_none_or(|param| param == future)
+            .then(|| (variant.to_owned(), future))
+    };
+    Some(EitherLayout {
+        left: side("Left", "A")?,
+        right: side("Right", "B")?,
+    })
+}
+
+/// tower's retry `ResponseFuture` as the raw screen saw it: the member
+/// holding its state, the state enum, the member of `Called` holding the
+/// service's future and of `Waiting` holding the policy's, and the name
+/// of the state in which neither is held.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TowerRetryLayout {
+    pub(crate) state: String,
+    pub(crate) state_ty: TypeId,
+    pub(crate) called: (String, String, TypeId),
+    pub(crate) waiting: (String, String, TypeId),
+    pub(crate) retrying: String,
+}
+
+/// Screen `id` as tower's `retry::future::ResponseFuture<P, S,
+/// Request>`: `{ request, retry, state }`, whose `state` is the
+/// module's `State<F, P>` enum `Called { future } | Waiting { waiting }
+/// | Retrying`.
+pub(crate) fn tower_retry_response_future(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<TowerRetryLayout> {
+    declared_in(reader, id, "tower::retry::future", "ResponseFuture<")?;
+    let state_ty = member_of(reader, id, "state")?;
+    if !enum_declared_in_prefix(reader, state_ty, "tower::retry::future", "State<") {
+        return None;
+    }
+    let Some(RawType::Enum(en)) = reader.canonical_type(state_ty) else {
+        return None;
+    };
+    let VariantShape::Many { variants, .. } = &en.shape else {
+        return None;
+    };
+    if variants.len() != 3 {
+        return None;
+    }
+    let holding = |variant: &str, member: &str| {
+        let future = member_of(reader, variant_payload(reader, state_ty, variant)?, member)?;
+        Some((variant.to_owned(), member.to_owned(), future))
+    };
+    variant_payload(reader, state_ty, "Retrying")?;
+    Some(TowerRetryLayout {
+        state: "state".to_owned(),
+        state_ty,
+        called: holding("Called", "future")?,
+        waiting: holding("Waiting", "waiting")?,
+        retrying: "Retrying".to_owned(),
+    })
+}
+
+/// Screen `id` as reqwest's cookie layer's `ResponseFuture<S, B>`,
+/// declared in `reqwest::cookie::service`: `{ future, cookie_store, url
+/// }`, whose poll forwards to `future` and only reads the other two once
+/// the response is in.
+pub(crate) fn reqwest_cookie_response_future(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<ForwardLayout> {
+    declared_in(reader, id, "reqwest::cookie::service", "ResponseFuture<")?;
+    Some(ForwardLayout {
+        member: "future".to_owned(),
+        inner: member_of(reader, id, "future")?,
+    })
+}
+
+/// hyper-util's legacy client `ResponseFuture` as the raw screen saw
+/// it: the member holding hyper-util's own `SyncWrapper`, the wrapper's
+/// one member, and the pinned box of `dyn Future` it holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HyperUtilResponseLayout {
+    pub(crate) inner: String,
+    pub(crate) wrapped: String,
+    pub(crate) boxed: TypeId,
+}
+
+/// Screen `id` as hyper-util's legacy client `ResponseFuture`: `{ inner:
+/// SyncWrapper<Pin<Box<dyn Future<..> + Send>>> }`, whose poll is the
+/// boxed future's through the wrapper's `get_mut`.
+pub(crate) fn hyper_util_response_future(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<HyperUtilResponseLayout> {
+    let st = declared_in(
+        reader,
+        id,
+        "hyper_util::client::legacy::client",
+        "ResponseFuture",
+    )?;
+    if st.name.map(|n| reader.strings.get(n)) != Some("ResponseFuture") {
+        return None;
+    }
+    let wrapper = member_of(reader, id, "inner")?;
+    declared_in(reader, wrapper, "hyper_util::common::sync", "SyncWrapper<")?;
+    let boxed = member_of(reader, wrapper, "__0")?;
+    fq_name(reader, boxed)?
+        .starts_with("core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<")
+        .then(|| HyperUtilResponseLayout {
+            inner: "inner".to_owned(),
+            wrapped: "__0".to_owned(),
+            boxed,
+        })
+}
+
 /// Screen `id` as hyper-util's pool reaper, `IdleTask<T, K>`, declared
 /// in the pool's module: its `pool` is a `WeakOpt` over an `Option` of
 /// std's `Weak` to the `Mutex<PoolInner<T, K>>`, whose `idle` is std's

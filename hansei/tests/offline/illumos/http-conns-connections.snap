@@ -5,11 +5,11 @@ description: "`connections` over illumos/http-conns"
 TASK  ROLE    PHASE              DEADLINE    BUF      PEER             SERVER  METHOD  REQUEST
 4     server  idle (8ms)         +TS  0/16302  —                —       —       —
 5     client  idle               —           0/8192   —                —       —       —
-8     server  handling request   —           0/16339  —                —       GET     /park
-9     client  awaiting response  —           0/8192   —                —       GET     —
-11    server  handling request   —           0/16326  —                —       GET     /park
-12    client  awaiting response  —           0/8192   —                —       GET     http://127.0.0.1:43226/park
-13    server  negotiating        —           —        —                —       —       —
-15    server  idle (5ms)         +TS  0/16343  —                —       —       —
-16    client  idle               —           0/8192   127.0.0.1:43226  —       —       —
+7     server  handling request   —           0/16339  —                —       GET     /park
+8     client  awaiting response  —           0/8192   127.0.0.1:58724  —       GET     —
+10    server  handling request   —           0/16326  —                —       GET     /park
+11    client  awaiting response  —           0/8192   127.0.0.1:58724  —       GET     http://127.0.0.1:58724/park
+12    server  negotiating        —           —        —                —       —       —
+14    server  idle (5ms)         +TS  0/16343  —                —       —       —
+15    client  idle               —           0/8192   127.0.0.1:58724  —       —       —
 [9 connections]

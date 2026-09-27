@@ -259,55 +259,78 @@ impl RequestIndex {
                 continue;
             };
             let line = RequestLine::from(request);
-            index
-                .by_task
-                .entry(held.owner)
-                .or_default()
-                .insert(line.clone());
             index.by_held.entry(i).or_default().insert(line.clone());
-            index.record_above(census, held.via, &line);
+            if index.record_up(census, held.via, &line) {
+                index.by_task.entry(held.owner).or_default().insert(line);
+            }
         }
         for (set, futures) in census.sets.iter().enumerate() {
             for (child, found) in futures.children.iter().enumerate() {
                 if let Some(request) = &found.request {
-                    let via = census::Via::SetChild { set, child };
-                    index.record_above(census, Some(via), &RequestLine::from(request));
+                    let line = RequestLine::from(request);
+                    index
+                        .by_child
+                        .entry((set, child))
+                        .or_default()
+                        .insert(line.clone());
+                    index.record_up(census, futures.via, &line);
                 }
             }
         }
         index
     }
 
-    /// Record `line` against every holder from `via` up to the task. A
-    /// request the census read a few chains down — reqwest's request
-    /// behind the box a caller's future keeps, that future inside a set
-    /// child — is the child's, and every find's above it, as much as
-    /// the chain it was read from.
-    fn record_above(
+    /// Record `line` against every holder from `via` up toward the task,
+    /// and say whether it got there. A request the census read a few
+    /// chains down — reqwest's request behind the box a caller's future
+    /// keeps, that future inside a set child — is the child's, and every
+    /// find's above it, as much as the chain it was read from. The walk
+    /// stops at a holder that reads a request of its own: that is the
+    /// same exchange seen further out — reqwest's request, around the
+    /// one hyper-util's client rewrote its target from — and the
+    /// outermost reading names it to everything above.
+    fn record_up(
         &mut self,
         census: &census::FutureCensus,
         mut via: Option<census::Via>,
         line: &RequestLine,
-    ) {
+    ) -> bool {
         // The `via` links form a tree toward the task, so the walk ends
         // within the census's own length; the bound keeps a malformed
         // one from looping.
         for _ in 0..=census.held.len() + census.sets.len() {
             match via {
-                None => return,
+                None => return true,
                 Some(census::Via::Held(parent)) => {
+                    let Some(held) = census.held.get(parent) else {
+                        return false;
+                    };
+                    if held.request.is_some() {
+                        return false;
+                    }
                     self.by_held.entry(parent).or_default().insert(line.clone());
-                    via = census.held.get(parent).and_then(|held| held.via);
+                    via = held.via;
                 }
                 Some(census::Via::SetChild { set, child }) => {
+                    let Some(futures) = census.sets.get(set) else {
+                        return false;
+                    };
+                    if futures
+                        .children
+                        .get(child)
+                        .is_some_and(|found| found.request.is_some())
+                    {
+                        return false;
+                    }
                     self.by_child
                         .entry((set, child))
                         .or_default()
                         .insert(line.clone());
-                    via = census.sets.get(set).and_then(|set| set.via);
+                    via = futures.via;
                 }
             }
         }
+        false
     }
 
     /// The one request among `requests`; several name none.
@@ -1458,6 +1481,32 @@ mod tests {
         );
         let index = RequestIndex::of(&census);
         assert_eq!(index.of_held(0).as_deref(), Some("GET http://six/"));
+
+        // A request read under a find that reads its own is that one
+        // seen further in — hyper-util's rewritten target under
+        // reqwest's URL: it names the finds up to that one, and the
+        // outer reading alone names that find and everything above it.
+        let census = census::FutureCensus::from_finds(
+            vec![
+                find(None, Some(request("http://seven/park"))),
+                find(under(0), None),
+                find(under(1), Some(request("/park"))),
+            ],
+            vec![set(under(2), vec![set_child(Some(request("/child")))])],
+            vec![],
+        );
+        let index = RequestIndex::of(&census);
+        assert_eq!(index.of_held(0).as_deref(), Some("GET http://seven/park"));
+        assert_eq!(index.of_held(1).as_deref(), Some("GET /park"));
+        assert_eq!(index.of_held(2).as_deref(), Some("GET /park"));
+        assert_eq!(
+            index.of_owner(child(0, 0)).map(|line| line.to_string()),
+            Some("GET /child".to_string())
+        );
+        assert_eq!(
+            index.of_owner(task).map(|line| line.to_string()),
+            Some("GET http://seven/park".to_string())
+        );
     }
 
     /// A bucket's sample names up to three members and marks the rest.

@@ -6,7 +6,7 @@ core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 19/19
 allocator evidence: libumem index (58 caches, 35 slabs)
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 156.8 KiB swept in 3452 chunks
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 116.8 KiB swept in 3452 chunks
     hits: 5 task-pattern, 0 set-pattern; 3 admitted; 2 unlisted headers
     by class: 3 umem live, 2 lwp stack
     attributed: 0 by a registry, 3 by owner type, 0 by holding type, 0 from another task's side, 0 unknown; 0 stale

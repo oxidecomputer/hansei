@@ -1153,8 +1153,13 @@ fn test_the_census_accounting_is_exact_per_program() {
         // The client whose pool keeps a reaper adds a second such idle
         // server, its connection task's chain, and the reaper's frames
         // with their three finds: thirteen chain hits, six finds by
-        // descent, three enum finds and two dedup hits in all.
-        ("http-conns", 4, 56, 15, 6, 3),
+        // descent, three enum finds and two dedup hits in all. Both
+        // parked GETs' chains run on through their client's response
+        // future into hyper-util's request frames, down to the send on
+        // the checked-out connection: thirteen chain hits more, two
+        // finds by descent, and four locals of those frames whose
+        // initialization the layout cannot vouch for.
+        ("http-conns", 8, 69, 17, 6, 3),
         // Five chain frames: the keeper's oneshot, and each waiter's
         // pinned `Recv` and the oneshot behind it. The keeper's six
         // channel ends are no futures. Two finds by descent, one under

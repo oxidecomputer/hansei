@@ -680,6 +680,19 @@ pub enum SemanticRuleKind {
     /// reaper and its checked-out connections, which name each pooled
     /// connection by its key and its sender.
     HyperUtilPool,
+    /// futures-util's `future::Either<A, B>`: a match on which side it
+    /// holds, forwarding to that side's future.
+    FuturesUtilEither,
+    /// tower's retry `ResponseFuture` under a reviewed range: a match on
+    /// its state, forwarding to the service's or the policy's future it
+    /// holds, and to nothing while it polls the service's readiness.
+    TowerRetry,
+    /// reqwest's cookie layer's `ResponseFuture` under a reviewed range,
+    /// forwarding to the future of the service it wraps.
+    ReqwestCookie,
+    /// hyper-util's legacy client `ResponseFuture` under a reviewed
+    /// range, forwarding to the boxed future its `SyncWrapper` holds.
+    HyperUtilResponseFuture,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

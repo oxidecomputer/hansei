@@ -33,7 +33,7 @@ COUNT  TYPE / WAITING ON
     2  (2 more types)
 [7 types, 5 shown]
 
-Futures: 23 in flight, on 89 await-chain frames, up to 10 deep
+Futures: 23 in flight, on 105 await-chain frames, up to 11 deep
 
 COUNT  HELD IN
    14  task (its own await chain)
@@ -47,7 +47,7 @@ COUNT  TYPE / WAITING ON
     2  future futures_channel::oneshot::Receiver<core::convert::Infallible>
        └─ 2  unknown
     1  future futures_util::future::either::Either<tower::retry::future::ResponseFuture<reqwest::retry::Policy, reqwest::async_impl::client::HyperService, http::request::Request<reqwest::async_impl::body::Body>>, tower::util::oneshot::Oneshot<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, http::request::Request<reqwest::async_impl::body::Body>>>
-       └─ 1  unknown
+       └─ 1  oneshot rx
     1  future hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
        └─ 1  unknown
     1  future reqwest::async_impl::client::PendingRequest

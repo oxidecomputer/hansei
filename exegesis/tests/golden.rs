@@ -1049,6 +1049,116 @@ fn assert_pool(program: &str, bundle: &Bundle) {
     assert!(seen > 0, "{program}: no type named {checkout}");
 }
 
+/// The forwards between reqwest's in-flight future and hyper-util's
+/// request, each program as its rule reviewed it: every `Either` matches
+/// on itself, polling the future its side holds; tower's retry matches
+/// on its `state`, polling the service's or the policy's future and
+/// neither while retrying; hyper-util's response future polls the box
+/// its wrapper lends, and nothing else.
+fn assert_layers(program: &str, bundle: &Bundle) {
+    use hansei_bundle::{Continuation, FutureTarget, PollAction, PollProgram, SemanticRuleKind};
+    let s = |id| bundle.strings.get(id).unwrap();
+    let rule_kind =
+        |rule: hansei_bundle::SemanticRuleId| bundle.semantics.rules[rule.0 as usize].kind;
+    let delegate = |action: &PollAction| match action {
+        PollAction::Delegate {
+            target: FutureTarget::Value(path),
+            exclusive: true,
+        } => route_text(bundle, path),
+        other => format!("{other:?}"),
+    };
+    let program_of = |name: &str, record: Option<&hansei_bundle::TypeSemantics>| {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no semantic record"));
+        match &record.future.as_ref().map(|f| &f.continuation) {
+            Some(Continuation::Bound { rule, program }) => (rule_kind(*rule), program.clone()),
+            other => panic!("{program}: {name} is not bound: {other:?}"),
+        }
+    };
+    let mut seen = 0;
+    // An `Either` of values — `select`'s output — is no future and has no
+    // record. One whose poll the build inlined leaves no declaration to
+    // read futures-util's version off, and declines; the one under
+    // reqwest's redirect layer binds, and every one that binds runs the
+    // reviewed program.
+    for (name, _, record) in types_named(bundle, "futures_util::future::either::Either<")
+        .filter(|(_, _, record)| record.is_some_and(|r| r.future.is_some()))
+    {
+        let bound = record
+            .and_then(|r| r.future.as_ref())
+            .is_some_and(|f| matches!(f.continuation, Continuation::Bound { .. }));
+        if !bound && !name.contains("tower::retry::future::ResponseFuture<") {
+            continue;
+        }
+        let (kind, program_) = program_of(name, record);
+        assert_eq!(
+            kind,
+            SemanticRuleKind::FuturesUtilEither,
+            "{program}: {name}"
+        );
+        let PollProgram::MatchVariant { state, cases } = program_ else {
+            panic!("{program}: {name}: {program_:?}");
+        };
+        assert!(state.steps.is_empty(), "{program}: {name}");
+        let cases: Vec<(&str, String)> = cases
+            .iter()
+            .map(|c| (s(c.variant), delegate(&c.action)))
+            .collect();
+        assert_eq!(
+            cases,
+            [
+                ("Left", "Left.__0".to_owned()),
+                ("Right", "Right.__0".to_owned())
+            ],
+            "{program}: {name}"
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no Either");
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, "tower::retry::future::ResponseFuture<") {
+        let (kind, program_) = program_of(name, record);
+        assert_eq!(kind, SemanticRuleKind::TowerRetry, "{program}: {name}");
+        let PollProgram::MatchVariant { state, cases } = program_ else {
+            panic!("{program}: {name}: {program_:?}");
+        };
+        assert_eq!(route_text(bundle, &state), "state", "{program}: {name}");
+        let cases: Vec<(&str, String)> = cases
+            .iter()
+            .map(|c| match &c.action {
+                PollAction::Unknown(_) => (s(c.variant), "unknown".to_owned()),
+                action => (s(c.variant), delegate(action)),
+            })
+            .collect();
+        assert_eq!(
+            cases,
+            [
+                ("Called", "state.Called.future".to_owned()),
+                ("Waiting", "state.Waiting.waiting".to_owned()),
+                ("Retrying", "unknown".to_owned()),
+            ],
+            "{program}: {name}"
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no retry future");
+    let response = "hyper_util::client::legacy::client::ResponseFuture";
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, response).filter(|(name, ..)| *name == response) {
+        let (kind, program_) = program_of(name, record);
+        assert_eq!(
+            kind,
+            SemanticRuleKind::HyperUtilResponseFuture,
+            "{program}: {name}"
+        );
+        let PollProgram::Direct(action) = program_ else {
+            panic!("{program}: {name}: {program_:?}");
+        };
+        assert_eq!(delegate(&action), "inner.__0", "{program}: {name}");
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no {response}");
+}
+
 fn type_name_of(bundle: &Bundle, id: hansei_bundle::BundleTypeId) -> String {
     use hansei_bundle::TypeDef;
     match bundle.types.get(id) {
@@ -2051,15 +2161,15 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                     assert_eq!(program, "watch-stream", "{program}");
                 }
                 // hyper-util's sleep over tokio's, its version-choosing
-                // server connection and its client pool, which only the
-                // hyper fixture links, each read off its own file; whether
-                // a poll survives out of line for the origin to be recorded
-                // at all is the target's call (the Mach-O build inlines the
-                // sleep's).
+                // server connection, its client pool and its client's
+                // response future, which only the hyper fixture links,
+                // each read off its own file; whether a poll survives out
+                // of line for the origin to be recorded at all is the
+                // target's call (the Mach-O build inlines the sleep's).
                 "hyper-util" => {
                     use exegesis::detect::semantics::{
                         HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_POOL_V0_1_16,
-                        HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
+                        HYPER_UTIL_RESPONSE_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
                     };
                     let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
                         unreachable!()
@@ -2068,6 +2178,8 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         &HYPER_UTIL_AUTO_CONN_V0_1_10
                     } else if s(*family) == HYPER_UTIL_POOL_V0_1_16.family {
                         &HYPER_UTIL_POOL_V0_1_16
+                    } else if s(*family) == HYPER_UTIL_RESPONSE_V0_1_10.family {
+                        &HYPER_UTIL_RESPONSE_V0_1_10
                     } else {
                         assert_eq!(
                             s(*family),
@@ -2189,6 +2301,28 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         panic!("{program}: unexpected tokio delegation family {family}");
                     }
                 }
+                // tower's retry future, under reqwest's in-flight future:
+                // only the hyper fixture sends through reqwest, and the
+                // rule reads tower's version off the retry's own file.
+                "tower" => {
+                    use exegesis::detect::semantics::TOWER_RETRY_V0_5_2;
+                    let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
+                        unreachable!()
+                    };
+                    assert_eq!(s(*family), TOWER_RETRY_V0_5_2.family, "{program}");
+                    assert!(
+                        s(*source).ends_with("/src/retry/future.rs"),
+                        "{program}: {}",
+                        s(*source)
+                    );
+                    assert_eq!(
+                        TOWER_RETRY_V0_5_2.select(&s(*version).parse().unwrap()),
+                        LayoutSelection::ReviewedRange,
+                        "{program}: tower {} is outside the reviewed range",
+                        s(*version)
+                    );
+                    assert_eq!(program, "http-conns", "{program}");
+                }
                 other => panic!("{program}: unexpected delegation origin {other:?}"),
             },
             SemanticOrigin::LibraryLayout {
@@ -2273,6 +2407,8 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::TokioCoop,
         SemanticRuleKind::FuturesUtilNext,
         SemanticRuleKind::TokioIntervalTick,
+        SemanticRuleKind::ReqwestCookie,
+        SemanticRuleKind::HyperUtilResponseFuture,
     ];
     let delegate_kinds = [
         SemanticRuleKind::StdBoxPoll,
@@ -2287,6 +2423,8 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::TokioCoop,
         SemanticRuleKind::FuturesUtilNext,
         SemanticRuleKind::TokioIntervalTick,
+        SemanticRuleKind::ReqwestCookie,
+        SemanticRuleKind::HyperUtilResponseFuture,
     ];
     // A wrapper's program is not a storage access: only the std
     // adapters, which are pointers, carry one. `Next` holds a `&mut`
@@ -2301,6 +2439,8 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::TokioCoop,
         SemanticRuleKind::FuturesUtilNext,
         SemanticRuleKind::TokioIntervalTick,
+        SemanticRuleKind::ReqwestCookie,
+        SemanticRuleKind::HyperUtilResponseFuture,
     ];
     // Compiler storage: every async fn or async block environment binds
     // its states under the reviewed convention (the fixtures' toolchains
@@ -2468,26 +2608,30 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 rule,
                 program: PollProgram::MatchVariant { state, cases },
             } => {
-                // A coroutine's states, futures-util's `Map`, the
-                // `Option` a hyper connection wrapper holds its
-                // connection in, or the three states of hyper-util's
-                // version-choosing wrapper — the only reviewed matches,
-                // and only the hyper ones are on a member rather than
-                // the type itself.
+                // A coroutine's states, futures-util's `Map` or `Either`,
+                // the `Option` a hyper connection wrapper holds its
+                // connection in, the three states of hyper-util's
+                // version-choosing wrapper, or those of tower's retry —
+                // the only reviewed matches, and only the hyper and tower
+                // ones are on a member rather than the type itself.
                 let states = match &record.coroutine {
                     Some(layout) => {
                         assert_eq!(layout.rule, *rule, "{program}");
                         layout.states.len()
                     }
                     None => match rule_kind(*rule) {
-                        SemanticRuleKind::FuturesUtilMap | SemanticRuleKind::HyperH1Conn => 2,
-                        SemanticRuleKind::HyperUtilAutoConn => 3,
+                        SemanticRuleKind::FuturesUtilMap
+                        | SemanticRuleKind::FuturesUtilEither
+                        | SemanticRuleKind::HyperH1Conn => 2,
+                        SemanticRuleKind::HyperUtilAutoConn | SemanticRuleKind::TowerRetry => 3,
                         other => panic!("{program}: a match program on a non-coroutine: {other:?}"),
                     },
                 };
                 if matches!(
                     rule_kind(*rule),
-                    SemanticRuleKind::HyperH1Conn | SemanticRuleKind::HyperUtilAutoConn
+                    SemanticRuleKind::HyperH1Conn
+                        | SemanticRuleKind::HyperUtilAutoConn
+                        | SemanticRuleKind::TowerRetry
                 ) {
                     assert_eq!(state.steps.len(), 1, "{program}");
                 } else {
@@ -4014,6 +4158,10 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         // reqwest's pool, from its reaper and from a checkout: the key
         // authority's text and the sender's want pointer.
         assert_pool(program, bundle);
+        // The layers under reqwest's in-flight future down to hyper-util's
+        // request: the `Either` the redirect layer holds, the retry's
+        // state, and hyper-util's response future over its box.
+        assert_layers(program, bundle);
         // Each upgradeable connection matches on its `inner` option:
         // `Some` polls the dispatcher inside the connection — `inner`
         // on the client, `conn` on the server — exclusively; `None` is

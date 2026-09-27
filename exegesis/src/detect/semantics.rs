@@ -240,8 +240,14 @@ pub const TRACING_INSTRUMENTED_V0_1_40: LibraryConvention = LibraryConvention {
 /// stream it borrows, so it forwards exclusively too — to a stream,
 /// which the route names without claiming it a future.
 ///
+/// `future::Either<A, B>` (`src/future/either.rs`; 0.3.31 rewrote the
+/// projections' matches in `Self::` form, projecting the same way) is
+/// the enum `Left(A) | Right(B)`, and its `poll` is `as_pin_mut()`
+/// matched to the active variant's poll and nothing else: it forwards
+/// exclusively to whichever side it holds.
+///
 /// The checksums are the reviewed revisions of every file a `poll`
-/// declaration in this set can name — the four implementations, the
+/// declaration in this set can name — the five implementations, the
 /// two `delegate_all!` invocation sites and the macro's own file — so
 /// a build whose line table carries one is checked against the
 /// revision that was read.
@@ -345,6 +351,22 @@ pub const FUTURES_UTIL_ADAPTERS_V0_3_30: LibraryConvention = LibraryConvention {
             [
                 0x1b, 0xd8, 0x24, 0x3a, 0xe6, 0x0b, 0x46, 0xb4, 0x36, 0x7e, 0x8a, 0x1f, 0xfa, 0x0b,
                 0x0b, 0x1d,
+            ],
+        ),
+        // src/future/either.rs, 0.3.30
+        (
+            "src/future/either.rs",
+            [
+                0x9a, 0x47, 0xed, 0xe8, 0x20, 0x89, 0x4a, 0x11, 0x37, 0x6d, 0xf3, 0xd7, 0xb0, 0xa8,
+                0x61, 0xd8,
+            ],
+        ),
+        // src/future/either.rs, 0.3.31 through 0.3.34
+        (
+            "src/future/either.rs",
+            [
+                0xe4, 0xde, 0x5f, 0xe8, 0x82, 0x0b, 0xfc, 0x44, 0x8e, 0x48, 0x7f, 0x0d, 0x52, 0xf6,
+                0x5e, 0x4a,
             ],
         ),
     ],
@@ -582,6 +604,144 @@ pub const HYPER_UTIL_POOL_V0_1_16: LibraryConvention = LibraryConvention {
             [
                 0xbe, 0x70, 0x4c, 0x6b, 0xf9, 0x58, 0x1d, 0x9a, 0xcc, 0xb4, 0x6f, 0x50, 0x80, 0xaa,
                 0x70, 0x07,
+            ],
+        ),
+    ],
+};
+
+/// hyper-util's legacy client `ResponseFuture` as 0.1.10 through 0.1.20
+/// lay it out, reviewed in `src/client/legacy/client.rs` of each
+/// release: `struct ResponseFuture { inner: SyncWrapper<Pin<Box<dyn
+/// Future<..> + Send>>> }`, whose `poll` is
+/// `self.inner.get_mut().as_mut().poll(cx)` and nothing else — the
+/// crate's own `common::sync::SyncWrapper<T>(T)` only lends its one
+/// member — so it forwards exclusively to the boxed future
+/// `Client::request` built.
+pub const HYPER_UTIL_RESPONSE_V0_1_10: LibraryConvention = LibraryConvention {
+    package: "hyper-util",
+    family: "hyper-util-response-0.1.10",
+    floor: (0, 1, 10),
+    ceiling: (0, 1, 20),
+    checksums: &[
+        // src/client/legacy/client.rs, 0.1.10
+        (
+            "src/client/legacy/client.rs",
+            [
+                0x0e, 0xac, 0x23, 0x67, 0x18, 0x7c, 0xd7, 0x4b, 0xf7, 0x08, 0xa5, 0xec, 0xf2, 0xb7,
+                0x3e, 0xe9,
+            ],
+        ),
+        // src/client/legacy/client.rs, 0.1.11
+        (
+            "src/client/legacy/client.rs",
+            [
+                0xff, 0x3b, 0x40, 0xa4, 0x0f, 0xed, 0xf6, 0x0b, 0xc3, 0xdc, 0x70, 0x9a, 0x13, 0x4a,
+                0xc4, 0x3c,
+            ],
+        ),
+        // src/client/legacy/client.rs, 0.1.12
+        (
+            "src/client/legacy/client.rs",
+            [
+                0x6a, 0x90, 0xf1, 0x4d, 0x4f, 0x6a, 0xa6, 0x1d, 0xe1, 0x25, 0x09, 0xcf, 0x8f, 0x1e,
+                0xeb, 0xfe,
+            ],
+        ),
+        // src/client/legacy/client.rs, 0.1.13 through 0.1.14
+        (
+            "src/client/legacy/client.rs",
+            [
+                0x90, 0x9c, 0xff, 0x58, 0x8a, 0xe2, 0x6f, 0x17, 0x72, 0x00, 0xb7, 0x9d, 0x9c, 0x4f,
+                0x58, 0x93,
+            ],
+        ),
+        // src/client/legacy/client.rs, 0.1.15 through 0.1.16
+        (
+            "src/client/legacy/client.rs",
+            [
+                0x86, 0xe1, 0xbc, 0x92, 0x61, 0xf4, 0x9b, 0x52, 0xb4, 0x6a, 0x6c, 0x9d, 0xe6, 0x03,
+                0xe5, 0x21,
+            ],
+        ),
+        // src/client/legacy/client.rs, 0.1.17
+        (
+            "src/client/legacy/client.rs",
+            [
+                0xb0, 0x0b, 0x75, 0xa5, 0xa7, 0xc2, 0x52, 0xbe, 0x65, 0xac, 0x88, 0x8a, 0xe0, 0xab,
+                0xf2, 0x63,
+            ],
+        ),
+        // src/client/legacy/client.rs, 0.1.18 through 0.1.19
+        (
+            "src/client/legacy/client.rs",
+            [
+                0x9b, 0x90, 0x83, 0xd8, 0x0b, 0xb8, 0xec, 0x56, 0x4e, 0xb7, 0x70, 0x93, 0x5b, 0x36,
+                0x59, 0x6d,
+            ],
+        ),
+        // src/client/legacy/client.rs, 0.1.20
+        (
+            "src/client/legacy/client.rs",
+            [
+                0xbe, 0x70, 0x4c, 0x6b, 0xf9, 0x58, 0x1d, 0x9a, 0xcc, 0xb4, 0x6f, 0x50, 0x80, 0xaa,
+                0x70, 0x07,
+            ],
+        ),
+    ],
+};
+
+/// tower's retry `ResponseFuture` as 0.5.2 and 0.5.3 implement it,
+/// reviewed in `src/retry/future.rs` of each (their `ResponseFuture`,
+/// `State` and `poll` are identical): `{ request, retry, state: State<
+/// F, P> }`, `State` being `Called { future } | Waiting { waiting } |
+/// Retrying`. Its `poll` loops over the state: in `Called` it polls the
+/// service's `future`, in `Waiting` the policy's `waiting` future, and
+/// in `Retrying` it polls the service's readiness, which it holds no
+/// future of. So a parked retry is parked on the one future its state
+/// holds, or, retrying, on nothing a route can reach.
+pub const TOWER_RETRY_V0_5_2: LibraryConvention = LibraryConvention {
+    package: "tower",
+    family: "tower-retry-0.5.2",
+    floor: (0, 5, 2),
+    ceiling: (0, 5, 3),
+    checksums: &[
+        // src/retry/future.rs, 0.5.2
+        (
+            "src/retry/future.rs",
+            [
+                0x54, 0xf3, 0x51, 0xed, 0x09, 0xda, 0x3d, 0xf5, 0xd8, 0x39, 0xa2, 0x10, 0xc3, 0x48,
+                0x3a, 0x38,
+            ],
+        ),
+        // src/retry/future.rs, 0.5.3
+        (
+            "src/retry/future.rs",
+            [
+                0xfd, 0x9f, 0x09, 0x83, 0x4c, 0x00, 0x69, 0x91, 0x75, 0x1d, 0xf0, 0xec, 0x0b, 0xb0,
+                0x9b, 0xa8,
+            ],
+        ),
+    ],
+};
+
+/// reqwest's cookie layer as 0.13.2 through 0.13.4 implement it,
+/// reviewed in `src/cookie.rs` of each (byte-identical): the service's
+/// `ResponseFuture<S, B>` is `{ future: S::Future, cookie_store, url }`,
+/// and its `poll` clones the store and the URL, then polls `future`,
+/// reading the other two only once the response is in. So it forwards
+/// exclusively to `future`.
+pub const REQWEST_COOKIE_V0_13_2: LibraryConvention = LibraryConvention {
+    package: "reqwest",
+    family: "reqwest-cookie-0.13.2",
+    floor: (0, 13, 2),
+    ceiling: (0, 13, 4),
+    checksums: &[
+        // src/cookie.rs, 0.13.2 through 0.13.4
+        (
+            "src/cookie.rs",
+            [
+                0xb7, 0x07, 0x01, 0x0e, 0x05, 0x11, 0x1e, 0x6c, 0x25, 0xd1, 0xe6, 0xd0, 0x5c, 0x75,
+                0x81, 0x1c,
             ],
         ),
     ],
@@ -2018,6 +2178,24 @@ mod tests {
                 ["0.1.16", "0.1.17", "0.1.18", "0.1.19", "0.1.20"].as_slice(),
                 "0.1.15",
                 "0.1.21",
+            ),
+            (
+                &HYPER_UTIL_RESPONSE_V0_1_10,
+                ["0.1.10", "0.1.15", "0.1.20"].as_slice(),
+                "0.1.9",
+                "0.1.21",
+            ),
+            (
+                &TOWER_RETRY_V0_5_2,
+                ["0.5.2", "0.5.3"].as_slice(),
+                "0.5.1",
+                "0.5.4",
+            ),
+            (
+                &REQWEST_COOKIE_V0_13_2,
+                ["0.13.2", "0.13.3", "0.13.4"].as_slice(),
+                "0.13.1",
+                "0.13.5",
             ),
             (
                 &TOKIO_STREAM_WATCH_V0_1_14,

@@ -169,23 +169,31 @@ impl<'a> Check<'a> {
             | HyperUtilTokioSleep
             | HyperUtilAutoConn
             | HyperUtilPool
+            | HyperUtilResponseFuture
             | HyperH1Conn
             | DropshotRequestHandler
             | DropshotRequestContext
             | ReqwestPendingRequest
+            | ReqwestCookie
             | HttpRequest
             | TokioSelect
             | TokioIntervalTick
             | FuturesUtilNext
+            | FuturesUtilEither
+            | TowerRetry
             | TokioStreamWatchStream
             | TokioUtilReusableBox
             | TokioStreamStreamMap => {
                 let crate_name = match rule.kind {
                     TracingInstrumented => "tracing",
-                    HyperUtilTokioSleep | HyperUtilAutoConn | HyperUtilPool => "hyper-util",
+                    HyperUtilTokioSleep
+                    | HyperUtilAutoConn
+                    | HyperUtilPool
+                    | HyperUtilResponseFuture => "hyper-util",
                     HyperH1Conn => "hyper",
                     DropshotRequestHandler | DropshotRequestContext => "dropshot",
-                    ReqwestPendingRequest => "reqwest",
+                    ReqwestPendingRequest | ReqwestCookie => "reqwest",
+                    TowerRetry => "tower",
                     HttpRequest => "http",
                     // tokio's own macro and its own async fn, but read
                     // like a third-party rule: the declaration file is
@@ -1060,6 +1068,10 @@ impl<'a> Check<'a> {
                         TokioIntervalTick,
                         HyperH1Conn,
                         HyperUtilAutoConn,
+                        FuturesUtilEither,
+                        TowerRetry,
+                        ReqwestCookie,
+                        HyperUtilResponseFuture,
                     ],
                 )?;
                 self.target(record.ty, target)?;
@@ -1079,7 +1091,11 @@ impl<'a> Check<'a> {
                 // connection wrappers poll the dispatcher inside them
                 // and act only on its output, and hyper-util's
                 // version-choosing wrapper polls the HTTP/1 connection
-                // its `H1` state holds the same way.
+                // its `H1` state holds the same way. futures-util's
+                // `Either` polls the side it holds, tower's retry the
+                // future its state holds, reqwest's cookie layer the
+                // service's future, and hyper-util's response future the
+                // box its wrapper lends, each and nothing else.
                 let reviewed = matches!(
                     binding.kind,
                     RustcAsyncFn
@@ -1097,6 +1113,10 @@ impl<'a> Check<'a> {
                         | TokioIntervalTick
                         | HyperH1Conn
                         | HyperUtilAutoConn
+                        | FuturesUtilEither
+                        | TowerRetry
+                        | ReqwestCookie
+                        | HyperUtilResponseFuture
                 );
                 require(!exclusive || reviewed, "unreviewed delegation exclusivity")?;
                 let path = match target {
@@ -1206,6 +1226,10 @@ impl<'a> Check<'a> {
                 FuturesUtilPending,
                 HyperH1Conn,
                 HyperUtilAutoConn,
+                FuturesUtilEither,
+                TowerRetry,
+                ReqwestCookie,
+                HyperUtilResponseFuture,
             ],
         )?;
         require(

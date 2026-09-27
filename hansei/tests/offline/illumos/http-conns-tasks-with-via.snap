@@ -4,7 +4,7 @@ description: "`tasks --with waiting-on via:` over illumos/http-conns"
 ---
 ID  STATE  FUT  AWAITING AT               WAITING ON    TYPE
 5   idle     0  src/bin/http-conns.rs:76  http1 client  async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-9   idle     0  src/bin/http-conns.rs:76  http1 client  async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-12  idle     0  —                         http1 client  future Pin<Box<(dyn Future<Output=()> + Send)>>
-16  idle     0  —                         http1 client  future Pin<Box<(dyn Future<Output=()> + Send)>>
+8   idle     0  src/bin/http-conns.rs:76  http1 client  async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+11  idle     0  —                         http1 client  future Pin<Box<(dyn Future<Output=()> + Send)>>
+15  idle     0  —                         http1 client  future Pin<Box<(dyn Future<Output=()> + Send)>>
 [4 tasks]

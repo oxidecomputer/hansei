@@ -457,6 +457,13 @@ exclude_re = [
     # niche that `None` is stored as, so `<` and `<=` pass the same
     # words.
     "replace < with <= in Context<'b, T>::observe_http_conn",
+    # reqwest's cookie layer exists only in a build with its `cookies`
+    # feature, which no fixture enables: http-conns' `Either` holds
+    # tower's retry future directly. The screen and its convention are
+    # checked against sled-agent's DWARF, whose `Either` holds the
+    # cookie future; pin them here when a fixture builds one.
+    "replace reqwest_cookie_response_future -> Option<ForwardLayout> with None",
+    "delete match arm LibrarySeed::ReqwestCookie\\(\\.\\.\\) in LibrarySeed::convention",
     # The pool reaper's screens on std's own layout: the pool's mutex
     # is a `std::sync` `Mutex`, and the idle list's words are a byte
     # pointer and an unsigned word. Every std in the reviewed range

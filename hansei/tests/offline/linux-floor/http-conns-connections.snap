@@ -6,10 +6,10 @@ TASK  ROLE    PHASE              DEADLINE                                      B
 4     server  idle               TS on the target's monotonic clock  0/16302  —                —       —       —
 5     client  idle               —                                             0/8192   —                —       —       —
 8     server  handling request   —                                             0/16339  —                —       GET     /park
-9     client  awaiting response  —                                             0/8192   —                —       GET     —
+9     client  awaiting response  —                                             0/8192   127.0.0.1:36519  —       GET     —
 11    server  handling request   —                                             0/16326  —                —       GET     /park
-12    client  awaiting response  —                                             0/8192   —                —       GET     http://127.0.0.1:45731/park
+12    client  awaiting response  —                                             0/8192   127.0.0.1:36519  —       GET     http://127.0.0.1:36519/park
 13    server  negotiating        —                                             —        —                —       —       —
 15    server  idle               TS on the target's monotonic clock  0/16343  —                —       —       —
-16    client  idle               —                                             0/8192   127.0.0.1:45731  —       —       —
+16    client  idle               —                                             0/8192   127.0.0.1:36519  —       —       —
 [9 connections]

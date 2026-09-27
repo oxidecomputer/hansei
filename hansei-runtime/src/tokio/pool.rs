@@ -192,28 +192,35 @@ mod tests {
     }
 
     /// Over the fixture that holds connections, on every system that
-    /// captures it: the census reaches the reqwest client's pool through
-    /// its reaper, whose idle map holds the one pooled connection parked
-    /// between requests, under the loopback authority the requester
-    /// sent to. The connection checked out for the parked GET is in no
-    /// idle list, and the hyper client made without a pool is in no
-    /// pool at all.
+    /// captures it, the census names three pooled connections, all under
+    /// the listener's loopback authority: the one the reaped client's
+    /// pool keeps idle, read through its reaper, and the two checked out
+    /// for the parked GETs, read off the `Pooled` each caller's chain
+    /// holds under its client's response future — the hyper-util
+    /// requester's and reqwest's. The client whose pool keeps no reaper
+    /// and has nothing checked out is named by nothing.
     #[test]
-    fn test_the_reaper_names_the_idle_pooled_connection() {
+    fn test_the_census_names_idle_and_checked_out_connections() {
         for set in FIXTURE_SETS {
             let (bundle, snapshot) = testkit::load(set, "http-conns");
             let ctx = testkit::context(&bundle, &snapshot);
             let list = testkit::tasks(&ctx, &snapshot);
             let census = census(&ctx, &list);
             let peers = &census.pool_peers.0;
-            assert_eq!(peers.len(), 1, "{set}: {peers:?}");
-            let (want, authority) = peers.iter().next().unwrap();
-            assert_ne!(*want, 0, "{set}");
+            assert_eq!(peers.len(), 3, "{set}: {peers:?}");
+            let authorities: std::collections::BTreeSet<&str> =
+                peers.values().map(String::as_str).collect();
+            let [authority] = authorities.into_iter().collect::<Vec<_>>()[..] else {
+                panic!("{set}: {peers:?}");
+            };
             let port = authority
                 .strip_prefix("127.0.0.1:")
                 .unwrap_or_else(|| panic!("{set}: {authority}"));
             assert!(port.parse::<u16>().is_ok(), "{set}: {authority}");
-            assert_eq!(census.pool_peers.authority(*want), Some(authority.as_str()));
+            for want in peers.keys() {
+                assert_ne!(*want, 0, "{set}");
+                assert_eq!(census.pool_peers.authority(*want), Some(authority));
+            }
         }
     }
 }

@@ -47,12 +47,13 @@ use crate::detect::adapters::{
 use crate::detect::semantics::{
     DROPSHOT_HANDLER_V0_17_0, DROPSHOT_SERVER_V0_17_0, FUTURES_UTIL_ADAPTERS_V0_3_30,
     HASHBROWN_TABLE_V0_12_3, HTTP_REQUEST_V1_0_0, HYPER_H1_CONN_V1_6_0,
-    HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_POOL_V0_1_16, HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
-    LibraryConvention, REQWEST_PENDING_REQUEST_V0_12_0, RustcConvention, TOKIO_INTERVAL_TICK_V1_47,
+    HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_POOL_V0_1_16, HYPER_UTIL_RESPONSE_V0_1_10,
+    HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention, REQWEST_COOKIE_V0_13_2,
+    REQWEST_PENDING_REQUEST_V0_12_0, RustcConvention, TOKIO_INTERVAL_TICK_V1_47,
     TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
-    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40, library_convention,
-    rustc_core_pending_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
-    rustc_std_adapter_convention, tokio_state_protocol,
+    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2, TRACING_INSTRUMENTED_V0_1_40,
+    library_convention, rustc_core_pending_convention, rustc_coroutine_convention,
+    rustc_dyn_future_abi_convention, rustc_std_adapter_convention, tokio_state_protocol,
 };
 
 use std::borrow::Cow;
@@ -254,11 +255,41 @@ enum LibrarySeed {
         h1_conn: String,
         h1: BundleTypeId,
     },
+    /// futures-util's `Either<A, B>`: each variant's name and the future
+    /// its `__0` holds.
+    Either {
+        left: (String, BundleTypeId),
+        right: (String, BundleTypeId),
+    },
+    /// tower's retry `ResponseFuture`: the member holding its state, the
+    /// state enum, the variant and member holding the service's future
+    /// and the policy's, and the state holding neither.
+    TowerRetry {
+        state: String,
+        state_ty: BundleTypeId,
+        called: (String, String, BundleTypeId),
+        waiting: (String, String, BundleTypeId),
+        retrying: String,
+    },
+    /// reqwest's cookie layer's `ResponseFuture` over the service's
+    /// future in `future`.
+    ReqwestCookie(String, BundleTypeId),
+    /// hyper-util's legacy `ResponseFuture`: its `SyncWrapper` member,
+    /// the wrapper's one member, and the pinned box it holds.
+    HyperUtilResponse {
+        inner: String,
+        wrapped: String,
+        boxed: BundleTypeId,
+    },
 }
 
 impl LibrarySeed {
     fn rule_kind(&self) -> SemanticRuleKind {
         match self {
+            LibrarySeed::Either { .. } => SemanticRuleKind::FuturesUtilEither,
+            LibrarySeed::TowerRetry { .. } => SemanticRuleKind::TowerRetry,
+            LibrarySeed::ReqwestCookie(..) => SemanticRuleKind::ReqwestCookie,
+            LibrarySeed::HyperUtilResponse { .. } => SemanticRuleKind::HyperUtilResponseFuture,
             LibrarySeed::Pending => SemanticRuleKind::FuturesUtilPending,
             LibrarySeed::HyperConnection(..) | LibrarySeed::HyperUpgradeable { .. } => {
                 SemanticRuleKind::HyperH1Conn
@@ -288,6 +319,9 @@ impl LibrarySeed {
                 &HYPER_H1_CONN_V1_6_0
             }
             LibrarySeed::HyperUtilAuto { .. } => &HYPER_UTIL_AUTO_CONN_V0_1_10,
+            LibrarySeed::HyperUtilResponse { .. } => &HYPER_UTIL_RESPONSE_V0_1_10,
+            LibrarySeed::TowerRetry { .. } => &TOWER_RETRY_V0_5_2,
+            LibrarySeed::ReqwestCookie(..) => &REQWEST_COOKIE_V0_13_2,
             LibrarySeed::WatchStream(..) => &TOKIO_STREAM_WATCH_V0_1_14,
             LibrarySeed::ReusableBox { .. } => &TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
             LibrarySeed::IntervalTick { .. } => &TOKIO_INTERVAL_TICK_V1_47,
@@ -755,6 +789,33 @@ fn library_seed(
             state_ty: bundle_id(layout.state_ty)?,
             h1_conn: layout.h1_conn,
             h1: bundle_id(layout.h1)?,
+        })
+    } else if name.starts_with("futures_util::future::either::Either<") {
+        let layout = adapters::futures_util_either(reader, raw)?;
+        Some(LibrarySeed::Either {
+            left: (layout.left.0, bundle_id(layout.left.1)?),
+            right: (layout.right.0, bundle_id(layout.right.1)?),
+        })
+    } else if name.starts_with("tower::retry::future::ResponseFuture<") {
+        let layout = adapters::tower_retry_response_future(reader, raw)?;
+        let (called, called_member, called_ty) = layout.called;
+        let (waiting, waiting_member, waiting_ty) = layout.waiting;
+        Some(LibrarySeed::TowerRetry {
+            state: layout.state,
+            state_ty: bundle_id(layout.state_ty)?,
+            called: (called, called_member, bundle_id(called_ty)?),
+            waiting: (waiting, waiting_member, bundle_id(waiting_ty)?),
+            retrying: layout.retrying,
+        })
+    } else if name.starts_with("reqwest::cookie::service::ResponseFuture<") {
+        let (member, inner) = forward(adapters::reqwest_cookie_response_future(reader, raw))?;
+        Some(LibrarySeed::ReqwestCookie(member, inner))
+    } else if name == "hyper_util::client::legacy::client::ResponseFuture" {
+        let layout = adapters::hyper_util_response_future(reader, raw)?;
+        Some(LibrarySeed::HyperUtilResponse {
+            inner: layout.inner,
+            wrapped: layout.wrapped,
+            boxed: bundle_id(layout.boxed)?,
         })
     } else {
         None
@@ -2565,8 +2626,105 @@ fn plan_library(
         | LibrarySeed::MapErr(member, inner)
         | LibrarySeed::IntoFuture(member, inner)
         | LibrarySeed::TokioSleep(member, inner)
+        | LibrarySeed::ReqwestCookie(member, inner)
         | LibrarySeed::Coop(member, inner) => Delegation::Direct {
             target: Target::Value(forward(member, *inner, strings)?),
+            exclusive: true,
+        },
+        // `Either` polls the side its variant says it holds.
+        LibrarySeed::Either { left, right } => {
+            let side = |(variant, future): &(String, BundleTypeId)| -> Result<_, Decline> {
+                let path = hop_route(
+                    types,
+                    strings,
+                    ty,
+                    &[Hop::Variant(variant), Hop::Member("__0")],
+                    *future,
+                )?;
+                let Some(&Step::Variant(name)) = path.steps.first() else {
+                    unreachable!("the route starts at the variant");
+                };
+                Ok((name, CaseAction::Delegate(Box::new(Target::Value(path)))))
+            };
+            Delegation::Match {
+                state: TypedPath {
+                    steps: Vec::new(),
+                    target: ty,
+                },
+                cases: vec![side(left)?, side(right)?],
+            }
+        }
+        // The retry polls the future its state holds; retrying, it polls
+        // the service's readiness, which it keeps no future of.
+        LibrarySeed::TowerRetry {
+            state,
+            state_ty,
+            called,
+            waiting,
+            retrying,
+        } => {
+            let unread =
+                strings.intern("retrying, the retry polls its service's readiness, not a future");
+            let retrying_name = match types.get(*state_ty) {
+                Some(TypeDef::Enum { shape, .. }) => shape
+                    .variants
+                    .iter()
+                    .find(|v| strings.get(v.name) == Some(retrying.as_str()))
+                    .map(|v| v.name),
+                _ => None,
+            }
+            .ok_or((
+                SemanticIssueKind::MissingLayout,
+                format!("the retry's state has no {retrying} variant in the final table"),
+            ))?;
+            let state_path = hop_route(types, strings, ty, &[Hop::Member(state)], *state_ty)?;
+            let holding =
+                |(variant, member, future): &(String, String, BundleTypeId)| -> Result<_, Decline> {
+                    let path = hop_route(
+                        types,
+                        strings,
+                        ty,
+                        &[
+                            Hop::Member(state),
+                            Hop::Variant(variant),
+                            Hop::Member(member),
+                        ],
+                        *future,
+                    )?;
+                    let Some(&Step::Variant(name)) = path.steps.get(1) else {
+                        unreachable!("the route selects the variant under the state");
+                    };
+                    Ok((name, CaseAction::Delegate(Box::new(Target::Value(path)))))
+                };
+            Delegation::Match {
+                state: state_path,
+                cases: vec![
+                    holding(called)?,
+                    holding(waiting)?,
+                    (
+                        retrying_name,
+                        CaseAction::Unknown(SemanticIssue {
+                            kind: SemanticIssueKind::UnsupportedState,
+                            detail: Some(unread),
+                        }),
+                    ),
+                ],
+            }
+        }
+        // hyper-util's response future polls the box its wrapper lends;
+        // crossing the box is the box's own std record's business.
+        LibrarySeed::HyperUtilResponse {
+            inner,
+            wrapped,
+            boxed,
+        } => Delegation::Direct {
+            target: Target::Value(hop_route(
+                types,
+                strings,
+                ty,
+                &[Hop::Member(inner), Hop::Member(wrapped)],
+                *boxed,
+            )?),
             exclusive: true,
         },
         // The terminal: nothing in the layout to poll, so the plan is

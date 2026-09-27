@@ -1162,23 +1162,35 @@ fn response_cells(sources: &Sources<'_>) -> HashMap<u64, ResponseCell> {
     cells
 }
 
-/// Place the slots no owner's own values reached that lie in a
-/// response callback's receiver cell: the caller awaiting a response
-/// the analysis knows from the connection's side. The connection's own
-/// read of the cell, where it named a task, must name the slot's owner
-/// — the join is the address, and that read is its check.
+/// Name the slots that lie in a response callback's receiver cell as
+/// the caller awaiting a response the analysis knows from the
+/// connection's side: a slot no owner's own values reached, and one
+/// whose owner's values reached that same oneshot's receiver — what
+/// the connection says it is for names it better than the oneshot's own
+/// words. The connection's own read of the cell, where it named a task,
+/// must name the slot's owner — the join is the address, and that read
+/// is its check.
 fn join_response_cells(slots: &mut [AttributedSlot], sources: &Sources<'_>) {
     let cells = response_cells(sources);
     if cells.is_empty() {
         return;
     }
     for slot in slots {
-        if !matches!(slot.attribution, Attribution::Unknown) {
-            continue;
-        }
         let Some(cell) = cells.get(&slot.slot) else {
             continue;
         };
+        let joinable = match &slot.attribution {
+            Attribution::Unknown => true,
+            Attribution::Owner {
+                kind: OwnerKind::OneshotRx,
+                primitive,
+                ..
+            } => *primitive == cell.primitive,
+            _ => false,
+        };
+        if !joinable {
+            continue;
+        }
         if let (Some(named), Owner::Task { header, .. }) = (cell.waker_task, slot.owner)
             && named != header
         {
@@ -2593,7 +2605,10 @@ pub fn verified_accounts(
                 kind: OwnerKind::OneshotRx,
                 primitive,
                 ..
-            },
+            }
+            // A caller's slot named from the connection's side is the
+            // same oneshot's receiver cell, named for what it awaits.
+            | Attribution::Response { primitive, .. },
             WaitTarget::Oneshot { addr, .. },
         ) => primitive == addr,
         (
@@ -3429,11 +3444,11 @@ mod tests {
     }
 
     /// The caller's slot in the busy connection's response callback:
-    /// the requester's own values never reach the receiver, so its
-    /// waker in the `rx_task` cell is placed from the connection's
-    /// side and named as the response it awaits, while the
-    /// connection's own sender-cell slot in the same oneshot stands as
-    /// it did. The idle connection, with no callback, joins nothing.
+    /// the requester's own values reach the receiver, but its waker in
+    /// the `rx_task` cell is named from the connection's side, as the
+    /// response it awaits, while the connection's own sender-cell slot
+    /// in the same oneshot stands as it did. The idle connection, with
+    /// no callback, joins nothing.
     #[test]
     fn test_the_callers_slot_joins_the_connections_callback() {
         use crate::tokio::bundle::{HttpCaller, HttpPhase};
@@ -3502,7 +3517,14 @@ mod tests {
             slots[0].entry(None),
             format!("oneshot rx {inner:#x} (response for http1 client {addr:#x})")
         );
-        assert_eq!(slots[0].reach, Reach::Unlocated);
+        // The requester's own chain reaches the receiver, through
+        // hyper-util's response future down to the checkout's send, so
+        // the slot is located where the requester awaits it.
+        assert!(
+            matches!(slots[0].reach, Reach::Awaited(_)),
+            "{:?}",
+            slots[0].reach
+        );
         // The connection's own slot in the same oneshot: the sender
         // cell, a different address in the same `Inner`.
         let tx = attributed

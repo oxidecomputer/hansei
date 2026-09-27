@@ -3997,8 +3997,8 @@ fn test_http_conns_connections_acceptance() {
         let out = hansei_ok(&bundle, core, "connections");
         assert!(out.ends_with("[9 connections]\n"), "{out}");
         // The listener's port is the kernel's to pick, so the URL the
-        // reqwest requester sent, and the key the reaped client's pool
-        // keeps its connection under, are compared with it masked.
+        // reqwest requester sent, and the key each client's pool keeps
+        // its connection under, are compared with it masked.
         let port = regex::Regex::new(r"127\.0\.0\.1:\d+").unwrap();
         // The idle server's deadline — relative where the core records
         // when the process stopped, else on the monotonic clock — and
@@ -4028,8 +4028,8 @@ fn test_http_conns_connections_acceptance() {
         assert_eq!(
             rows,
             [
-                "client awaiting response — 0/8192 — — GET http://127.0.0.1:PORT/park",
-                "client awaiting response — 0/8192 — — GET —",
+                "client awaiting response — 0/8192 127.0.0.1:PORT — GET http://127.0.0.1:PORT/park",
+                "client awaiting response — 0/8192 127.0.0.1:PORT — GET —",
                 "client idle — 0/8192 127.0.0.1:PORT — — —",
                 "client idle — 0/8192 — — — —",
                 "server handling request — 0/16326 — — GET /park",
