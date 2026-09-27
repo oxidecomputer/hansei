@@ -3,11 +3,13 @@ source: hansei/src/offline.rs
 description: "`connections` over illumos/http-conns"
 ---
 TASK  ROLE    PHASE              DEADLINE    BUF      PEER  SERVER  METHOD  REQUEST
-4     server  idle (20ms)        +TS  0/16302  —     —       —       —
+4     server  idle (8ms)         +TS  0/16302  —     —       —       —
 5     client  idle               —           0/8192   —     —       —       —
-9     server  handling request   —           0/16339  —     —       GET     /park
-10    client  awaiting response  —           0/8192   —     —       GET     —
-12    server  handling request   —           0/16326  —     —       GET     /park
-13    client  awaiting response  —           0/8192   —     —       GET     http://127.0.0.1:52557/park
-14    server  negotiating        —           —        —     —       —       —
-[7 connections]
+8     server  handling request   —           0/16339  —     —       GET     /park
+9     client  awaiting response  —           0/8192   —     —       GET     —
+11    server  handling request   —           0/16326  —     —       GET     /park
+12    client  awaiting response  —           0/8192   —     —       GET     http://127.0.0.1:43226/park
+13    server  negotiating        —           —        —     —       —       —
+15    server  idle (5ms)         +TS  0/16343  —     —       —       —
+16    client  idle               —           0/8192   —     —       —       —
+[9 connections]

@@ -4,6 +4,6 @@ description: "`print scheduled_io` over linux-floor/http-conns"
 ---
 0xADDR -> tokio::runtime::io::scheduled_io::ScheduledIo {
         linked_list_pointers: core::cell::UnsafeCell<tokio::util::linked_list::Pointers<tokio::runtime::io::scheduled_io::ScheduledIo>> { .. } @ 0xADDR,
-        readiness: 262144,
+        readiness: 327680,
         waiters: tokio::loom::std::parking_lot::Mutex<tokio::runtime::io::scheduled_io::Waiters> { .. } @ 0xADDR,
     }

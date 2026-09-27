@@ -11,44 +11,46 @@ COUNT  RT  ROLE             STATE            LWPS
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
-Tasks: 11 owned by runtime 0 @ 0xADDR
+Tasks: 14 owned by runtime 0 @ 0xADDR
 
 COUNT  STATE
-   11  idle
-[11 tasks]
+   14  idle
+[14 tasks]
 
 COUNT  TYPE / WAITING ON
-    4  async fn http_conns::serve
-       ├─ 3  http1 server
+    5  async fn http_conns::serve
+       ├─ 4  http1 server
        └─ 1  http server
+    3  future Pin<Box<(dyn Future<Output=()> + Send)>>
+       ├─ 2  http1 client
+       └─ 1  one of several
     2  async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
        └─ 2  http1 client
     1  async fn http_conns::accept_loop
        └─ 1  io
     1  async fn http_conns::raw_holder
        └─ 1  oneshot rx
-    1  async fn http_conns::requester
-       └─ 1  one of several
     2  (2 more types)
 [7 types, 5 shown]
 
-Futures: 16 in flight, on 64 await-chain frames, up to 10 deep
+Futures: 23 in flight, on 89 await-chain frames, up to 10 deep
 
 COUNT  HELD IN
-   11  task (its own await chain)
-    5  frame (off any await chain)
+   14  task (its own await chain)
+    9  frame (off any await chain)
     0  set (0 FuturesUnordered)
-[16 futures]
+[23 futures]
 
 COUNT  TYPE / WAITING ON
+    3  future hyper_util::rt::tokio::TokioSleep
+       └─ 3  timer
+    2  future futures_channel::oneshot::Receiver<core::convert::Infallible>
+       └─ 2  unknown
     1  future futures_util::future::either::Either<tower::retry::future::ResponseFuture<reqwest::retry::Policy, reqwest::async_impl::client::HyperService, http::request::Request<reqwest::async_impl::body::Body>>, tower::util::oneshot::Oneshot<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, http::request::Request<reqwest::async_impl::body::Body>>>
        └─ 1  unknown
-    1  future hyper_util::rt::tokio::TokioSleep
-       └─ 1  timer
     1  future hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
        └─ 1  unknown
     1  future reqwest::async_impl::client::PendingRequest
        └─ 1  unknown
-    1  future tower_http::follow_redirect::ResponseFuture<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, reqwest::async_impl::body::Body, reqwest::redirect::TowerRedirectPolicy>
-       └─ 1  unknown
-[5 types]
+    1  (1 more types)
+[6 types, 5 shown]

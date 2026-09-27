@@ -37,4 +37,34 @@ Held by: task 13 — async fn http_conns::serve (frame 0, `read_version`)
 
 #0  future        hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
       defined at hyper-util-0.1.20/src/server/conn/auto/mod.rs:337 (<no_state>, 5 locals)
-[Executed against 5 futures, 0 failed]
+
+future 0xADDR
+future 0xADDR: future hyper_util::rt::tokio::TokioSleep
+Held by: task 15 — async fn http_conns::serve (frame 0, `conn`)
+
+#0  future        tokio::time::sleep::Sleep
+      waiting on timer (deadline TS on the target's monotonic clock)
+[2 frames, 1 shown]
+
+future 0xADDR
+future 0xADDR: future futures_channel::oneshot::Receiver<core::convert::Infallible>
+Held by: task 17 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `self`)
+
+#0  future        futures_channel::oneshot::Receiver<core::convert::Infallible>
+      defined at futures-channel-0.3.33/src/oneshot.rs:458 (<no_state>, 1 local)
+
+future 0xADDR
+future 0xADDR: future hyper_util::rt::tokio::TokioSleep
+Held by: task 17 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `sleep`)
+
+#0  future        tokio::time::sleep::Sleep
+      waiting on timer (deadline TS on the target's monotonic clock)
+[2 frames, 1 shown]
+
+future 0xADDR
+future 0xADDR: future futures_channel::oneshot::Receiver<core::convert::Infallible>
+Held by: task 17 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `on_pool_drop`)
+
+#0  future        futures_channel::oneshot::Receiver<core::convert::Infallible>
+      defined at futures-channel-0.3.33/src/oneshot.rs:458 (<no_state>, 1 local)
+[Executed against 9 futures, 0 failed]

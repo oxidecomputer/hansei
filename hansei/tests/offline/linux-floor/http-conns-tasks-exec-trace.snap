@@ -46,10 +46,10 @@ task 5
       defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
 #8  future        Pin<Box<(dyn Future<Output=()> + Send)>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#9  async block   http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+#9  async block   http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
       awaiting at src/bin/http-conns.rs:76 (Suspend0, 2 locals)
 
-task 8
+task 7
 #0  future        hyper_util::client::legacy::client::ResponseFuture
       defined at hyper-util-0.1.20/src/client/legacy/client.rs:757 (<no_state>, 1 local)
 #1  async fn      http_conns::get
@@ -57,7 +57,7 @@ task 8
 #2  async fn      http_conns::requester
       awaiting at src/bin/http-conns.rs:173 (Suspend0, 2 locals)
 
-task 9
+task 8
 #0  future        hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::proto::h1::role::Server>
       waiting on http1 server 0xADDR (GET in flight, handler running)
       request GET /park
@@ -68,11 +68,11 @@ task 9
 #3  async fn      http_conns::serve
       awaiting at src/bin/http-conns.rs:137 (Suspend0, 1 local)
 
-task 10
+task 9
 #0  future        hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
       waiting on http1 client 0xADDR (GET sent, awaiting response headers)
       via oneshot tx 0xADDR (nothing sent, receiver alive)
-      caller task 8
+      caller task 7
 #1  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
       defined at hyper-1.10.1/src/client/conn/http1.rs:622 (Some, 0 locals)
 #2  future        futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>
@@ -89,16 +89,16 @@ task 10
       defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
 #8  future        Pin<Box<(dyn Future<Output=()> + Send)>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#9  async block   http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+#9  async block   http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
       awaiting at src/bin/http-conns.rs:76 (Suspend0, 2 locals)
 
-task 11
+task 10
 #0  future        reqwest::async_impl::client::Pending
       defined at reqwest-0.13.2/src/async_impl/client.rs:3025 (<no_state>, 1 local; holds 1 pending future)
 #1  async fn      http_conns::reqwest_requester
       awaiting at src/bin/http-conns.rs:180 (Suspend0, 1 local)
 
-task 12
+task 11
 #0  future        hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::proto::h1::role::Server>
       waiting on http1 server 0xADDR (GET in flight, handler running)
       request GET /park
@@ -109,12 +109,12 @@ task 12
 #3  async fn      http_conns::serve
       awaiting at src/bin/http-conns.rs:137 (Suspend0, 1 local)
 
-task 13
+task 12
 #0  future        hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<reqwest::async_impl::body::Body>, reqwest::async_impl::body::Body, reqwest::connect::sealed::Conn, hyper::proto::h1::role::Client>
       waiting on http1 client 0xADDR (GET sent, awaiting response headers)
       via oneshot tx 0xADDR (nothing sent, receiver alive)
-      caller task 11
-      request GET http://127.0.0.1:46185/park
+      caller task 10
+      request GET http://127.0.0.1:45731/park
 #1  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>
       defined at hyper-1.10.1/src/client/conn/http1.rs:622 (Some, 0 locals)
 #2  future        futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>>
@@ -132,15 +132,56 @@ task 13
 #8  future        Pin<Box<(dyn Future<Output=()> + Send)>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
 
-task 14
+task 13
 #0  future        hyper_util::server::conn::auto::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper_util::rt::tokio::TokioExecutor>
       waiting on http server 0xADDR (negotiating version)
 #1  async fn      http_conns::serve
       awaiting at src/bin/http-conns.rs:137 (Suspend0, 1 local)
 
-task 15
+task 14
 #0  future        tokio::sync::oneshot::Receiver<()>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      http_conns::raw_holder
       awaiting at src/bin/http-conns.rs:186 (Suspend0, 1 local)
-[Executed against 11 tasks, 0 failed]
+
+task 15
+#0  future        hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::proto::h1::role::Server>
+      waiting on http1 server 0xADDR (idle, keep-alive, header-read timer armed)
+#1  future        hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
+      defined at hyper-1.10.1/src/server/conn/http1.rs:550 (Some, 0 locals)
+#2  future        hyper_util::server::conn::auto::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper_util::rt::tokio::TokioExecutor>
+      defined at hyper-util-0.1.20/src/server/conn/auto/mod.rs:664 (H1, 1 local)
+#3  async fn      http_conns::serve
+      awaiting at src/bin/http-conns.rs:137 (Suspend0, 1 local)
+
+task 16
+#0  future        hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
+      waiting on http1 client 0xADDR (idle, keep-alive)
+      via mpsc rx 0xADDR (1 sender, 0 unread)
+#1  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
+      defined at hyper-1.10.1/src/client/conn/http1.rs:622 (Some, 0 locals)
+#2  future        futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>
+      defined at futures-util-0.3.33/src/future/try_future/into_future.rs:33 (<no_state>, 1 local)
+#3  future        futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>, futures_util::fns::MapErrFn<hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>>
+      defined at futures-util-0.3.33/src/future/future/map.rs:52 (Incomplete, 2 locals)
+#4  future        futures_util::future::future::Map<futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>, futures_util::fns::MapErrFn<hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>>
+      defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
+#5  future        futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>
+      defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
+#6  future        futures_util::future::future::map::Map<futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#3}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>
+      defined at futures-util-0.3.33/src/future/future/map.rs:52 (Incomplete, 1 local)
+#7  future        futures_util::future::future::Map<futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#3}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>> [dyn]
+      defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
+#8  future        Pin<Box<(dyn Future<Output=()> + Send)>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+
+task 17
+#0  future        futures_util::future::select::Select<&mut futures_channel::oneshot::Receiver<core::convert::Infallible>, &mut Pin<Box<dyn hyper::rt::timer::Sleep<Output=()>>>>
+      defined at futures-util-0.3.33/src/future/select.rs:100 (<no_state>, 1 local)
+#1  async fn      hyper_util::client::legacy::pool::IdleTask::run<hyper_util::client::legacy::client::PoolClient<http_body_util::empty::Empty<bytes::bytes::Bytes>>, (http::uri::scheme::Scheme, http::uri::authority::Authority)> [dyn]
+      awaiting at hyper-util-0.1.20/src/client/legacy/pool.rs:798 (Suspend0, 3 locals; holds 3 pending futures)
+#2  future        Pin<Box<dyn hyper::rt::timer::Sleep<Output=()>>> [dyn]
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+#3  future        Pin<Box<(dyn Future<Output=()> + Send)>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+[Executed against 14 tasks, 0 failed]

@@ -2,16 +2,19 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over linux-floor/http-conns"
 ---
-ID  STATE  FUT  AWAITING AT                WAITING ON              TYPE
-3   idle     0  src/bin/http-conns.rs:151  io                      async fn http_conns::accept_loop
-4   idle     1  src/bin/http-conns.rs:137  http1 server            async fn http_conns::serve
-5   idle     0  src/bin/http-conns.rs:76   http1 client            async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-8   idle     0  src/bin/http-conns.rs:173  oneshot rx, 3x unknown  async fn http_conns::requester
-9   idle     0  src/bin/http-conns.rs:137  http1 server            async fn http_conns::serve
-10  idle     0  src/bin/http-conns.rs:76   http1 client            async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-11  idle     1  src/bin/http-conns.rs:180  oneshot rx, unknown     async fn http_conns::reqwest_requester
-12  idle     0  src/bin/http-conns.rs:137  http1 server            async fn http_conns::serve
-13  idle     0  —                          http1 client            future Pin<Box<(dyn Future<Output=()> + Send)>>
-14  idle     1  src/bin/http-conns.rs:137  http server             async fn http_conns::serve
-15  idle     0  src/bin/http-conns.rs:186  oneshot rx              async fn http_conns::raw_holder
-[11 tasks]
+ID  STATE  FUT  AWAITING AT                                      WAITING ON                          TYPE
+3   idle     0  src/bin/http-conns.rs:151                        io                                  async fn http_conns::accept_loop
+4   idle     1  src/bin/http-conns.rs:137                        http1 server                        async fn http_conns::serve
+5   idle     0  src/bin/http-conns.rs:76                         http1 client                        async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+7   idle     0  src/bin/http-conns.rs:173                        oneshot rx, 2x unknown              async fn http_conns::requester
+8   idle     0  src/bin/http-conns.rs:137                        http1 server                        async fn http_conns::serve
+9   idle     0  src/bin/http-conns.rs:76                         http1 client                        async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+10  idle     1  src/bin/http-conns.rs:180                        oneshot rx, unknown                 async fn http_conns::reqwest_requester
+11  idle     0  src/bin/http-conns.rs:137                        http1 server                        async fn http_conns::serve
+12  idle     0  —                                                http1 client                        future Pin<Box<(dyn Future<Output=()> + Send)>>
+13  idle     1  src/bin/http-conns.rs:137                        http server                         async fn http_conns::serve
+14  idle     0  src/bin/http-conns.rs:186                        oneshot rx                          async fn http_conns::raw_holder
+15  idle     1  src/bin/http-conns.rs:137                        http1 server                        async fn http_conns::serve
+16  idle     0  —                                                http1 client                        future Pin<Box<(dyn Future<Output=()> + Send)>>
+17  idle     3  hyper-util-0.1.20/src/client/legacy/pool.rs:798  futures_channel::lock::Lock, timer  future Pin<Box<(dyn Future<Output=()> + Send)>>
+[14 tasks]

@@ -3961,35 +3961,38 @@ fn test_wrong_binary_refused_by_build_id() {
 }
 
 /// The connection listing over the fixture that holds connections: the
-/// two clients — one idle in its pool, one awaiting the parked GET's
-/// response — and the three servers: idle, running the parked handler,
-/// and still choosing its version. No row names a peer or a server:
-/// hyper keeps neither on either side, and the fixture's service is its
-/// own closure, which no reviewed convention says stores them
-/// (dropshot's does). The buffers hold nothing unparsed at the parked
-/// state. The idle server has armed its header-read timer, whose
-/// deadline is masked whole — its form is the system's — and whose wait
-/// beside the phase only an illumos core, which records when the
-/// process stopped, can put a length to. Grouping by phase files the
-/// five under four buckets, and a filter on the role keeps the servers.
+/// four clients — two idle in their pools, two awaiting a parked GET's
+/// response — and the five servers: two idle, two running the parked
+/// handler, and one still choosing its version. No row names a peer
+/// or a server: hyper keeps neither on either side, and the fixture's
+/// service is its own closure, which no reviewed convention says stores
+/// them (dropshot's does). The buffers hold nothing unparsed at the
+/// parked state. The idle servers have armed their header-read timers,
+/// whose deadlines are masked whole — their form is the system's — and
+/// whose waits beside the phase only an illumos core, which records
+/// when the process stopped, can put a length to. Grouping by phase
+/// files the nine under four buckets, and a filter on the role keeps
+/// the servers.
 ///
-/// The rows are compared without their task cell and in sorted order. Every connection is parked by the time the core is
-/// taken — that is what `READY` waits for — but the ids tokio hands
+/// The rows are compared without their task cell and in sorted order.
+/// Every connection is parked by the time the core is taken — that is
+/// what `READY` waits for — but the ids tokio hands
 /// the parked request's tasks are not the fixture's to order: its
 /// connection task is spawned by hyper-util's client inside
 /// `client.request()` on the requester's worker, the server's by the
 /// accept loop on the other, and the client's pool spawns background
 /// tasks of its own between them, so the same capture assigns the ids
 /// in either order. The buffer capacities are pinned: each is what the
-/// first read left of a fresh 16 KiB buffer, fixed by the request's
-/// byte length, and the ephemeral port in its `host` header is five
+/// reads left of a fresh 16 KiB buffer, fixed by the length of the
+/// requests the connection read — two on (a)'s idle server, one on
+/// every other — and the ephemeral port in each `host` header is five
 /// digits on every host the suite runs on.
 #[test]
 fn test_http_conns_connections_acceptance() {
     let bundle = fixtures().bundle("http-conns");
     with_core("http-conns", |core| {
         let out = hansei_ok(&bundle, core, "connections");
-        assert!(out.ends_with("[7 connections]\n"), "{out}");
+        assert!(out.ends_with("[9 connections]\n"), "{out}");
         // The listener's port is the kernel's to pick, so the URL the
         // reqwest requester sent is compared with it masked; nothing
         // else on a row names the loopback address (the peer column is
@@ -4004,13 +4007,13 @@ fn test_http_conns_connections_acceptance() {
         let waited = regex::Regex::new(r"idle \((\d+ms|\d+\.\d{3}s)\)").unwrap();
         assert_eq!(
             waited.find_iter(&out).count(),
-            usize::from(cfg!(target_os = "illumos")),
+            2 * usize::from(cfg!(target_os = "illumos")),
             "{out}"
         );
         let mut rows: Vec<String> = out
             .lines()
             .skip(1)
-            .take(7)
+            .take(9)
             .map(|line| {
                 let cells: Vec<&str> = line.split_whitespace().skip(1).collect();
                 let row = cells.join(" ");
@@ -4026,16 +4029,18 @@ fn test_http_conns_connections_acceptance() {
                 "client awaiting response — 0/8192 — — GET http://127.0.0.1:PORT/park",
                 "client awaiting response — 0/8192 — — GET —",
                 "client idle — 0/8192 — — — —",
+                "client idle — 0/8192 — — — —",
                 "server handling request — 0/16326 — — GET /park",
                 "server handling request — 0/16339 — — GET /park",
                 "server idle DEADLINE 0/16302 — — — —",
+                "server idle DEADLINE 0/16343 — — — —",
                 "server negotiating — — — — — —",
             ],
             "{out}"
         );
         let grouped = hansei_ok(&bundle, core, "connections --group phase");
         for bucket in [
-            "2  idle",
+            "4  idle",
             "2  awaiting response",
             "2  handling request",
             "1  negotiating",
@@ -4043,7 +4048,7 @@ fn test_http_conns_connections_acceptance() {
             assert!(grouped.contains(bucket), "{grouped}");
         }
         let servers = hansei_ok(&bundle, core, "connections --with role server");
-        assert!(servers.ends_with("[4 connections]\n"), "{servers}");
+        assert!(servers.ends_with("[5 connections]\n"), "{servers}");
         assert!(!servers.contains("client"), "{servers}");
         // The request reaches a filter, on either side of the exchange.
         let parked = hansei_ok(&bundle, core, "connections --with request park");

@@ -274,6 +274,26 @@ fn main() {
         std::mem::forget(park_tx);
         let _raw_holder = tokio::spawn(raw_holder(raw, park_rx));
 
+        // (e) A client whose pool keeps a timer, and so a reaper; see
+        // `reaped`. Kept alive, with its pool, for the capture.
+        let _reaped = reaped(addr).await;
+        assert!(
+            matches!(events.recv().await, Some(Event::Accepted)),
+            "the reaped client opens a connection"
+        );
+        // The reaper's frame holds its sleep and the receiver the pool's
+        // drop is announced on — and, in its `self`, the moved-out copy
+        // of that receiver: the frame's layout cannot say a member of a
+        // live local was moved out, so the census lists it too. The
+        // reaper is the boxed future hyper-util's executor spawns, named
+        // by its type in full.
+        for held in ["TokioSleep", "oneshot::Receiver", "oneshot::Receiver"] {
+            census_expect::held_by_task("core::pin::Pin<alloc::boxed::Box<(dyn", held);
+        }
+        // Its server connection idles as (a)'s does, holding its armed
+        // header-read timer.
+        census_expect::held_by_task("http_conns::serve", "TokioSleep");
+
         // What the census finds inside hyper-util's own futures, which
         // the fixture can name only by the task holding it: under the
         // connection that never spoke, the version-choosing read the
@@ -302,4 +322,70 @@ fn main() {
         println!("READY");
         std::future::pending::<()>().await
     })
+}
+
+/// (e) One completed GET on a client whose pool keeps a timer: its
+/// connection goes idle in the pool, and the pool's first idle
+/// connection spawns the reaper that holds the pool weakly — the task a
+/// pooled connection's far end is read through, by its key in the
+/// pool's idle map. hyper-util pushes the connection onto the idle list
+/// and then spawns the reaper, whose first act is to ask the pool's
+/// timer for a sleep; the timer reports that first sleep, so hearing it
+/// means the connection is idle in the pool. The client is returned so
+/// main keeps it, and with it the pool, alive.
+async fn reaped(addr: SocketAddr) -> Client<HttpConnector, Empty<Bytes>> {
+    let (armed_tx, armed_rx) = oneshot::channel();
+    let timer = FirstSleep {
+        inner: TokioTimer::new(),
+        armed: Arc::new(std::sync::Mutex::new(Some(armed_tx))),
+    };
+    let client = Client::builder(TokioExecutor::new())
+        .pool_timer(timer)
+        .build_http::<Empty<Bytes>>();
+    get(&client, &format!("http://{addr}/")).await;
+    armed_rx.await.expect("the reaper asks for its first sleep");
+    client
+}
+
+/// tokio's timer for hyper, reporting on `armed` the first time a sleep
+/// is asked of it and forwarding everything to tokio's.
+#[derive(Clone)]
+struct FirstSleep {
+    inner: TokioTimer,
+    armed: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+impl FirstSleep {
+    fn report(&self) {
+        if let Some(armed) = self.armed.lock().expect("an unpoisoned lock").take() {
+            let _ = armed.send(());
+        }
+    }
+}
+
+impl hyper::rt::Timer for FirstSleep {
+    fn sleep(&self, duration: std::time::Duration) -> std::pin::Pin<Box<dyn hyper::rt::Sleep>> {
+        self.report();
+        self.inner.sleep(duration)
+    }
+
+    fn sleep_until(
+        &self,
+        deadline: std::time::Instant,
+    ) -> std::pin::Pin<Box<dyn hyper::rt::Sleep>> {
+        self.report();
+        self.inner.sleep_until(deadline)
+    }
+
+    fn now(&self) -> std::time::Instant {
+        self.inner.now()
+    }
+
+    fn reset(
+        &self,
+        sleep: &mut std::pin::Pin<Box<dyn hyper::rt::Sleep>>,
+        new_deadline: std::time::Instant,
+    ) {
+        self.inner.reset(sleep, new_deadline)
+    }
 }

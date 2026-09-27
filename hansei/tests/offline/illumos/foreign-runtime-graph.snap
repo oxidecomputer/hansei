@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`graph` over illumos/foreign-runtime"
 ---
 TASK  STATE  WAITING ON
-4     idle   task 1
+3     idle   task 1
 └─ 1  idle   semaphore

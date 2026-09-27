@@ -86,6 +86,7 @@ dyn: http_conns::get::{async_fn_env#0} (poll, drop_glue)
 dyn: http_conns::handle::{async_fn_env#0} (poll, drop_glue)
 dyn: http_conns::main::{async_block_env#0} (poll, drop_glue)
 dyn: http_conns::raw_holder::{async_fn_env#0} (poll, drop_glue)
+dyn: http_conns::reaped::{async_fn_env#0} (poll, drop_glue)
 dyn: http_conns::requester::{async_fn_env#0} (poll, drop_glue)
 dyn: http_conns::reqwest_requester::{async_fn_env#0} (poll, drop_glue)
 dyn: http_conns::serve::{async_fn_env#0} (poll, drop_glue)
@@ -105,6 +106,7 @@ env: http_conns::get::{async_fn_env#0} @ http-conns.rs:161
 env: http_conns::handle::{async_fn_env#0} @ http-conns.rs:101
 env: http_conns::main::{async_block_env#0} @ http-conns.rs:194
 env: http_conns::raw_holder::{async_fn_env#0} @ http-conns.rs:184
+env: http_conns::reaped::{async_fn_env#0} @ http-conns.rs:336
 env: http_conns::requester::{async_fn_env#0} @ http-conns.rs:171
 env: http_conns::reqwest_requester::{async_fn_env#0} @ http-conns.rs:178
 env: http_conns::serve::{async_fn#0}::{closure_env#0} @ http-conns.rs:131
@@ -135,6 +137,9 @@ local: http_conns::main::{async_block_env#0} :: pooled @ http-conns.rs:216
 local: http_conns::main::{async_block_env#0} :: raw @ http-conns.rs:268
 local: http_conns::main::{async_block_env#0} :: uri @ http-conns.rs:217
 local: http_conns::raw_holder::{async_fn_env#0} :: park @ http-conns.rs:184
+local: http_conns::reaped::{async_fn_env#0} :: addr @ http-conns.rs:336
+local: http_conns::reaped::{async_fn_env#0} :: armed_rx @ http-conns.rs:337
+local: http_conns::reaped::{async_fn_env#0} :: client @ http-conns.rs:342
 local: http_conns::requester::{async_fn_env#0} :: client @ http-conns.rs:171
 local: http_conns::requester::{async_fn_env#0} :: uri @ http-conns.rs:171
 local: http_conns::reqwest_requester::{async_fn_env#0} :: client @ http-conns.rs:178

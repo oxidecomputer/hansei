@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`runtimes` over linux/http-conns"
 ---
 ID  FLAVOR        HANDLE          TASKS  FUT  WORKERS  THREADS  FOUND VIA
-0   multi_thread  0xADDR     11   16        2        3  a thread's runtime context
+0   multi_thread  0xADDR     14   23        2        3  a thread's runtime context
 [1 runtime]

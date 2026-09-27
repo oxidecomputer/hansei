@@ -38,7 +38,7 @@ task 8
     held futures: 0
     join sets: 0
 
-task 12
+task 11
     state: idle
     thread: <none>
     type: async fn http_conns::serve
@@ -67,4 +67,22 @@ task 13
     type defined at: src/bin/http-conns.rs:125
     held futures: 1
     join sets: 0
-[Executed against 4 tasks, 0 failed]
+
+task 15
+    state: idle
+    thread: <none>
+    type: async fn http_conns::serve
+    awaiting at: src/bin/http-conns.rs:137
+    awaiting on: http1 server 0xADDR (idle, keep-alive, header-read timer armed)
+        note: the wheel entry 0xADDR also holds this task's waker, outside the verified wait
+        waker: the read-waiter slot, awaiting readable, ready: writable
+        timer 0xADDR: hyper_util::rt::tokio::TokioSleep
+            held in: frame 0 `conn`
+            awaiting on: timer (deadline TS on the target's monotonic clock)
+            type defined at: hyper-util-0.1.20/src/rt/tokio.rs:314
+            waker: timer @ 0xADDR
+    spawned at: src/bin/http-conns.rs:155:9
+    type defined at: src/bin/http-conns.rs:125
+    held futures: 1
+    join sets: 0
+[Executed against 5 tasks, 0 failed]

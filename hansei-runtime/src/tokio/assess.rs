@@ -2517,9 +2517,9 @@ mod tests {
     }
 
     /// The version-choosing wrapper is observed as the connection only
-    /// while it reads the first bytes: on the fixture's two HTTP/1
+    /// while it reads the first bytes: on the fixture's four HTTP/1
     /// server tasks the wrapper has chosen its version and observing it
-    /// fails naming that, while the third's reads as negotiating.
+    /// fails naming that, while the fifth's reads as negotiating.
     #[test]
     fn test_a_wrapper_that_chose_its_version_is_not_negotiating() {
         use crate::tokio::observe::ResourceObservation;
@@ -2569,7 +2569,7 @@ mod tests {
                 other => panic!("{other:?}"),
             }
         }
-        assert_eq!((chosen, negotiating), (3, 1));
+        assert_eq!((chosen, negotiating), (4, 1));
     }
 
     /// The server's verdict from its words, and the version-choosing

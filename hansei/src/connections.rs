@@ -1455,7 +1455,7 @@ mod tests {
         assert_eq!(phases.len(), 4, "{phases:?}");
         let (tasks, pattern) = field_values(&session, "task").unwrap();
         assert!(!pattern);
-        assert_eq!(tasks.len(), 7, "{tasks:?}");
+        assert_eq!(tasks.len(), 9, "{tasks:?}");
         // The request reaches the prompt's offers as the URL and the
         // path the two parked handlers and the reqwest requester carry,
         // the method left to its own field.
