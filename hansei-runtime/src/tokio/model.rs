@@ -14,7 +14,9 @@ use super::observe::{Consistency, ReferenceSource, ValueKey};
 use super::{Lifecycle, Location, RawInstant, TaskAddr, TaskState};
 
 use hansei_bundle::tokio::timer;
-use hansei_bundle::{BundleTypeId, FutureKind, FutureTarget, SemanticIssueKind, TaskEntryId};
+use hansei_bundle::{
+    BundleTypeId, BundleView, FutureKind, FutureTarget, SemanticIssueKind, TaskEntryId,
+};
 use reify::Value;
 
 use std::collections::HashMap;
@@ -785,35 +787,35 @@ pub enum FutureInfo {
     Unknown {
         poll_symbol: Option<String>,
     },
-    /// Normalization joined the vtable functions to distinct task entries.
+    /// Normalization joined the vtable functions to distinct task
+    /// entries, whose future types are the candidates. Each is reported
+    /// by its id as well as its name: two candidates often differ only
+    /// inside their generic arguments, and `type <id>` is the handle
+    /// that names each exactly.
     Ambiguous {
         symbol: String,
-        candidates: Vec<TypeCandidate>,
+        candidates: Vec<BundleTypeId>,
     },
-}
-
-/// One concrete type an ambiguous symbol join could mean. The id is the
-/// part of the report the shared normalized spelling cannot carry: two
-/// candidates often differ only inside their generic arguments, and
-/// `type <id>` is the handle that names each exactly.
-#[derive(Clone, Debug)]
-pub struct TypeCandidate {
-    /// The raw bundle type name, folded for display by the printer.
-    pub name: String,
-    pub ty: BundleTypeId,
 }
 
 /// A future resolved through the bundle's task join table.
 #[derive(Clone, Debug)]
 pub struct KnownFuture {
     pub entry: TaskEntryId,
-    /// Demangled name of the future type (display only).
-    pub display_name: String,
+    /// The future type, the entry's `T`.
+    pub future: BundleTypeId,
     pub kind: FutureKind,
     /// Source file/line where the future is defined.
     pub decl: Option<(String, u32)>,
     /// The mangled vtable-fn symbol the join matched on.
     pub symbol: String,
+}
+
+impl KnownFuture {
+    /// The future type's name, as `view`'s bundle records it.
+    pub fn name<'b>(&self, view: BundleView<'b>) -> &'b str {
+        view.ty(self.future).map_or("<anon>", |ty| ty.name())
+    }
 }
 
 /// A task's decoded `Stage<T>`.
@@ -952,19 +954,19 @@ pub enum ChainEnd {
     /// A `dyn Future` awaitee whose vtable symbols joined nothing in the
     /// bundle; the raw poll symbol is reported and nothing is guessed.
     UnknownDyn {
-        /// The `dyn Trait` spelling, for display.
-        pointee: String,
+        /// The `dyn Trait` pointee.
+        pointee: BundleTypeId,
         /// The mangled symbol the vtable's poll slot resolved to, if any.
         poll_symbol: Option<String>,
     },
     /// Normalization joined the vtable symbol to distinct concrete types.
     AmbiguousDyn {
-        /// The `dyn Trait` spelling, for display.
-        pointee: String,
+        /// The `dyn Trait` pointee.
+        pointee: BundleTypeId,
         /// The target's raw mangled symbol.
         symbol: String,
         /// The concrete bundle types sharing the normalized key.
-        candidates: Vec<TypeCandidate>,
+        candidates: Vec<BundleTypeId>,
     },
     /// The depth bound was hit.
     DepthLimit,

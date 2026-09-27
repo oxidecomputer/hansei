@@ -535,7 +535,7 @@ fn print_join(view: &View<'_>, index: usize, out: &mut dyn io::Write) -> Result<
         out,
         "{} ({}): {state}",
         task_label(view.list, index),
-        future_name(&task.future, view.names.impls())
+        future_name(&task.future, view.names)
     )?;
     let named = |tasks: &[usize]| {
         tasks

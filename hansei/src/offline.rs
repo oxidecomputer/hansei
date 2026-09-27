@@ -236,7 +236,7 @@ fn commands(
     if program == "channels" {
         let holder = session.tasks.tasks.iter().find(|task| {
             matches!(&task.future, bundle::FutureInfo::Known(known)
-                if known.display_name.starts_with("channels::hold::"))
+                if known.name(session.ctx.view).starts_with("channels::hold::"))
         });
         if let Some(id) = holder.and_then(|task| task.task_id) {
             list.push(("task-holder", format!("task {id}")));
@@ -252,7 +252,7 @@ fn commands(
         // and the trace header says the same under the cell.
         let sender = session.tasks.tasks.iter().find(|task| {
             matches!(&task.future, bundle::FutureInfo::Known(known)
-                if known.display_name.starts_with("channels::send_waiter::"))
+                if known.name(session.ctx.view).starts_with("channels::send_waiter::"))
         });
         if let Some(id) = sender.and_then(|task| task.task_id) {
             list.push(("task-sender", format!("task {id}")));
@@ -265,7 +265,7 @@ fn commands(
     if program == "watch-stream" {
         let mapper = session.tasks.tasks.iter().find(|task| {
             matches!(&task.future, bundle::FutureInfo::Known(known)
-                if known.display_name.starts_with("watch_stream::mapper"))
+                if known.name(session.ctx.view).starts_with("watch_stream::mapper"))
         });
         if let Some(id) = mapper.and_then(|task| task.task_id) {
             list.push(("task-mapper", format!("task {id}")));

@@ -272,7 +272,7 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
         let id = task.task_id.expect("every fixture task has an id");
         let (future, defined) = match &task.future {
             FutureInfo::Known(known) => (
-                known.display_name.as_str(),
+                known.name(ctx.view),
                 known
                     .decl
                     .as_ref()
@@ -303,7 +303,7 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
                 let lifecycle = task.state.lifecycle();
                 let inspection =
                     ctx.inspect_future(future, InspectionMode::Task { lifecycle }, &read);
-                render_chain(&mut out, &inspection.chain);
+                render_chain(&mut out, ctx.view, &inspection.chain);
                 if let Some((file, line)) = &wait.site {
                     writeln!(out, "  site {file}:{line}").unwrap();
                 }
@@ -366,7 +366,7 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
     out
 }
 
-fn render_chain(out: &mut String, chain: &AwaitChain<'_>) {
+fn render_chain(out: &mut String, view: BundleView<'_>, chain: &AwaitChain<'_>) {
     for frame in &chain.frames {
         let dyn_marker = if frame.dyn_symbol.is_some() {
             " [dyn]"
@@ -413,8 +413,10 @@ fn render_chain(out: &mut String, chain: &AwaitChain<'_>) {
         ChainEnd::UnknownContinuation { reason, .. } => {
             format!("unknown continuation ({reason:?})")
         }
-        ChainEnd::UnknownDyn { pointee, .. } => format!("unknown dyn {pointee}"),
-        ChainEnd::AmbiguousDyn { pointee, .. } => format!("ambiguous dyn {pointee}"),
+        ChainEnd::UnknownDyn { pointee, .. } => format!("unknown dyn {}", name(view, *pointee)),
+        ChainEnd::AmbiguousDyn { pointee, .. } => {
+            format!("ambiguous dyn {}", name(view, *pointee))
+        }
         ChainEnd::DepthLimit => "depth limit".to_owned(),
         ChainEnd::Cycle { .. } => "cycle".to_owned(),
         ChainEnd::Error(e) => mask(&format!("error: {e:#}")),
@@ -790,7 +792,7 @@ fn test_io_resource_fd_member_shapes() {
             .list
             .tasks
             .iter()
-            .position(|t| known_name(t).contains(name_part))
+            .position(|t| known_name(ctx.view, t).contains(name_part))
             .unwrap_or_else(|| panic!("no task named {name_part}"));
         let Some(WaitTarget::Io { addr, fd, .. }) =
             analysis.waits[index].verified().map(|w| w.target())
@@ -1023,7 +1025,7 @@ fn test_armed_select_offline() {
             e.list
                 .tasks
                 .iter()
-                .find(|t| known_name(t).contains(needle))
+                .find(|t| known_name(ctx.view, t).contains(needle))
                 .unwrap_or_else(|| panic!("[{set}] no task named {needle}"))
         };
         let count = |task: &Task| slots.slots_of(task.addr.0).count();
@@ -1068,10 +1070,15 @@ fn test_armed_select_offline() {
     }
 }
 
+/// A type's name, for a golden line.
+fn name(view: BundleView<'_>, ty: hansei_bundle::BundleTypeId) -> &str {
+    view.ty(ty).map_or("<anon>", |ty| ty.name())
+}
+
 /// The resolved future name of a task the fixtures guarantee decodes.
-fn known_name(task: &Task) -> &str {
+fn known_name<'b>(view: BundleView<'b>, task: &Task) -> &'b str {
     match &task.future {
-        FutureInfo::Known(known) => known.display_name.as_str(),
+        FutureInfo::Known(known) => known.name(view),
         other => panic!("unresolved future: {other:?}"),
     }
 }
@@ -1389,7 +1396,7 @@ fn test_ct_runtime_offline() {
     // same leaf readers the multi_thread fixtures exercise.
     let mut leaves = Vec::new();
     for (task, wait) in list.tasks.iter().zip(&analysis.waits) {
-        let name = known_name(task);
+        let name = known_name(ctx.view, task);
         if !name.starts_with("ct_runtime::") {
             continue;
         }
@@ -1482,7 +1489,7 @@ fn test_local_set_offline() {
     for task in &local {
         assert_eq!(task.owner_id, Some(set.owned_id), "{task:#?}");
         assert!(
-            known_name(task).starts_with("local_set::local_"),
+            known_name(ctx.view, task).starts_with("local_set::local_"),
             "{task:#?}"
         );
     }
@@ -1497,19 +1504,18 @@ fn test_local_set_offline() {
     // through the readers the scheduler-owned fixtures exercise.
     let analysis = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
-    let mut leaves: Vec<String> = list
-        .tasks
-        .iter()
-        .zip(&analysis.waits)
-        .filter(|(task, _)| task.owner.known() == owner)
-        .map(|(task, wait)| {
-            let target = wait
-                .verified()
-                .map(|w| w.target())
-                .unwrap_or_else(|| panic!("{} decodes no wait target", known_name(task)));
-            mask(&target.to_string())
-        })
-        .collect();
+    let mut leaves: Vec<String> =
+        list.tasks
+            .iter()
+            .zip(&analysis.waits)
+            .filter(|(task, _)| task.owner.known() == owner)
+            .map(|(task, wait)| {
+                let target = wait.verified().map(|w| w.target()).unwrap_or_else(|| {
+                    panic!("{} decodes no wait target", known_name(ctx.view, task))
+                });
+                mask(&target.to_string())
+            })
+            .collect();
     leaves.sort_unstable();
     let [semaphore, timer] = leaves.as_slice() else {
         panic!("expected the set's two leaves, got {leaves:#?}");
@@ -1588,7 +1594,7 @@ fn test_local_set_timer_offline() {
     for task in &local {
         assert_eq!(task.owner_id, Some(set.owned_id), "{task:#?}");
         assert!(
-            known_name(task).starts_with("local_set_timer::local_"),
+            known_name(ctx.view, task).starts_with("local_set_timer::local_"),
             "{task:#?}"
         );
     }
@@ -1606,19 +1612,18 @@ fn test_local_set_timer_offline() {
     // semaphore waiter, and it is listed all the same.
     let analysis = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
-    let mut leaves: Vec<String> = list
-        .tasks
-        .iter()
-        .zip(&analysis.waits)
-        .filter(|(task, _)| task.owner.known() == owner)
-        .map(|(task, wait)| {
-            let target = wait
-                .verified()
-                .map(|w| w.target())
-                .unwrap_or_else(|| panic!("{} decodes no wait target", known_name(task)));
-            mask(&target.to_string())
-        })
-        .collect();
+    let mut leaves: Vec<String> =
+        list.tasks
+            .iter()
+            .zip(&analysis.waits)
+            .filter(|(task, _)| task.owner.known() == owner)
+            .map(|(task, wait)| {
+                let target = wait.verified().map(|w| w.target()).unwrap_or_else(|| {
+                    panic!("{} decodes no wait target", known_name(ctx.view, task))
+                });
+                mask(&target.to_string())
+            })
+            .collect();
     leaves.sort_unstable();
     let [semaphore, timer] = leaves.as_slice() else {
         panic!("expected the set's two leaves, got {leaves:#?}");
@@ -1683,7 +1688,7 @@ fn test_local_set_io_offline() {
         .filter(|t| t.owner.known() == owner)
         .collect();
     assert_eq!(local.len(), 4, "{local:#?}");
-    let mut names: Vec<&str> = local.iter().map(|t| known_name(t)).collect();
+    let mut names: Vec<&str> = local.iter().map(|t| known_name(ctx.view, t)).collect();
     names.sort_unstable();
     assert_eq!(
         names,
@@ -1706,7 +1711,7 @@ fn test_local_set_io_offline() {
     );
     let gated = local
         .iter()
-        .find(|t| known_name(t) == "local_set_io::local_gated_reader::{async_fn_env#0}")
+        .find(|t| known_name(ctx.view, t) == "local_set_io::local_gated_reader::{async_fn_env#0}")
         .unwrap();
     assert!(
         !candidates.contains(&gated.addr.0),
@@ -1786,8 +1791,11 @@ fn test_foreign_runtime_offline() {
         .iter()
         .filter(|t| t.owner.known() == Some(hidden.owner_key()))
         .collect();
-    hidden_tasks.sort_by_key(|t| known_name(t));
-    let names: Vec<&str> = hidden_tasks.iter().map(|t| known_name(t)).collect();
+    hidden_tasks.sort_by_key(|t| known_name(ctx.view, t));
+    let names: Vec<&str> = hidden_tasks
+        .iter()
+        .map(|t| known_name(ctx.view, t))
+        .collect();
     assert_eq!(
         names,
         [
@@ -1821,7 +1829,7 @@ fn test_foreign_runtime_offline() {
     // alone to thank.
     let detached = hidden_tasks
         .iter()
-        .find(|t| known_name(t).contains("detached"))
+        .find(|t| known_name(ctx.view, t).contains("detached"))
         .expect("the detached task");
     let record = list.record(detached.addr.0).expect("a record per row");
     assert_eq!(record.owner_claims.len(), 1, "{record:#?}");
@@ -1842,7 +1850,7 @@ fn test_foreign_runtime_offline() {
         panic!("expected the set's one member, got {local:#?}");
     };
     assert_eq!(
-        known_name(member),
+        known_name(ctx.view, member),
         "foreign_runtime::local_sleeper::{async_fn_env#0}"
     );
     assert_eq!(member.owner_id, Some(set.owned_id), "{member:#?}");

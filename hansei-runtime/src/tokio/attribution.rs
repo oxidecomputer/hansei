@@ -2908,7 +2908,7 @@ mod tests {
                 .tasks
                 .iter()
                 .find(
-                    |t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)),
+                    |t| matches!(&t.future, FutureInfo::Known(k) if k.name(self.ctx.view).contains(name)),
                 )
                 .unwrap_or_else(|| panic!("a task named {name}"))
         }

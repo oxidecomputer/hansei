@@ -561,12 +561,18 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
             NextFuture::End(ChainEnd::UnknownDyn { pointee, .. }) => self.report(WalkIssue::new(
                 key,
                 WalkIssueKind::UnknownDynamicType,
-                format!("the concrete type behind the {pointee} is not in the tokio info"),
+                format!(
+                    "the concrete type behind the {} is not in the tokio info",
+                    self.ctx.type_name(pointee)
+                ),
             )),
             NextFuture::End(ChainEnd::AmbiguousDyn { pointee, .. }) => self.report(WalkIssue::new(
                 key,
                 WalkIssueKind::AmbiguousDynamicType,
-                format!("the concrete type behind the {pointee} is ambiguous"),
+                format!(
+                    "the concrete type behind the {} is ambiguous",
+                    self.ctx.type_name(pointee)
+                ),
             )),
             NextFuture::End(_) => {}
         }
@@ -936,10 +942,10 @@ mod tests {
     const NOWHERE: u64 = 0xdead_beef_0000;
 
     /// The listed task whose future's display name contains `name`.
-    fn task_named<'a>(list: &'a TaskList, name: &str) -> &'a Task {
+    fn task_named<'a>(list: &'a TaskList, view: BundleView<'_>, name: &str) -> &'a Task {
         list.tasks
             .iter()
-            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)))
+            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.name(view).contains(name)))
             .unwrap_or_else(|| panic!("the fixture lists a task named {name}"))
     }
 
@@ -1003,8 +1009,8 @@ mod tests {
         let (bundle, snapshot) = testkit::load_any("sleep-join");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let joiner = task_named(&list, "joiner");
-        let sleeper = task_named(&list, "sleeper");
+        let joiner = task_named(&list, ctx.view, "joiner");
+        let sleeper = task_named(&list, ctx.view, "sleeper");
         let (completion, sink) = scan_task(&ctx, joiner);
         assert!(completion.complete, "{:?}", sink.issues);
         assert!(sink.issues.is_empty(), "{:?}", sink.issues);
@@ -1044,8 +1050,8 @@ mod tests {
         let (bundle, snapshot) = testkit::load_any("delegation-cases");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let handle = task_named(&list, "delegation_cases::Handle");
-        let holder = task_named(&list, "delegation_cases::Holder<");
+        let handle = task_named(&list, ctx.view, "delegation_cases::Handle");
+        let holder = task_named(&list, ctx.view, "delegation_cases::Holder<");
         let (completion, sink) = scan_task(&ctx, handle);
         assert!(completion.complete, "{:?}", sink.issues);
         assert!(sink.issues.is_empty(), "{:?}", sink.issues);
@@ -1067,8 +1073,8 @@ mod tests {
         let (bundle, snapshot) = testkit::load_any("sleep-join");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let joiner = task_named(&list, "joiner");
-        let sleeper = task_named(&list, "sleeper");
+        let joiner = task_named(&list, ctx.view, "joiner");
+        let sleeper = task_named(&list, ctx.view, "sleeper");
         let header_ty = ctx.view.ty(bundle.infra.header).unwrap();
         let state_at = ctx
             .walk(WalkRole::HeaderState)
@@ -1096,7 +1102,7 @@ mod tests {
         let (bundle, snapshot) = testkit::load_any("sleep-join");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let sleeper = task_named(&list, "sleeper");
+        let sleeper = task_named(&list, ctx.view, "sleeper");
         let (completion, sink) = scan_task(&ctx, sleeper);
         assert!(completion.complete, "{:?}", sink.issues);
         assert!(sink.references.is_empty(), "{:?}", sink.references);
@@ -1117,7 +1123,7 @@ mod tests {
             ("recv_waiter", ReferenceSource::ChannelWaker),
             ("notify_waiter", ReferenceSource::NotifyWaker),
         ] {
-            let task = task_named(&list, name);
+            let task = task_named(&list, ctx.view, name);
             let (completion, sink) = scan_task(&ctx, task);
             assert!(completion.complete, "{name}: {:?}", sink.issues);
             let named: Vec<_> = sink
@@ -1128,7 +1134,7 @@ mod tests {
                 .collect();
             assert_eq!(named, [task.addr], "{name}: {:?}", sink.references);
         }
-        let waiter = task_named(&list, "notify_waiter");
+        let waiter = task_named(&list, ctx.view, "notify_waiter");
         let read = ReadContext::none();
         let Some(ResourceObservation::Notified(notified)) = ctx
             .inspect_task(waiter, &read)
@@ -1169,7 +1175,7 @@ mod tests {
         let (bundle, snapshot) = testkit::load_any("futurelock");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "futurelock::main");
+        let task = task_named(&list, ctx.view, "futurelock::main");
         let (completion, sink) = scan_task(&ctx, task);
         assert!(!completion.complete);
         assert_eq!(
@@ -1217,7 +1223,7 @@ mod tests {
     fn test_a_join_set_references_its_members_through_its_entries() {
         let (bundle, snapshot) = testkit::load_any("joinset");
         let run = testkit::run(&bundle, &snapshot);
-        let driver = task_named(&run.list, "driver");
+        let driver = task_named(&run.list, run.ctx.view, "driver");
         let (completion, sink) = scan_task(&run.ctx, driver);
         assert!(completion.complete, "{:?}", sink.issues);
         let mut found: Vec<(u64, u64)> = sink
@@ -1373,7 +1379,7 @@ mod tests {
     fn test_a_set_walks_its_children_as_new_origins() {
         let (bundle, snapshot) = testkit::load_any("unordered");
         let run = testkit::run(&bundle, &snapshot);
-        let driver = task_named(&run.list, "driver");
+        let driver = task_named(&run.list, run.ctx.view, "driver");
         let nodes: Vec<Vec<u64>> = run
             .census
             .sets
@@ -1578,7 +1584,7 @@ mod tests {
         let (bundle, snapshot) = testkit::load_any("sleep-join");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let joiner = task_named(&list, "joiner");
+        let joiner = task_named(&list, ctx.view, "joiner");
 
         let (completion, sink) = scan_task_with(
             &ctx,
@@ -1622,7 +1628,7 @@ mod tests {
         let (bundle, snapshot) = testkit::load_any("sleep-join");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let joiner = task_named(&list, "joiner");
+        let joiner = task_named(&list, ctx.view, "joiner");
         let root = root_of(&ctx, joiner);
         let mut unbound = bundle.clone();
         let record = unbound
@@ -1678,7 +1684,7 @@ mod tests {
         let (bundle, snapshot) = testkit::load_any("joinset");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let driver = task_named(&list, "driver");
+        let driver = task_named(&list, ctx.view, "driver");
         let mut budget = ScanBudget::default();
         let mut sink = CollectedReferences::default();
         let first = ctx.scan_references(
@@ -1711,7 +1717,7 @@ mod tests {
         let (bundle, snapshot) = testkit::load_any("futurelock");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "futurelock::main");
+        let task = task_named(&list, ctx.view, "futurelock::main");
         let (completion, sink) = scan_task_with(
             &ctx,
             task,
@@ -2040,7 +2046,7 @@ mod tests {
             ("local_watcher", 2),
             ("::reader", 1),
         ] {
-            let task = task_named(&list, name);
+            let task = task_named(&list, ctx.view, name);
             let (completion, sink) = scan_task(&ctx, task);
             assert!(completion.complete, "{name}: {:?}", sink.issues);
             let targets: Vec<TaskAddr> = sink.references.iter().map(|r| r.target).collect();
@@ -2048,7 +2054,7 @@ mod tests {
             assert_eq!(sink.references[0].source, ReferenceSource::IoWaker);
             assert_eq!(completion.referent_expansions, expansions, "{name}");
         }
-        let gated = task_named(&list, "local_gated_reader");
+        let gated = task_named(&list, ctx.view, "local_gated_reader");
         let (completion, sink) = scan_task(&ctx, gated);
         assert!(completion.complete, "{:?}", sink.issues);
         assert!(sink.references.is_empty(), "{:?}", sink.references);
@@ -2066,7 +2072,7 @@ mod tests {
         let (bundle, snapshot) = testkit::load_any("watch-stream");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let mapper = task_named(&list, "mapper");
+        let mapper = task_named(&list, ctx.view, "mapper");
         let map = testkit::frame_local(&ctx, mapper, "mapper", "map");
         let map_key = ValueKey::of(map);
         let (completion, sink) = scan_task(&ctx, mapper);
@@ -2126,7 +2132,7 @@ mod tests {
         let (bundle, snapshot) = testkit::load_any("unordered");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let driver = task_named(&list, "driver");
+        let driver = task_named(&list, ctx.view, "driver");
         let map = testkit::frame_local(&ctx, driver, "driver", "keyed");
         let map_key = ValueKey::of(map);
         let table = ctx
@@ -2269,7 +2275,7 @@ mod tests {
         let (bundle, snapshot) = testkit::load_any("joinset");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let driver = task_named(&list, "driver");
+        let driver = task_named(&list, ctx.view, "driver");
         let (_, collected) = scan_task(&ctx, driver);
         let mut count = Count(0, 0);
         let mut budget = ScanBudget::default();

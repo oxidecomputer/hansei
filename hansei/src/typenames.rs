@@ -234,6 +234,22 @@ pub(crate) mod testing {
         "a::very::long::module::path::to::some::future_type",
         "worker::{async_fn_env#0}",
         "tokio::sync::batch_semaphore::Acquire",
+        "x",
+        "x::fut",
+        "a::fut",
+        "b::fut",
+        "c::fut",
+        "f",
+        "f0",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "one::fut",
+        "core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future>>",
+        "dyn core::future::future::Future",
+        "work::step::{async_fn_env#0}",
     ];
 
     /// A future's name long enough that any fit width cuts it, and the

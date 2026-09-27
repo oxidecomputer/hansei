@@ -29,12 +29,12 @@ fn pair() -> (Bundle, Snapshot) {
 }
 
 /// The one task whose future name contains `name`.
-fn task_by_name(list: &TaskList, name: &str) -> usize {
+fn task_by_name(list: &TaskList, view: BundleView<'_>, name: &str) -> usize {
     let hits: Vec<usize> = list
         .tasks
         .iter()
         .enumerate()
-        .filter(|(_, t)| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)))
+        .filter(|(_, t)| matches!(&t.future, FutureInfo::Known(k) if k.name(view).contains(name)))
         .map(|(i, _)| i)
         .collect();
     assert_eq!(hits.len(), 1, "one task named {name}: {hits:?}");
@@ -89,7 +89,7 @@ fn test_the_chain_steps_through_hand_written_wrappers() {
     let (bundle, snapshot) = pair();
     let ctx = testkit::context(&bundle, &snapshot);
     let list = tasks_of(&ctx, &snapshot);
-    let chained = &list.tasks[task_by_name(&list, "chained")];
+    let chained = &list.tasks[task_by_name(&list, ctx.view, "chained")];
 
     // Production: the chain ends at the struct wrapper, unknown.
     let chain = chain_of(&ctx, chained);
@@ -110,7 +110,7 @@ fn test_the_chain_steps_through_hand_written_wrappers() {
     // What the wrapper holds is still discoverable: the census lists
     // the coroutine inside it, under the wrapper's frame.
     let census = testkit::census(&ctx, &list);
-    let owner = task_by_name(&list, "chained");
+    let owner = task_by_name(&list, ctx.view, "chained");
     assert!(
         census.held.iter().any(|h| h.owner == owner
             && ctx.view.ty(h.future).unwrap().name().contains("::deep::")
@@ -227,7 +227,7 @@ fn test_a_by_value_acquire_behind_a_notified_chain_is_a_barrier() {
     let list = tasks_of(&ctx, &snapshot);
     let analysis = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
-    let abandoner = &list.tasks[task_by_name(&list, "abandoner")];
+    let abandoner = &list.tasks[task_by_name(&list, ctx.view, "abandoner")];
     let barrier = analysis
         .barriers
         .iter()
@@ -253,7 +253,7 @@ fn test_a_by_value_acquire_behind_a_notified_chain_is_a_barrier() {
         matches!(verified.target(), WaitTarget::Notify { .. }),
         "{wait:#?}"
     );
-    let victim = task_by_name(&list, "victim");
+    let victim = task_by_name(&list, ctx.view, "victim");
     let behind: Vec<_> = analysis
         .behind()
         .into_iter()
@@ -306,7 +306,7 @@ fn test_a_by_value_acquire_behind_a_notified_chain_is_a_barrier() {
 
     // And the census lists it where it is held.
     let census = testkit::census(&ctx, &list);
-    let owner = task_by_name(&list, "abandoner");
+    let owner = task_by_name(&list, ctx.view, "abandoner");
     let found = census
         .held
         .iter()
@@ -337,8 +337,8 @@ fn test_local_blocks_group_past_the_runtimes() {
     let sets = e.discover(&ctx, &[]);
     let index = OwnerIndex::new(&e.runtimes, &sets);
     let list = &e.list;
-    let parker = &list.tasks[task_by_name(list, "local_parker")];
-    let side = &list.tasks[task_by_name(list, "side_parker")];
+    let parker = &list.tasks[task_by_name(list, ctx.view, "local_parker")];
+    let side = &list.tasks[task_by_name(list, ctx.view, "side_parker")];
     // Two runtimes (the main one and the hidden one), then the local
     // blocks in discovery order.
     let mut groups = [index.group_of(parker), index.group_of(side)];
@@ -355,7 +355,7 @@ fn test_the_tls_anchored_set_is_discovered() {
     let (bundle, snapshot) = pair();
     let ctx = testkit::context(&bundle, &snapshot);
     let list = tasks_of(&ctx, &snapshot);
-    task_by_name(&list, "side_parker");
+    task_by_name(&list, ctx.view, "side_parker");
 }
 
 /// The registry diff, audit, and outcome plumbing hold for this pair
@@ -385,11 +385,11 @@ fn test_the_wake_queue_is_the_hidden_runtimes_only_edge() {
         !e.list
             .tasks
             .iter()
-            .any(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains("hidden_blocked"))),
+            .any(|t| matches!(&t.future, FutureInfo::Known(k) if k.name(ctx.view).contains("hidden_blocked"))),
         "the hidden task is enumerated before discovery"
     );
     e.discover(&ctx, &[]);
-    let x = &e.list.tasks[task_by_name(&e.list, "hidden_blocked")];
+    let x = &e.list.tasks[task_by_name(&e.list, ctx.view, "hidden_blocked")];
     let owner = x
         .owner
         .known()

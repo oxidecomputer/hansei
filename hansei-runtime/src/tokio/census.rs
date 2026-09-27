@@ -3528,7 +3528,7 @@ mod tests {
         let holder = list
             .tasks
             .iter()
-            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains("delegation_cases::Holder<")))
+            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.name(ctx.view).contains("delegation_cases::Holder<")))
             .expect("the holder is a task");
         // The pin over the box forwards to the holder itself, whose
         // `held` member is the box's pointer word.
@@ -3981,8 +3981,16 @@ mod tests {
     use anyhow::anyhow;
 
     /// The type names the hand-laid rows below carry: a future `f`, the
-    /// sets `S` and `T`, and a join set `J`, each its position's id.
-    const NAMES: [&str; 4] = ["f", "S", "T", "J"];
+    /// sets `S` and `T`, a join set `J`, and two tasks' futures, each its
+    /// position's id.
+    const NAMES: [&str; 6] = [
+        "f",
+        "S",
+        "T",
+        "J",
+        "demo::driver::{async_fn_env#0}",
+        "demo::worker::{async_fn_env#0}",
+    ];
 
     /// The id [`names`] gives `name`.
     fn named(name: &str) -> BundleTypeId {
@@ -4537,7 +4545,7 @@ mod tests {
             spawn_location: None,
             future: FutureInfo::Known(super::super::bundle::KnownFuture {
                 entry: hansei_bundle::TaskEntryId(0),
-                display_name: name.to_string(),
+                future: named(name),
                 kind: hansei_bundle::FutureKind::AsyncFn,
                 decl: None,
                 symbol: String::new(),
@@ -4989,7 +4997,7 @@ mod fanout_tests {
             .tasks
             .iter()
             .find(
-                |t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains("mapper")),
+                |t| matches!(&t.future, FutureInfo::Known(k) if k.name(ctx.view).contains("mapper")),
             )
             .expect("the fixture lists the mapper");
         testkit::frame_local(ctx, task, "mapper", "map")
@@ -5121,7 +5129,7 @@ mod table_tests {
             .tasks
             .iter()
             .find(
-                |t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains("driver")),
+                |t| matches!(&t.future, FutureInfo::Known(k) if k.name(ctx.view).contains("driver")),
             )
             .expect("the fixture lists the driver");
         (task, testkit::frame_local(ctx, task, "driver", "keyed"))

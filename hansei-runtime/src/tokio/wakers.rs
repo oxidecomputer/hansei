@@ -853,7 +853,7 @@ mod tests {
             .list
             .tasks
             .iter()
-            .find(|t| matches!(&t.future, crate::tokio::bundle::FutureInfo::Known(k) if k.display_name.contains("sleeper")))
+            .find(|t| matches!(&t.future, crate::tokio::bundle::FutureInfo::Known(k) if k.name(ctx.view).contains("sleeper")))
             .expect("the sleeper");
         let entry = e
             .registries

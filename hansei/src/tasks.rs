@@ -10,7 +10,7 @@ use crate::typenames::TypeNames;
 use crate::{Session, output, print_warnings, repl, summary};
 
 use anyhow::{Context as _, Result};
-use hansei_bundle::{BundleTypeId, names};
+use hansei_bundle::BundleTypeId;
 use hansei_runtime::tokio::assess::{
     ContinuationStatus, IncompleteReason, NotWaitingReason, ReadyReason, RunnableReason,
     WaitAssessment, WaitUnknownReason,
@@ -587,7 +587,7 @@ fn joined_task(child: &census::JoinedTask, listing: &Listing<'_>, indent: usize)
     };
     if let Some(task) = listing.list.tasks.iter().find(|t| t.addr.0 == child.task) {
         let state = task_state(task, listing.polling, listing.blocking_lwps);
-        let name = future_name(&task.future, listing.names.impls());
+        let name = future_name(&task.future, listing.names);
         let taken = indent + who.chars().count() + 2 + 2 + state.chars().count();
         let name = output::fit_name(&name, taken, listing.fit);
         return format!("{who}  {name}  {state}");
@@ -609,9 +609,9 @@ fn joined_task(child: &census::JoinedTask, listing: &Listing<'_>, indent: usize)
 /// resolved it: the kind word joined to the folded name for a known
 /// future (`async fn foo::bar`), since none of the lines this opens
 /// carries a kind column of its own.
-pub fn future_name(future: &bundle::FutureInfo, impls: &names::ImplFold) -> String {
+pub(crate) fn future_name(future: &bundle::FutureInfo, type_names: &TypeNames<'_>) -> String {
     match future {
-        bundle::FutureInfo::Known(known) => names::display_future_name(&known.display_name, impls),
+        bundle::FutureInfo::Known(known) => type_names.future(known.future),
         bundle::FutureInfo::Unknown {
             poll_symbol: Some(sym),
         } => format!("<unknown: {:#}>", rustc_demangle::demangle(sym)),
@@ -619,13 +619,7 @@ pub fn future_name(future: &bundle::FutureInfo, impls: &names::ImplFold) -> Stri
         bundle::FutureInfo::Ambiguous { candidates, .. } => {
             let candidates: Vec<_> = candidates
                 .iter()
-                .map(|c| {
-                    format!(
-                        "{} (type {})",
-                        names::fold_type_name(&c.name, impls),
-                        c.ty.0
-                    )
-                })
+                .map(|&ty| format!("{} (type {})", type_names.folded(ty), ty.0))
                 .collect();
             format!("<ambiguous: {}>", candidates.join(" | "))
         }
@@ -737,7 +731,6 @@ pub(crate) fn base_rows<T: proc::Target>(
         &session.owners,
         &analysis.waits,
         &polling,
-        &session.impl_fold,
         blocking_lwps(session),
         &TypeNames::of(session),
     )
@@ -773,7 +766,6 @@ pub(crate) fn build_rows(
     owners: &bundle::OwnerIndex,
     waits: &[rt_graph::TaskWait],
     polling: &HashMap<u64, u32>,
-    impls: &names::ImplFold,
     blocking_lwps: &HashMap<u64, u32>,
     stops: &TypeNames<'_>,
 ) -> Vec<TaskRow> {
@@ -810,7 +802,7 @@ pub(crate) fn build_rows(
                 waiting_kind: waiting_kind(task, waits.get(index), stops),
                 wait_detail: lines.awaiting,
                 will_wake: lines.wake,
-                future: future_name(&task.future, impls),
+                future: future_name(&task.future, stops),
                 spawned: task.spawn_location.as_ref().map(|loc| loc.to_string()),
                 defined: match &task.future {
                     bundle::FutureInfo::Known(known) => known
@@ -3778,7 +3770,6 @@ mod table_tests {
             &Default::default(),
             &waits,
             &polling,
-            &hansei_bundle::names::ImplFold::default(),
             &Default::default(),
             &TypeNames::none(&Default::default()),
         )
@@ -4371,7 +4362,7 @@ mod table_tests {
             vec![Task {
                 future: FutureInfo::Known(hansei_runtime::tokio::bundle::KnownFuture {
                     entry: hansei_bundle::TaskEntryId(0),
-                    display_name: "app::work::{async_fn_env#0}".to_string(),
+                    future: crate::typenames::testing::named("app::work::{async_fn_env#0}"),
                     kind: hansei_bundle::FutureKind::AsyncFn,
                     decl: Some(("src/app.rs".to_string(), 7)),
                     symbol: String::new(),
@@ -4428,7 +4419,6 @@ mod table_tests {
             &Default::default(),
             &[],
             &HashMap::new(),
-            &hansei_bundle::names::ImplFold::default(),
             &HashMap::from([(0x1000 + 2 * 0x100, 42)]),
             &TypeNames::none(&Default::default()),
         );
@@ -5216,7 +5206,6 @@ mod table_tests {
             &Default::default(),
             waits,
             &HashMap::new(),
-            &hansei_bundle::names::ImplFold::default(),
             &Default::default(),
             &stops,
         );

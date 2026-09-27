@@ -654,7 +654,7 @@ fn tasks(
     let mut types: BTreeMap<String, (usize, Waits)> = BTreeMap::new();
     for (index, task) in list.tasks.iter().enumerate() {
         let (count, waits) = types
-            .entry(future_name(&task.future, facts.names.impls()))
+            .entry(future_name(&task.future, facts.names))
             .or_default();
         *count += 1;
         if let Some(wait) = facts.waits.get(index) {
@@ -1157,7 +1157,7 @@ mod tests {
             }),
             future: FutureInfo::Known(KnownFuture {
                 entry: TaskEntryId(0),
-                display_name: future.to_string(),
+                future: named(future),
                 kind: FutureKind::AsyncFn,
                 decl: None,
                 symbol: "_ZN1x".to_string(),

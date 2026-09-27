@@ -212,7 +212,7 @@ fn exec_trace_future<T: proc::Target>(
                 out,
                 "Held by: {} — {} (frame {}, `{}`{via})",
                 task_label(list, h.owner),
-                future_name(&list.tasks[h.owner].future, &session.impl_fold),
+                future_name(&list.tasks[h.owner].future, &type_names),
                 h.frame,
                 h.local
             )?;
@@ -247,7 +247,7 @@ fn exec_trace_future<T: proc::Target>(
                 s.frame,
                 s.local,
                 task_label(list, s.owner),
-                future_name(&list.tasks[s.owner].future, &session.impl_fold)
+                future_name(&list.tasks[s.owner].future, &type_names)
             )?;
             let root = c
                 .root
@@ -553,7 +553,7 @@ fn print_await_chain<'b, T: proc::Target>(
     annotate: Option<&reify::AddrAnnotator<'_>>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    print_chain_end(chain, impls, out)?;
+    print_chain_end(chain, &TypeNames::over(ctx.view, impls), out)?;
     let len = chain.frames.len();
     let shown = opts.limit.unwrap_or(len).min(len);
     let num_width = format!("#{}", shown.saturating_sub(1)).len();
@@ -881,7 +881,7 @@ pub(crate) fn print_locals<'b, T: proc::Target>(
 /// listed with no detail, and `task` names the type it stopped at.
 fn print_chain_end(
     chain: &bundle::AwaitChain<'_>,
-    impls: &names::ImplFold,
+    type_names: &TypeNames<'_>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     match &chain.end {
@@ -911,7 +911,7 @@ fn print_chain_end(
             writeln!(
                 out,
                 "the chain continues into a {} whose concrete type is not in the bundle",
-                names::fold_type_name(pointee, impls)
+                type_names.folded(*pointee)
             )?;
             if let Some(sym) = poll_symbol {
                 writeln!(
@@ -929,15 +929,15 @@ fn print_chain_end(
             writeln!(
                 out,
                 "the chain continues into a {}, but its poll symbol is ambiguous",
-                names::fold_type_name(pointee, impls)
+                type_names.folded(*pointee)
             )?;
             writeln!(out, "     poll fn: {symbol}")?;
-            for candidate in candidates {
+            for &candidate in candidates {
                 writeln!(
                     out,
                     "     candidate: {} (type {})",
-                    names::fold_type_name(&candidate.name, impls),
-                    candidate.ty.0
+                    type_names.folded(candidate),
+                    candidate.0
                 )?;
             }
         }
@@ -1616,8 +1616,8 @@ mod state_locals_tests {
 #[cfg(test)]
 mod chain_end_tests {
     use super::print_chain_end;
-    use hansei_bundle::names::ImplFold;
-    use hansei_runtime::tokio::bundle::{AwaitChain, ChainEnd, TypeCandidate};
+    use crate::typenames::testing::{named, type_names};
+    use hansei_runtime::tokio::bundle::{AwaitChain, ChainEnd};
 
     fn rendered(end: ChainEnd) -> String {
         let chain = AwaitChain {
@@ -1626,7 +1626,7 @@ mod chain_end_tests {
             end,
         };
         let mut out = Vec::new();
-        print_chain_end(&chain, &ImplFold::default(), &mut out).expect("the message renders");
+        print_chain_end(&chain, type_names(), &mut out).expect("the message renders");
         String::from_utf8(out).expect("rendered output is UTF-8")
     }
 
@@ -1683,8 +1683,7 @@ mod chain_end_tests {
     #[test]
     fn test_dyn_ends_name_the_pointee_and_the_poll_fn() {
         let out = rendered(ChainEnd::UnknownDyn {
-            pointee: "core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future>>"
-                .to_string(),
+            pointee: named("core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future>>"),
             poll_symbol: Some("_ZN4core3fut4pollE".to_string()),
         });
         assert_eq!(
@@ -1695,18 +1694,18 @@ mod chain_end_tests {
         );
 
         let out = rendered(ChainEnd::AmbiguousDyn {
-            pointee: "dyn core::future::future::Future".to_string(),
+            pointee: named("dyn core::future::future::Future"),
             symbol: "poll_sym".to_string(),
-            candidates: vec![TypeCandidate {
-                name: "work::step::{async_fn_env#0}".to_string(),
-                ty: hansei_bundle::BundleTypeId(41),
-            }],
+            candidates: vec![named("work::step::{async_fn_env#0}")],
         });
         assert_eq!(
             out,
-            "the chain continues into a dyn Future, \
-             but its poll symbol is ambiguous\n     \
-             poll fn: poll_sym\n     candidate: work::step (type 41)\n"
+            format!(
+                "the chain continues into a dyn Future, \
+                 but its poll symbol is ambiguous\n     \
+                 poll fn: poll_sym\n     candidate: work::step (type {})\n",
+                named("work::step::{async_fn_env#0}").0
+            )
         );
     }
 
@@ -2381,8 +2380,11 @@ mod future_trace_tests {
     use crate::tasks::{
         Finds, TaskView, census_tree, future_name, print_task_children, print_task_view,
     };
+    use crate::typenames::TypeNames;
+    use crate::typenames::testing::type_names;
     use crate::{RenderOpts, output};
     use crate::{TraceTarget, parse_trace_target};
+    use hansei_bundle::names::ImplFold;
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::TaskState;
     use hansei_runtime::tokio::assess::ContinuationStatus;
@@ -2394,6 +2396,15 @@ mod future_trace_tests {
     use reify::Value;
 
     use std::collections::HashMap;
+    use std::sync::LazyLock;
+
+    static NO_IMPLS: LazyLock<ImplFold> = LazyLock::new(ImplFold::default);
+
+    /// The names of a fixture's own types, as a session over it gives
+    /// them.
+    fn fixture_names<'b>(ctx: &Context<'b, Snapshot>) -> TypeNames<'b> {
+        TypeNames::over(ctx.view, &NO_IMPLS)
+    }
 
     fn with_target(
         program: &str,
@@ -2693,18 +2704,20 @@ mod future_trace_tests {
     /// listing test turns on it.
     fn render(
         list: &TaskList,
+        names: &TypeNames<'_>,
         held: &[census::HeldFuture],
         sets: &[census::FutureSet],
         children: bool,
         id: u64,
     ) -> String {
-        render_joining(list, held, sets, &[], children, id)
+        render_joining(list, names, held, sets, &[], children, id)
     }
 
     /// The same, for the tests that lay out join sets: no fixture
     /// spawns onto one, so they are built by hand.
     fn render_joining(
         list: &TaskList,
+        names: &TypeNames<'_>,
         held: &[census::HeldFuture],
         sets: &[census::FutureSet],
         join_sets: &[census::JoinSet],
@@ -2721,9 +2734,8 @@ mod future_trace_tests {
             &Default::default(),
             &[],
             &HashMap::new(),
-            &hansei_bundle::names::ImplFold::default(),
             &Default::default(),
-            &crate::typenames::TypeNames::none(&Default::default()),
+            names,
         );
         let finds = Finds {
             held,
@@ -2735,7 +2747,7 @@ mod future_trace_tests {
         let view = TaskView {
             list,
             rows: &rows,
-            names: crate::typenames::testing::type_names(),
+            names,
             owners: &owners,
             group_tags: &[],
             polling: &HashMap::new(),
@@ -2777,10 +2789,10 @@ mod future_trace_tests {
             task(2, RUNNING, TaskKind::Blocking),
             task(3, 0, TaskKind::Async),
         ]);
-        let polling = render(&list, &[], &[], false, 1);
+        let polling = render(&list, type_names(), &[], &[], false, 1);
         assert!(polling.contains("\n    state: running\n"), "{polling}");
         assert!(!polling.contains("waiting on:"), "{polling}");
-        let blocking = render(&list, &[], &[], false, 2);
+        let blocking = render(&list, type_names(), &[], &[], false, 2);
         assert!(
             blocking.contains("\n    state: blocking (running)\n"),
             "{blocking}"
@@ -2789,7 +2801,7 @@ mod future_trace_tests {
         // With no analysis behind it an idle task has nothing to wait
         // on either; the line exists only where the cell says more
         // than a dash.
-        let idle = render(&list, &[], &[], false, 3);
+        let idle = render(&list, type_names(), &[], &[], false, 3);
         assert!(idle.contains("\n    state: idle\n"), "{idle}");
         assert!(!idle.contains("waiting on:"), "{idle}");
     }
@@ -2809,7 +2821,14 @@ mod future_trace_tests {
                 .owner;
             let id = list.tasks[owner].task_id.expect("the owner has an id");
 
-            let rendered = render(list, &census.held, &census.sets, true, id);
+            let rendered = render(
+                list,
+                &fixture_names(_ctx),
+                &census.held,
+                &census.sets,
+                true,
+                id,
+            );
             assert!(rendered.starts_with("held futures: 1\n    ("), "{rendered}");
             // The row names the local it was found in and nothing more:
             // under `held futures`, `held` would only repeat the
@@ -2817,7 +2836,14 @@ mod future_trace_tests {
             assert!(rendered.contains(", `future1`): 0x"), "{rendered}");
             assert!(!rendered.contains("held (frame"), "{rendered}");
 
-            let block = render(list, &census.held, &census.sets, false, id);
+            let block = render(
+                list,
+                &fixture_names(_ctx),
+                &census.held,
+                &census.sets,
+                false,
+                id,
+            );
             assert!(
                 block.ends_with("\n    held futures: 1\n    join sets: 0\n"),
                 "{block}"
@@ -2829,9 +2855,23 @@ mod future_trace_tests {
                     continue;
                 }
                 let other = task.task_id.expect("every fixture task has an id");
-                let rendered = render(list, &census.held, &census.sets, true, other);
+                let rendered = render(
+                    list,
+                    &fixture_names(_ctx),
+                    &census.held,
+                    &census.sets,
+                    true,
+                    other,
+                );
                 assert_eq!(rendered, "held futures: 0\njoin sets: 0\n");
-                let block = render(list, &census.held, &census.sets, false, other);
+                let block = render(
+                    list,
+                    &fixture_names(_ctx),
+                    &census.held,
+                    &census.sets,
+                    false,
+                    other,
+                );
                 assert!(
                     block.ends_with("\n    held futures: 0\n    join sets: 0\n"),
                     "{block}"
@@ -2904,7 +2944,7 @@ mod future_trace_tests {
                 continuation: ContinuationStatus::Unresumed,
             }];
 
-            let rendered = render(list, &held, &sets, true, id);
+            let rendered = render(list, type_names(), &held, &sets, true, id);
 
             // The set sits under the owning task's `join sets` row, the
             // held row one step right of the child it was found in,
@@ -2925,7 +2965,7 @@ mod future_trace_tests {
             // The reaped slot is not a future in flight, so the rows say
             // one child, not two — and they say it with or without the
             // listing under them.
-            let counted = render(list, &held, &sets, false, id);
+            let counted = render(list, type_names(), &held, &sets, false, id);
             assert!(counted.contains("\n    held futures: 0\n"), "{counted}");
             assert!(
                 counted.contains("\n    join sets: 1 (1 future)\n"),
@@ -2948,6 +2988,11 @@ mod future_trace_tests {
             let joined: Vec<&bundle::Task> = list.tasks.iter().take(2).collect();
             let owner = list.tasks.len() - 1;
             let id = list.tasks[owner].task_id.expect("the owner has an id");
+            // The set's type is any the fixture's bundle names.
+            let bundle::FutureInfo::Known(owner_future) = &list.tasks[owner].future else {
+                panic!("the owner's future is known");
+            };
+            let ty = owner_future.future;
             let mut children: Vec<census::JoinedTask> = joined
                 .iter()
                 .map(|task| census::JoinedTask {
@@ -2971,28 +3016,24 @@ mod future_trace_tests {
                 local: "set".to_string(),
                 via: None,
                 addr: 0x4000,
-                ty: crate::typenames::testing::named("JoinSet<()>"),
+                ty,
                 length: 3,
                 children,
             }];
 
-            let rendered = render_joining(list, &[], &[], &join_sets, true, id);
+            let names = fixture_names(_ctx);
+            let rendered = render_joining(list, &names, &[], &[], &join_sets, true, id);
             let expected = format!(
                 "held futures: 0\njoin sets: 1 (3 tasks)\n    \
-                 - JoinSet<()> at 0x4000 (frame 0, `set`): 3 tasks\n        \
+                 - {} at 0x4000 (frame 0, `set`): 3 tasks\n        \
                  task {}  {}  {}\n        task {}  {}  {}\n        \
                  task 99  <complete, awaiting join>\n",
+                names.folded(ty),
                 joined[0].task_id.expect("the fixture's tasks have ids"),
-                future_name(
-                    &joined[0].future,
-                    &hansei_bundle::names::ImplFold::default()
-                ),
+                future_name(&joined[0].future, &names),
                 joined[0].state.lifecycle(),
                 joined[1].task_id.expect("the fixture's tasks have ids"),
-                future_name(
-                    &joined[1].future,
-                    &hansei_bundle::names::ImplFold::default()
-                ),
+                future_name(&joined[1].future, &names),
                 joined[1].state.lifecycle(),
             );
             assert_eq!(rendered, expected);
@@ -3016,9 +3057,23 @@ mod future_trace_tests {
             let id = list.tasks[empty].task_id.expect("the task has an id");
             // A task that drives no set says so with a bare zero: what
             // the sets it does not have would hold is noise.
-            let rendered = render(list, &census.held, &census.sets, true, id);
+            let rendered = render(
+                list,
+                &fixture_names(_ctx),
+                &census.held,
+                &census.sets,
+                true,
+                id,
+            );
             assert_eq!(rendered, "held futures: 0\njoin sets: 0\n");
-            let block = render(list, &census.held, &census.sets, false, id);
+            let block = render(
+                list,
+                &fixture_names(_ctx),
+                &census.held,
+                &census.sets,
+                false,
+                id,
+            );
             assert!(block.starts_with(&format!("task {id}\n")), "{block}");
             assert!(
                 block.ends_with("\n    held futures: 0\n    join sets: 0\n"),
@@ -3113,7 +3168,7 @@ mod trace_render_tests {
             .enumerate()
             .find(|(_, t)| match &t.future {
                 hansei_runtime::tokio::bundle::FutureInfo::Known(known) => {
-                    known.display_name == future
+                    known.name(ctx.view) == future
                 }
                 _ => false,
             })

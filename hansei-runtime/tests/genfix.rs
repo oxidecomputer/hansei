@@ -54,7 +54,7 @@ fn test_generated_pair_matches_its_registry() {
         let name = |id| r.ctx.view.ty(id).map_or("<unknown>", |ty| ty.name());
         for (i, t) in list.tasks.iter().enumerate() {
             let name = match &t.future {
-                hansei_runtime::tokio::bundle::FutureInfo::Known(k) => k.display_name.as_str(),
+                hansei_runtime::tokio::bundle::FutureInfo::Known(k) => k.name(r.ctx.view),
                 other => &format!("{other:?}"),
             };
             println!("task {i}: `{name}` header at {:#x}", t.addr.0);

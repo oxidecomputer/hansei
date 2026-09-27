@@ -304,7 +304,7 @@ fn report_whatis(
         let task = &list.tasks[index];
         let id = task_id(list, index);
         separate(&mut blocks, out)?;
-        writeln!(out, "Task {id}: {}", future_name(&task.future, impls))?;
+        writeln!(out, "Task {id}: {}", future_name(&task.future, &type_names))?;
         writeln!(
             out,
             "    At: offset {offset:#x} in the task's allocation (header {:?})",
@@ -351,7 +351,7 @@ fn report_whatis(
             out,
             "    Polled by: {} — {}",
             task_label(list, set.owner),
-            future_name(&list.tasks[set.owner].future, impls)
+            future_name(&list.tasks[set.owner].future, &type_names)
         )?;
     }
 
@@ -384,7 +384,7 @@ fn report_whatis(
             out,
             "    Held by: {} — {} (frame {}, `{}`{})",
             task_label(list, h.owner),
-            future_name(&list.tasks[h.owner].future, impls),
+            future_name(&list.tasks[h.owner].future, &type_names),
             h.frame,
             h.local,
             via_suffix(census, h.via)
@@ -407,7 +407,7 @@ fn report_whatis(
             out,
             "    Driven by: {} — {} (frame {}, `{}`{})",
             task_label(list, set.owner),
-            future_name(&list.tasks[set.owner].future, impls),
+            future_name(&list.tasks[set.owner].future, &type_names),
             set.frame,
             set.local,
             via_suffix(census, set.via)

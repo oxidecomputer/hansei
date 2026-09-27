@@ -921,7 +921,7 @@ pub mod expect {
                 Expectation::HeldByTask { task, name } => {
                     let owned_by = |h: &crate::tokio::census::HeldFuture| {
                         matches!(&list.tasks[h.owner].future,
-                            FutureInfo::Known(k) if k.display_name.contains(task))
+                            FutureInfo::Known(k) if k.name(view).contains(task))
                     };
                     let row = census.held.iter().enumerate().find(|(i, h)| {
                         !held_claimed[*i] && owned_by(h) && name_of(h.future).contains(name)
@@ -991,7 +991,7 @@ pub mod expect {
                 .tasks
                 .iter()
                 .filter(
-                    |t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)),
+                    |t| matches!(&t.future, FutureInfo::Known(k) if k.name(view).contains(name)),
                 )
                 .count();
             if listed < wanted {

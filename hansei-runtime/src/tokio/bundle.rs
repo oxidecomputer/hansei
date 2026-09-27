@@ -1191,7 +1191,7 @@ impl<'b, T: Target> Context<'b, T> {
             vt.drop_abort_handle,
             vt.shutdown,
         ];
-        let mut ambiguous: Option<(String, Vec<TypeCandidate>)> = None;
+        let mut ambiguous: Option<(String, Vec<BundleTypeId>)> = None;
         for addr in candidates.into_iter().flatten() {
             let Some(symbol) = self.symbol_at(addr) else {
                 continue;
@@ -1199,27 +1199,17 @@ impl<'b, T: Target> Context<'b, T> {
             let entry_id = match self.task_ids_memoized(&symbol) {
                 SymbolLookup::Unique(id) => id,
                 SymbolLookup::Ambiguous(ids) => {
-                    let names = ids
+                    let futures = ids
                         .into_iter()
                         .filter_map(|id| self.view.bundle().tasks.entries.get(id.0 as usize))
-                        .filter_map(|entry| {
-                            Some(TypeCandidate {
-                                name: self.view.str(entry.display_name)?.to_owned(),
-                                ty: entry.future,
-                            })
-                        })
+                        .map(|entry| entry.future)
                         .collect();
-                    ambiguous.get_or_insert((symbol, names));
+                    ambiguous.get_or_insert((symbol, futures));
                     continue;
                 }
                 SymbolLookup::Missing => continue,
             };
             let entry = &self.view.bundle().tasks.entries[entry_id.0 as usize];
-            let display_name = self
-                .view
-                .str(entry.display_name)
-                .unwrap_or("<anon>")
-                .to_owned();
             let provenance = self.view.provenance(entry_id);
             let decl = provenance
                 .and_then(|p| p.decl)
@@ -1227,7 +1217,7 @@ impl<'b, T: Target> Context<'b, T> {
             let kind = provenance.map(|p| p.kind).unwrap_or(FutureKind::Manual);
             return FutureInfo::Known(KnownFuture {
                 entry: entry_id,
-                display_name,
+                future: entry.future,
                 kind,
                 decl,
                 symbol,
@@ -1259,7 +1249,7 @@ impl<'b, T: Target> Context<'b, T> {
             trailer_offset == vt.trailer_offset,
             "tokio-info/target layout mismatch for {}: recorded Cell.trailer at {:#x}, \
              target vtable trailer_offset {:#x}",
-            known.display_name,
+            known.name(self.view),
             trailer_offset,
             vt.trailer_offset
         );
@@ -1268,7 +1258,7 @@ impl<'b, T: Target> Context<'b, T> {
                 id_offset == vt.id_offset,
                 "tokio-info/target layout mismatch for {}: recorded Core.task_id at {:#x}, \
                  target vtable id_offset {:#x}",
-                known.display_name,
+                known.name(self.view),
                 id_offset,
                 vt.id_offset
             );
@@ -2293,6 +2283,12 @@ impl<'b, T: Target> Context<'b, T> {
         Ok(found)
     }
 
+    /// A type's name as the bundle records it, for a message: `<anon>`
+    /// for one the bundle does not carry.
+    pub fn type_name(&self, ty: BundleTypeId) -> &'b str {
+        self.view.ty(ty).map_or("<anon>", |ty| ty.name())
+    }
+
     /// The first recorded root type of a bound role — how a probe that
     /// constructs its own root value (a TLS payload) knows the layout
     /// to read it with.
@@ -2877,7 +2873,10 @@ impl<'b, T: Target> Context<'b, T> {
             return Ok(None);
         };
         let entry = self.task_entry(known.entry);
-        let cell_ty = self.infra_ty(entry.cell, &format!("the Cell of {}", known.display_name))?;
+        let cell_ty = self.infra_ty(
+            entry.cell,
+            &format!("the Cell of {}", known.name(self.view)),
+        )?;
         let owner_id = header
             .owner_id
             .ok_or_else(|| anyhow!("the task at {addr:?} records no owner_id to check"))?;
@@ -4898,7 +4897,7 @@ mod tests {
             .tasks
             .iter()
             .filter(|t| {
-                matches!(&t.future, FutureInfo::Known(known) if known.display_name.contains("http_conns::serve"))
+                matches!(&t.future, FutureInfo::Known(known) if known.name(ctx.view).contains("http_conns::serve"))
             })
             .find_map(|serve| {
                 let inspection = ctx.inspect_task(serve, &read).ok()??;
@@ -5058,9 +5057,8 @@ mod tests {
             let FutureInfo::Ambiguous { candidates, .. } = ctx.resolve_future(&vt) else {
                 panic!("an exact collision cannot choose a task");
             };
-            let types: Vec<_> = candidates.iter().map(|candidate| candidate.ty).collect();
             assert_eq!(
-                types,
+                candidates,
                 vec![
                     bundle.tasks.entries[0].future,
                     bundle.tasks.entries[second.0 as usize].future
@@ -5148,10 +5146,10 @@ mod tests {
     }
 
     /// The listed task whose future's display name contains `name`.
-    fn task_named<'a>(list: &'a TaskList, name: &str) -> &'a Task {
+    fn task_named<'a>(list: &'a TaskList, view: BundleView<'_>, name: &str) -> &'a Task {
         list.tasks
             .iter()
-            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)))
+            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.name(view).contains(name)))
             .unwrap_or_else(|| panic!("the fixture lists a task named {name}"))
     }
 
@@ -5170,7 +5168,7 @@ mod tests {
         let (bundle, snapshot) = sleep_join();
         let ctx = testkit::context(bundle, snapshot);
         let list = testkit::tasks(&ctx, snapshot);
-        let task = task_named(&list, "sleeper");
+        let task = task_named(&list, ctx.view, "sleeper");
         let healthy = ctx
             .read_task_header(task.addr, &ReadContext::none())
             .unwrap();
@@ -5196,7 +5194,7 @@ mod tests {
         let FutureInfo::Known(known) = &header.future else {
             panic!("the join resolves as before: {:?}", header.future);
         };
-        assert!(known.display_name.contains("sleeper"));
+        assert!(known.name(ctx.view).contains("sleeper"));
         assert_eq!(
             ctx.header_task_ref(task.addr.0).unwrap(),
             (healthy.task_id, healthy.state)
@@ -5382,8 +5380,8 @@ mod tests {
         let (bundle, snapshot) = sleep_join();
         let ctx = testkit::context(bundle, snapshot);
         let list = testkit::tasks(&ctx, snapshot);
-        let joiner = task_named(&list, "joiner");
-        let sleeper = task_named(&list, "sleeper");
+        let joiner = task_named(&list, ctx.view, "joiner");
+        let sleeper = task_named(&list, ctx.view, "sleeper");
         let handle = leaf_of(&ctx, joiner);
         let observed = ctx.observe_resource(handle, &ReadContext::none());
         assert!(observed.issues.is_empty(), "{:?}", observed.issues);
@@ -5441,7 +5439,7 @@ mod tests {
         let (bundle, snapshot) = sleep_join();
         let ctx = testkit::context(bundle, snapshot);
         let list = testkit::tasks(&ctx, snapshot);
-        let sleeper = task_named(&list, "sleeper");
+        let sleeper = task_named(&list, ctx.view, "sleeper");
         let sleep = leaf_of(&ctx, sleeper);
         let observed = ctx.observe_resource(sleep, &ReadContext::none());
         let Some(ResourceObservation::Timer(timer)) = observed.value else {
@@ -5791,7 +5789,7 @@ mod tests {
 
         // `Read<UnixStream>`: through `reader` to its `ScheduledIo`.
         for (name, remaining) in [("local_reader", 8), ("::reader", 16)] {
-            let task = task_named(list, name);
+            let task = task_named(list, ctx.view, name);
             let read = leaf_of(&ctx, task);
             assert!(read.ty.name().starts_with("tokio::io::util::read::Read<"));
             let observed = ctx.observe_resource(read, &ReadContext::none());
@@ -5815,7 +5813,7 @@ mod tests {
         }
 
         // `WriteAll<UnixStream>`: through `writer`.
-        let writer = task_named(list, "local_writer");
+        let writer = task_named(list, ctx.view, "local_writer");
         let write = leaf_of(&ctx, writer);
         let Some(ResourceObservation::Io(io)) =
             ctx.observe_resource(write, &ReadContext::none()).value
@@ -5836,7 +5834,7 @@ mod tests {
 
         // `Readiness`: the registration it names outright, its state,
         // and its own node — which the registration lists.
-        let watcher = task_named(list, "local_watcher");
+        let watcher = task_named(list, ctx.view, "local_watcher");
         let readiness = leaf_of(&ctx, watcher);
         let observed = ctx.observe_resource(readiness, &ReadContext::none());
         assert!(observed.issues.is_empty(), "{:?}", observed.issues);
@@ -5967,7 +5965,7 @@ mod tests {
         // `Read<Gated>` holds a socket and is not an operation on one:
         // the chain ends at it with its continuation unknown, and it
         // observes as nothing.
-        let gated = task_named(list, "local_gated_reader");
+        let gated = task_named(list, ctx.view, "local_gated_reader");
         let chain = chain_of(&ctx, gated);
         assert!(
             matches!(chain.end, ChainEnd::UnknownContinuation { .. }),
@@ -5992,7 +5990,7 @@ mod tests {
         let (bundle, snapshot) = local_set_io();
         let ctx = testkit::context(bundle, snapshot);
         let list = testkit::tasks(&ctx, snapshot);
-        let task = task_named(&list, "local_reader");
+        let task = task_named(&list, ctx.view, "local_reader");
         let read = leaf_of(&ctx, task);
         let reader = ctx.walk(WalkRole::IoReadReader).walk_at(read).unwrap();
         let stream: u64 = reader.parse(ctx.proc).unwrap();
@@ -6145,10 +6143,10 @@ mod discovery_scan_tests {
     use super::*;
     use crate::testkit;
 
-    fn named<'l>(list: &'l TaskList, name: &str) -> &'l Task {
+    fn named<'l>(list: &'l TaskList, view: BundleView<'_>, name: &str) -> &'l Task {
         list.tasks
             .iter()
-            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)))
+            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.name(view).contains(name)))
             .unwrap_or_else(|| panic!("a task named {name}"))
     }
 
@@ -6181,7 +6179,7 @@ mod discovery_scan_tests {
             // sweep is driven over a fresh enumeration.
             let mut e = testkit::enumerate(&ctx, &snapshot);
             e.discover(&ctx, &[]);
-            let joined = named(&e.list, "foreign_runtime::joined").addr.0;
+            let joined = named(&e.list, ctx.view, "foreign_runtime::joined").addr.0;
             assert_eq!(
                 alone,
                 vec![(joined, DiscoveryRoute::Scanned(ReferenceSource::JoinHandle))],

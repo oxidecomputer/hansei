@@ -1438,14 +1438,15 @@ mod tests {
     use crate::tokio::bundle::{FutureInfo, IoResourceInfo, IoWaiterInfo, Task, TimerEntryInfo};
     use crate::tokio::observe::Consistency;
 
+    use hansei_bundle::BundleView;
     use hansei_bundle::tokio::timer;
     use proc::snapshot::Snapshot;
 
-    fn task_named<'a>(list: &'a TaskList, name: &str) -> &'a Task {
+    fn task_named<'a>(list: &'a TaskList, view: BundleView<'_>, name: &str) -> &'a Task {
         let hits: Vec<&Task> = list
             .tasks
             .iter()
-            .filter(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)))
+            .filter(|t| matches!(&t.future, FutureInfo::Known(k) if k.name(view).contains(name)))
             .collect();
         assert_eq!(hits.len(), 1, "one task named {name}: {hits:?}");
         hits[0]
@@ -1512,7 +1513,7 @@ mod tests {
         let (bundle, snapshot) = load_any("walk-shapes");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "chained");
+        let task = task_named(&list, ctx.view, "chained");
         let Branches::Held { members, capped } =
             branches_of(&ctx, &list, task, &Registries::default())
         else {
@@ -1555,7 +1556,7 @@ mod tests {
         let (bundle, snapshot) = load_any("walk-shapes");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "chained");
+        let task = task_named(&list, ctx.view, "chained");
         let Branches::Held { members, .. } = branches_of(&ctx, &list, task, &Registries::default())
         else {
             panic!("held");
@@ -1602,7 +1603,7 @@ mod tests {
         let (bundle, snapshot) = load_any("walk-shapes");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "chained");
+        let task = task_named(&list, ctx.view, "chained");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
             .unwrap()
@@ -1678,7 +1679,7 @@ mod tests {
         let (bundle, snapshot) = load_any("sleep-join");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "sleeper");
+        let task = task_named(&list, ctx.view, "sleeper");
         let registries = Registries::new(vec![wheel(0x4000, task)], Vec::new());
         assert!(matches!(
             branches_of(&ctx, &list, task, &registries),
@@ -1695,7 +1696,7 @@ mod tests {
         let (bundle, snapshot) = load_any("sleep-join");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "sleeper");
+        let task = task_named(&list, ctx.view, "sleeper");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
             .unwrap()
@@ -1947,7 +1948,7 @@ mod tests {
         let (bundle, snapshot) = load_any("walk-shapes");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "chained");
+        let task = task_named(&list, ctx.view, "chained");
         let root = ctx
             .inspect_task(task, &ReadContext::none())
             .unwrap()
@@ -1971,7 +1972,7 @@ mod tests {
         let (bundle, snapshot) = load_any("walk-shapes");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "chained");
+        let task = task_named(&list, ctx.view, "chained");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
             .unwrap()
@@ -2016,7 +2017,7 @@ mod tests {
         let (bundle, snapshot) = load_any("walk-shapes");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "chained");
+        let task = task_named(&list, ctx.view, "chained");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
             .unwrap()
@@ -2170,7 +2171,7 @@ mod tests {
         let (bundle, snapshot) = load_any("armed-select");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "selector");
+        let task = task_named(&list, ctx.view, "selector");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
             .unwrap()
@@ -2223,7 +2224,7 @@ mod tests {
         let (bundle, snapshot) = load_any("watch-stream");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "mapper");
+        let task = task_named(&list, ctx.view, "mapper");
         let Branches::Set(set) = branches_of(&ctx, &list, task, &Registries::default()) else {
             panic!("a set");
         };
@@ -2296,7 +2297,7 @@ mod tests {
         let (bundle, snapshot) = load_any("armed-select");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let driver = task_named(&list, "driver");
+        let driver = task_named(&list, ctx.view, "driver");
         let members = match branches_of(&ctx, &list, driver, &Registries::default()) {
             Branches::Set(set) => set.members,
             Branches::Held { members, .. } | Branches::NeverReady { members, .. } => members,
@@ -2336,7 +2337,7 @@ mod tests {
             "the borrow is access only under the bound context"
         );
         let list = testkit::tasks(&bound, &snapshot);
-        let task = task_named(&list, "selector");
+        let task = task_named(&list, bound.view, "selector");
         let inspection = bound
             .inspect_task(task, &ReadContext::none())
             .unwrap()
@@ -2373,7 +2374,7 @@ mod tests {
         let (bundle, snapshot) = load_any("delegation-cases");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "Retained");
+        let task = task_named(&list, ctx.view, "Retained");
         assert!(matches!(
             branches_of(&ctx, &list, task, &Registries::default()),
             Branches::None
@@ -2387,7 +2388,7 @@ mod tests {
         let (bundle, snapshot) = load_any("sleep-join");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "sleeper");
+        let task = task_named(&list, ctx.view, "sleeper");
         let registries = Registries::new(vec![wheel(0x4000, task)], Vec::new());
         let analysis = crate::tokio::graph::analyze(&ctx, &list, &registries, &ReadContext::none());
         let row = analysis
@@ -2420,7 +2421,7 @@ mod tests {
         let ctx = testkit::context(&bundle, &snapshot);
         let mut e = testkit::enumerate(&ctx, &snapshot);
         e.discover(&ctx, &[]);
-        let task = task_named(&e.list, "sleeper");
+        let task = task_named(&e.list, ctx.view, "sleeper");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
             .unwrap()
@@ -2770,7 +2771,7 @@ mod tests {
         let (bundle, snapshot) = load_any("armed-select");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = task_named(&list, "forever");
+        let task = task_named(&list, ctx.view, "forever");
         let Branches::NeverReady { members, capped } =
             branches_of(&ctx, &list, task, &Registries::default())
         else {
@@ -3049,10 +3050,12 @@ mod fanout_tests {
     use crate::testkit::{self, load_any};
     use crate::tokio::bundle::{FutureInfo, Task};
 
-    fn named<'a>(list: &'a TaskList, name: &str) -> &'a Task {
+    use hansei_bundle::BundleView;
+
+    fn named<'a>(list: &'a TaskList, view: BundleView<'_>, name: &str) -> &'a Task {
         list.tasks
             .iter()
-            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)))
+            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.name(view).contains(name)))
             .unwrap_or_else(|| panic!("the fixture lists {name}"))
     }
 
@@ -3066,7 +3069,7 @@ mod fanout_tests {
         let (bundle, snapshot) = load_any("watch-stream");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = named(&list, "mapper");
+        let task = named(&list, ctx.view, "mapper");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
             .unwrap()
@@ -3169,7 +3172,7 @@ mod fanout_tests {
         let (bundle, snapshot) = load_any("watch-stream");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let map = testkit::frame_local(&ctx, named(&list, "mapper"), "mapper", "map");
+        let map = testkit::frame_local(&ctx, named(&list, ctx.view, "mapper"), "mapper", "map");
         let frame = AwaitFrame {
             future: map,
             state: None,
@@ -3212,7 +3215,7 @@ mod fanout_tests {
         let (bundle, snapshot) = load_any("watch-stream");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let task = named(&list, "mapper");
+        let task = named(&list, ctx.view, "mapper");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
             .unwrap()

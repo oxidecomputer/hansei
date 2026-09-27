@@ -2534,7 +2534,7 @@ mod tests {
             .list
             .tasks
             .iter()
-            .filter(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains("http_conns::serve")))
+            .filter(|t| matches!(&t.future, FutureInfo::Known(k) if k.name(ctx.view).contains("http_conns::serve")))
         {
             let inspection = ctx.inspect_task(task, &read).unwrap().unwrap();
             let wrapper = inspection
@@ -2678,7 +2678,7 @@ mod tests {
             .list
             .tasks
             .iter()
-            .filter(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains("{impl#0}::execute")))
+            .filter(|t| matches!(&t.future, FutureInfo::Known(k) if k.name(ctx.view).contains("{impl#0}::execute")))
         {
             let inspection = ctx.inspect_task(task, &read).unwrap().unwrap();
             let observation = inspection.primitive.value.as_ref().unwrap();
@@ -2716,7 +2716,7 @@ mod tests {
                         ),
                         "{via}"
                     );
-                    let requester = task_named(&e.list, "http_conns::requester");
+                    let requester = task_named(&e.list, ctx.view, "http_conns::requester");
                     assert_eq!(
                         observed.caller(),
                         Some(&HttpCaller::Task(TaskRef {
@@ -2732,11 +2732,11 @@ mod tests {
         assert_eq!(seen, 2);
     }
 
-    fn task_named<'a>(list: &'a TaskList, name: &str) -> &'a Task {
+    fn task_named<'a>(list: &'a TaskList, view: BundleView<'_>, name: &str) -> &'a Task {
         let hits: Vec<&Task> = list
             .tasks
             .iter()
-            .filter(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)))
+            .filter(|t| matches!(&t.future, FutureInfo::Known(k) if k.name(view).contains(name)))
             .collect();
         assert_eq!(hits.len(), 1, "one task named {name}: {hits:?}");
         hits[0]
@@ -2798,7 +2798,7 @@ mod tests {
         let (bundle, snapshot) = load_any("sleep-join");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let joiner = task_named(&list, "joiner");
+        let joiner = task_named(&list, ctx.view, "joiner");
         for (bits, expected) in [
             (COMPLETE, "NotWaiting(Complete)"),
             (NOTIFIED, "Runnable(Scheduled)"),
@@ -2807,7 +2807,7 @@ mod tests {
             let patched = with_state(&snapshot, &ctx, joiner, bits);
             let ctx = Context::new(&patched, BundleView::new(&bundle)).unwrap();
             let (list, rows, _) = assessed(&ctx, &patched);
-            let row = row(&rows, task_named(&list, "joiner"));
+            let row = row(&rows, task_named(&list, ctx.view, "joiner"));
             assert_eq!(format!("{:?}", row.assessment), expected, "{bits:#b}");
             match bits {
                 COMPLETE => {
@@ -2846,8 +2846,8 @@ mod tests {
         let ctx = testkit::context(&bundle, &snapshot);
         let (list, rows, barriers) = assessed(&ctx, &snapshot);
         assert!(barriers.is_empty());
-        let joiner = task_named(&list, "joiner");
-        let sleeper = task_named(&list, "sleeper");
+        let joiner = task_named(&list, ctx.view, "joiner");
+        let sleeper = task_named(&list, ctx.view, "sleeper");
         let joined = row(&rows, joiner);
         let WaitAssessment::Waiting(wait) = &joined.assessment else {
             panic!(
@@ -2883,7 +2883,7 @@ mod tests {
         let ctx2 = Context::new(&done, BundleView::new(&bundle)).unwrap();
         let (list2, rows2, _) = assessed(&ctx2, &done);
         assert!(matches!(
-            row(&rows2, task_named(&list2, "joiner")).assessment,
+            row(&rows2, task_named(&list2, ctx.view, "joiner")).assessment,
             WaitAssessment::ResourceReady(ReadyReason::JoinComplete)
         ));
 
@@ -2897,7 +2897,7 @@ mod tests {
         );
         let ctx3 = Context::new(&unset, BundleView::new(&bundle)).unwrap();
         let (list3, rows3, _) = assessed(&ctx3, &unset);
-        let row3 = row(&rows3, task_named(&list3, "joiner"));
+        let row3 = row(&rows3, task_named(&list3, ctx.view, "joiner"));
         assert!(
             matches!(
                 row3.assessment,
@@ -2936,7 +2936,7 @@ mod tests {
         let other = Corrupt::new(&snapshot).patch(data.addr, sleeper.addr.0);
         let ctx4 = Context::new(&other, BundleView::new(&bundle)).unwrap();
         let (list4, rows4, _) = assessed(&ctx4, &other);
-        let row4 = row(&rows4, task_named(&list4, "joiner"));
+        let row4 = row(&rows4, task_named(&list4, ctx.view, "joiner"));
         assert!(matches!(
             row4.assessment,
             WaitAssessment::Unknown(WaitUnknownReason::ConflictingEvidence)
@@ -2951,7 +2951,7 @@ mod tests {
         let (bundle, snapshot) = load_any("sleep-join");
         let ctx = testkit::context(&bundle, &snapshot);
         let (list, rows, _) = assessed(&ctx, &snapshot);
-        let sleeper = task_named(&list, "sleeper");
+        let sleeper = task_named(&list, ctx.view, "sleeper");
         let slept = row(&rows, sleeper);
         let WaitAssessment::Waiting(wait) = &slept.assessment else {
             panic!(
@@ -2970,7 +2970,7 @@ mod tests {
             let patched = Corrupt::new(&snapshot).patch(word.addr, sentinel);
             let ctx = Context::new(&patched, BundleView::new(&bundle)).unwrap();
             let (list, rows, _) = assessed(&ctx, &patched);
-            let row = row(&rows, task_named(&list, "sleeper"));
+            let row = row(&rows, task_named(&list, ctx.view, "sleeper"));
             assert!(
                 matches!(row.assessment, WaitAssessment::ResourceReady(reason) if reason == expected),
                 "{sentinel:#x}: {:?}",
@@ -3204,7 +3204,7 @@ mod tests {
         let (bundle, snapshot) = load_any("channels");
         let ctx = testkit::context(&bundle, &snapshot);
         let (list, rows, _) = assessed(&ctx, &snapshot);
-        let waiter = task_named(&list, "recv_waiter");
+        let waiter = task_named(&list, ctx.view, "recv_waiter");
         let parked = row(&rows, waiter);
         let WaitAssessment::Waiting(wait) = &parked.assessment else {
             panic!("recv waits: {:?} {:?}", parked.assessment, parked.notes);
@@ -3261,7 +3261,7 @@ mod tests {
             0,
             "nothing at the index"
         );
-        let holder = task_named(&list, "channels::hold");
+        let holder = task_named(&list, ctx.view, "channels::hold");
         // The windows move the read index off zero where its slot's
         // bit or the unread count would otherwise be indistinguishable
         // from a zero.
@@ -3422,7 +3422,7 @@ mod tests {
         let (bundle, snapshot) = load_any("armed-select");
         let ctx = testkit::context(&bundle, &snapshot);
         let (list, rows, _) = assessed(&ctx, &snapshot);
-        let holder = task_named(&list, "armed_select::holder");
+        let holder = task_named(&list, ctx.view, "armed_select::holder");
         let parked = row(&rows, holder);
         let WaitAssessment::Waiting(wait) = &parked.assessment else {
             panic!("oneshot waits: {:?} {:?}", parked.assessment, parked.notes);
@@ -3461,7 +3461,7 @@ mod tests {
         let word: u64 = state_at.parse(&snapshot).unwrap();
         assert_eq!(word, state.word);
         let (data, _) = raw_waker_words(&ctx, WalkRole::OneshotRxTask, arc);
-        let selector = task_named(&list, "armed_select::selector");
+        let selector = task_named(&list, ctx.view, "armed_select::selector");
         let cases: Vec<(&str, Corrupt<'_>, &str)> = vec![
             (
                 "the sender completed",
@@ -3527,7 +3527,7 @@ mod tests {
         let (bundle, snapshot) = load_any("channels");
         let ctx = testkit::context(&bundle, &snapshot);
         let (list, rows, _) = assessed(&ctx, &snapshot);
-        let waiter = task_named(&list, "notify_waiter");
+        let waiter = task_named(&list, ctx.view, "notify_waiter");
         let parked = row(&rows, waiter);
         let WaitAssessment::Waiting(wait) = &parked.assessment else {
             panic!("notified waits: {:?} {:?}", parked.assessment, parked.notes);
@@ -3594,7 +3594,7 @@ mod tests {
             .unwrap()
             .addr;
         let head = option_word(&ctx, WalkRole::NotifyQueueHead, notify_value);
-        let holder = task_named(&list, "channels::hold");
+        let holder = task_named(&list, ctx.view, "channels::hold");
         let cases: Vec<(&str, Corrupt<'_>, &str)> = vec![
             (
                 "done",
@@ -3659,7 +3659,7 @@ mod tests {
         let (bundle, snapshot) = load_any("walk-shapes");
         let ctx = testkit::context(&bundle, &snapshot);
         let (list, rows, barriers) = assessed(&ctx, &snapshot);
-        let abandoner = row(&rows, task_named(&list, "abandoner"));
+        let abandoner = row(&rows, task_named(&list, ctx.view, "abandoner"));
         let WaitAssessment::Waiting(wait) = &abandoner.assessment else {
             panic!("{:?} {:?}", abandoner.assessment, abandoner.notes);
         };
@@ -3682,7 +3682,7 @@ mod tests {
         assert_eq!(barrier.acquire.needed, 1);
         assert_eq!(barrier.primitive, wait.primitive());
         // The victim, parked on the same mutex, does wait.
-        let victim = row(&rows, task_named(&list, "victim"));
+        let victim = row(&rows, task_named(&list, ctx.view, "victim"));
         assert!(
             matches!(victim.assessment, WaitAssessment::Waiting(_)),
             "{:?} {:?}",
@@ -3704,7 +3704,7 @@ mod tests {
         let (list, rows, barriers) = assessed(&ctx, &snapshot);
         assert!(barriers.is_empty());
         let expect_io = |name: &str, interest: crate::tokio::bundle::Interest| {
-            let task = task_named(&list, name);
+            let task = task_named(&list, ctx.view, name);
             let r = row(&rows, task);
             let WaitAssessment::Waiting(wait) = &r.assessment else {
                 panic!("{name} waits: {:?} {:?}", r.assessment, r.notes);
@@ -3728,7 +3728,7 @@ mod tests {
         expect_io("local_set_io::reader", Interest::READABLE);
         expect_io("local_writer", Interest::WRITABLE);
         expect_io("local_watcher", Interest::READABLE);
-        let gated = row(&rows, task_named(&list, "local_gated_reader"));
+        let gated = row(&rows, task_named(&list, ctx.view, "local_gated_reader"));
         assert!(matches!(
             gated.assessment,
             WaitAssessment::Unknown(WaitUnknownReason::Continuation)
@@ -3736,7 +3736,7 @@ mod tests {
 
         // The reader's registration: its readiness word, its guard,
         // and the reader slot's waker data word.
-        let reader = task_named(&list, "local_reader");
+        let reader = task_named(&list, ctx.view, "local_reader");
         let Some(ResourceObservation::Io(io)) = &row(&rows, reader).observation else {
             unreachable!()
         };
@@ -3762,7 +3762,7 @@ mod tests {
             .optional()
             .expect("the reader slot is armed");
         let data = ctx.walk(WalkRole::WakerData).walk_at(raw).unwrap();
-        let other = task_named(&list, "local_writer").addr.0;
+        let other = task_named(&list, ctx.view, "local_writer").addr.0;
         let cases: Vec<(&str, Corrupt<'_>, &str)> = vec![
             (
                 "readable delivered",
@@ -3798,7 +3798,7 @@ mod tests {
         for (what, patched, expected) in cases {
             let ctx = Context::new(&patched, BundleView::new(&bundle)).unwrap();
             let (list, rows, _) = assessed(&ctx, &patched);
-            let row = row(&rows, task_named(&list, "local_reader"));
+            let row = row(&rows, task_named(&list, ctx.view, "local_reader"));
             let spelled = format!("{:?}", row.assessment);
             assert!(
                 spelled.starts_with(expected),
@@ -3818,7 +3818,7 @@ mod tests {
 
         // The readiness await: its node notified is ready; its state
         // word at Done likewise.
-        let watcher = task_named(&list, "local_watcher");
+        let watcher = task_named(&list, ctx.view, "local_watcher");
         let await_ = primitive_of(&ctx, watcher);
         let node = ctx.walk(WalkRole::ReadinessWaiter).walk_at(await_).unwrap();
         let flag = ctx
@@ -3829,7 +3829,7 @@ mod tests {
         let ctx2 = Context::new(&patched, BundleView::new(&bundle)).unwrap();
         let (list2, rows2, _) = assessed(&ctx2, &patched);
         assert!(matches!(
-            row(&rows2, task_named(&list2, "local_watcher")).assessment,
+            row(&rows2, task_named(&list2, ctx.view, "local_watcher")).assessment,
             WaitAssessment::ResourceReady(ReadyReason::IoNotified)
         ));
         // Another task's waker on the listed node: a contradiction, not
@@ -3844,7 +3844,7 @@ mod tests {
         let patched = Corrupt::new(&snapshot).patch(data.addr, other);
         let ctx5 = Context::new(&patched, BundleView::new(&bundle)).unwrap();
         let (list5, rows5, _) = assessed(&ctx5, &patched);
-        let row5 = row(&rows5, task_named(&list5, "local_watcher"));
+        let row5 = row(&rows5, task_named(&list5, ctx.view, "local_watcher"));
         assert!(matches!(
             row5.assessment,
             WaitAssessment::Unknown(WaitUnknownReason::ConflictingEvidence)
@@ -3863,19 +3863,19 @@ mod tests {
         let ctx3 = Context::new(&patched, BundleView::new(&bundle)).unwrap();
         let (list3, rows3, _) = assessed(&ctx3, &patched);
         assert!(matches!(
-            row(&rows3, task_named(&list3, "local_watcher")).assessment,
+            row(&rows3, task_named(&list3, ctx.view, "local_watcher")).assessment,
             WaitAssessment::ResourceReady(ReadyReason::IoNotified)
         ));
 
         // An exhausted write never parks: a suspended one contradicts
         // the protocol.
-        let writer = task_named(&list, "local_writer");
+        let writer = task_named(&list, ctx.view, "local_writer");
         let write = primitive_of(&ctx, writer);
         let len = ctx.walk(WalkRole::IoWriteAllBufLen).walk_at(write).unwrap();
         let patched = Corrupt::new(&snapshot).patch(len.addr, 0);
         let ctx4 = Context::new(&patched, BundleView::new(&bundle)).unwrap();
         let (list4, rows4, _) = assessed(&ctx4, &patched);
-        let row4 = row(&rows4, task_named(&list4, "local_writer"));
+        let row4 = row(&rows4, task_named(&list4, ctx.view, "local_writer"));
         assert!(matches!(
             row4.assessment,
             WaitAssessment::Unknown(WaitUnknownReason::ConflictingEvidence)
@@ -3968,7 +3968,7 @@ mod tests {
         let (bundle, snapshot) = load_any("local-set-io");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let watcher = task_named(&list, "local_watcher");
+        let watcher = task_named(&list, ctx.view, "local_watcher");
         let await_ = primitive_of(&ctx, watcher);
         let observed = ctx.observe_resource(await_, &ReadContext::none());
         let Some(ResourceObservation::Io(io)) = observed.value else {
@@ -4014,8 +4014,8 @@ mod tests {
         let (bundle, snapshot) = load_any("walk-shapes");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let victim = task_named(&list, "victim");
-        let other = task_named(&list, "abandoner").addr.0;
+        let victim = task_named(&list, ctx.view, "victim");
+        let other = task_named(&list, ctx.view, "abandoner").addr.0;
         let acquire = primitive_of(&ctx, victim);
         let node = ctx.walk(WalkRole::AcquireNode).walk_at(acquire).unwrap();
         let raw = ctx
@@ -4032,7 +4032,7 @@ mod tests {
         let patched = Corrupt::new(&snapshot).patch(data.addr, other);
         let ctx = Context::new(&patched, BundleView::new(&bundle)).unwrap();
         let (list, rows, _) = assessed(&ctx, &patched);
-        let row = row(&rows, task_named(&list, "victim"));
+        let row = row(&rows, task_named(&list, ctx.view, "victim"));
         assert!(
             matches!(
                 row.assessment,
