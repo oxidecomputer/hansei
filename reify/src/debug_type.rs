@@ -394,7 +394,7 @@ impl<'a> DisplayNode<'a> {
         fn member_at<'a>(ty: BundleType<'a>, at: &MemberRef) -> Option<BundleMember<'a>> {
             let members: Vec<_> = ty.members().collect();
             let index = at.resolve(members.len(), |index, name| {
-                members[index].name() == ty.resolve_str(name)
+                members[index].name_ref() == name
             })?;
             members.get(index).copied()
         }

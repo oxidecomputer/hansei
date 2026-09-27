@@ -429,7 +429,7 @@ impl<'b, T: Target> Bound<'_, 'b, T> {
         let mut offset = 0;
         for step in steps {
             let Step::Member(at) = step else { return None };
-            let member = member_at(&self.ctx.view, ty, at)?;
+            let member = member_at(ty, at)?;
             offset += member.offset();
             ty = member.ty();
         }
@@ -440,15 +440,9 @@ impl<'b, T: Target> Bound<'_, 'b, T> {
 /// The unique member a recorded step addresses, resolved by the shared
 /// [`MemberRef`] rule — so the runtime walker means exactly what bundle
 /// validation checked.
-fn member_at<'b>(
-    view: &BundleView<'b>,
-    ty: BundleType<'b>,
-    at: &MemberRef,
-) -> Option<BundleMember<'b>> {
+fn member_at<'b>(ty: BundleType<'b>, at: &MemberRef) -> Option<BundleMember<'b>> {
     let members: Vec<BundleMember<'b>> = ty.members().collect();
-    let index = at.resolve(members.len(), |i, name| {
-        view.str(name) == Some(members[i].name())
-    })?;
+    let index = at.resolve(members.len(), |i, name| members[i].name_ref() == name)?;
     Some(members[index])
 }
 
@@ -512,7 +506,7 @@ pub(crate) fn execute_steps_over<'b, T: Target>(
     };
     match step {
         Step::Member(at) => {
-            let member = member_at(&ctx.1, cur.ty, at).ok_or_else(|| match at {
+            let member = member_at(cur.ty, at).ok_or_else(|| match at {
                 MemberRef::Named(name) => {
                     anyhow!(no_member(
                         cur.ty,
