@@ -51,7 +51,7 @@ use super::observe::ResourceObservation;
 // reported apart from a set of futures; anything built on one
 // (omicron's `ParallelTaskSet`, which pairs it with a semaphore) is
 // reached by the same scan, since it holds its `JoinSet` by value.
-use super::observe::{HttpRequestObservation, ReadContext, Refusal, ValueKey};
+use super::observe::{HttpRequestObservation, PoolPeers, ReadContext, Refusal, ValueKey};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use foldhash::{HashMap, HashSet};
@@ -113,6 +113,10 @@ pub struct FutureCensus {
     pub refused: usize,
     /// Which of the scan's paths produced the finds; see [`Stats`].
     pub stats: Stats,
+    /// The far end of every pooled HTTP client connection a frame the
+    /// walk scanned holds a pool of: a pool's idle reaper, or a
+    /// connection checked out of one.
+    pub pool_peers: PoolPeers,
 }
 
 /// How often each of the census's two hard limits stopped it, kept
@@ -384,6 +388,7 @@ impl FutureCensus {
             uncertain: 0,
             refused: 0,
             stats: Stats::default(),
+            pool_peers: PoolPeers::default(),
         }
     }
 
@@ -851,6 +856,7 @@ struct Walker<'a, 'b, T> {
     uncertain: usize,
     refused: usize,
     stats: Stats,
+    pool_peers: PoolPeers,
     /// Where this walk's hard limits sit; [`Bounds::default`] outside
     /// the tests.
     bounds: Bounds,
@@ -932,6 +938,7 @@ pub fn census_bounded<T: Target>(
         uncertain: 0,
         refused: 0,
         stats: Stats::default(),
+        pool_peers: PoolPeers::default(),
         bounds,
         visited: HashSet::default(),
         plans: HashMap::default(),
@@ -962,6 +969,7 @@ pub fn census_bounded<T: Target>(
         uncertain: walker.uncertain,
         refused: walker.refused,
         stats: walker.stats,
+        pool_peers: walker.pool_peers,
     }
 }
 
@@ -1051,6 +1059,23 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
             }
             self.uncertain += locals.uncertain;
             for (name, local) in locals.locals {
+                // A pool the frame holds names the pooled connections'
+                // far ends: a fact beside the finds, read once per value.
+                if let Some(pool) = self
+                    .ctx
+                    .type_semantics(local.ty.id())
+                    .and_then(|record| record.pool.as_ref())
+                    && self.visited.insert((local.addr, local.ty.id()))
+                    && let Err(e) = super::pool::read_pool(
+                        self.ctx,
+                        &self.read,
+                        local,
+                        pool,
+                        &mut self.pool_peers,
+                    )
+                {
+                    self.errors.push(e);
+                }
                 let mut found = Vec::new();
                 scan_value(
                     local,
@@ -3667,6 +3692,7 @@ mod tests {
             uncertain: 0,
             refused: 0,
             stats: Stats::default(),
+            pool_peers: PoolPeers::default(),
             bounds: nesting(0),
             visited: HashSet::default(),
             plans: HashMap::default(),
@@ -3829,6 +3855,7 @@ mod tests {
             uncertain: 0,
             refused: 0,
             stats: Stats::default(),
+            pool_peers: PoolPeers::default(),
         }
     }
 

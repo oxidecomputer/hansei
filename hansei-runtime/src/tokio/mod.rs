@@ -21,6 +21,7 @@ pub mod discovery;
 pub mod graph;
 mod model;
 pub mod observe;
+mod pool;
 pub mod registers;
 pub mod scan;
 mod semantics;

@@ -17,7 +17,7 @@ use anyhow::{Context as _, Result, anyhow};
 use hansei_bundle::HttpRole;
 use hansei_runtime::tokio::assess::{client_phase, http_caller, server_phase};
 use hansei_runtime::tokio::bundle::{HttpCaller, HttpPhase, TaskList, deadline_text};
-use hansei_runtime::tokio::observe::{HttpRequestObservation, ResourceObservation};
+use hansei_runtime::tokio::observe::{HttpRequestObservation, PoolPeers, ResourceObservation};
 use hansei_runtime::tokio::wakers::Owner;
 use hansei_runtime::tokio::{RawInstant, attribution, census};
 
@@ -235,6 +235,7 @@ fn row_of<T: proc::Target>(
         header_read_deadline(census, observation),
         stopped,
         &request_of,
+        &census.pool_peers,
     )
 }
 
@@ -373,13 +374,16 @@ fn caller_request_line(
 /// Fill `base` — the row's task cells — from the observation: the
 /// negotiating wrapper's address and phase, or the connection's words
 /// with the facts beside them. `held` is the deadline of the
-/// connection's own header-read timer, where the census found it.
+/// connection's own header-read timer, where the census found it;
+/// `pools` names a client connection's far end by the pool it belongs
+/// to.
 fn conn_row(
     base: ConnRow,
     observation: &ResourceObservation,
     held: Option<RawInstant>,
     stopped: Option<RawInstant>,
     request_of: &dyn Fn(&HttpCaller) -> Option<RequestLine>,
+    pools: &PoolPeers,
 ) -> Option<ConnRow> {
     match observation {
         // A wrapper still reading the first bytes has no version, no
@@ -437,12 +441,24 @@ fn conn_row(
                     .and_then(|timeout| waited(timeout, deadline, stopped)),
                 _ => None,
             };
+            // The peer: the socket's, where a server's service keeps
+            // it; the pool key's authority for a client, where the
+            // census reached the pool holding the connection's sender.
+            let peer = match http.role {
+                HttpRole::Server => server.and_then(|server| server.peer.clone()),
+                HttpRole::Client => http
+                    .client
+                    .as_ref()
+                    .and_then(|client| client.want)
+                    .and_then(|want| pools.authority(want))
+                    .map(str::to_string),
+            };
             Some(ConnRow {
                 addr: http.conn,
                 role: http.role,
                 phase,
                 method: http.method.clone(),
-                peer: server.and_then(|server| server.peer.clone()),
+                peer,
                 server: server.and_then(|server| server.context.clone()),
                 idle_for,
                 read_buf: http.read_buf,
@@ -829,9 +845,9 @@ mod tests {
     use hansei_runtime::tokio::TaskAddr;
     use hansei_runtime::tokio::assess::ContinuationStatus;
     use hansei_runtime::tokio::observe::{
-        HttpConnObservation, HttpNegotiatingObservation, HttpReading, HttpRequestObservation,
-        HttpServerObservation, HttpWriting, JoinObservation, KeepAlive, TimerObservation,
-        TimerRegistrationState, ValueKey,
+        HttpClientObservation, HttpConnObservation, HttpNegotiatingObservation, HttpReading,
+        HttpRequestObservation, HttpServerObservation, HttpWriting, JoinObservation, KeepAlive,
+        TimerObservation, TimerRegistrationState, ValueKey,
     };
 
     fn row(addr: u64, role: HttpRole, phase: Option<HttpPhase>) -> ConnRow {
@@ -1122,9 +1138,16 @@ mod tests {
         });
         let stopped = Some(instant(100));
         let none = |_: &HttpCaller| None;
+        // A pool that names the connection whose receiver shares
+        // `0xabc0`, and names it for a server too: a server's peer is
+        // its service's, whatever a pool says.
+        let pools = PoolPeers(HashMap::from([
+            (0xabc0, "127.0.0.1:8080".to_string()),
+            (0x7b78948, "pool.example:80".to_string()),
+        ]));
         let fill = |observation: HttpConnObservation, held, stopped| {
             let observation = ResourceObservation::HttpConn(Box::new(observation));
-            conn_row(base.clone(), &observation, held, stopped, &none).unwrap()
+            conn_row(base.clone(), &observation, held, stopped, &none, &pools).unwrap()
         };
         let armed = fill(server_observation(true), held, stopped);
         assert_eq!(armed.addr, 0x7b78948);
@@ -1160,6 +1183,26 @@ mod tests {
         let handling = fill(handling, held, stopped);
         assert_eq!(handling.phase, Some(HttpPhase::HandlingRequest));
         assert_eq!(handling.idle_for, None);
+        // A client's peer is the authority of the pool key its sender
+        // is kept under, found by the want pointer its receiver shares;
+        // a connection no pool the census reached names, or whose
+        // pointer did not read, has none.
+        let client = |want| HttpConnObservation {
+            role: HttpRole::Client,
+            client: Some(HttpClientObservation {
+                callback: None,
+                rx: None,
+                want,
+            }),
+            server: None,
+            ..server_observation(false)
+        };
+        assert_eq!(
+            fill(client(Some(0xabc0)), held, stopped).peer.as_deref(),
+            Some("127.0.0.1:8080")
+        );
+        assert_eq!(fill(client(Some(0xdef0)), held, stopped).peer, None);
+        assert_eq!(fill(client(None), held, stopped).peer, None);
         let negotiating = conn_row(
             base.clone(),
             &ResourceObservation::HttpNegotiating(HttpNegotiatingObservation {
@@ -1168,6 +1211,7 @@ mod tests {
             held,
             stopped,
             &none,
+            &pools,
         )
         .unwrap();
         assert_eq!(negotiating.addr, 0x12345);
@@ -1185,7 +1229,7 @@ mod tests {
             handle: key(0x1),
             header: TaskAddr(0x1),
         });
-        assert!(conn_row(base.clone(), &other, held, stopped, &none).is_none());
+        assert!(conn_row(base.clone(), &other, held, stopped, &none, &pools).is_none());
     }
 
     /// A caller that is no task is placed by the waker sweep's slot at
@@ -1456,6 +1500,12 @@ mod tests {
         let (tasks, pattern) = field_values(&session, "task").unwrap();
         assert!(!pattern);
         assert_eq!(tasks.len(), 9, "{tasks:?}");
+        // The one peer is the pool key of the client whose pool keeps a
+        // reaper: the listener's loopback address.
+        let (peers, pattern) = field_values(&session, "peer").unwrap();
+        assert!(pattern);
+        assert_eq!(peers.len(), 1, "{peers:?}");
+        assert!(peers[0].starts_with("127.0.0.1:"), "{peers:?}");
         // The request reaches the prompt's offers as the URL and the
         // path the two parked handlers and the reqwest requester carry,
         // the method left to its own field.

@@ -255,7 +255,7 @@ const MAX_REQUEST_TEXT: u64 = 64 * 1024;
 /// A request's text: the `len` bytes at `ptr`, where they decode as
 /// UTF-8. An empty text is a fact; a text past any sane request line
 /// is a word that did not read as one.
-fn read_request_text<T: proc::Target>(proc: &T, ptr: u64, len: u64) -> Option<String> {
+pub(crate) fn read_request_text<T: proc::Target>(proc: &T, ptr: u64, len: u64) -> Option<String> {
     if len > MAX_REQUEST_TEXT {
         return None;
     }
@@ -3561,7 +3561,13 @@ impl<'b, T: Target> Context<'b, T> {
                     .walk_with(read, receiver)?
                     .optional()
                     .map(ValueKey::of);
-                Some(HttpClientObservation { callback, rx })
+                // The want pointer, a fact beside the verdict: a word
+                // that does not read leaves the connection unnamed.
+                let want = word(&client.want, "want handle")
+                    .ok()
+                    .and_then(|pointer| pointer.parse::<u64>(self.proc).ok())
+                    .filter(|addr| *addr != 0);
+                Some(HttpClientObservation { callback, rx, want })
             }
             None => None,
         };

@@ -2172,6 +2172,7 @@ mod tests {
                     tx_task_at: Some(0xc72d9e0),
                 }),
                 rx: Some(key),
+                want: Some(0x81f4c90),
             }),
             server: None,
         }
@@ -4211,6 +4212,7 @@ mod caller_tests {
         let client = HttpClientObservation {
             callback: Some(callback(set, Some(waker))),
             rx: None,
+            want: None,
         };
         assert_eq!(
             in_flight_caller(HttpPhase::AwaitingResponse, &client),
@@ -4230,6 +4232,7 @@ mod caller_tests {
         let unread = HttpClientObservation {
             callback: None,
             rx: None,
+            want: None,
         };
         assert_eq!(in_flight_caller(HttpPhase::AwaitingResponse, &unread), None);
     }

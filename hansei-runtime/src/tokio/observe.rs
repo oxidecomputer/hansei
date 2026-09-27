@@ -444,6 +444,26 @@ pub struct HttpClientObservation {
     /// The channel behind the request receiver, keyed by the `Chan`'s
     /// own type.
     pub rx: Option<ValueKey>,
+    /// The `want::Inner` the receiver's taker shares with the one
+    /// sender that feeds it: what names this connection in a pool
+    /// ([`PoolPeers`]). `None` where the word did not read.
+    pub want: Option<u64>,
+}
+
+/// The far end of each pooled HTTP client connection the census could
+/// reach a pool of, by the `want::Inner` pointer the pool's sender
+/// shares with the connection's receiver
+/// ([`HttpClientObservation::want`]): the authority of the pool key the
+/// connection was made for, as its text.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct PoolPeers(pub std::collections::HashMap<u64, String>);
+
+impl PoolPeers {
+    /// The authority the connection whose receiver shares `want` was
+    /// made for.
+    pub fn authority(&self, want: u64) -> Option<&str> {
+        self.0.get(&want).map(String::as_str)
+    }
 }
 
 /// The server dispatch as one read found it.

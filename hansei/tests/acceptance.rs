@@ -3963,21 +3963,24 @@ fn test_wrong_binary_refused_by_build_id() {
 /// The connection listing over the fixture that holds connections: the
 /// four clients — two idle in their pools, two awaiting a parked GET's
 /// response — and the five servers: two idle, two running the parked
-/// handler, and one still choosing its version. No row names a peer
-/// or a server: hyper keeps neither on either side, and the fixture's
-/// service is its own closure, which no reviewed convention says stores
-/// them (dropshot's does). The buffers hold nothing unparsed at the
-/// parked state. The idle servers have armed their header-read timers,
-/// whose deadlines are masked whole — their form is the system's — and
-/// whose waits beside the phase only an illumos core, which records
-/// when the process stopped, can put a length to. Grouping by phase
-/// files the nine under four buckets, and a filter on the role keeps
-/// the servers.
+/// handler, and one still choosing its version. One row names a peer:
+/// the idle client whose pool keeps a timer, and so a reaper the census
+/// reaches the pool through, is named by its pool key's authority, the
+/// listener's loopback address. No other row names a peer or a server:
+/// hyper keeps neither on either side, a pool with no reaper is reached
+/// by nothing, and the fixture's service is its own closure, which no
+/// reviewed convention says stores them (dropshot's does). The buffers
+/// hold nothing unparsed at the parked state. The idle servers have
+/// armed their header-read timers, whose deadlines are masked whole —
+/// their form is the system's — and whose waits beside the phase only
+/// an illumos core, which records when the process stopped, can put a
+/// length to. Grouping by phase files the nine under four buckets, and
+/// a filter on the role keeps the servers.
 ///
 /// The rows are compared without their task cell and in sorted order.
 /// Every connection is parked by the time the core is taken — that is
-/// what `READY` waits for — but the ids tokio hands
-/// the parked request's tasks are not the fixture's to order: its
+/// what `READY` waits for — but the ids tokio hands the parked
+/// request's tasks are not the fixture's to order: its
 /// connection task is spawned by hyper-util's client inside
 /// `client.request()` on the requester's worker, the server's by the
 /// accept loop on the other, and the client's pool spawns background
@@ -3994,9 +3997,8 @@ fn test_http_conns_connections_acceptance() {
         let out = hansei_ok(&bundle, core, "connections");
         assert!(out.ends_with("[9 connections]\n"), "{out}");
         // The listener's port is the kernel's to pick, so the URL the
-        // reqwest requester sent is compared with it masked; nothing
-        // else on a row names the loopback address (the peer column is
-        // a dropshot server's).
+        // reqwest requester sent, and the key the reaped client's pool
+        // keeps its connection under, are compared with it masked.
         let port = regex::Regex::new(r"127\.0\.0\.1:\d+").unwrap();
         // The idle server's deadline — relative where the core records
         // when the process stopped, else on the monotonic clock — and
@@ -4028,7 +4030,7 @@ fn test_http_conns_connections_acceptance() {
             [
                 "client awaiting response — 0/8192 — — GET http://127.0.0.1:PORT/park",
                 "client awaiting response — 0/8192 — — GET —",
-                "client idle — 0/8192 — — — —",
+                "client idle — 0/8192 127.0.0.1:PORT — — —",
                 "client idle — 0/8192 — — — —",
                 "server handling request — 0/16326 — — GET /park",
                 "server handling request — 0/16339 — — GET /park",
