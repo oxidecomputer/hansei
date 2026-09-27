@@ -724,19 +724,20 @@ pub const TOWER_RETRY_V0_5_2: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// reqwest's cookie layer as 0.13.2 through 0.13.4 implement it,
+/// reqwest's cookie layer as 0.12.24 through 0.13.4 implement it,
 /// reviewed in `src/cookie.rs` of each (byte-identical): the service's
 /// `ResponseFuture<S, B>` is `{ future: S::Future, cookie_store, url }`,
 /// and its `poll` clones the store and the URL, then polls `future`,
 /// reading the other two only once the response is in. So it forwards
-/// exclusively to `future`.
-pub const REQWEST_COOKIE_V0_13_2: LibraryConvention = LibraryConvention {
+/// exclusively to `future`. Before 0.12.24 the file has no `service`
+/// module: the layer did not exist.
+pub const REQWEST_COOKIE_V0_12_24: LibraryConvention = LibraryConvention {
     package: "reqwest",
-    family: "reqwest-cookie-0.13.2",
-    floor: (0, 13, 2),
+    family: "reqwest-cookie-0.12.24",
+    floor: (0, 12, 24),
     ceiling: (0, 13, 4),
     checksums: &[
-        // src/cookie.rs, 0.13.2 through 0.13.4
+        // src/cookie.rs, 0.12.24 through 0.13.4
         (
             "src/cookie.rs",
             [
@@ -2192,9 +2193,9 @@ mod tests {
                 "0.5.4",
             ),
             (
-                &REQWEST_COOKIE_V0_13_2,
-                ["0.13.2", "0.13.3", "0.13.4"].as_slice(),
-                "0.13.1",
+                &REQWEST_COOKIE_V0_12_24,
+                ["0.12.24", "0.12.28", "0.13.0", "0.13.2", "0.13.4"].as_slice(),
+                "0.12.23",
                 "0.13.5",
             ),
             (
