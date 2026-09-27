@@ -2038,11 +2038,12 @@ mod tests {
         assert_eq!(
             spelled("threads", "role"),
             [
+                ("worker".to_string(), "worker".to_string()),
+                ("blocking".to_string(), "blocking".to_string()),
                 (
                     "entered runtime".to_string(),
                     "\"entered runtime\"".to_string()
                 ),
-                ("worker".to_string(), "worker".to_string()),
             ]
         );
         assert_eq!(spelled("threads", "has-task"), plain(&["yes", "no"]));

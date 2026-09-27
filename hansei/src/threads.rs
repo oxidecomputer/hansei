@@ -186,11 +186,13 @@ fn park_word(park: Option<ParkState>, polling: bool) -> &'static str {
 /// thread inside `blocking::pool::Inner::run` is the pool's, idle when
 /// it is parked above that frame and running someone's closure
 /// otherwise. `None` for every other stack — including an absent one,
-/// which cannot testify either way.
+/// which cannot testify either way. The loop is named
+/// `<tokio::runtime::blocking::pool::Inner>::run` under v0 mangling and
+/// without the brackets under legacy mangling; either is the frame.
 fn blocking_role(frames: &[String]) -> Option<&'static str> {
-    let run = frames
-        .iter()
-        .position(|name| name.contains("blocking::pool::Inner::run"))?;
+    let run = frames.iter().position(|name| {
+        name.contains("blocking::pool::Inner>::run") || name.contains("blocking::pool::Inner::run")
+    })?;
     let parked = frames[..run].iter().any(|name| {
         name.contains("std::thread::park")
             || name.contains("cond_wait")
@@ -1097,6 +1099,14 @@ mod tests {
             "tokio::runtime::blocking::pool::Inner::run",
         ]);
         assert_eq!(blocking_role(&running), Some("blocking, running"));
+
+        // The same loop under v0 mangling, as a current rustc names it.
+        let v0 = names(&[
+            "app::compress",
+            "<tokio::runtime::blocking::pool::Inner>::run",
+            "<std::sys::thread::unix::Thread>::new::thread_start",
+        ]);
+        assert_eq!(blocking_role(&v0), Some("blocking, running"));
 
         // A worker parks through the same condvars without ever being
         // the pool's; nothing below says Inner::run, so nothing is
