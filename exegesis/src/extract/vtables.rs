@@ -12,9 +12,9 @@
 use super::{ExtractStats, fq_name, raw_type_size, strip};
 use crate::{DwReader, TypeId};
 
+use foldhash::{HashMap, HashMapExt, HashSet};
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
 use rayon::iter::ParallelIterator;
-use rayon::slice::ParallelSlice;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -195,58 +195,42 @@ fn read_object_word(bytes: &[u8], little_endian: bool) -> u64 {
     }
 }
 
-/// Below this many types, indexing them by name is not worth spawning threads.
-const VTABLE_INDEX_PARALLEL_THRESHOLD: usize = 4096;
-
-/// Index a slice of type ids by their normalized fully-qualified name. Pulled
-/// out so [`resolve_vtable_type_hints`] can run it on several threads and merge.
-fn vtable_name_index(
-    reader: &DwReader<'_>,
-    ids: &[TypeId],
-) -> foldhash::HashMap<String, Vec<(TypeId, u64)>> {
-    let mut by_name: foldhash::HashMap<String, Vec<(TypeId, u64)>> = foldhash::HashMap::default();
-    for &id in ids {
-        let Some(name) = fq_name(reader, id) else {
-            continue;
-        };
-        let Some(size) = raw_type_size(reader, id) else {
-            continue;
-        };
-        by_name
-            .entry(crate::symbols::normalized_rust_type_name(&name).into_owned())
-            .or_default()
-            .push((id, size));
-    }
-    by_name
-}
-
 pub(super) fn resolve_vtable_type_hints(
     reader: &DwReader<'_>,
     hints: &[VtableTypeHint],
     stats: &mut ExtractStats,
 ) -> BTreeSet<TypeId> {
-    // Index every canonical type by its normalized fully-qualified name.
-    // Computing those names -- a namespace walk, a format, and a normalization
-    // pass per type -- over tens of thousands of types dominates emission and
-    // is read-only, so fan it out and merge the per-thread shards.
-    let ids: Vec<TypeId> = reader.canonical_types().map(|(id, _)| id).collect();
-    let by_name = if ids.len() < VTABLE_INDEX_PARALLEL_THRESHOLD {
-        vtable_name_index(reader, &ids)
-    } else {
-        let chunk = ids.len().div_ceil(rayon::current_num_threads());
-        let shards: Vec<_> = ids
-            .par_chunks(chunk)
-            .map(|c| vtable_name_index(reader, c))
-            .collect();
-        let mut merged: foldhash::HashMap<String, Vec<(TypeId, u64)>> =
-            foldhash::HashMap::default();
-        for shard in shards {
-            for (name, mut entries) in shard {
-                merged.entry(name).or_default().append(&mut entries);
+    // Index the canonical types a hint could name by their normalized
+    // fully-qualified name. Computing a name — a namespace walk, a
+    // format, and a normalization pass — for each of the millions of
+    // types a real program has is the cost here, so a type is named
+    // only when some hint gives its size, and kept only when some hint
+    // gives its name: the index a hint is looked up in then holds every
+    // type that lookup could find, and nothing else. The pass is
+    // read-only, so it is fanned out.
+    let sizes: HashSet<u64> = hints.iter().map(|hint| hint.size).collect();
+    let names: HashSet<Cow<'_, str>> = hints
+        .iter()
+        .map(|hint| crate::symbols::normalized_rust_type_name(&hint.name))
+        .collect();
+    let named: Vec<(String, TypeId, u64)> = reader
+        .par_canonical_types()
+        .filter_map(|(id, _)| {
+            let size = raw_type_size(reader, id)?;
+            if !sizes.contains(&size) {
+                return None;
             }
-        }
-        merged
-    };
+            let name = fq_name(reader, id)?;
+            let name = crate::symbols::normalized_rust_type_name(&name);
+            names
+                .contains(name.as_ref())
+                .then(|| (name.into_owned(), id, size))
+        })
+        .collect();
+    let mut by_name: HashMap<String, Vec<(TypeId, u64)>> = HashMap::new();
+    for (name, id, size) in named {
+        by_name.entry(name).or_default().push((id, size));
+    }
 
     stats.vtable_type_hints = hints.len();
     let mut roots = BTreeSet::new();

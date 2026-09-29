@@ -1886,6 +1886,19 @@ impl<'dw> DwReader<'dw> {
             .filter(|(id, _)| !self.subs.contains_key(id))
             .map(|(&id, ty)| (id, ty))
     }
+
+    /// [`Self::canonical_types`] over the worker pool, for a pass that
+    /// asks something of every type: a serial walk over the millions of
+    /// entries a real program's table holds costs tenths of a second on
+    /// its own.
+    pub(crate) fn par_canonical_types(
+        &self,
+    ) -> impl ParallelIterator<Item = (TypeId, &RawType<StrId>)> {
+        self.types
+            .par_iter()
+            .filter(|(id, _)| !self.subs.contains_key(id))
+            .map(|(&id, ty)| (id, ty))
+    }
 }
 
 /// One unit's worth of parse work for the worker pool.
