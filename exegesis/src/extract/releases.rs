@@ -29,6 +29,8 @@ use super::labels::declared_releases;
 use crate::raw_types::{RawType, VariantShape};
 use crate::{DwReader, TypeId};
 
+use rayon::iter::ParallelIterator;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// One type the releases of its crate lay out at different sizes.
@@ -51,7 +53,7 @@ pub(super) fn release_sizes(reader: &DwReader<'_>) -> Vec<ReleaseSize> {
     // The candidates: every named struct, enum and union that is not
     // itself an environment, each labeled by its declarations.
     let candidates: HashMap<TypeId, TypeId> = reader
-        .canonical_types()
+        .par_canonical_types()
         .filter(|(_, raw)| {
             matches!(
                 raw,
