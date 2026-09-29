@@ -25,13 +25,13 @@
 //! else is laid out from its fields alone.
 
 use super::fq_name;
-use super::labels::declared_releases;
+use super::labels::Declared;
 use crate::raw_types::{RawType, VariantShape};
-use crate::{DwReader, TypeId};
+use crate::{DwReader, StrId, TypeId};
 
 use rayon::iter::ParallelIterator;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// One type the releases of its crate lay out at different sizes.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -47,24 +47,41 @@ pub(super) struct ReleaseSize {
 /// and the types that declare it.
 type ByRelease<'v> = BTreeMap<&'v semver::Version, (BTreeSet<u64>, Vec<TypeId>)>;
 
-/// Every plain type of a multi-release crate whose releases disagree on
-/// its size, sorted by package and name.
-pub(super) fn release_sizes(reader: &DwReader<'_>) -> Vec<ReleaseSize> {
-    // The candidates: every named struct, enum and union that is not
-    // itself an environment, each labeled by its declarations.
-    let candidates: HashMap<TypeId, TypeId> = reader
+/// The types whose releases this pass compares: every named struct,
+/// enum and union that is not itself an environment. Their
+/// declarations are gathered beside the emitted types' for the crate
+/// labels, and [`release_sizes`] reads its candidates' back.
+pub(super) fn candidates(reader: &DwReader<'_>) -> HashSet<TypeId> {
+    reader
         .par_canonical_types()
-        .filter(|(_, raw)| {
-            matches!(
-                raw,
-                RawType::Struct(_) | RawType::Enum(_) | RawType::Union(_)
-            ) && raw
-                .name()
-                .is_some_and(|n| !is_environment(reader.strings.get(n)))
+        .filter(|&(_, raw)| is_candidate(reader, raw))
+        .map(|(id, _)| id)
+        .collect()
+}
+
+fn is_candidate(reader: &DwReader<'_>, raw: &RawType<StrId>) -> bool {
+    matches!(
+        raw,
+        RawType::Struct(_) | RawType::Enum(_) | RawType::Union(_)
+    ) && raw
+        .name()
+        .is_some_and(|n| !is_environment(reader.strings.get(n)))
+}
+
+/// Every plain type of a multi-release crate whose releases disagree on
+/// its size, sorted by package and name, read off the declarations
+/// gathered for the [`candidates`].
+pub(super) fn release_sizes(reader: &DwReader<'_>, declared: &Declared) -> Vec<ReleaseSize> {
+    let labels: BTreeMap<TypeId, &(String, Vec<semver::Version>)> = declared
+        .labels
+        .iter()
+        .filter(|&(&id, _)| {
+            reader
+                .canonical_type(id)
+                .is_some_and(|raw| is_candidate(reader, raw))
         })
-        .map(|(id, _)| (id, id))
+        .map(|(&id, label)| (id, label))
         .collect();
-    let (labels, _) = declared_releases(reader, &candidates);
 
     let mut releases: HashMap<&str, BTreeSet<&semver::Version>> = HashMap::new();
     for (package, versions) in labels.values() {

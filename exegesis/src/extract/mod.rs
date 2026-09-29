@@ -1399,8 +1399,12 @@ fn extract_from_view(
     // The crate release each emitted type's own declarations name — what
     // tells two same-named types apart where the target links their
     // crate at two releases. Bundle-id order, for the string-table
-    // reason above.
-    let labels = labels::crate_labels(reader, &em);
+    // reason above. The declarations are gathered once for these and
+    // for the release sizes below.
+    let mut labeled = releases::candidates(reader);
+    labeled.extend(em.emitted_ids().map(|(tid, _)| tid));
+    let declared = labels::declared_releases(reader, &labeled);
+    let labels = labels::crate_labels(&em, &declared);
     stats.crate_labels = labels.labels.len();
     stats.crate_labels_several_releases = labels.several_releases();
     stats.crate_labels_declined = labels.declined;
@@ -1411,7 +1415,7 @@ fn extract_from_view(
     // What tells a target's crate hashes apart when it links a crate
     // at two releases and was built apart from this binary: the sizes
     // the releases give the types they disagree on.
-    let release_sizes = releases::release_sizes(reader);
+    let release_sizes = releases::release_sizes(reader, &declared);
     stats.release_sizes = release_sizes.len();
     em.record_release_sizes(&release_sizes);
 

@@ -64,40 +64,54 @@ fn loc_key(loc: &SourceLoc<StrId>) -> LocKey {
     (loc.file, loc.dir, loc.comp_dir)
 }
 
-/// Read every emitted type's release from the declarations inside its
-/// own crate.
-pub(super) fn crate_labels(reader: &DwReader<'_>, em: &Emitter<'_>) -> Labels {
-    let emitted: HashMap<TypeId, BundleTypeId> = em.emitted_ids().collect();
-    let (labels, declined) = declared_releases(reader, &emitted);
+/// Every emitted type's release, read off what [`declared_releases`]
+/// gathered for it.
+pub(super) fn crate_labels(em: &Emitter<'_>, declared: &Declared) -> Labels {
+    let mut labels = BTreeMap::new();
+    let mut declined = 0;
+    for (tid, bid) in em.emitted_ids() {
+        if let Some(label) = declared.labels.get(&tid) {
+            labels.insert(bid, label.clone());
+        } else if declared.declined.contains(&tid) {
+            declined += 1;
+        }
+    }
     Labels { labels, declined }
 }
 
+/// What the declarations inside each of a set of types' own crates say
+/// about its release.
+pub(super) struct Declared {
+    /// Per type, the package its declarations are written under and
+    /// every release of it they name, ascending.
+    pub(super) labels: BTreeMap<TypeId, (String, Vec<semver::Version>)>,
+    /// Types whose declarations named two different packages that both
+    /// name the type's crate root, so neither is the label.
+    pub(super) declined: HashSet<TypeId>,
+}
+
 /// The package and releases the declarations of each of `targets` name
-/// inside its own crate, keyed as `targets` keys them, and how many
-/// targets were declined for naming two packages.
-pub(super) fn declared_releases<K>(
-    reader: &DwReader<'_>,
-    targets: &HashMap<TypeId, K>,
-) -> (BTreeMap<K, (String, Vec<semver::Version>)>, usize)
-where
-    K: Copy + Eq + std::hash::Hash + Ord + Send + Sync,
-{
+/// inside its own crate. The crate labels and the release sizes both
+/// read it, over the emitted types and every plain type respectively;
+/// it is gathered once for the two, since each gathering is a pass
+/// over the whole function table.
+pub(super) fn declared_releases(reader: &DwReader<'_>, targets: &HashSet<TypeId>) -> Declared {
     // Every (target, declaring location) pair the function table
     // offers: a function whose `self` is a target is a declaration on
     // it. The table is large (millions of functions on a real target)
     // and the classification is read-only, so it is fanned out; the
     // pairs are few (one per method file) and are resolved serially
     // below.
-    let mut pairs: HashSet<(K, LocKey)> = reader
+    let mut pairs: HashSet<(TypeId, LocKey)> = reader
         .functions
         .par_iter()
         .fold(HashSet::new, |mut acc, (_, func)| {
             if let Some(loc) = func.source_loc.as_deref()
                 && let Some(first) = func.formal_parameters.first().and_then(|p| p.type_id)
                 && let Some(target) = self_target(reader, first)
-                && let Some(&key) = targets.get(&target)
+                && targets.contains(&target)
             {
-                acc.insert((key, loc_key(loc)));
+                acc.insert((target, loc_key(loc)));
             }
             acc
         })
@@ -107,23 +121,20 @@ where
         });
 
     // The type's own declaration file, where rustc recorded one.
-    for (&tid, &key) in targets {
+    for &tid in targets {
         if let Some(RawType::Struct(st)) = reader.canonical_type(tid)
             && let Some(loc) = st.source_loc.as_deref()
         {
-            pairs.insert((key, loc_key(loc)));
+            pairs.insert((tid, loc_key(loc)));
         }
     }
 
     // Each distinct location parsed once; each type's crate root once.
     let mut origins: HashMap<LocKey, Option<(String, semver::Version)>> = HashMap::new();
-    let mut roots: HashMap<K, Option<&str>> = HashMap::new();
-    let by_key: HashMap<K, TypeId> = targets.iter().map(|(&t, &k)| (k, t)).collect();
-    let mut found: BTreeMap<K, BTreeMap<String, BTreeSet<semver::Version>>> = BTreeMap::new();
-    for (bid, key) in pairs {
-        let root = *roots
-            .entry(bid)
-            .or_insert_with(|| crate_root(reader, by_key[&bid]));
+    let mut roots: HashMap<TypeId, Option<&str>> = HashMap::new();
+    let mut found: BTreeMap<TypeId, BTreeMap<String, BTreeSet<semver::Version>>> = BTreeMap::new();
+    for (tid, key) in pairs {
+        let root = *roots.entry(tid).or_insert_with(|| crate_root(reader, tid));
         let Some(root) = root else {
             continue;
         };
@@ -148,7 +159,7 @@ where
             continue;
         }
         found
-            .entry(bid)
+            .entry(tid)
             .or_default()
             .entry(package.clone())
             .or_default()
@@ -156,17 +167,17 @@ where
     }
 
     let mut labels = BTreeMap::new();
-    let mut declined = 0;
-    for (bid, packages) in found {
+    let mut declined = HashSet::new();
+    for (tid, packages) in found {
         let mut packages = packages.into_iter();
         let (package, versions) = packages.next().expect("a noted type names a package");
         if packages.next().is_some() {
-            declined += 1;
+            declined.insert(tid);
             continue;
         }
-        labels.insert(bid, (package, versions.into_iter().collect()));
+        labels.insert(tid, (package, versions.into_iter().collect()));
     }
-    (labels, declined)
+    Declared { labels, declined }
 }
 
 /// The type a method's `self` parameter is on: `T` for `T`, `&T`,
