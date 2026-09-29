@@ -7,7 +7,7 @@ runtime 0 @ 0xADDR
     tasks: 12
     futures: 16
     workers: 1
-    threads: 1 (lwp 2790590)
+    threads: 1 (lwp 2502373)
     found via: a thread's runtime context
     drivers:
       tokio::runtime::driver::Handle {
@@ -92,7 +92,7 @@ runtime 0 @ 0xADDR
           },
           worker_metrics: tokio::runtime::metrics::worker::WorkerMetrics {
               busy_duration_total: tokio::util::metric_atomics::MetricAtomicU64 {
-                  value: 16852,
+                  value: 12464,
               },
               queue_depth: tokio::util::metric_atomics::MetricAtomicUsize {
                   value: 0,
@@ -105,7 +105,7 @@ runtime 0 @ 0xADDR
                   value: 3,
               },
               noop_count: tokio::util::metric_atomics::MetricAtomicU64 {
-                  value: 1,
+                  value: 0,
               },
               steal_count: tokio::util::metric_atomics::MetricAtomicU64 {
                   value: 0,

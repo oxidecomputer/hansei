@@ -68,23 +68,36 @@ fn loc_key(loc: &SourceLoc<StrId>) -> LocKey {
 /// own crate.
 pub(super) fn crate_labels(reader: &DwReader<'_>, em: &Emitter<'_>) -> Labels {
     let emitted: HashMap<TypeId, BundleTypeId> = em.emitted_ids().collect();
+    let (labels, declined) = declared_releases(reader, &emitted);
+    Labels { labels, declined }
+}
 
-    // Every (emitted type, declaring location) pair the function table
-    // offers: a function whose `self` is an emitted type is a
-    // declaration on it. The table is large (millions of functions on
-    // a real target) and the classification is read-only, so it is
-    // fanned out; the pairs are few (one per method file) and are
-    // resolved serially below.
-    let mut pairs: HashSet<(BundleTypeId, LocKey)> = reader
+/// The package and releases the declarations of each of `targets` name
+/// inside its own crate, keyed as `targets` keys them, and how many
+/// targets were declined for naming two packages.
+pub(super) fn declared_releases<K>(
+    reader: &DwReader<'_>,
+    targets: &HashMap<TypeId, K>,
+) -> (BTreeMap<K, (String, Vec<semver::Version>)>, usize)
+where
+    K: Copy + Eq + std::hash::Hash + Ord + Send + Sync,
+{
+    // Every (target, declaring location) pair the function table
+    // offers: a function whose `self` is a target is a declaration on
+    // it. The table is large (millions of functions on a real target)
+    // and the classification is read-only, so it is fanned out; the
+    // pairs are few (one per method file) and are resolved serially
+    // below.
+    let mut pairs: HashSet<(K, LocKey)> = reader
         .functions
         .par_iter()
         .fold(HashSet::new, |mut acc, (_, func)| {
             if let Some(loc) = func.source_loc.as_deref()
                 && let Some(first) = func.formal_parameters.first().and_then(|p| p.type_id)
                 && let Some(target) = self_target(reader, first)
-                && let Some(&bid) = emitted.get(&target)
+                && let Some(&key) = targets.get(&target)
             {
-                acc.insert((bid, loc_key(loc)));
+                acc.insert((key, loc_key(loc)));
             }
             acc
         })
@@ -94,24 +107,23 @@ pub(super) fn crate_labels(reader: &DwReader<'_>, em: &Emitter<'_>) -> Labels {
         });
 
     // The type's own declaration file, where rustc recorded one.
-    for (&tid, &bid) in &emitted {
+    for (&tid, &key) in targets {
         if let Some(RawType::Struct(st)) = reader.canonical_type(tid)
             && let Some(loc) = st.source_loc.as_deref()
         {
-            pairs.insert((bid, loc_key(loc)));
+            pairs.insert((key, loc_key(loc)));
         }
     }
 
     // Each distinct location parsed once; each type's crate root once.
     let mut origins: HashMap<LocKey, Option<(String, semver::Version)>> = HashMap::new();
-    let mut roots: HashMap<BundleTypeId, Option<&str>> = HashMap::new();
-    let by_bid: HashMap<BundleTypeId, TypeId> = emitted.iter().map(|(&t, &b)| (b, t)).collect();
-    let mut found: BTreeMap<BundleTypeId, BTreeMap<String, BTreeSet<semver::Version>>> =
-        BTreeMap::new();
+    let mut roots: HashMap<K, Option<&str>> = HashMap::new();
+    let by_key: HashMap<K, TypeId> = targets.iter().map(|(&t, &k)| (k, t)).collect();
+    let mut found: BTreeMap<K, BTreeMap<String, BTreeSet<semver::Version>>> = BTreeMap::new();
     for (bid, key) in pairs {
         let root = *roots
             .entry(bid)
-            .or_insert_with(|| crate_root(reader, by_bid[&bid]));
+            .or_insert_with(|| crate_root(reader, by_key[&bid]));
         let Some(root) = root else {
             continue;
         };
@@ -143,18 +155,18 @@ pub(super) fn crate_labels(reader: &DwReader<'_>, em: &Emitter<'_>) -> Labels {
             .insert(version.clone());
     }
 
-    let mut out = Labels::default();
+    let mut labels = BTreeMap::new();
+    let mut declined = 0;
     for (bid, packages) in found {
         let mut packages = packages.into_iter();
         let (package, versions) = packages.next().expect("a noted type names a package");
         if packages.next().is_some() {
-            out.declined += 1;
+            declined += 1;
             continue;
         }
-        out.labels
-            .insert(bid, (package, versions.into_iter().collect()));
+        labels.insert(bid, (package, versions.into_iter().collect()));
     }
-    out
+    (labels, declined)
 }
 
 /// The type a method's `self` parameter is on: `T` for `T`, `&T`,
@@ -181,7 +193,7 @@ fn self_target(reader: &DwReader<'_>, mut id: TypeId) -> Option<TypeId> {
 /// The crate a type belongs to: the outermost namespace of its path.
 /// `None` for a type outside every namespace (a primitive, an
 /// anonymous pointer).
-fn crate_root<'r>(reader: &'r DwReader<'_>, id: TypeId) -> Option<&'r str> {
+pub(super) fn crate_root<'r>(reader: &'r DwReader<'_>, id: TypeId) -> Option<&'r str> {
     let mut ns = reader.canonical_type(id)?.namespace()?;
     loop {
         let entry = reader.namespaces.get(ns);
@@ -195,7 +207,7 @@ fn crate_root<'r>(reader: &'r DwReader<'_>, id: TypeId) -> Option<&'r str> {
 /// Whether a registry package directory names the crate `root` is the
 /// path of: cargo spells `hickory-proto` where rustc spells
 /// `hickory_proto`.
-fn package_names_crate(package: &str, root: &str) -> bool {
+pub(super) fn package_names_crate(package: &str, root: &str) -> bool {
     package.len() == root.len()
         && package
             .bytes()

@@ -13,7 +13,7 @@ a tokio::sync::Mutex (semaphore 0xADDR): 0 permits available
     Wake queue: a non-task waiter (held off), task 4
 
 task 7 (async fn walk_shapes::local_parker): idle
-    Waited by: task 8
+    Waited by: task 9
 
 notify 0xADDR: waiting
     rx: task 7

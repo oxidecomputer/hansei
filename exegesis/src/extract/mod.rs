@@ -28,6 +28,7 @@ mod emitter;
 mod labels;
 mod passes;
 mod paths;
+mod releases;
 mod semantics;
 mod sources;
 mod statics;
@@ -164,6 +165,9 @@ pub struct ExtractStats {
     /// Emitted types whose declarations named two different packages
     /// that both spell the type's crate, so no label was recorded.
     pub crate_labels_declined: usize,
+    /// Plain types of crates the binary links at several releases
+    /// that those releases lay out at different sizes.
+    pub release_sizes: usize,
     /// Infra types that were not found.
     pub infra_missing: Vec<String>,
     /// Statics that were not found.
@@ -282,6 +286,7 @@ impl fmt::Display for ExtractStats {
             "  crate labels declined:  {}",
             self.crate_labels_declined
         )?;
+        writeln!(f, "  release sizes:          {}", self.release_sizes)?;
         writeln!(f, "types:")?;
         writeln!(f, "  emitted:                {}", self.types_emitted)?;
         writeln!(f, "  opaque:                 {}", self.opaque_types)?;
@@ -1402,6 +1407,13 @@ fn extract_from_view(
     for (bid, (package, versions)) in &labels.labels {
         em.record_crate_label(*bid, package, versions);
     }
+
+    // What tells a target's crate hashes apart when it links a crate
+    // at two releases and was built apart from this binary: the sizes
+    // the releases give the types they disagree on.
+    let release_sizes = releases::release_sizes(reader);
+    stats.release_sizes = release_sizes.len();
+    em.record_release_sizes(&release_sizes);
 
     // Where each emitted coroutine's frame-resident locals are declared
     // — the `declared at` a task block prints under a value held in one.

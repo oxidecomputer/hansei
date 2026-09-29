@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux-floor/futurelock"
 ---
 COUNT  ROLE             LWPS
-    4  worker           2787094, 2787095, 2787096, …
-    1  entered runtime  2787092
+    4  worker           2498977, 2498978, 2498979, …
+    1  entered runtime  2498975
 [2 groups]

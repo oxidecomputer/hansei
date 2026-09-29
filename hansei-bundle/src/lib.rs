@@ -23,10 +23,10 @@ pub use schema::{
     Arm, BinaryIdent, BitField, Bundle, BundleTypeId, CrateLabel, DebugSourceIdent, DiscrDef,
     DiscrValue, DiscrValues, DisplayNode, DynFutureTable, FamilyCeiling, Field, FieldRender,
     FutureKind, ImplTable, InfraTypes, MapEntries, MemberDef, MemberRef, Meta, Notation,
-    Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
-    StaticsTable, Step, Stmt, SymbolLookup, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef,
-    TypeTable, ValueExpr, VariantDef, VariantShape, VtableDataSource, WalkBinding, WalkOutcome,
-    WalkRole, WalksTable, strip_build_prefix, strip_llvm_suffix,
+    Provenance, ProvenanceTable, ReleaseSize, ScalarDecode, Selector, SourceLoc, StaticDef,
+    StaticRole, StaticsTable, Step, Stmt, SymbolLookup, TaskEntryId, TaskFutureEntry, TaskTable,
+    TypeDef, TypeTable, ValueExpr, VariantDef, VariantShape, VtableDataSource, WalkBinding,
+    WalkOutcome, WalkRole, WalksTable, strip_build_prefix, strip_llvm_suffix,
 };
 pub use semantics::*;
 pub use shape::Shape;

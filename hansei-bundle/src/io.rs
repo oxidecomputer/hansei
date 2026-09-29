@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 86;
+pub const FORMAT_VERSION: u32 = 87;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -1428,6 +1428,46 @@ impl Bundle {
                     ));
                 }
                 seen.push(version);
+            }
+        }
+
+        // Strictly increasing by package and name; each entry names two
+        // releases or more, each once, at sizes no two of which agree —
+        // a size two releases share tells neither apart.
+        let mut prev: Option<(&str, &str)> = None;
+        for entry in &self.types.release_sizes {
+            check_str("release size", entry.package)?;
+            check_str("release size", entry.name)?;
+            let key = (
+                self.strings.get(entry.package).unwrap(),
+                self.strings.get(entry.name).unwrap(),
+            );
+            if prev.is_some_and(|prev| prev >= key) {
+                return corrupt(format!(
+                    "release sizes are not strictly ordered at {} {}",
+                    key.0, key.1
+                ));
+            }
+            prev = Some(key);
+            if entry.sizes.len() < 2 {
+                return corrupt(format!(
+                    "release sizes of {} name fewer than two releases",
+                    key.1
+                ));
+            }
+            let mut releases: Vec<&str> = Vec::with_capacity(entry.sizes.len());
+            let mut sizes: Vec<u64> = Vec::with_capacity(entry.sizes.len());
+            for &(release, size) in &entry.sizes {
+                check_str("release size", release)?;
+                let release = self.strings.get(release).unwrap();
+                if releases.contains(&release) || sizes.contains(&size) {
+                    return corrupt(format!(
+                        "release sizes of {} repeat a release or a size",
+                        key.1
+                    ));
+                }
+                releases.push(release);
+                sizes.push(size);
             }
         }
 

@@ -217,6 +217,22 @@ pub struct TypeTable {
     /// crate, so none is made. A label, never a key: nothing selects a
     /// type by it.
     pub crate_labels: BTreeMap<BundleTypeId, CrateLabel>,
+    /// The size each release of a crate gives a type it declares, for
+    /// each crate the binary links at more than one release and each
+    /// type those releases lay out at different sizes: what lets a
+    /// target built apart from this bundle's binary say which of its
+    /// crate hashes is which release. The symbols of such a target
+    /// carry other hashes, so a symbol that names a type of the crate
+    /// answers to every release's type; but a vtable records its
+    /// concrete type's size beside the drop glue whose symbol names the
+    /// type under the target's hash, and one vtable whose size only one
+    /// release gives the type settles that hash.
+    ///
+    /// Plain types only: one holding a closure or coroutine
+    /// environment by value, anywhere inside it, is laid out after the
+    /// compiler's optimizations and may have another size in the
+    /// target's build. Sorted by package, then name, and unique.
+    pub release_sizes: Vec<ReleaseSize>,
     /// The generic type arguments of each generic struct, union and
     /// enum instantiation, keyed by type id, in declaration order: the
     /// types its name lists between `<` and `>`, as DWARF's
@@ -246,6 +262,21 @@ pub struct CrateLabel {
     /// agree are one type that both declare, and the label says so
     /// rather than choosing.
     pub versions: Vec<StrRef>,
+}
+
+/// A type laid out at a different size by each release of its crate —
+/// see [`TypeTable::release_sizes`].
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ReleaseSize {
+    /// The package name as the registry directory writes it.
+    pub package: StrRef,
+    /// The type's name, normalized as
+    /// [`normalized_rust_type_name`](crate::symbols::normalized_rust_type_name)
+    /// normalizes it: what a drop glue symbol's type is matched on.
+    pub name: StrRef,
+    /// Each release that declares the type, with the type's size
+    /// there: ascending by release, at least two, no two sizes equal.
+    pub sizes: Vec<(StrRef, u64)>,
 }
 
 /// A lazily-built in-memory side table riding on serialized data: skipped

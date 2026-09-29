@@ -14,7 +14,8 @@ use super::passes::{
 use super::paths::{OwnedLoc, display_path};
 use crate::bundle::{
     BundleTypeId, CrateLabel, DiscrDef, DiscrValue, DiscrValues, DisplayNode, ImplTable, MemberDef,
-    MemberRef, SourceLoc, StrRef, StringInterner, TypeDef, TypeTable, VariantDef, VariantShape,
+    MemberRef, ReleaseSize, SourceLoc, StrRef, StringInterner, TypeDef, TypeTable, VariantDef,
+    VariantShape,
 };
 use crate::detect::{Family, FormatExplanation, trace, unique_member};
 use crate::raw_types::{DiscrBits, RawType, VariantShape as RawVariantShape};
@@ -74,6 +75,8 @@ pub(crate) struct Emitter<'a> {
     /// The crate release each emitted type's own declarations name,
     /// keyed by its emitted id — the type table's `crate_labels`.
     crate_labels: BTreeMap<BundleTypeId, CrateLabel>,
+    /// The type table's `release_sizes`, sorted by package and name.
+    release_sizes: Vec<ReleaseSize>,
     debug_formats: BTreeMap<BundleTypeId, DisplayNode>,
     /// Fully-qualified names for the name index, parallel to `defs`.
     names: Vec<Option<String>>,
@@ -106,6 +109,7 @@ impl<'a> Emitter<'a> {
             poll_decls: BTreeMap::new(),
             local_decls: BTreeMap::new(),
             crate_labels: BTreeMap::new(),
+            release_sizes: Vec::new(),
             debug_formats: BTreeMap::new(),
             names: Vec::new(),
             pending: VecDeque::new(),
@@ -378,6 +382,24 @@ impl<'a> Emitter<'a> {
                 .collect(),
         };
         self.crate_labels.insert(bid, label);
+    }
+
+    /// Record the sizes a crate's releases give the types they
+    /// disagree on — the type table's `release_sizes`, in the order
+    /// `entries` arrives in, which is the table's.
+    pub(super) fn record_release_sizes(&mut self, entries: &[super::releases::ReleaseSize]) {
+        self.release_sizes = entries
+            .iter()
+            .map(|entry| ReleaseSize {
+                package: self.intern(&entry.package),
+                name: self.intern(&entry.name),
+                sizes: entry
+                    .sizes
+                    .iter()
+                    .map(|(version, size)| (self.intern(&version.to_string()), *size))
+                    .collect(),
+            })
+            .collect();
     }
 
     /// Record where a coroutine's frame-resident locals are declared —
@@ -713,6 +735,7 @@ impl<'a> Emitter<'a> {
             poll_decls: self.poll_decls,
             local_decls: self.local_decls,
             crate_labels: self.crate_labels,
+            release_sizes: self.release_sizes,
             generic_args,
             ..Default::default()
         };

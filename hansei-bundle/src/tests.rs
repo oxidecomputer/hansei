@@ -1893,6 +1893,58 @@ mod view_tests {
         assert!(refused(label(vec![new]), BundleTypeId(9)).contains("out of range"));
     }
 
+    /// The release sizes survive a write and a read, and validation
+    /// refuses an entry naming one release, a release twice, a size
+    /// two releases share, or entries out of order.
+    #[test]
+    fn test_release_sizes_name_two_releases_at_two_sizes_in_order() {
+        use crate::ReleaseSize;
+        let mut b = super::tiny_bundle();
+        let mut strings = StringInterner::new();
+        for s in b.strings.iter() {
+            strings.intern(s);
+        }
+        let reqwest = strings.intern("reqwest");
+        let backend = strings.intern("reqwest::tls::TlsBackend");
+        let service = strings.intern("reqwest::connect::ConnectorService");
+        let old = strings.intern("0.12.28");
+        let new = strings.intern("0.13.2");
+        b.strings = strings.finish();
+        let entry = |name, sizes| ReleaseSize {
+            package: reqwest,
+            name,
+            sizes,
+        };
+        b.types.release_sizes = vec![
+            entry(service, vec![(old, 120), (new, 128)]),
+            entry(backend, vec![(old, 0), (new, 344)]),
+        ];
+        b.validate().unwrap();
+
+        let mut bytes = Vec::new();
+        b.write_to(&mut bytes).unwrap();
+        let back = Bundle::read_from(bytes.as_slice()).unwrap();
+        assert_eq!(back.types.release_sizes, b.types.release_sizes);
+
+        let refused = |entries: Vec<ReleaseSize>| {
+            let mut bad = b.clone();
+            bad.types.release_sizes = entries;
+            bad.validate().unwrap_err().to_string()
+        };
+        assert!(refused(vec![entry(backend, vec![(new, 344)])]).contains("fewer than two"));
+        assert!(
+            refused(vec![entry(backend, vec![(new, 0), (new, 344)])]).contains("repeat a release")
+        );
+        assert!(refused(vec![entry(backend, vec![(old, 344), (new, 344)])]).contains("or a size"));
+        assert!(
+            refused(vec![
+                entry(backend, vec![(old, 0), (new, 344)]),
+                entry(service, vec![(old, 120), (new, 128)]),
+            ])
+            .contains("strictly ordered")
+        );
+    }
+
     /// A coroutine's local site is the entry of that name in its own
     /// `local_decls` list, compared as strings; nothing for a name the
     /// list lacks or a type with no list.
