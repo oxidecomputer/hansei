@@ -1525,6 +1525,11 @@ fn extract_from_view(
     // namespace the sweep resolved to the type, inherent methods as
     // declarations inside the type DIE, which the unit pass files
     // under a namespace named after the type.
+    //
+    // A rule asks this of hundreds of types, so the function table is
+    // filed by namespace once, beside the namespace tree's child edges,
+    // and each question walks only its roots' subtrees.
+    let declared_under = DeclaredUnder::new(view);
     let type_sources = |ty: TypeId| -> BTreeSet<sweep::PollSource> {
         let Some(name) = fq_name(reader, ty) else {
             return BTreeSet::new();
@@ -1545,20 +1550,11 @@ fn extract_from_view(
         // body nested under one — an `async` block's, a closure's, an
         // inner fn's — in a namespace of its own below the impl, or
         // the declaration the type DIE keeps of the method whatever
-        // became of its body. So the root is looked for anywhere up
-        // the function's chain.
-        let under_root = |mut ns: Option<NsId>| {
-            while let Some(id) = ns {
-                if roots.contains(&id) {
-                    return true;
-                }
-                ns = reader.namespaces.get(id).parent;
-            }
-            false
-        };
-        view.functions()
-            .filter(|(_, f)| under_root(f.namespace_id()))
-            .filter_map(|(_, f)| sweep::poll_source(reader, &f))
+        // became of its body. So every function anywhere below a root
+        // counts.
+        declared_under
+            .below(roots)
+            .filter_map(|f| sweep::poll_source(reader, f))
             .collect()
     };
     let seeds = semantics::collect_semantic_seeds(
@@ -1659,6 +1655,56 @@ pub(crate) fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
     }
     segs.reverse();
     segs.join("::")
+}
+
+/// The functions that record a location, filed under the namespace
+/// that declares them, beside the namespace tree's child edges: what a
+/// question about everything declared below some namespaces walks,
+/// rather than the whole function table.
+struct DeclaredUnder<'a> {
+    children: foldhash::HashMap<NsId, Vec<NsId>>,
+    functions: foldhash::HashMap<NsId, Vec<Func<'a>>>,
+}
+
+impl<'a> DeclaredUnder<'a> {
+    fn new(view: &DwView<'a>) -> Self {
+        let mut children: foldhash::HashMap<NsId, Vec<NsId>> = foldhash::HashMap::default();
+        for (id, entry) in view.collector().namespaces.iter() {
+            if let Some(parent) = entry.parent {
+                children.entry(parent).or_default().push(id);
+            }
+        }
+        let mut functions: foldhash::HashMap<NsId, Vec<Func<'a>>> = foldhash::HashMap::default();
+        for (_, f) in view.functions() {
+            if let Some(ns) = f.namespace_id()
+                && f.raw().source_loc.is_some()
+            {
+                functions.entry(ns).or_default().push(f);
+            }
+        }
+        Self {
+            children,
+            functions,
+        }
+    }
+
+    /// Every function declared in one of `roots` or anywhere below one,
+    /// each once however the roots nest.
+    fn below(&self, roots: Vec<NsId>) -> impl Iterator<Item = &Func<'a>> {
+        let mut seen = BTreeSet::new();
+        let mut stack = roots;
+        std::iter::from_fn(move || {
+            while let Some(ns) = stack.pop() {
+                if !seen.insert(ns) {
+                    continue;
+                }
+                stack.extend(self.children.get(&ns).into_iter().flatten());
+                return Some(self.functions.get(&ns).into_iter().flatten());
+            }
+            None
+        })
+        .flatten()
+    }
 }
 
 /// Where a closure or coroutine environment was written. The env DIE
