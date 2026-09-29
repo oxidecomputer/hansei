@@ -1627,6 +1627,8 @@ fn extract_from_view(
         semantics,
     };
 
+    // Every caller receives a validated bundle; the extract verb writes
+    // it without validating it a second time.
     bundle.validate()?;
     Ok((bundle, stats))
 }

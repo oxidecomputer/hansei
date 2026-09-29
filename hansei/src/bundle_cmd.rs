@@ -238,8 +238,10 @@ fn write_extracted(
     for warning in warnings(&stats) {
         eprintln!("{warning}");
     }
+    // Extraction validated the bundle before handing it over; `save`
+    // would only validate it again.
     bundle
-        .save(output)
+        .write_file(output)
         .with_context(|| format!("failed to write {}", output.display()))?;
     println!(
         "wrote {} ({} types, {} task entries, {} dyn futures)",

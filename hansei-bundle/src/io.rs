@@ -1242,6 +1242,14 @@ impl Bundle {
     /// Validate and write the bundle to `path`.
     pub fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
+        self.write_file(path)
+    }
+
+    /// Write the bundle to `path` without validating it, for a caller
+    /// holding a bundle [`Bundle::validate`] has already passed: a
+    /// fresh extraction is validated before it is returned, and a
+    /// second pass over a real program's bundle costs a quarter second.
+    pub fn write_file(&self, path: &Path) -> Result<()> {
         let mut w = BufWriter::new(File::create(path)?);
         self.write_to(&mut w)?;
         w.flush()?;
