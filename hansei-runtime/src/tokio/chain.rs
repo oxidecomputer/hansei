@@ -566,8 +566,17 @@ impl<'b, T: Target> Context<'b, T> {
                     .copied()
                     .filter(|&id| trailing().all(|(_, e)| e.admits(id)))
                     .collect();
-                match narrowed.as_slice() {
-                    [one] => *one,
+                // Several left, one per release of a crate the target
+                // links twice, named by a symbol from another build:
+                // the release the target's own vtables pair the
+                // symbol's crate hash with picks one.
+                let paired = match narrowed.as_slice() {
+                    [_, _, ..] => self.paired_candidate(&evidence[lead].symbol, &narrowed),
+                    _ => None,
+                };
+                match (narrowed.as_slice(), paired) {
+                    ([one], _) => *one,
+                    (_, Some(chosen)) => chosen,
                     // Neither the lead nor its corroboration settled
                     // it. What is reported is the lead's own set: a
                     // type only a trailing slot named is a type the
@@ -1421,6 +1430,102 @@ mod tests {
                     "a type only the glue named is not a candidate: {ids:?}"
                 );
             }
+        }
+    }
+
+    /// A symbol naming one type per release of a crate the target links
+    /// twice stays ambiguous until the target's crate hash in it is
+    /// paired with a release; then the candidate of that release is the
+    /// one taken, whichever it is. Over dyn-future: the boxed leaf gets
+    /// a twin under every symbol that names it, the two labeled as two
+    /// releases of the program's own crate.
+    #[test]
+    fn test_a_paired_crate_hash_picks_its_release_of_an_ambiguous_poll() {
+        use crate::tokio::pairing::{Pairing, crate_hashes};
+        use hansei_bundle::{CrateLabel, ReleaseSize, StringInterner};
+
+        let (bundle, snapshot) = load_any("dyn-future");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let healthy = inspect(&ctx, task_named(&list, ctx.view, "driver"));
+        let leaf_frame = &healthy.chain.frames[2];
+        let leaf = leaf_frame.future.ty.id();
+        let symbol = leaf_frame
+            .dyn_symbol
+            .clone()
+            .expect("the leaf is reached through its vtable");
+        drop(ctx);
+
+        let demangled = format!(
+            "{}",
+            rustc_demangle::demangle(hansei_bundle::strip_llvm_suffix(&symbol))
+        );
+        let (krate, hash) = crate_hashes(&demangled)
+            .into_iter()
+            .find(|(k, _)| *k == "dyn_future")
+            .expect("the leaf's poll is the program's own");
+        let (krate, hash) = (krate.to_owned(), hash.to_owned());
+
+        let mut twinned = bundle.clone();
+        let twin = BundleTypeId(twinned.types.types.len() as u32);
+        let def = twinned.types.types[leaf.0 as usize].clone();
+        twinned.types.types.push(def);
+        let mut record = twinned
+            .semantics
+            .types
+            .iter()
+            .find(|r| r.ty == leaf)
+            .cloned()
+            .expect("the leaf has a record");
+        record.ty = twin;
+        twinned.semantics.types.push(record);
+        for ids in twinned.dyn_futures.by_symbol.values_mut() {
+            if ids.contains(&leaf) {
+                ids.push(twin);
+            }
+        }
+        twinned.dyn_futures.by_normalized_symbol =
+            hansei_bundle::symbols::normalized_candidate_index(&twinned.dyn_futures.by_symbol);
+        let mut strings = StringInterner::new();
+        for s in twinned.strings.iter() {
+            strings.intern(s);
+        }
+        let package = strings.intern("dyn-future");
+        let (one, two) = (strings.intern("1.0.0"), strings.intern("2.0.0"));
+        let unused = strings.intern("dyn_future::Unused");
+        twinned.strings = strings.finish();
+        let label = |v| CrateLabel {
+            package,
+            versions: vec![v],
+        };
+        twinned.types.crate_labels.insert(leaf, label(one));
+        twinned.types.crate_labels.insert(twin, label(two));
+        twinned.types.release_sizes = vec![ReleaseSize {
+            package,
+            name: unused,
+            sizes: vec![(one, 1), (two, 2)],
+        }];
+
+        let driver_chain = |pairing: Option<Pairing>| {
+            let ctx = Context::new(&snapshot, BundleView::new(&twinned)).unwrap();
+            let ctx = match pairing {
+                Some(p) => ctx.with_pairing(p),
+                None => ctx,
+            };
+            let list = testkit::tasks(&ctx, &snapshot);
+            let inspection = inspect(&ctx, task_named(&list, ctx.view, "driver"));
+            (
+                inspection.chain.frames.get(2).map(|f| f.future.ty.id()),
+                format!("{:?}", inspection.chain.end),
+            )
+        };
+        // Nothing in the fixture's vtables pairs the hash: ambiguous.
+        let (_, end) = driver_chain(None);
+        assert!(end.contains("AmbiguousDyn"), "{end}");
+        for (release, expected) in [("2.0.0", twin), ("1.0.0", leaf)] {
+            let paired = Pairing::from_triples(&[(krate.as_str(), hash.as_str(), release)]);
+            let (taken, end) = driver_chain(Some(paired));
+            assert_eq!(taken, Some(expected), "paired with {release}: {end}");
         }
     }
 

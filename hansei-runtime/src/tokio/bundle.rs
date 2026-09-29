@@ -274,6 +274,14 @@ pub struct Context<'b, T> {
     task_lookups: Memo<String, SymbolLookup<TaskEntryId>>,
     /// The same memo for the dyn-future join.
     dyn_future_lookups: Memo<String, SymbolLookup<BundleTypeId>>,
+    /// Which release each of the target's crate hashes is, for a crate
+    /// the target links at several releases (see [`super::pairing`]).
+    /// Read on the first join that needs it: a target linking every
+    /// crate once never does.
+    pairing: std::cell::OnceCell<super::pairing::Pairing>,
+    /// The candidate the pairing picks, per symbol: every in-flight
+    /// request of a target meets the same few ambiguous joins.
+    paired: Memo<String, Option<BundleTypeId>>,
     /// The tasks a `Notify`'s wait list names, per `Notify`: the
     /// reference scan meets the same few `Notify`s — a cancellation
     /// token's, with thousands of waiters — from thousands of tasks,
@@ -326,6 +334,8 @@ impl<'b, T: Target> Context<'b, T> {
             stopped: RefCell::new(None),
             task_lookups: Memo::default(),
             dyn_future_lookups: Memo::default(),
+            pairing: std::cell::OnceCell::new(),
+            paired: Memo::default(),
             notify_waiters: Memo::default(),
             reference_inert: Memo::default(),
             semantics,
@@ -453,6 +463,31 @@ impl<'b, T: Target> Context<'b, T> {
     pub(crate) fn dyn_future_ids_memoized(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
         self.dyn_future_lookups
             .get_or(symbol, || self.view.dyn_future_ids_for_symbol(symbol))
+    }
+
+    /// Of a join's `candidates`, the one of the release the target's
+    /// crate hashes in `symbol` were paired with (see
+    /// [`super::pairing::select`]). The candidates are what `symbol`
+    /// resolves to, so the symbol alone keys the memo.
+    pub(crate) fn paired_candidate(
+        &self,
+        symbol: &str,
+        candidates: &[BundleTypeId],
+    ) -> Option<BundleTypeId> {
+        self.paired.get_or(symbol, || {
+            let pairing = self.pairing.get_or_init(|| {
+                super::pairing::pair(self.view.bundle(), self.proc, &self.mappings)
+            });
+            super::pairing::select(self.view.bundle(), pairing, symbol, candidates)
+        })
+    }
+
+    /// Stand a known pairing in for the one the target's vtables would
+    /// give, for a test over a fixture that links every crate once.
+    #[cfg(test)]
+    pub(crate) fn with_pairing(self, pairing: super::pairing::Pairing) -> Self {
+        let _ = self.pairing.set(pairing);
+        self
     }
 
     /// Every target address a named static resolves to: the exact name's
