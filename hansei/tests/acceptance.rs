@@ -2496,8 +2496,9 @@ fn test_futures_acceptance() {
         // What the census found inside what it found is listed under
         // it, not beside it: each set child holds a future of its own,
         // one indent step deeper than the child, and one of them holds
-        // a whole set of its own, whose children are deeper again. The
-        // tree is the census's attribution, drawn.
+        // a whole set of its own, whose children are deeper again and
+        // named by the futures their boxes hold. The tree is the
+        // census's attribution, drawn.
         let held_row = r"held \(frame 1, `held`\): 0x[0-9a-f]+  async fn unordered::leaf";
         let under_child =
             regex::Regex::new(&format!(r"\n            {held_row}  Unresumed")).unwrap();
@@ -2505,7 +2506,7 @@ fn test_futures_acceptance() {
         assert!(
             futures.contains(
                 "\n            - futures_util::stream::futures_unordered::FuturesUnordered\
-                 <unordered::leaf> at 0x"
+                 <Pin<Box<(dyn Future<Output=u32> + Send)>>> at 0x"
             ),
             "{futures}"
         );

@@ -1398,10 +1398,12 @@ mod tests {
         // One expansion per child, plus the two adapters the driver's
         // frames hold: the `boxed` local's pin, and the `&mut
         // FuturesUnordered` the `Next` awaitee borrows — which lands on
-        // the set held by value, walked once — and one per full bucket
-        // of the `keyed` map's table. The `Notify` the children park
-        // in costs nothing here: the sweep that built `run` walked its
-        // list, and the tasks it names are kept per target.
+        // the set held by value, walked once — one per full bucket of
+        // the `keyed` map's table, and one per child of the nested
+        // set, whose box points at the future it holds. The `Notify`
+        // the children park in costs nothing here: the sweep that
+        // built `run` walked its list, and the tasks it names are kept
+        // per target.
         assert!(
             run.census
                 .sets
@@ -1409,7 +1411,18 @@ mod tests {
                 .flat_map(|s| s.children.iter())
                 .any(|c| matches!(c.wait, Some(WaitKind::Notify { .. })))
         );
-        assert_eq!(completion.referent_expansions, total as u64 + 2 + 2);
+        let boxed: usize = run
+            .census
+            .sets
+            .iter()
+            .filter(|s| s.via.is_some())
+            .map(|s| s.children.len())
+            .sum();
+        assert_eq!(boxed, 2);
+        assert_eq!(
+            completion.referent_expansions,
+            (total + boxed) as u64 + 2 + 2
+        );
         let (expansions, visits) = (completion.referent_expansions, completion.inline_visits);
 
         // Every child scanned once: a second scan of the same root
@@ -1501,8 +1514,9 @@ mod tests {
 
         // One hop allowed: the children are scanned, the set nested in
         // one of them is walked, and its own children are the limit —
-        // every node expanded, the `Notify` and its list read once
-        // through the children that were scanned.
+        // every node expanded but none of the boxes those children sit
+        // behind, the `Notify` and its list read once through the
+        // children that were scanned.
         let (completion, sink) = scan_task_with(
             &run.ctx,
             driver,
@@ -1514,7 +1528,7 @@ mod tests {
         );
         assert!(!completion.complete);
         assert!(kinds(&sink.issues).contains(&WalkIssueKind::HopLimit));
-        assert_eq!(completion.referent_expansions, expansions);
+        assert_eq!(completion.referent_expansions, expansions - boxed as u64);
         assert!(completion.inline_visits < visits);
 
         // A future held beside a chain is one hop of its own: the

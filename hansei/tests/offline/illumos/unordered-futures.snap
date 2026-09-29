@@ -11,11 +11,11 @@ ADDR       TASK  HELD IN                                         STATE          
 0xADDR  3     frame 0, `inner`, via held future at 0xADDR  Unresumed                           —                   no     async fn unordered::leaf
 0xADDR  3     frame 2, `keyed[0]`                             Unresumed                           —                   no     async fn unordered::leaf
 0xADDR  3     frame 2, `keyed[1]`                             Unresumed                           —                   no     async fn unordered::leaf
-0xADDR  3     set 0xADDR                                   Suspend0 — src/bin/unordered.rs:79  unarmed: notify rx  no     async fn unordered::set_member
+0xADDR  3     set 0xADDR                                   Suspend0 — src/bin/unordered.rs:87  unarmed: notify rx  no     async fn unordered::set_member
 0xADDR  3     frame 1, `held`, via set child at 0xADDR     Unresumed                           —                   no     async fn unordered::leaf
-0xADDR  3     set 0xADDR                                   Suspend0 — src/bin/unordered.rs:79  unarmed: notify rx  no     async fn unordered::set_member
+0xADDR  3     set 0xADDR                                   Suspend0 — src/bin/unordered.rs:87  unarmed: notify rx  no     async fn unordered::set_member
 0xADDR  3     frame 1, `held`, via set child at 0xADDR     Unresumed                           —                   no     async fn unordered::leaf
-0xADDR  3     set 0xADDR                                   Suspend0 — src/bin/unordered.rs:79  unarmed: notify rx  no     async fn unordered::set_member
+0xADDR  3     set 0xADDR                                   Suspend0 — src/bin/unordered.rs:87  unarmed: notify rx  no     async fn unordered::set_member
 0xADDR  3     frame 1, `held`, via set child at 0xADDR     Unresumed                           —                   no     async fn unordered::leaf
 0xADDR  3     set 0xADDR, via set child at 0xADDR       Unresumed                           —                   no     async fn unordered::leaf
 0xADDR  3     set 0xADDR, via set child at 0xADDR       Unresumed                           —                   no     async fn unordered::leaf

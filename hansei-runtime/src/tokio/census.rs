@@ -1939,10 +1939,13 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
             let fut = if variant == "Some" {
                 // The `Some` payload's one field is the future itself,
                 // read as its own nominal type: its program takes the
-                // first step, adapter or coroutine alike.
+                // first step, adapter or coroutine alike. Unpeeled,
+                // because a peel takes `Pin<Box<dyn Future>>` to the
+                // bare box it wraps, which is no future and has no
+                // program to take that step.
                 Some(
                     payload
-                        .member("__0")
+                        .member_raw("__0")
                         .with_context(|| format!("the child slot at {cur:#x} holds no future"))?,
                 )
             } else {
@@ -3633,6 +3636,33 @@ mod tests {
                 && r.contains("lists only 1 of its children")),
             "{reports:#?}"
         );
+    }
+
+    /// A set whose children sit behind `dyn Future` boxes names each
+    /// child by the future its box holds: the fixture's nested set
+    /// holds unpolled `leaf`s that way. Its slot is a
+    /// `Pin<Box<dyn Future>>`, and read peeled it would be the bare box
+    /// inside the pin, which is no future — every child would stop
+    /// there, named by the box and with no continuation.
+    #[test]
+    fn test_a_set_names_a_boxed_child_by_the_future_it_holds() {
+        let census = unordered_census(Bounds::default());
+        let nested = census
+            .sets
+            .iter()
+            .find(|s| s.via.is_some())
+            .expect("the fixture's first child holds a set");
+        assert_eq!(nested.children.len(), 2, "{nested:#?}");
+        let (bundle, _) = testkit::load_any("unordered");
+        let view = BundleView::new(&bundle);
+        for child in &nested.children {
+            let future = view.ty(child.future.unwrap()).unwrap().name();
+            assert!(future.starts_with("unordered::leaf"), "{future}");
+            assert!(
+                matches!(child.continuation, ContinuationStatus::Unresumed),
+                "{child:#?}"
+            );
+        }
     }
 
     /// A join set's entry list stops the same way, at an entry the

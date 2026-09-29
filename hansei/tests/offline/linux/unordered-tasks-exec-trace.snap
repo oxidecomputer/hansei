@@ -8,5 +8,5 @@ task 3
 #1  future        futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>>
       defined at futures-util-0.3.33/src/stream/stream/next.rs:31 (<no_state>, 1 local)
 #2  async fn      unordered::driver
-      awaiting at src/bin/unordered.rs:131 (Suspend0, 9 locals; holds 7 pending futures)
+      awaiting at src/bin/unordered.rs:138 (Suspend0, 9 locals; holds 7 pending futures)
 [Executed against 1 task, 0 failed]

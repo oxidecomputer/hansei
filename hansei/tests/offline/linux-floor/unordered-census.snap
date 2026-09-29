@@ -5,9 +5,9 @@ description: "`census` over linux-floor/unordered"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        2499768
-    1  0   worker           parked           2499767
-    1  0   entered runtime  block_on caller  2499765
+    1  0   worker           in driver        2962992
+    1  0   worker           parked           2962993
+    1  0   entered runtime  block_on caller  2962990
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -22,7 +22,7 @@ COUNT  TYPE / WAITING ON
        └─ 1  one of several
 [1 type]
 
-Futures: 17 in flight, on 23 await-chain frames, up to 3 deep
+Futures: 17 in flight, on 25 await-chain frames, up to 3 deep
 
 COUNT  HELD IN
     1  task (its own await chain)

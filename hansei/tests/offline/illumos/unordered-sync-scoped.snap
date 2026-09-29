@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`sync` over illumos/unordered"
 ---
-a futures_util::stream::futures_unordered::FuturesUnordered<unordered::leaf> (set 0xADDR): 2 children, driven by task 3 (`inner`)
+a futures_util::stream::futures_unordered::FuturesUnordered<Pin<Box<(dyn Future<Output=u32> + Send)>>> (set 0xADDR): 2 children, driven by task 3 (`inner`)
     In flight: 2
 
 a futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> (set 0xADDR): 3 children, driven by task 3 (`set`)

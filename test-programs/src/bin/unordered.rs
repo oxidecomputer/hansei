@@ -13,12 +13,13 @@
 //! future reached only by descending into an aggregate (the `pair`
 //! tuple) or into an enum's active variant (`maybe`, and each child's
 //! `inner`), and a find two hops from the driver's own frames — one
-//! child holds a set of its own, and every child holds a future — so
-//! that what the census attributes to whom is pinned by something
-//! other than a comment. Both ways out of a task's own frames are
-//! covered: through a set's child, and through a future the driver
-//! holds (`nested_hold`), which carries a future of its own. And one
-//! way out of the frame's bytes: futures kept as a hash map's values
+//! child holds a set of its own, whose children sit behind `dyn
+//! Future` boxes, and every child holds a future — so that what the
+//! census attributes to whom is pinned by something other than a
+//! comment. Both ways out of a task's own frames are covered: through
+//! a set's child, and through a future the driver holds
+//! (`nested_hold`), which carries a future of its own. And one way out
+//! of the frame's bytes: futures kept as a hash map's values
 //! (`keyed`), which only the table's buckets hold.
 
 use std::collections::HashMap;
@@ -36,6 +37,10 @@ const CHILDREN: usize = 3;
 
 /// How many futures the nesting child's own set holds.
 const NESTED: usize = 2;
+
+/// A future behind a trait object, the way a set of futures of
+/// different types holds its children.
+type BoxedFuture = Pin<Box<dyn Future<Output = u32> + Send>>;
 
 /// How many futures the driver keeps in its map.
 const KEYED: u32 = 2;
@@ -59,13 +64,16 @@ async fn holder<F: Future<Output = u32>>(inner: F, notify: Arc<Notify>) -> u32 {
 }
 
 /// A child of the driver's set, holding futures of its own across the
-/// park: a set when `nest`, and a bare future either way. Both are
-/// reached only by scanning this child's frames, which the census does
-/// only because the child is a set member — one hop further out than
-/// the driver's own locals.
+/// park: a set of boxed futures when `nest`, and a bare future either
+/// way. Both are reached only by scanning this child's frames, which
+/// the census does only because the child is a set member — one hop
+/// further out than the driver's own locals.
 async fn set_member(notify: Arc<Notify>, nest: bool) -> u32 {
-    let inner: Option<FuturesUnordered<_>> =
-        nest.then(|| (0..NESTED).map(|_| leaf(notify.clone())).collect());
+    let inner: Option<FuturesUnordered<BoxedFuture>> = nest.then(|| {
+        (0..NESTED)
+            .map(|_| Box::pin(leaf(notify.clone())) as BoxedFuture)
+            .collect()
+    });
     let held = leaf(notify.clone());
 
     // Ground truth for the census diff: what this child holds, at the
@@ -93,8 +101,7 @@ async fn driver(ready: oneshot::Sender<()>, notify: Arc<Notify>) -> u32 {
     // Held, never polled while the set is awaited: live across the
     // await below because both are consumed after it.
     let held = set_member(notify.clone(), false);
-    let boxed: Pin<Box<dyn Future<Output = u32> + Send>> =
-        Box::pin(set_member(notify.clone(), false));
+    let boxed: BoxedFuture = Box::pin(set_member(notify.clone(), false));
     // The same, one level in: a future the scan reaches only by
     // descending into a tuple, and one it reaches only through an
     // enum's active variant.

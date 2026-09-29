@@ -6,21 +6,21 @@ program: unordered
 [tasks]
 task: unordered::driver::{async_fn_env#0}
   kind: AsyncFn
-  decl: unordered.rs:88
+  decl: unordered.rs:96
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<unordered::driver::{async_fn_env#0}>
   variants:
-    Unresumed @ unordered.rs:88
-    Returned @ unordered.rs:143
-    Panicked @ unordered.rs:143
-    Suspend0 @ unordered.rs:131
-    Suspend1 @ unordered.rs:135
-    Suspend2 @ unordered.rs:137
-    Suspend3 @ unordered.rs:138
-    Suspend4 @ unordered.rs:139
-    Suspend5 @ unordered.rs:141
-    Suspend6 @ unordered.rs:142
+    Unresumed @ unordered.rs:96
+    Returned @ unordered.rs:150
+    Panicked @ unordered.rs:150
+    Suspend0 @ unordered.rs:138
+    Suspend1 @ unordered.rs:142
+    Suspend2 @ unordered.rs:144
+    Suspend3 @ unordered.rs:145
+    Suspend4 @ unordered.rs:146
+    Suspend5 @ unordered.rs:148
+    Suspend6 @ unordered.rs:149
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<unordered::main::{async_block_env#0}>> (poll)
@@ -32,32 +32,32 @@ dyn: unordered::main::{async_block_env#0} (poll, drop_glue)
 dyn: unordered::set_member::{async_fn_env#0} (poll, drop_glue)
 
 [env-decls]
-env: unordered::driver::{async_fn_env#0} @ unordered.rs:88
-env: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> @ unordered.rs:56
-env: unordered::leaf::{async_fn_env#0} @ unordered.rs:46
-env: unordered::main::{async_block_env#0} @ unordered.rs:150
-env: unordered::set_member::{async_fn_env#0} @ unordered.rs:66
+env: unordered::driver::{async_fn_env#0} @ unordered.rs:96
+env: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> @ unordered.rs:61
+env: unordered::leaf::{async_fn_env#0} @ unordered.rs:51
+env: unordered::main::{async_block_env#0} @ unordered.rs:157
+env: unordered::set_member::{async_fn_env#0} @ unordered.rs:71
 
 [poll-decls]
 
 [local-decls]
-local: unordered::driver::{async_fn_env#0} :: boxed @ unordered.rs:96
-local: unordered::driver::{async_fn_env#0} :: held @ unordered.rs:95
-local: unordered::driver::{async_fn_env#0} :: keyed @ unordered.rs:109
-local: unordered::driver::{async_fn_env#0} :: maybe @ unordered.rs:102
-local: unordered::driver::{async_fn_env#0} :: nested_hold @ unordered.rs:106
-local: unordered::driver::{async_fn_env#0} :: notify @ unordered.rs:88
-local: unordered::driver::{async_fn_env#0} :: pair @ unordered.rs:101
-local: unordered::driver::{async_fn_env#0} :: ready @ unordered.rs:88
-local: unordered::driver::{async_fn_env#0} :: set @ unordered.rs:89
-local: unordered::driver::{async_fn_env#0} :: sum @ unordered.rs:130
-local: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> :: inner @ unordered.rs:56
-local: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> :: notify @ unordered.rs:56
-local: unordered::leaf::{async_fn_env#0} :: notify @ unordered.rs:46
-local: unordered::set_member::{async_fn_env#0} :: held @ unordered.rs:69
-local: unordered::set_member::{async_fn_env#0} :: inner @ unordered.rs:67
-local: unordered::set_member::{async_fn_env#0} :: nest @ unordered.rs:66
-local: unordered::set_member::{async_fn_env#0} :: notify @ unordered.rs:66
+local: unordered::driver::{async_fn_env#0} :: boxed @ unordered.rs:104
+local: unordered::driver::{async_fn_env#0} :: held @ unordered.rs:103
+local: unordered::driver::{async_fn_env#0} :: keyed @ unordered.rs:116
+local: unordered::driver::{async_fn_env#0} :: maybe @ unordered.rs:109
+local: unordered::driver::{async_fn_env#0} :: nested_hold @ unordered.rs:113
+local: unordered::driver::{async_fn_env#0} :: notify @ unordered.rs:96
+local: unordered::driver::{async_fn_env#0} :: pair @ unordered.rs:108
+local: unordered::driver::{async_fn_env#0} :: ready @ unordered.rs:96
+local: unordered::driver::{async_fn_env#0} :: set @ unordered.rs:97
+local: unordered::driver::{async_fn_env#0} :: sum @ unordered.rs:137
+local: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> :: inner @ unordered.rs:61
+local: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> :: notify @ unordered.rs:61
+local: unordered::leaf::{async_fn_env#0} :: notify @ unordered.rs:51
+local: unordered::set_member::{async_fn_env#0} :: held @ unordered.rs:77
+local: unordered::set_member::{async_fn_env#0} :: inner @ unordered.rs:72
+local: unordered::set_member::{async_fn_env#0} :: nest @ unordered.rs:71
+local: unordered::set_member::{async_fn_env#0} :: notify @ unordered.rs:71
 
 [infra]
 header: ok

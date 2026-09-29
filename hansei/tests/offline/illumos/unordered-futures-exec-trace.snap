@@ -116,7 +116,7 @@ the chain ends in a future that has never been polled
 
 future 0xADDR
 future 0xADDR: async fn unordered::leaf
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::leaf> at 0xADDR (frame 1, `inner`, via set child at 0xADDR), polled by task 3 — async fn unordered::driver
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<Pin<Box<(dyn Future<Output=u32> + Send)>>> at 0xADDR (frame 1, `inner`, via set child at 0xADDR), polled by task 3 — async fn unordered::driver
 
 the chain ends in a future that has never been polled
 #0  async fn      unordered::leaf
@@ -124,7 +124,7 @@ the chain ends in a future that has never been polled
 
 future 0xADDR
 future 0xADDR: async fn unordered::leaf
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::leaf> at 0xADDR (frame 1, `inner`, via set child at 0xADDR), polled by task 3 — async fn unordered::driver
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<Pin<Box<(dyn Future<Output=u32> + Send)>>> at 0xADDR (frame 1, `inner`, via set child at 0xADDR), polled by task 3 — async fn unordered::driver
 
 the chain ends in a future that has never been polled
 #0  async fn      unordered::leaf

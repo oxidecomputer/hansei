@@ -1,11 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0x7f51a00010a0` over linux/unordered"
+description: "`future 0x7f25e80010a0` over linux/unordered"
 ---
 future 0xADDR
     type: async fn unordered::set_member
     child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR, polled by task 3
-    state: Suspend0 — src/bin/unordered.rs:79
+    state: Suspend0 — src/bin/unordered.rs:87
     depth: 2 frames
     awaiting on: unarmed: notify rx 0xADDR (waiting)
     held futures: 1
