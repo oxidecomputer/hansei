@@ -3268,6 +3268,43 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         bundle.types.release_sizes.len(),
         "{program}: release size count"
     );
+    // A fixture linking one tokio labels every tokio type with it,
+    // whatever methods of the type the build happened to keep a
+    // declaration of.
+    if program != "two-releases" {
+        let view = hansei_bundle::BundleView::new(bundle);
+        let tokio = format!("tokio {}", bundle.meta.tokio_version.as_ref().unwrap());
+        let mut seen = 0;
+        for index in 0..bundle.types.types.len() {
+            let id = hansei_bundle::BundleTypeId(index as u32);
+            let name = type_name_of(bundle, id);
+            if !name.starts_with("tokio::") {
+                continue;
+            }
+            let label = view
+                .ty(id)
+                .and_then(|ty| ty.crate_release())
+                .map(|release| release.to_string());
+            assert_eq!(label.as_deref(), Some(tokio.as_str()), "{program}: {name}");
+            seen += 1;
+        }
+        assert!(seen > 0, "{program}: no tokio type");
+    }
+    // std's own hashbrown (tokio's blocking pool keeps its threads in a
+    // std map) is a copy apart from any registry hashbrown the fixture
+    // links, and lends no release — the HTTP fixtures link hashbrown
+    // from the registry too.
+    const STD_HASHBROWN: &str = "hashbrown::map::HashMap<usize, \
+                                 std::thread::join_handle::JoinHandle<()>, \
+                                 std::hash::random::RandomState, alloc::alloc::Global>";
+    if bundle
+        .types
+        .find_by_name(&bundle.strings, STD_HASHBROWN)
+        .next()
+        .is_some()
+    {
+        assert_crate_label(program, bundle, STD_HASHBROWN, None);
+    }
     // The impl table records only what the bundle's strings mention —
     // an entry nothing names is dead weight the emit filter should have
     // dropped. (Sortedness and the plain-path value rules are the

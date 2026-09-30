@@ -99,7 +99,7 @@ core::task::wake::RawWaker :: Node Alias { data }
 core::task::wake::RawWakerVTable :: Node Struct { clone: Symbol { clone }, wake: Symbol { wake }, wake_by_ref: Symbol { wake_by_ref }, drop: Symbol { drop } }
 core::task::wake::Waker :: Node Alias { waker.data }
 hashbrown::map::HashMap<usize, std::thread::join_handle::JoinHandle<()>, std::hash::random::RandomState, alloc::alloc::Global> :: Node Map { length=table.table.items, key=usize, value=std::thread::join_handle::JoinHandle<()>, entries=Hash { bucket_mask=table.table.bucket_mask, ctrl=table.table.ctrl.pointer, bucket=(usize, std::thread::join_handle::JoinHandle<()>), key=__0, value=__1 } }
-mio::token::Token :: Node Alias { __0, follow }
+mio::token::Token :: Node Alias { __0, follow } — mio 1.2.2
 std::collections::hash::map::HashMap<usize, std::thread::join_handle::JoinHandle<()>, std::hash::random::RandomState, alloc::alloc::Global> :: Node Map { length=base.table.table.items, key=usize, value=std::thread::join_handle::JoinHandle<()>, entries=Hash { bucket_mask=base.table.table.bucket_mask, ctrl=base.table.table.ctrl.pointer, bucket=(usize, std::thread::join_handle::JoinHandle<()>), key=__0, value=__1 } }
 std::sys::time::unix::Instant :: Node Alias { t, follow }
 std::time::Instant :: Node Alias { __0, follow }
