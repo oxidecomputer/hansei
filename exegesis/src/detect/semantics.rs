@@ -2046,6 +2046,34 @@ pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
     ],
 };
 
+/// rustls's connection state as 0.23.23 through 0.23.45 lay it out,
+/// read in every release of that range: `ConnectionCommon<Data>` holds
+/// `core: ConnectionCore<Data>`, whose `state` is a `Result<Box<dyn
+/// State<Data>>, Error>` that turns `Err` when the connection fails and
+/// stays so, and whose `common_state: CommonState` holds `side`, the
+/// `negotiated_version: Option<ProtocolVersion>`, the
+/// `may_send_application_data` and `may_receive_application_data` flags
+/// the handshake sets on finishing (`start_outgoing_traffic`,
+/// `start_traffic`; `is_handshaking` is their conjunction negated),
+/// `has_sent_close_notify` (added at 0.23.23, the floor),
+/// `has_received_close_notify`, `has_seen_eof`, `sent_fatal_alert`, and
+/// `record_layer: RecordLayer` with its `read_seq` and `write_seq`
+/// counts. Every assignment of those flags is the same text across the
+/// range, so the words mean the same thing in each release — including
+/// `send_close_notify` setting `sent_fatal_alert` beside
+/// `has_sent_close_notify`, the flag meaning that no further alert will
+/// be sent, while a fatal alert (`send_fatal_alert`) always comes with
+/// the error the state then holds. The
+/// release is read off the type's own method declarations, as
+/// hashbrown's is; rustc's DWARF 4 records no checksum to check.
+pub const RUSTLS_SESSION_V0_23_23: LibraryConvention = LibraryConvention {
+    package: "rustls",
+    family: "rustls-session-0.23.23",
+    floor: (0, 23, 23),
+    ceiling: (0, 23, 45),
+    checksums: &[],
+};
+
 /// One reviewed third-party implementation fetched from git, which has
 /// no release to select a range by: the crate, the repository cargo
 /// names its checkout after, the crate's directory inside it, the
@@ -2604,6 +2632,12 @@ mod tests {
                 ["0.26.0", "0.26.3", "0.26.6"].as_slice(),
                 "0.25.0",
                 "0.26.7",
+            ),
+            (
+                &RUSTLS_SESSION_V0_23_23,
+                ["0.23.23", "0.23.41", "0.23.45"].as_slice(),
+                "0.23.22",
+                "0.23.46",
             ),
         ] {
             for version in inside {

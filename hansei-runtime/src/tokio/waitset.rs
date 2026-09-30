@@ -344,6 +344,7 @@ impl SlotRef {
                     addr: *resource,
                     fd: *fd,
                     interest: slot.interest(),
+                    tls: None,
                 }
                 .to_string(),
             ),
@@ -1087,6 +1088,7 @@ impl<'b, T: Target> Context<'b, T> {
                                 addr,
                                 fd,
                                 interest: Some(interest),
+                                ..
                             } if *addr == resource.addr && *interest == direction => Some((i, *fd)),
                             _ => None,
                         }
@@ -1829,6 +1831,7 @@ mod tests {
             addr: 0x7000,
             fd: None,
             interest: None,
+            tls: None,
         };
         let notes = ctx.slot_diagnostics(&inspection.chain, &io_target, &facts, &loud);
         assert_eq!(notes.len(), 1, "{notes:#?}");

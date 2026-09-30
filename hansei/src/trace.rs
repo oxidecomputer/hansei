@@ -474,6 +474,9 @@ fn leaf_wait(target: &bundle::WaitTarget, request: Option<String>) -> String {
     if let Some(via) = target.via() {
         text.push_str(&format!("\nvia {}", via.line()));
     }
+    if let Some(tls) = target.tls() {
+        text.push_str(&format!("\ntls {}", crate::tasks::tls_words(tls)));
+    }
     if let Some(caller) = target.caller() {
         text.push_str(&format!("\ncaller {caller}"));
     }

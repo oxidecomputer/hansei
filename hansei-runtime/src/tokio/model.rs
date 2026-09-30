@@ -1019,6 +1019,9 @@ pub enum WaitTarget {
         fd: Option<i32>,
         /// The readiness awaited, where the parked slot spelled one.
         interest: Option<Interest>,
+        /// The TLS connection the operation's route crossed, where it
+        /// crossed one: its words, or why they did not read.
+        tls: Option<Result<TlsReading, String>>,
     },
     /// `batch_semaphore::Acquire`: queued on the semaphore that backs
     /// tokio's Mutex, RwLock, and Semaphore.
@@ -1551,6 +1554,15 @@ impl WaitTarget {
         }
     }
 
+    /// The TLS connection an io wait's route crossed, where it crossed
+    /// one: the `tls:` line under the wait's own.
+    pub fn tls(&self) -> Option<&Result<TlsReading, String>> {
+        match self {
+            Self::Io { tls, .. } => tls.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Who awaits a client connection's response, where a request is
     /// in flight: the `caller:` line under the connection's own.
     pub fn caller(&self) -> Option<&HttpCaller> {
@@ -1567,6 +1579,109 @@ impl WaitTarget {
         match self.words() {
             Some(words) => format!("{self} ({words})"),
             None => self.to_string(),
+        }
+    }
+}
+
+/// A TLS connection's words, as rustls's connection and the stream
+/// holding it read: which side this end is, the version the handshake
+/// settled on, the flags that say how far the handshake got and which
+/// side has closed, and the records each direction has carried.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TlsReading {
+    /// `Side`'s enumerator: `Client` or `Server`.
+    pub side: String,
+    /// `ProtocolVersion`'s variant, where one was negotiated.
+    pub version: Option<String>,
+    /// The connection's state is an error: it failed, and stays so.
+    pub failed: bool,
+    pub may_send_application_data: bool,
+    pub may_receive_application_data: bool,
+    pub has_sent_close_notify: bool,
+    pub has_received_close_notify: bool,
+    pub has_seen_eof: bool,
+    pub sent_fatal_alert: bool,
+    pub read_seq: u64,
+    pub write_seq: u64,
+    /// The stream's own state variant: `Stream` while both directions
+    /// are open, `ReadShutdown`, `WriteShutdown`, `FullyShutdown`, or
+    /// `EarlyData` before a client's handshake finishes.
+    pub stream_state: String,
+}
+
+/// Where a TLS connection stands, in one word.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum TlsVerdict {
+    /// Application data cannot flow both ways yet (rustls's own
+    /// `is_handshaking`).
+    Handshaking,
+    Established,
+    /// One side has said it is done: a close_notify either way, or the
+    /// stream shut one direction.
+    Closing,
+    /// Both directions are done: the stream shut both, or the peer's
+    /// end of stream was seen.
+    Closed,
+    /// The connection's state is an error, or this end sent a fatal
+    /// alert. rustls sets the flag it keeps for that on sending a
+    /// close_notify too — no alert of any kind follows either — so
+    /// only a flag without a close_notify beside it is a failure.
+    Failed,
+}
+
+impl fmt::Display for TlsVerdict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Handshaking => "handshaking",
+            Self::Established => "established",
+            Self::Closing => "closing",
+            Self::Closed => "closed",
+            Self::Failed => "failed",
+        })
+    }
+}
+
+impl TlsReading {
+    /// The verdict, the most final word that applies: a failure
+    /// outranks a close, a close a half-close, and a half-close an
+    /// unfinished handshake.
+    pub fn verdict(&self) -> TlsVerdict {
+        if self.failed || (self.sent_fatal_alert && !self.has_sent_close_notify) {
+            TlsVerdict::Failed
+        } else if self.stream_state == "FullyShutdown" || self.has_seen_eof {
+            TlsVerdict::Closed
+        } else if self.has_sent_close_notify
+            || self.has_received_close_notify
+            || matches!(self.stream_state.as_str(), "ReadShutdown" | "WriteShutdown")
+        {
+            TlsVerdict::Closing
+        } else if !(self.may_send_application_data && self.may_receive_application_data) {
+            TlsVerdict::Handshaking
+        } else {
+            TlsVerdict::Established
+        }
+    }
+}
+
+/// `client, TLSv1_3, established, 9239 records each way`: the side,
+/// the version where one was negotiated, the verdict, and the records
+/// each direction carried — once where both counts agree.
+impl fmt::Display for TlsReading {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.side.to_ascii_lowercase())?;
+        if let Some(version) = &self.version {
+            write!(f, ", {version}")?;
+        }
+        write!(f, ", {}, ", self.verdict())?;
+        if self.read_seq == self.write_seq {
+            write!(f, "{} each way", counted_noun(self.read_seq, "record"))
+        } else {
+            write!(
+                f,
+                "{} read, {} written",
+                counted_noun(self.read_seq, "record"),
+                self.write_seq
+            )
         }
     }
 }
@@ -1749,7 +1864,9 @@ impl fmt::Display for WaitTarget {
                 }
                 Ok(())
             }
-            Self::Io { addr, fd, interest } => {
+            Self::Io {
+                addr, fd, interest, ..
+            } => {
                 match fd {
                     Some(fd) => write!(f, "io fd {fd}")?,
                     None => write!(f, "io {addr:#x}")?,
@@ -2310,6 +2427,7 @@ mod tests {
             addr: 0xa000,
             fd,
             interest,
+            tls: None,
         };
         assert_eq!(
             io(None, Some(Interest(0b01))).to_string(),
@@ -2473,6 +2591,108 @@ mod tests {
         assert_eq!(io, [(0x30, IoSlot::Reader)]);
         assert!(registries.io_of(0x9999).next().is_none());
     }
+
+    /// A TLS connection's verdict is the most final word that applies,
+    /// and its line gives the side, the version where one was
+    /// negotiated, the verdict and the records each direction carried.
+    #[test]
+    fn test_a_tls_reading_says_where_its_connection_stands() {
+        let established = TlsReading {
+            side: "Client".to_owned(),
+            version: Some("TLSv1_3".to_owned()),
+            failed: false,
+            may_send_application_data: true,
+            may_receive_application_data: true,
+            has_sent_close_notify: false,
+            has_received_close_notify: false,
+            has_seen_eof: false,
+            sent_fatal_alert: false,
+            read_seq: 9239,
+            write_seq: 9239,
+            stream_state: "Stream".to_owned(),
+        };
+        assert_eq!(
+            established.to_string(),
+            "client, TLSv1_3, established, 9239 records each way"
+        );
+        let with = |f: &dyn Fn(&mut TlsReading)| {
+            let mut reading = established.clone();
+            f(&mut reading);
+            reading
+        };
+        let verdict = |f: &dyn Fn(&mut TlsReading)| with(f).verdict();
+        // Either direction not yet open is a handshake in progress.
+        assert_eq!(
+            verdict(&|r| r.may_receive_application_data = false),
+            TlsVerdict::Handshaking
+        );
+        assert_eq!(
+            verdict(&|r| r.may_send_application_data = false),
+            TlsVerdict::Handshaking
+        );
+        // A close_notify either way, or one direction shut, is closing,
+        // and outranks a handshake.
+        for close in [
+            &|r: &mut TlsReading| r.has_sent_close_notify = true,
+            &|r: &mut TlsReading| r.has_received_close_notify = true,
+            &|r: &mut TlsReading| r.stream_state = "ReadShutdown".to_owned(),
+            &|r: &mut TlsReading| r.stream_state = "WriteShutdown".to_owned(),
+        ] as [&dyn Fn(&mut TlsReading); 4]
+        {
+            assert_eq!(verdict(close), TlsVerdict::Closing);
+            assert_eq!(
+                verdict(&|r| {
+                    close(r);
+                    r.may_receive_application_data = false;
+                }),
+                TlsVerdict::Closing
+            );
+        }
+        // Both directions shut, or the peer's end of stream, is closed,
+        // and outranks closing.
+        assert_eq!(
+            verdict(&|r| r.stream_state = "FullyShutdown".to_owned()),
+            TlsVerdict::Closed
+        );
+        assert_eq!(
+            verdict(&|r| {
+                r.has_seen_eof = true;
+                r.has_sent_close_notify = true;
+            }),
+            TlsVerdict::Closed
+        );
+        // A failed state or a fatal alert outranks everything.
+        assert_eq!(
+            verdict(&|r| {
+                r.failed = true;
+                r.stream_state = "FullyShutdown".to_owned();
+            }),
+            TlsVerdict::Failed
+        );
+        assert_eq!(verdict(&|r| r.sent_fatal_alert = true), TlsVerdict::Failed);
+        // A close_notify sets the same flag, and is a close.
+        assert_eq!(
+            verdict(&|r| {
+                r.has_sent_close_notify = true;
+                r.sent_fatal_alert = true;
+            }),
+            TlsVerdict::Closing
+        );
+        // No version before the handshake picks one; counts that differ
+        // are given each.
+        assert_eq!(
+            with(&|r| {
+                r.side = "Server".to_owned();
+                r.version = None;
+                r.may_send_application_data = false;
+                r.may_receive_application_data = false;
+                r.read_seq = 1;
+                r.write_seq = 0;
+            })
+            .to_string(),
+            "server, handshaking, 1 record read, 0 written"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2530,6 +2750,7 @@ mod caller_tests {
             addr: 0x8058d80,
             fd: None,
             interest: None,
+            tls: None,
         };
         assert!(io.caller().is_none());
     }

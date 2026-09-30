@@ -2008,6 +2008,7 @@ mod tests {
                         addr: 0x7000,
                         fd: None,
                         interest: None,
+                        tls: None,
                     },
                     None,
                 ))),

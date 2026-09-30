@@ -40,6 +40,8 @@ fn record(ty: BundleTypeId) -> TypeSemantics {
         pool: None,
         io_route: None,
         io: None,
+        tls_session: None,
+        tls_stream: None,
         refcount: None,
         lock: None,
         acquires_for: None,
@@ -3128,7 +3130,7 @@ fn test_semantic_table_binding_routes_the_words_of_a_reviewed_release() {
     bad(&wrong, "layout rule has an incompatible library origin");
     let mut wrong = b.clone();
     wrong.semantics.rules[rule].origin = SemanticOriginId(origin + 2);
-    bad(&wrong, "hash table rule requires a reviewed range");
+    bad(&wrong, "layout rule requires a reviewed range");
     // The mask and the count are words, the control bytes a pointer to
     // bytes: the `NonNull` holding that pointer is no pointer itself.
     let mut wrong = b.clone();
@@ -3884,4 +3886,285 @@ fn test_stream_matches_select_variants_and_git_origins_name_their_checkout() {
     let mut checked_out = b.clone();
     checked_out.semantics.rules[2].origin = SemanticOriginId(2);
     bad(&checked_out, "third-party delegation needs source evidence");
+}
+
+/// [`third_party_routes`] with a TLS stream on top: a stream that
+/// forwards to the routed parent under tokio-rustls's rule and holds a
+/// rustls connection whose words bind under rustls's session rule.
+fn tls_session() -> Bundle {
+    let mut b = third_party_routes();
+    let mut strings = StringInterner::new();
+    for s in b.strings.iter() {
+        strings.intern(s);
+    }
+    let mut name = |s: &str| strings.intern(s);
+    let [u8_name, ok, err, client, server, tls13, none, some] = [
+        "u8", "Ok", "Err", "Client", "Server", "TLSv1_3", "None", "Some",
+    ]
+    .map(&mut name);
+    let [
+        state,
+        side,
+        negotiated,
+        send,
+        receive,
+        sent_close,
+        received_close,
+    ] = [
+        "state",
+        "side",
+        "negotiated_version",
+        "may_send_application_data",
+        "may_receive_application_data",
+        "has_sent_close_notify",
+        "has_received_close_notify",
+    ]
+    .map(&mut name);
+    let [eof, fatal, read_seq, write_seq, session, inner] = [
+        "has_seen_eof",
+        "sent_fatal_alert",
+        "read_seq",
+        "write_seq",
+        "session",
+        "inner",
+    ]
+    .map(&mut name);
+    let [
+        rustls,
+        release,
+        family,
+        result_name,
+        side_name,
+        version_name,
+        option_name,
+    ] = [
+        "rustls",
+        "0.23.41",
+        "rustls-session-0.23.23",
+        "Result",
+        "Side",
+        "ProtocolVersion",
+        "Option",
+    ]
+    .map(&mut name);
+    let [connection_name, stream_name] = ["ConnectionCommon", "TlsStream"].map(&mut name);
+    b.strings = strings.finish();
+    let member = |name, ty, offset| MemberDef { name, ty, offset };
+    let variant = |name, discr: Option<u128>, payload| VariantDef {
+        name,
+        discr_values: discr.map(|d| DiscrValues(vec![DiscrValue::Value(d)])),
+        payload,
+        decl: None,
+        await_site: None,
+    };
+    let (u8_t, result_t, side_t, version_t, option_t, session_t, stream_t) = (
+        BundleTypeId(13),
+        BundleTypeId(14),
+        BundleTypeId(15),
+        BundleTypeId(16),
+        BundleTypeId(17),
+        BundleTypeId(18),
+        BundleTypeId(19),
+    );
+    assert_eq!(b.types.types.len(), 13);
+    let tagged = |name, size, variants| TypeDef::Enum {
+        name,
+        size,
+        shape: VariantShape {
+            discr: Some(DiscrDef {
+                offset: 0,
+                ty: u8_t,
+            }),
+            variants,
+        },
+    };
+    b.types.types.extend([
+        TypeDef::Base {
+            name: u8_name,
+            size: 1,
+            encoding: Encoding::Unsigned,
+        },
+        tagged(
+            result_name,
+            2,
+            vec![
+                variant(ok, Some(0), member(ok, u8_t, 1)),
+                variant(err, Some(1), member(err, u8_t, 1)),
+            ],
+        ),
+        TypeDef::CEnum {
+            name: side_name,
+            size: 1,
+            repr: u8_t,
+            enumerators: vec![(client, 0), (server, 1)],
+        },
+        TypeDef::Enum {
+            name: version_name,
+            size: 1,
+            shape: VariantShape {
+                discr: None,
+                variants: vec![variant(tls13, None, member(tls13, u8_t, 0))],
+            },
+        },
+        tagged(
+            option_name,
+            2,
+            vec![
+                variant(none, Some(0), member(none, u8_t, 1)),
+                variant(some, Some(1), member(some, version_t, 1)),
+            ],
+        ),
+        TypeDef::Struct {
+            name: connection_name,
+            size: 32,
+            members: vec![
+                member(state, result_t, 0),
+                member(side, side_t, 2),
+                member(negotiated, option_t, 3),
+                member(send, u8_t, 5),
+                member(receive, u8_t, 6),
+                member(sent_close, u8_t, 7),
+                member(received_close, u8_t, 8),
+                member(eof, u8_t, 9),
+                member(fatal, u8_t, 10),
+                member(read_seq, BundleTypeId(0), 16),
+                member(write_seq, BundleTypeId(0), 24),
+            ],
+        },
+        TypeDef::Struct {
+            name: stream_name,
+            size: 56,
+            members: vec![
+                member(inner, PARENT, 0),
+                member(session, session_t, 16),
+                member(state, side_t, 48),
+            ],
+        },
+    ]);
+    b.semantics.origins.push(SemanticOrigin::LibraryLayout {
+        package: rustls,
+        version: Some(release),
+        family,
+        selection: LayoutSelection::ReviewedRange,
+    });
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::RustlsSession,
+        revision: 1,
+        origin: SemanticOriginId(3),
+    });
+    let word = |name| path(vec![named(name)], BundleTypeId(0));
+    let flag = |name| path(vec![named(name)], u8_t);
+    let mut connection = record(session_t);
+    connection.future = None;
+    connection.tls_session = Some(TlsSessionBinding {
+        rule: SemanticRuleId(4),
+        state: path(vec![named(state)], result_t),
+        side: path(vec![named(side)], side_t),
+        negotiated_version: path(vec![named(negotiated)], option_t),
+        version: path(vec![named(negotiated), Step::Variant(some)], version_t),
+        may_send_application_data: flag(send),
+        may_receive_application_data: flag(receive),
+        has_sent_close_notify: flag(sent_close),
+        has_received_close_notify: flag(received_close),
+        has_seen_eof: flag(eof),
+        sent_fatal_alert: flag(fatal),
+        read_seq: word(read_seq),
+        write_seq: word(write_seq),
+    });
+    let mut stream = record(stream_t);
+    stream.future = None;
+    stream.io_route = Some(IoRouteBinding {
+        rule: SemanticRuleId(2),
+        step: IoRouteStep::Forward {
+            inner: path(vec![named(inner)], PARENT),
+        },
+    });
+    stream.tls_stream = Some(TlsStreamBinding {
+        rule: SemanticRuleId(2),
+        session: path(vec![named(session)], session_t),
+        state: path(vec![named(state)], side_t),
+    });
+    b.semantics.types.extend([connection, stream]);
+    b.validate().unwrap();
+    b
+}
+
+/// A TLS stream binds its connection under its route's rule, landing
+/// on a type whose words bind; the words bind only under rustls's
+/// session rule at a reviewed release, each of the shape its reading
+/// takes.
+#[test]
+fn test_tls_words_bind_by_shape_under_their_rules() {
+    let b = tls_session();
+    let [connection, stream] = [5, 6];
+    fn session(b: &mut Bundle) -> &mut TlsSessionBinding {
+        b.semantics.types[5].tls_session.as_mut().unwrap()
+    }
+    fn tls(b: &mut Bundle) -> &mut TlsStreamBinding {
+        b.semantics.types[6].tls_stream.as_mut().unwrap()
+    }
+    let words = session(&mut b.clone()).clone();
+
+    let mut not_a_result = b.clone();
+    session(&mut not_a_result).state = words.negotiated_version.clone();
+    bad(&not_a_result, "TLS session state is not a result");
+
+    let mut side = b.clone();
+    session(&mut side).side = words.state.clone();
+    bad(&side, "TLS session side is not a C-like enum");
+
+    let mut not_an_option = b.clone();
+    session(&mut not_an_option).negotiated_version = words.state.clone();
+    bad(&not_an_option, "TLS session version is not an option");
+
+    let mut unselected = b.clone();
+    session(&mut unselected).version = words.state.clone();
+    bad(&unselected, "not selected from its option");
+
+    let mut wide_flag = b.clone();
+    session(&mut wide_flag).has_seen_eof = words.read_seq.clone();
+    bad(&wide_flag, "TLS session flag is not one byte");
+
+    let mut narrow_seq = b.clone();
+    session(&mut narrow_seq).write_seq = words.sent_fatal_alert.clone();
+    bad(&narrow_seq, "TLS session sequence is not an unsigned word");
+
+    let mut wrong_rule = b.clone();
+    session(&mut wrong_rule).rule = SemanticRuleId(2);
+    bad(&wrong_rule, "incompatible capability");
+
+    let mut unreviewed = b.clone();
+    let SemanticOrigin::LibraryLayout { selection, .. } = &mut unreviewed.semantics.origins[3]
+    else {
+        unreachable!()
+    };
+    *selection = LayoutSelection::AboveReviewedRange;
+    bad(&unreviewed, "layout rule requires a reviewed range");
+
+    let mut unavailable = b.clone();
+    unavailable.semantics.types[connection].storage = StoragePolicy::Unavailable(issue());
+    bad(
+        &unavailable,
+        "unavailable storage carries a readable capability",
+    );
+
+    let mut wordless = b.clone();
+    wordless.semantics.types[connection].tls_session = None;
+    bad(&wordless, "TLS stream's connection has no session binding");
+
+    let mut unrouted = b.clone();
+    unrouted.semantics.types[stream].io_route = None;
+    bad(&unrouted, "TLS stream binding is not its route's");
+
+    let mut session_rule = b.clone();
+    tls(&mut session_rule).rule = SemanticRuleId(4);
+    bad(&session_rule, "incompatible capability");
+
+    let mut stateless = b.clone();
+    let seq = words.read_seq.steps[0];
+    tls(&mut stateless).state = path(
+        vec![tls(&mut b.clone()).session.steps[0], seq],
+        BundleTypeId(0),
+    );
+    bad(&stateless, "TLS stream state is not an enum");
 }

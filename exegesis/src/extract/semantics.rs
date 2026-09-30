@@ -35,10 +35,10 @@ use crate::bundle::{
     RefcountBinding, ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass,
     SelectBinding, Selector, SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId,
     SemanticRule, SemanticRuleId, SemanticRuleKind, SemanticTable, SourceFileEvidence, SourceLoc,
-    Step, StoragePolicy, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TypeDef,
-    TypeSemantics, TypeTable, TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles,
-    container_routes, required_resource_roles, required_resource_routes, scheduler_role,
-    semantic_path_target, socket_roles,
+    Step, StoragePolicy, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TlsSessionBinding,
+    TlsStreamBinding, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome, WalkRole,
+    WalksTable, container_roles, container_routes, required_resource_roles,
+    required_resource_routes, scheduler_role, semantic_path_target, socket_roles,
 };
 use crate::detect::Family;
 use crate::detect::adapters::{
@@ -51,12 +51,12 @@ use crate::detect::semantics::{
     GitConvention, HASHBROWN_TABLE_V0_12_3, HTTP_REQUEST_V1_0_0, HYPER_H1_CONN_V1_6_0,
     HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_POOL_V0_1_16, HYPER_UTIL_RESPONSE_V0_1_10,
     HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention, PARKING_LOT_RAW_MUTEX_V0_12_1,
-    REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0, RustcConvention,
-    SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_INTERVAL_TICK_V1_47, TOKIO_RUSTLS_STREAM_V0_26_0,
-    TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
-    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2, TRACING_INSTRUMENTED_V0_1_40,
-    library_convention, rustc_core_pending_convention, rustc_coroutine_convention,
-    rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
+    REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0, RUSTLS_SESSION_V0_23_23,
+    RustcConvention, SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_INTERVAL_TICK_V1_47,
+    TOKIO_RUSTLS_STREAM_V0_26_0, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
+    TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2,
+    TRACING_INSTRUMENTED_V0_1_40, library_convention, rustc_core_pending_convention,
+    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
     rustc_std_futex_mutex_convention, rustc_std_refcount_convention, tokio_acquire_owner,
     tokio_state_protocol,
 };
@@ -654,6 +654,9 @@ pub(super) struct Seed {
     /// One of tokio's io operation futures, where the type is one: a
     /// resource only over a stream whose route ends at a socket.
     io_op: Option<IoOpSeed>,
+    /// rustls's connection state, where the type is it: the type's own
+    /// method declarations, which its release is read off.
+    tls_session: Option<BTreeSet<PollSource>>,
     /// A refcounted allocation's header, where the type is one: the
     /// member its value sits in, and the verdict on its defining units.
     refcount: Option<(&'static str, CompilerVerdict)>,
@@ -712,7 +715,25 @@ struct DelegatedStream {
     kind: SemanticRuleKind,
     review: Review,
     route: DelegatedRoute,
+    /// Where the stream holds a rustls connection: the hops to it and
+    /// to the stream's own state.
+    tls: Option<TlsHops>,
 }
+
+#[derive(Debug)]
+struct TlsHops {
+    session: &'static [Hop<'static>],
+    state: &'static [Hop<'static>],
+}
+
+/// tokio-rustls's client and server streams hold their connection as
+/// `session`, a `ClientConnection` or `ServerConnection` newtype over
+/// rustls's `ConnectionCommon` in `inner`, and their shutdown state as
+/// `state`, a `TlsState`.
+const TOKIO_RUSTLS_SESSION: TlsHops = TlsHops {
+    session: &[Hop::Member("session"), Hop::Member("inner")],
+    state: &[Hop::Member("state")],
+};
 
 /// Which kind of review a third-party stream's origin is checked
 /// against: a registry release's range, or a git revision list.
@@ -739,26 +760,34 @@ const IO_DELEGATIONS: [DelegatedStream; 4] = [
         kind: SemanticRuleKind::TokioRustlsStream,
         review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_26_0),
         route: DelegatedRoute::Match(&["Client", "Server"]),
+        tls: None,
     },
     DelegatedStream {
         key: "tokio_rustls::client::TlsStream<",
         kind: SemanticRuleKind::TokioRustlsStream,
         review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_26_0),
         route: DelegatedRoute::Forward(&[Hop::Member("io")]),
+        tls: Some(TOKIO_RUSTLS_SESSION),
     },
     DelegatedStream {
         key: "tokio_rustls::server::TlsStream<",
         kind: SemanticRuleKind::TokioRustlsStream,
         review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_26_0),
         route: DelegatedRoute::Forward(&[Hop::Member("io")]),
+        tls: Some(TOKIO_RUSTLS_SESSION),
     },
     DelegatedStream {
         key: "sprockets_tls::Stream<",
         kind: SemanticRuleKind::SprocketsTlsStream,
         review: Review::Git(&SPROCKETS_TLS_STREAM_D2B68E4),
         route: DelegatedRoute::Forward(&[Hop::Member("inner")]),
+        tls: None,
     },
 ];
+
+/// rustls's connection state, by the name every instantiation starts
+/// with.
+const RUSTLS_CONNECTION: &str = "rustls::conn::ConnectionCommon<";
 
 /// The third-party stream a name announces, if its route is reviewed.
 fn io_delegation(name: &str) -> Option<&'static DelegatedStream> {
@@ -1324,6 +1353,8 @@ pub(super) fn collect_semantic_seeds(
                 stream,
                 sources: type_sources(raw),
             });
+        } else if names_type(RUSTLS_CONNECTION, name) {
+            seeds.entry(ty).or_default().tls_session = Some(type_sources(raw));
         } else if let Some(op) = io_op_seed(name) {
             seeds.entry(ty).or_default().io_op = Some(op);
         } else if let Some(library) = library_seed(
@@ -2048,6 +2079,10 @@ struct Draft {
     /// The stream an io operation polls, where it is one over a routed
     /// stream.
     io: Option<IoOpPlan>,
+    /// A rustls connection's words, where they bind.
+    tls_session: Option<TlsSessionPlan>,
+    /// A routed TLS stream's connection and state, where they bind.
+    tls_stream: Option<(TypedPath, TypedPath)>,
     /// The header's value member, with the rule it binds under.
     refcount: Option<(RuleKey, MemberRef)>,
     /// The lock's word, with the rule it binds under.
@@ -2168,6 +2203,11 @@ pub(super) fn bind_semantics(
                 draft.issues.push(decline.clone());
             }
             draft.io = io.operations.get(&ty).cloned();
+            draft.tls_session = io.sessions.get(&ty).cloned();
+            draft.tls_stream = io.tls_streams.get(&ty).cloned();
+            if let Some(decline) = io.tls_declines.get(&ty) {
+                draft.issues.push(decline.clone());
+            }
             if let Some(decline) = io.operation_declines.get(&ty) {
                 draft.decline = Some(decline.clone());
             }
@@ -2351,7 +2391,8 @@ pub(super) fn bind_semantics(
     // adapter whose storage leads to a record does, so that discovery
     // can follow the owned route to it. A stream's route makes a record
     // too, but one discovery has no business following: a pointer to a
-    // stream is no adapter, whatever its type's route says.
+    // stream is no adapter, whatever its type's route says; nor is a
+    // pointer to a TLS connection.
     let mut discovered: BTreeSet<BundleTypeId> = drafts
         .iter()
         .filter(|(_, d)| d.own_record || !d.evidence.is_empty())
@@ -2374,7 +2415,12 @@ pub(super) fn bind_semantics(
     }
     let included: BTreeSet<BundleTypeId> = drafts
         .iter()
-        .filter(|(ty, d)| discovered.contains(ty) || d.io_route.is_some())
+        .filter(|(ty, d)| {
+            discovered.contains(ty)
+                || d.io_route.is_some()
+                || d.tls_session.is_some()
+                || d.tls_stream.is_some()
+        })
         .map(|(&ty, _)| ty)
         .collect();
 
@@ -2700,12 +2746,41 @@ pub(super) fn bind_semantics(
                 stream: plan.stream,
                 remaining: plan.remaining,
             });
+        // A TLS stream's words bind under its route's rule: the review
+        // that routes it is the one that names its members.
+        let tls_stream = draft
+            .tls_stream
+            .zip(draft.io_route.as_ref())
+            .filter(|_| readable)
+            .map(|((session, state), (rule, _))| TlsStreamBinding {
+                rule: rules.rule(rule, strings, library),
+                session,
+                state,
+            });
         let io_route = draft
             .io_route
             .filter(|_| readable)
             .map(|(rule, step)| IoRouteBinding {
                 rule: rules.rule(&rule, strings, library),
                 step,
+            });
+        let tls_session = draft
+            .tls_session
+            .filter(|_| readable)
+            .map(|plan| TlsSessionBinding {
+                rule: rules.rule(&plan.rule, strings, library),
+                state: plan.state,
+                side: plan.side,
+                negotiated_version: plan.negotiated_version,
+                version: plan.version,
+                may_send_application_data: plan.may_send_application_data,
+                may_receive_application_data: plan.may_receive_application_data,
+                has_sent_close_notify: plan.has_sent_close_notify,
+                has_received_close_notify: plan.has_received_close_notify,
+                has_seen_eof: plan.has_seen_eof,
+                sent_fatal_alert: plan.sent_fatal_alert,
+                read_seq: plan.read_seq,
+                write_seq: plan.write_seq,
             });
         records.push(TypeSemantics {
             ty,
@@ -2725,6 +2800,8 @@ pub(super) fn bind_semantics(
             pool,
             io_route,
             io,
+            tls_session,
+            tls_stream,
             refcount: draft.refcount.map(|(rule, value)| RefcountBinding {
                 rule: rules.rule(&rule, strings, library),
                 value,
@@ -4017,7 +4094,7 @@ fn plan_table(
 ) -> Result<TablePlan, Decline> {
     use hash_table::{BUCKET_MASK, CTRL, ITEMS, POINTER, TABLE};
     let convention = &HASHBROWN_TABLE_V0_12_3;
-    let version = table_release(&seed.sources, convention)?;
+    let version = layout_release(&seed.sources, convention)?;
     let rule = RuleKey::Layout {
         kind: SemanticRuleKind::HashbrownTable,
         package: convention.package,
@@ -4042,15 +4119,16 @@ fn plan_table(
     })
 }
 
-/// The hashbrown release a table's map was declared in: a cargo registry
-/// release, or the one the toolchain vendors for std. A declaration in
-/// another crate — a trait some other crate implements on the map —
-/// says nothing about which hashbrown laid it out and is set aside.
+/// The release a layout rule's type was declared in — hashbrown's map,
+/// rustls's connection: a cargo registry release, or the one the
+/// toolchain vendors for std. A declaration in another crate — a trait
+/// some other crate implements on the type — says nothing about which
+/// release laid it out and is set aside.
 /// Where every release named is inside the reviewed range the binding
 /// holds for each, and the origin names the newest, as a delegation's
 /// does; where one is outside, or none is named at all, there is no
 /// binding.
-fn table_release(
+fn layout_release(
     sources: &BTreeSet<PollSource>,
     convention: &'static LibraryConvention,
 ) -> Result<String, Decline> {
@@ -4212,6 +4290,183 @@ struct IoPlans {
     route_declines: BTreeMap<BundleTypeId, Decline>,
     /// Why a screened operation did not bind: its continuation's reason.
     operation_declines: BTreeMap<BundleTypeId, Decline>,
+    /// Every rustls connection whose words bind.
+    sessions: BTreeMap<BundleTypeId, TlsSessionPlan>,
+    /// Every routed TLS stream whose connection is such a one: the
+    /// paths to the connection and to the stream's state.
+    tls_streams: BTreeMap<BundleTypeId, (TypedPath, TypedPath)>,
+    /// Why a screened connection's words, or a routed stream's TLS
+    /// layer, did not bind: an issue beside its record.
+    tls_declines: BTreeMap<BundleTypeId, Decline>,
+}
+
+/// rustls's connection words, each a run of member names from the
+/// connection landing on a type of the shape its reading takes.
+#[derive(Clone, Debug)]
+struct TlsSessionPlan {
+    rule: RuleKey,
+    state: TypedPath,
+    side: TypedPath,
+    negotiated_version: TypedPath,
+    version: TypedPath,
+    may_send_application_data: TypedPath,
+    may_receive_application_data: TypedPath,
+    has_sent_close_notify: TypedPath,
+    has_received_close_notify: TypedPath,
+    has_seen_eof: TypedPath,
+    sent_fatal_alert: TypedPath,
+    read_seq: TypedPath,
+    write_seq: TypedPath,
+}
+
+/// Plan a rustls connection's words: the release first, read off the
+/// type's declarations and inside the reviewed range, then each word
+/// by the reviewed layout's member names, held to the shape the
+/// reading takes — the state a `Result`, the version an `Option` over
+/// an enum, the side a C-like enum, the flags single bytes and the
+/// sequence counts unsigned words.
+fn plan_tls_session(
+    ty: BundleTypeId,
+    sources: &BTreeSet<PollSource>,
+    types: &TypeTable,
+    strings: &StringInterner,
+) -> Result<TlsSessionPlan, Decline> {
+    use Hop::{Member, Variant};
+    let convention = &RUSTLS_SESSION_V0_23_23;
+    let version = layout_release(sources, convention)?;
+    let rule = RuleKey::Layout {
+        kind: SemanticRuleKind::RustlsSession,
+        package: convention.package,
+        version,
+        family: convention.family,
+    };
+    let shape = |path: TypedPath, ok: bool, what: &str| {
+        if ok {
+            Ok(path)
+        } else {
+            Err((
+                SemanticIssueKind::MissingLayout,
+                format!("its {what} has another shape in the final table"),
+            ))
+        }
+    };
+    let variants = |target: BundleTypeId| -> BTreeSet<&str> {
+        match types.get(target) {
+            Some(TypeDef::Enum { shape, .. }) => shape
+                .variants
+                .iter()
+                .filter_map(|v| strings.get(v.name))
+                .collect(),
+            _ => BTreeSet::new(),
+        }
+    };
+    let common = |name: &str| {
+        hop_landing(
+            types,
+            strings,
+            ty,
+            &[Member("core"), Member("common_state"), Member(name)],
+        )
+    };
+    let flag = |name: &str| {
+        let path = common(name)?;
+        let ok = types.size_of(path.target) == Some(1);
+        shape(path, ok, name)
+    };
+    let seq = |name: &str| {
+        let path = hop_landing(
+            types,
+            strings,
+            ty,
+            &[
+                Member("core"),
+                Member("common_state"),
+                Member("record_layer"),
+                Member(name),
+            ],
+        )?;
+        let ok = matches!(
+            types.get(path.target),
+            Some(TypeDef::Base {
+                encoding: crate::bundle::Encoding::Unsigned,
+                size: 8,
+                ..
+            })
+        );
+        shape(path, ok, name)
+    };
+    let state = hop_landing(types, strings, ty, &[Member("core"), Member("state")])?;
+    let ok = variants(state.target) == BTreeSet::from(["Ok", "Err"]);
+    let state = shape(state, ok, "state")?;
+    let side = common("side")?;
+    let ok = matches!(types.get(side.target), Some(TypeDef::CEnum { .. }));
+    let side = shape(side, ok, "side")?;
+    let negotiated_version = common("negotiated_version")?;
+    let ok = variants(negotiated_version.target) == BTreeSet::from(["None", "Some"]);
+    let negotiated_version = shape(negotiated_version, ok, "negotiated version")?;
+    let version = hop_landing(
+        types,
+        strings,
+        ty,
+        &[
+            Member("core"),
+            Member("common_state"),
+            Member("negotiated_version"),
+            Variant("Some"),
+            Member("__0"),
+        ],
+    )?;
+    let ok = !variants(version.target).is_empty();
+    let version = shape(version, ok, "version")?;
+    Ok(TlsSessionPlan {
+        rule,
+        state,
+        side,
+        negotiated_version,
+        version,
+        may_send_application_data: flag("may_send_application_data")?,
+        may_receive_application_data: flag("may_receive_application_data")?,
+        has_sent_close_notify: flag("has_sent_close_notify")?,
+        has_received_close_notify: flag("has_received_close_notify")?,
+        has_seen_eof: flag("has_seen_eof")?,
+        sent_fatal_alert: flag("sent_fatal_alert")?,
+        read_seq: seq("read_seq")?,
+        write_seq: seq("write_seq")?,
+    })
+}
+
+/// A routed stream's TLS layer: the paths to the connection it holds,
+/// which has to be one whose words bind, and to its own state, an
+/// enum.
+fn plan_tls_stream(
+    ty: BundleTypeId,
+    hops: &TlsHops,
+    sessions: &BTreeMap<BundleTypeId, TlsSessionPlan>,
+    types: &TypeTable,
+    names: &[Option<String>],
+    strings: &StringInterner,
+) -> Result<(TypedPath, TypedPath), Decline> {
+    let session = hop_landing(types, strings, ty, hops.session)?;
+    if !sessions.contains_key(&session.target) {
+        return Err((
+            SemanticIssueKind::NoRule,
+            format!(
+                "its connection, {}, has no reviewed session layout",
+                type_label(names, session.target)
+            ),
+        ));
+    }
+    let state = hop_landing(types, strings, ty, hops.state)?;
+    if !matches!(
+        types.get(state.target),
+        Some(TypeDef::Enum { .. } | TypeDef::CEnum { .. })
+    ) {
+        return Err((
+            SemanticIssueKind::MissingLayout,
+            "its state is not an enum in the final table".to_owned(),
+        ));
+    }
+    Ok((session, state))
 }
 
 #[derive(Clone, Debug)]
@@ -4237,6 +4492,20 @@ fn plan_io(
     strings: &StringInterner,
     walks: &WalksTable,
 ) -> IoPlans {
+    let mut sessions = BTreeMap::new();
+    let mut tls_declines = BTreeMap::new();
+    for (&ty, seed) in seeds {
+        if let Some(sources) = &seed.tls_session {
+            match plan_tls_session(ty, sources, types, strings) {
+                Ok(plan) => {
+                    sessions.insert(ty, plan);
+                }
+                Err(decline) => {
+                    tls_declines.insert(ty, decline);
+                }
+            }
+        }
+    }
     let tokio = || RuleKey::Library(SemanticRuleKind::TokioIoRoute);
     let mut planned: BTreeMap<BundleTypeId, (RuleKey, IoRouteStep)> = BTreeMap::new();
     let mut route_declines = BTreeMap::new();
@@ -4350,11 +4619,36 @@ fn plan_io(
             }
         }
     }
+    // A routed stream that holds a rustls connection: its TLS layer,
+    // where the connection's words bind.
+    let mut tls_streams = BTreeMap::new();
+    for (&ty, seed) in seeds {
+        let Some(IoRouteSeed::Delegated { stream, .. }) = &seed.io_route else {
+            continue;
+        };
+        let Some(hops) = &stream.tls else {
+            continue;
+        };
+        if !routes.contains_key(&ty) {
+            continue;
+        }
+        match plan_tls_stream(ty, hops, &sessions, types, names, strings) {
+            Ok(paths) => {
+                tls_streams.insert(ty, paths);
+            }
+            Err(decline) => {
+                tls_declines.insert(ty, decline);
+            }
+        }
+    }
     IoPlans {
         routes,
         operations,
         route_declines,
         operation_declines,
+        sessions,
+        tls_streams,
+        tls_declines,
     }
 }
 
@@ -6265,7 +6559,7 @@ mod tests {
         let vendored =
             |version: &str| source(&format!("/rust/deps/hashbrown-{version}/src/map.rs"), None);
         let release = |sources: &[PollSource]| {
-            table_release(&sources.iter().cloned().collect(), &HASHBROWN_TABLE_V0_12_3)
+            layout_release(&sources.iter().cloned().collect(), &HASHBROWN_TABLE_V0_12_3)
         };
         assert_eq!(
             release(&[registry("hashbrown", "0.15.5")]).unwrap(),

@@ -977,6 +977,38 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 fq_name(bundle, table.bucket)
             );
         }
+        if let Some(session) = &record.tls_session {
+            let words = [
+                ("state", &session.state),
+                ("side", &session.side),
+                ("negotiated", &session.negotiated_version),
+                ("version", &session.version),
+                ("send", &session.may_send_application_data),
+                ("receive", &session.may_receive_application_data),
+                ("sent-close", &session.has_sent_close_notify),
+                ("received-close", &session.has_received_close_notify),
+                ("eof", &session.has_seen_eof),
+                ("fatal", &session.sent_fatal_alert),
+                ("read-seq", &session.read_seq),
+                ("write-seq", &session.write_seq),
+            ]
+            .map(|(what, word)| format!("{what} {}", path(record.ty, word)));
+            let _ = write!(
+                line,
+                " tls-session rule {} {}",
+                session.rule.0,
+                words.join(" ")
+            );
+        }
+        if let Some(stream) = &record.tls_stream {
+            let _ = write!(
+                line,
+                " tls-stream rule {} session {} state {}",
+                stream.rule.0,
+                path(record.ty, &stream.session),
+                path(record.ty, &stream.state)
+            );
+        }
         if let Some(refcount) = &record.refcount {
             let value = match refcount.value {
                 MemberRef::Named(name) => s(name).to_owned(),

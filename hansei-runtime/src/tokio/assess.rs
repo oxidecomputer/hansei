@@ -1386,6 +1386,7 @@ impl<'b, T: Target> Context<'b, T> {
                 .fd
                 .or_else(|| self.io_resource_fd(&payloads(chain), io.scheduled_io.addr)),
             interest: Some(io.interest),
+            tls: io.tls.clone(),
         };
         let waiting = || {
             Assessed::of(WaitAssessment::Waiting(VerifiedWait {
@@ -1562,6 +1563,7 @@ impl<'b, T: Target> Context<'b, T> {
                     .fd
                     .or_else(|| self.io_resource_fd(&payloads(chain), io.scheduled_io.addr)),
                 interest: Some(io.interest),
+                tls: io.tls.clone(),
             }),
             ResourceObservation::Timer(timer) => Some(WaitTarget::Timer {
                 deadline: timer.deadline?,
@@ -3949,6 +3951,7 @@ mod tests {
                 addr: 7,
                 fd: None,
                 interest: None,
+                tls: None,
             },
             primitive: at,
             queue_position: Some(2),

@@ -296,6 +296,9 @@ impl<'a> Check<'a> {
             // of hashbrown's map, where std's vendored copy has no cargo
             // registry path to be a delegation origin by.
             HashbrownTable => "hashbrown",
+            // A layout rule whose release is read off the declarations
+            // of rustls's connection, like hashbrown's.
+            RustlsSession => "rustls",
         };
         require(
             matches!(origin, SemanticOrigin::LibraryLayout { package: p, .. }
@@ -328,10 +331,11 @@ impl<'a> Check<'a> {
                 "state rule requires a reviewed range",
             )?;
         }
-        if rule.kind == HashbrownTable {
+        if matches!(rule.kind, HashbrownTable | RustlsSession) {
             // The table rule authorizes reading a map's buckets as the
-            // value's storage, so like a state protocol it binds only on
-            // a release the review read.
+            // value's storage, and the session rule reading a
+            // connection's words as its verdict, so like a state
+            // protocol each binds only on a release the review read.
             require(
                 matches!(
                     origin,
@@ -340,7 +344,7 @@ impl<'a> Check<'a> {
                         ..
                     }
                 ),
-                "hash table rule requires a reviewed range",
+                "layout rule requires a reviewed range",
             )?;
         }
         Ok(())
@@ -758,6 +762,111 @@ impl<'a> Check<'a> {
                 self.roles(record.ty, &socket_roles(*socket))
             }
         }
+    }
+
+    /// A rustls connection's words, under rustls's session rule: its
+    /// state a `Result`, its side a C-like enum, its version an
+    /// option whose payload's variant is read, one-byte flags and
+    /// unsigned sequence words, every path starting at the connection.
+    fn tls_session(&self, record: &TypeSemantics, binding: &TlsSessionBinding) -> Result<()> {
+        self.rule(binding.rule, &[SemanticRuleKind::RustlsSession])?;
+        let variant_names = |path: &TypedPath, what: &str| -> Result<BTreeSet<&str>> {
+            self.path(record.ty, path)?;
+            require(
+                matches!(self.ty(path.target)?, TypeDef::Enum { .. }),
+                &format!("TLS session {what} is not an enum"),
+            )?;
+            self.variants(path.target)?
+                .iter()
+                .map(|variant| self.string(variant.name))
+                .collect()
+        };
+        require(
+            variant_names(&binding.state, "state")? == BTreeSet::from(["Ok", "Err"]),
+            "TLS session state is not a result",
+        )?;
+        self.path(record.ty, &binding.side)?;
+        require(
+            matches!(self.ty(binding.side.target)?, TypeDef::CEnum { .. }),
+            "TLS session side is not a C-like enum",
+        )?;
+        require(
+            variant_names(&binding.negotiated_version, "version")?
+                == BTreeSet::from(["None", "Some"]),
+            "TLS session version is not an option",
+        )?;
+        variant_names(&binding.version, "version name")?;
+        require(
+            binding
+                .version
+                .steps
+                .starts_with(&binding.negotiated_version.steps)
+                && matches!(
+                    binding.version.steps.get(binding.negotiated_version.steps.len()),
+                    Some(Step::Variant(v)) if self.string(*v)? == "Some"
+                ),
+            "TLS session version name is not selected from its option",
+        )?;
+        for flag in [
+            &binding.may_send_application_data,
+            &binding.may_receive_application_data,
+            &binding.has_sent_close_notify,
+            &binding.has_received_close_notify,
+            &binding.has_seen_eof,
+            &binding.sent_fatal_alert,
+        ] {
+            self.path(record.ty, flag)?;
+            require(
+                self.0.types.size_of(flag.target) == Some(1),
+                "TLS session flag is not one byte",
+            )?;
+        }
+        for seq in [&binding.read_seq, &binding.write_seq] {
+            self.path(record.ty, seq)?;
+            require(
+                matches!(
+                    self.ty(seq.target)?,
+                    TypeDef::Base {
+                        encoding: crate::Encoding::Unsigned,
+                        size: 8,
+                        ..
+                    }
+                ),
+                "TLS session sequence is not an unsigned word",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// A TLS stream's words, under its route's rule: the connection it
+    /// holds, landing on a session, and its own state enum.
+    fn tls_stream(
+        &self,
+        record: &TypeSemantics,
+        binding: &TlsStreamBinding,
+        session: &impl Fn(BundleTypeId) -> bool,
+    ) -> Result<()> {
+        self.rule(binding.rule, &[SemanticRuleKind::TokioRustlsStream])?;
+        require(
+            record
+                .io_route
+                .as_ref()
+                .is_some_and(|route| route.rule == binding.rule),
+            "TLS stream binding is not its route's",
+        )?;
+        self.path(record.ty, &binding.session)?;
+        require(
+            session(binding.session.target),
+            "TLS stream's connection has no session binding",
+        )?;
+        self.path(record.ty, &binding.state)?;
+        require(
+            matches!(
+                self.ty(binding.state.target)?,
+                TypeDef::Enum { .. } | TypeDef::CEnum { .. }
+            ),
+            "TLS stream state is not an enum",
+        )
     }
 
     /// An operation's stream, under the resource's rule: a path through
@@ -1694,6 +1803,8 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                         && record.pool.is_none()
                         && record.io_route.is_none()
                         && record.io.is_none()
+                        && record.tls_session.is_none()
+                        && record.tls_stream.is_none()
                         && record.refcount.is_none()
                         && record.lock.is_none(),
                     "unavailable storage carries a readable capability",
@@ -1786,6 +1897,25 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                     .is_some_and(|&i| table.types[i].io_route.is_some())
             };
             check.io_operation(record, io, &routed)?;
+        }
+        if let Some(session) = &record.tls_session {
+            require(
+                matches!(record.storage, StoragePolicy::DeclaredMembers),
+                "TLS session binding needs declared-member storage",
+            )?;
+            check.tls_session(record, session)?;
+        }
+        if let Some(stream) = &record.tls_stream {
+            require(
+                matches!(record.storage, StoragePolicy::DeclaredMembers),
+                "TLS stream binding needs declared-member storage",
+            )?;
+            let session = |ty| {
+                positions
+                    .get(&ty)
+                    .is_some_and(|&i| table.types[i].tls_session.is_some())
+            };
+            check.tls_stream(record, stream, &session)?;
         }
         if let Some(refcount) = &record.refcount {
             check.rule(refcount.rule, &[SemanticRuleKind::StdRefcountHeader])?;

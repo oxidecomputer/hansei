@@ -37,8 +37,8 @@ use hansei_bundle::{
     AccessKind, BundleMember, BundleType, BundleTypeId, BundleView, ContainerKind, Continuation,
     FutureKind, HashTableBinding, IoOperationKind, IoRouteStep, MemberRef, PollAction, PollProgram,
     ResourceKind, SchedulerClass, SelectBinding, StaticRole, Step, StoragePolicy, SymbolLookup,
-    TaskEntryId, TaskFutureEntry, TypeClass, TypeDef, TypeSemantics, TypedPath, WalkOutcome,
-    WalkRole, socket_roles, strip_build_prefix, strip_llvm_suffix,
+    TaskEntryId, TaskFutureEntry, TlsStreamBinding, TypeClass, TypeDef, TypeSemantics, TypedPath,
+    WalkOutcome, WalkRole, socket_roles, strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -56,6 +56,16 @@ pub(crate) const MAX_AWAIT_DEPTH: usize = 64;
 /// Bound on the streams a route crosses to its socket, for a table that
 /// was never validated; a validated one ends every route well short.
 const MAX_IO_ROUTE: usize = 32;
+
+/// Where a stream's route led: the streams crossed, outermost first,
+/// the socket's registration and descriptor, and the TLS connection on
+/// the way, where there was one.
+pub(crate) struct FollowedRoute<'b> {
+    pub(crate) streams: Vec<ValueKey>,
+    pub(crate) scheduled_io: Value<'b>,
+    pub(crate) fd: Option<i32>,
+    pub(crate) tls: Option<Result<TlsReading, String>>,
+}
 
 /// Whether `addr` lies in `value`'s storage.
 pub(crate) fn contains(value: Value<'_>, addr: u64) -> bool {
@@ -3889,7 +3899,12 @@ impl<'b, T: Target> Context<'b, T> {
         let stream = contract::execute_steps(self, read, future, &binding.stream.steps)
             .context("the operation's stream")?
             .at("the operation's stream")?;
-        let (route, scheduled_io, fd) = self.follow_io_route(stream, read)?;
+        let FollowedRoute {
+            streams: route,
+            scheduled_io,
+            fd,
+            tls,
+        } = self.follow_io_route(stream, read)?;
         let remaining = binding
             .remaining
             .as_ref()
@@ -3915,6 +3930,7 @@ impl<'b, T: Target> Context<'b, T> {
             waiter_ready: None,
             route,
             fd,
+            tls,
         })
     }
 
@@ -3929,13 +3945,24 @@ impl<'b, T: Target> Context<'b, T> {
         &self,
         stream: Value<'b>,
         read: &ReadContext<'_>,
-    ) -> Result<(Vec<ValueKey>, Value<'b>, Option<i32>)> {
+    ) -> Result<FollowedRoute<'b>> {
         let mut current = stream;
         let mut route = Vec::new();
+        let mut tls = None;
         while route.len() < MAX_IO_ROUTE {
             route.push(ValueKey::of(current));
-            let step = self
-                .type_semantics(current.ty.id())
+            let record = self.type_semantics(current.ty.id());
+            // A TLS stream on the way: its connection's words, read
+            // where the route crosses it — never from a frame's copy.
+            if tls.is_none()
+                && let Some(binding) = record.and_then(|record| record.tls_stream.as_ref())
+            {
+                tls = Some(
+                    self.observe_tls(current, binding, read)
+                        .map_err(|e| format!("{e:#}")),
+                );
+            }
+            let step = record
                 .and_then(|record| record.io_route.as_ref())
                 .map(|binding| &binding.step)
                 .ok_or_else(|| anyhow!("{} has no stream route", current.ty.name()))?;
@@ -3965,11 +3992,93 @@ impl<'b, T: Target> Context<'b, T> {
                     let [shared, fd] = socket_roles(*socket);
                     let scheduled_io = self.walk(shared).walk_at_with(read, current)?;
                     let fd = self.walk(fd).try_read::<i32>(current).ok().flatten();
-                    return Ok((route, scheduled_io, fd));
+                    return Ok(FollowedRoute {
+                        streams: route,
+                        scheduled_io,
+                        fd,
+                        tls,
+                    });
                 }
             }
         }
         bail!("the stream route runs past {MAX_IO_ROUTE} streams")
+    }
+
+    /// A TLS stream's connection, read through the paths its binding
+    /// records: the stream's own state variant, then the rustls
+    /// connection's words by its session binding.
+    fn observe_tls(
+        &self,
+        stream: Value<'b>,
+        binding: &TlsStreamBinding,
+        read: &ReadContext<'_>,
+    ) -> Result<TlsReading> {
+        let at = |root: Value<'b>, path: &TypedPath, what: &str| -> Result<Value<'b>> {
+            let value = contract::execute_steps(self, read, root, &path.steps)
+                .with_context(|| format!("the TLS {what}"))?
+                .at(what)?;
+            ensure!(
+                value.ty.id() == path.target,
+                "the TLS {what} route landed on {} rather than its recorded type",
+                value.ty.name()
+            );
+            Ok(value)
+        };
+        // An enum's word: a C-like enum's enumerator, or the variant
+        // that is live.
+        let name = |value: Value<'b>, what: &str| -> Result<&'b str> {
+            match value.ty.enumerator_name(value.bytes) {
+                Some(name) => Ok(name),
+                None => Ok(value
+                    .active_variant_raw()
+                    .with_context(|| format!("the TLS {what}"))?
+                    .0),
+            }
+        };
+        let stream_state = name(at(stream, &binding.state, "stream state")?, "stream state")?;
+        let session = at(stream, &binding.session, "connection")?;
+        let words = self
+            .type_semantics(session.ty.id())
+            .and_then(|record| record.tls_session.as_ref())
+            .ok_or_else(|| anyhow!("{} has no session binding", session.ty.name()))?;
+        let flag = |path: &TypedPath, what: &str| -> Result<bool> {
+            Ok(at(session, path, what)?
+                .bytes
+                .first()
+                .is_some_and(|b| *b != 0))
+        };
+        let seq = |path: &TypedPath, what: &str| -> Result<u64> {
+            Ok(at(session, path, what)?.parse::<u64>(self.proc)?)
+        };
+        let failed = name(at(session, &words.state, "state")?, "state")? == "Err";
+        let side = name(at(session, &words.side, "side")?, "side")?.to_owned();
+        let version = match name(
+            at(session, &words.negotiated_version, "negotiated version")?,
+            "negotiated version",
+        )? {
+            "Some" => Some(name(at(session, &words.version, "version")?, "version")?.to_owned()),
+            _ => None,
+        };
+        Ok(TlsReading {
+            side,
+            version,
+            failed,
+            may_send_application_data: flag(&words.may_send_application_data, "send flag")?,
+            may_receive_application_data: flag(
+                &words.may_receive_application_data,
+                "receive flag",
+            )?,
+            has_sent_close_notify: flag(&words.has_sent_close_notify, "sent close_notify flag")?,
+            has_received_close_notify: flag(
+                &words.has_received_close_notify,
+                "received close_notify flag",
+            )?,
+            has_seen_eof: flag(&words.has_seen_eof, "end-of-stream flag")?,
+            sent_fatal_alert: flag(&words.sent_fatal_alert, "fatal alert flag")?,
+            read_seq: seq(&words.read_seq, "read sequence")?,
+            write_seq: seq(&words.write_seq, "write sequence")?,
+            stream_state: stream_state.to_owned(),
+        })
     }
 
     /// A `Readiness` await: the registration it names, its own state,
@@ -4022,6 +4131,7 @@ impl<'b, T: Target> Context<'b, T> {
             waiter_ready: Some(ready),
             route: Vec::new(),
             fd: None,
+            tls: None,
         })
     }
 

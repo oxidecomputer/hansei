@@ -4,4 +4,5 @@ description: "`trace 3 -l 1` over linux/tls-conns"
 ---
 #0  future        tokio::io::util::read::Read<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
       waiting on io fd 11 (readable)
+      tls client, TLSv1_3, established, 2 records read, 1 written
 [2 frames, 1 shown]

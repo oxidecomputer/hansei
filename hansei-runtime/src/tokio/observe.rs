@@ -26,6 +26,7 @@
 
 use super::bundle::{
     BodyFraming, HttpRole, Interest, NotifyWaiter, OneshotState, QueuedWaker, SemaphoreWaiter,
+    TlsReading,
 };
 use super::{RawInstant, TaskAddr};
 
@@ -254,6 +255,10 @@ pub struct IoObservation {
     pub route: Vec<ValueKey>,
     /// The socket's descriptor, where the route's end read one.
     pub fd: Option<i32>,
+    /// The TLS connection the route crossed, where it crossed one: its
+    /// words, or why they did not read. The first one crossed, where a
+    /// route crosses several, is the one the task speaks.
+    pub tls: Option<Result<TlsReading, String>>,
 }
 
 /// A readiness await's `State`, as its own enumeration spells it.

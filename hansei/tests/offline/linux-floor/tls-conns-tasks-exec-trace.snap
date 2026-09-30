@@ -5,12 +5,14 @@ description: "`tasks --exec trace -n` over linux-floor/tls-conns"
 task 3
 #0  future        tokio::io::util::read::Read<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
       waiting on io fd 11 (readable)
+      tls client, TLSv1_3, established, 2 records read, 1 written
 #1  async fn      tls_conns::plain_client
       awaiting at src/bin/tls-conns.rs:161 (Suspend2, 3 locals)
 
 task 4
 #0  future        tokio::io::util::read_exact::ReadExact<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>
       waiting on io fd 12 (readable)
+      tls server, TLSv1_3, established, 1 record read, 2 written
 #1  async fn      tls_conns::exact_server
       awaiting at src/bin/tls-conns.rs:176 (Suspend2, 3 locals)
 
@@ -23,6 +25,7 @@ task 5
 task 6
 #0  future        tokio::io::util::read_exact::ReadExact<Box<tokio::io::util::buf_stream::BufStream<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>>
       waiting on io fd 14 (readable)
+      tls server, TLSv1_3, established, 0 records read, 1 written
 #1  async fn      tls_conns::buffered_server
       awaiting at src/bin/tls-conns.rs:212 (Suspend0, 2 locals)
 
@@ -41,6 +44,7 @@ task 8
 task 9
 #0  future        tokio::io::util::read::Read<&mut tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
       waiting on io fd 17 (readable)
+      tls client, TLSv1_3, closing, 1 record each way
 #1  async fn      tls_conns::closing_client
       awaiting at src/bin/tls-conns.rs:256 (Suspend1, 3 locals)
 

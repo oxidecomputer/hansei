@@ -822,6 +822,79 @@ fn assert_io_operation(
     assert!(seen > 0, "{program}: no type named {key}");
 }
 
+/// A TLS stream: every instantiation the key names binds its
+/// connection and state under its route's rule, and the connection it
+/// lands on binds every word under rustls's session rule, by the
+/// reviewed member names.
+fn assert_tls_stream(program: &str, bundle: &Bundle, key: &str) {
+    use hansei_bundle::SemanticRuleKind;
+    let record_of = |ty| bundle.semantics.types.iter().find(|record| record.ty == ty);
+    let kind = |rule: hansei_bundle::SemanticRuleId| bundle.semantics.rules[rule.0 as usize].kind;
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, key) {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no record"));
+        let stream = record
+            .tls_stream
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} has no TLS stream binding"));
+        assert_eq!(
+            Some(stream.rule),
+            record.io_route.as_ref().map(|route| route.rule),
+            "{program}: {name}"
+        );
+        assert_eq!(kind(stream.rule), SemanticRuleKind::TokioRustlsStream);
+        assert_eq!(route_text(bundle, &stream.session), "session.inner");
+        assert_eq!(route_text(bundle, &stream.state), "state");
+        let session = record_of(stream.session.target)
+            .and_then(|record| record.tls_session.as_ref())
+            .unwrap_or_else(|| panic!("{program}: {name}'s connection has no session binding"));
+        assert_eq!(kind(session.rule), SemanticRuleKind::RustlsSession);
+        let common = "core.common_state";
+        for (word, expected) in [
+            (&session.state, "core.state".to_owned()),
+            (&session.side, format!("{common}.side")),
+            (
+                &session.negotiated_version,
+                format!("{common}.negotiated_version"),
+            ),
+            (
+                &session.version,
+                format!("{common}.negotiated_version.Some.__0"),
+            ),
+            (
+                &session.may_send_application_data,
+                format!("{common}.may_send_application_data"),
+            ),
+            (
+                &session.may_receive_application_data,
+                format!("{common}.may_receive_application_data"),
+            ),
+            (
+                &session.has_sent_close_notify,
+                format!("{common}.has_sent_close_notify"),
+            ),
+            (
+                &session.has_received_close_notify,
+                format!("{common}.has_received_close_notify"),
+            ),
+            (&session.has_seen_eof, format!("{common}.has_seen_eof")),
+            (
+                &session.sent_fatal_alert,
+                format!("{common}.sent_fatal_alert"),
+            ),
+            (&session.read_seq, format!("{common}.record_layer.read_seq")),
+            (
+                &session.write_seq,
+                format!("{common}.record_layer.write_seq"),
+            ),
+        ] {
+            assert_eq!(route_text(bundle, word), expected, "{program}: {name}");
+        }
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no type named {key}");
+}
+
 /// The hash table a type keeps: every instantiation the key names binds
 /// its table under the hashbrown layout rule, at the release `version`
 /// inside the reviewed range, through `outer` to hashbrown's map and
@@ -2565,6 +2638,19 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 assert_eq!(s(*family), HASHBROWN_TABLE_V0_12_3.family, "{program}");
                 assert_eq!(*selection, LayoutSelection::ReviewedRange, "{program}");
             }
+            // The TLS fixture's rustls, at the release it pins.
+            SemanticOrigin::LibraryLayout {
+                package,
+                version,
+                family,
+                selection,
+            } if s(*package) == "rustls" => {
+                use exegesis::detect::semantics::RUSTLS_SESSION_V0_23_23;
+                assert_eq!(version.map(s), Some("0.23.41"), "{program}");
+                assert_eq!(s(*family), RUSTLS_SESSION_V0_23_23.family, "{program}");
+                assert_eq!(*selection, LayoutSelection::ReviewedRange, "{program}");
+                assert_eq!(program, "tls-conns", "{program}");
+            }
             other => panic!("{program}: unexpected semantic origin {other:?}"),
         }
     }
@@ -4041,6 +4127,15 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
                 "socket TcpStream",
             ],
         );
+        // Each of tokio-rustls's streams holds its rustls connection,
+        // whose words bind under rustls's session rule at the pinned
+        // release; the stream's own binding is under its route's rule.
+        for key in [
+            "tokio_rustls::client::TlsStream<",
+            "tokio_rustls::server::TlsStream<",
+        ] {
+            assert_tls_stream(program, bundle, key);
+        }
         // A pointer to a stream is recorded for its route alone: it is
         // no adapter to a future, which a census following an owned
         // pointer would take the stream behind it for.

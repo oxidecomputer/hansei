@@ -4682,6 +4682,8 @@ mod synthetic_tests {
                 pool: None,
                 io_route: None,
                 io: None,
+                tls_session: None,
+                tls_stream: None,
                 refcount: None,
                 lock: None,
                 acquires_for: None,

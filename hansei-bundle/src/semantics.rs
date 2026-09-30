@@ -70,6 +70,13 @@ pub struct TypeSemantics {
     /// routed stream: the stream it polls. Present exactly when the
     /// record's resource is such an operation.
     pub io: Option<IoOperationBinding>,
+    /// Where the type is rustls's connection state under a reviewed
+    /// range: the words that say how far its handshake got and whether
+    /// either side has closed.
+    pub tls_session: Option<TlsSessionBinding>,
+    /// Where the type is a routed TLS stream that holds a rustls
+    /// connection: the connection, and the stream's own shutdown state.
+    pub tls_stream: Option<TlsStreamBinding>,
     /// Where the type is a refcounted allocation's header — an `Arc`'s
     /// `ArcInner<T>`, an `Rc`'s `RcInner<T>` — the member holding the
     /// value its counts guard: what a path through the pointer names.
@@ -589,6 +596,50 @@ pub enum IoRouteStep {
     Socket(IoSocket),
 }
 
+/// rustls's `ConnectionCommon<Data>`: every path starts at it and
+/// names its members.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct TlsSessionBinding {
+    pub rule: SemanticRuleId,
+    /// `core.state`: a `Result` whose `Err` holds the error that ended
+    /// the connection.
+    pub state: TypedPath,
+    /// `core.common_state.side`: the C-like `Side`, `Client` or
+    /// `Server`.
+    pub side: TypedPath,
+    /// `core.common_state.negotiated_version`: an
+    /// `Option<ProtocolVersion>`, `None` until the handshake picks one.
+    pub negotiated_version: TypedPath,
+    /// The version's own enum, selected out of the option
+    /// (`….negotiated_version.Some.__0`), whose variant names it.
+    pub version: TypedPath,
+    /// The common state's one-byte flags.
+    pub may_send_application_data: TypedPath,
+    pub may_receive_application_data: TypedPath,
+    pub has_sent_close_notify: TypedPath,
+    pub has_received_close_notify: TypedPath,
+    pub has_seen_eof: TypedPath,
+    pub sent_fatal_alert: TypedPath,
+    /// `core.common_state.record_layer.{read,write}_seq`: the records
+    /// each direction has carried, as unsigned words.
+    pub read_seq: TypedPath,
+    pub write_seq: TypedPath,
+}
+
+/// A TLS stream's words: the rustls connection it holds, and its own
+/// shutdown state.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct TlsStreamBinding {
+    /// The stream's route rule: the same review names both.
+    pub rule: SemanticRuleId,
+    /// The path to the connection, landing on a type with a session
+    /// binding.
+    pub session: TypedPath,
+    /// The stream's state enum, whose variant says which directions it
+    /// has shut down.
+    pub state: TypedPath,
+}
+
 /// The sockets a route ends at, by the walk roles rooted at each.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum IoSocket {
@@ -860,6 +911,9 @@ pub enum SemanticRuleKind {
     /// sprockets-tls's `Stream` at a reviewed revision, whose reads and
     /// writes are the TLS stream it holds.
     SprocketsTlsStream,
+    /// rustls's connection state under a reviewed range, read as the
+    /// words of a TLS session.
+    RustlsSession,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

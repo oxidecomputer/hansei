@@ -1519,6 +1519,11 @@ pub(crate) fn wait_detail(
             if let Some(via) = target.via() {
                 lines.push(format!("via: {}", via.line()));
             }
+            // An io wait's route that crossed a TLS connection: where
+            // that connection stands, read through the route.
+            if let Some(tls) = target.tls() {
+                lines.push(format!("tls: {}", tls_words(tls)));
+            }
             // And who awaits the response it is carrying, read from
             // the callback the `via` line names — a receiver that is no
             // task's named by the sweep's account of its cell, where
@@ -2000,6 +2005,9 @@ fn member_line(
         // awaits the response with what they asked for.
         if let Some(via) = verified.and_then(bundle::WaitTarget::via) {
             field("via", via.line());
+        }
+        if let Some(tls) = verified.and_then(bundle::WaitTarget::tls) {
+            field("tls", tls_words(tls));
         }
         if let Some(caller) = verified.and_then(bundle::WaitTarget::caller) {
             field("caller", caller.to_string());
@@ -3279,6 +3287,15 @@ fn optional<T>(read: Result<T>, what: &str) -> Result<Option<T>> {
     }
 }
 
+/// A TLS reading as its line says it: the words, or why they did not
+/// read.
+pub(crate) fn tls_words(tls: &Result<bundle::TlsReading, String>) -> String {
+    match tls {
+        Ok(reading) => reading.to_string(),
+        Err(e) => format!("unreadable ({e})"),
+    }
+}
+
 #[cfg(test)]
 mod table_tests {
     use super::{
@@ -3997,6 +4014,7 @@ mod table_tests {
                     addr: 0xbb00,
                     fd: None,
                     interest: None,
+                    tls: None,
                 },
                 None,
             )),
