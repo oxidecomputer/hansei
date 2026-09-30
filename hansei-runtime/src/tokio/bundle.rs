@@ -3945,6 +3945,22 @@ impl<'b, T: Target> Context<'b, T> {
                         .with_context(|| format!("the route through {}", current.ty.name()))?
                         .at("the stream held")?;
                 }
+                // Exactly one case's variant is live; a value in a
+                // variant with no case has no route.
+                IoRouteStep::Match { cases } => {
+                    let mut live = None;
+                    for case in cases {
+                        let walked = contract::execute_steps(self, read, current, &case.steps)
+                            .with_context(|| format!("the route through {}", current.ty.name()))?;
+                        if let Walked::At(inner) = walked {
+                            live = Some(inner);
+                            break;
+                        }
+                    }
+                    current = live.ok_or_else(|| {
+                        anyhow!("{}'s live variant has no stream route", current.ty.name())
+                    })?;
+                }
                 IoRouteStep::Socket(socket) => {
                     let [shared, fd] = socket_roles(*socket);
                     let scheduled_io = self.walk(shared).walk_at_with(read, current)?;

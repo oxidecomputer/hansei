@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task` over linux-floor/blocking-pool"
 ---
 COUNT  HAS TASK  LWPS
-    1  no        3932356
-    1  yes       3932360
+    1  no        4084351
+    1  yes       4084355
 [2 groups]

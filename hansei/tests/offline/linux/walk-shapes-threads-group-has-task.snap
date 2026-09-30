@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task` over linux/walk-shapes"
 ---
 COUNT  HAS TASK  LWPS
-    3  no        3918873, 3918875, 3918876
+    3  no        4077513, 4077515, 4077516
 [1 group]

@@ -3,13 +3,13 @@ source: hansei/src/offline.rs
 description: "`connections` over linux/http-conns"
 ---
 TASK  CALLER  ROLE    PHASE              DEADLINE                                     BUF      PEER             SERVER  METHOD  REQUEST
-4     —       client  idle               —                                            0/8192   —                —       —       —
-5     —       server  idle               TS on the target's monotonic clock  0/16302  —                —       —       —
-9     —       server  handling request   —                                            0/16339  —                —       GET     /park
-10    8       client  awaiting response  —                                            0/8192   127.0.0.1:40691  —       GET     —
-12    —       server  handling request   —                                            0/16326  —                —       GET     /park
-13    11      client  awaiting response  —                                            0/8192   127.0.0.1:40691  —       GET     http://127.0.0.1:40691/park
-14    —       server  negotiating        —                                            —        —                —       —       —
-16    —       server  idle               TS on the target's monotonic clock  0/16343  —                —       —       —
-17    —       client  idle               —                                            0/8192   127.0.0.1:40691  —       —       —
+4     —       server  idle               TS on the target's monotonic clock  0/16302  —                —       —       —
+5     —       client  idle               —                                            0/8192   —                —       —       —
+8     —       server  handling request   —                                            0/16339  —                —       GET     /park
+9     7       client  awaiting response  —                                            0/8192   127.0.0.1:41441  —       GET     —
+11    —       server  handling request   —                                            0/16326  —                —       GET     /park
+12    10      client  awaiting response  —                                            0/8192   127.0.0.1:41441  —       GET     http://127.0.0.1:41441/park
+13    —       server  negotiating        —                                            —        —                —       —       —
+15    —       server  idle               TS on the target's monotonic clock  0/16343  —                —       —       —
+16    —       client  idle               —                                            0/8192   127.0.0.1:41441  —       —       —
 [9 connections]

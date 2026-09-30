@@ -7,7 +7,7 @@ runtime 0 @ 0xADDR
     tasks: 14
     futures: 23
     workers: 2
-    threads: 3 (lwp 3920202, 3920205, 3920204)
+    threads: 3 (lwp 4078792, 4078795, 4078794)
     found via: a thread's runtime context
     drivers:
       tokio::runtime::driver::Handle {
@@ -95,7 +95,7 @@ runtime 0 @ 0xADDR
           },
           scheduler_metrics: tokio::runtime::metrics::scheduler::SchedulerMetrics {
               remote_schedule_count: tokio::util::metric_atomics::MetricAtomicU64 {
-                  value: 15,
+                  value: 13,
               },
               budget_forced_yield_count: tokio::util::metric_atomics::MetricAtomicU64 {
                   value: 0,

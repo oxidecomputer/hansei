@@ -129,6 +129,39 @@ impl<'a> Check<'a> {
                     )?;
                 }
             }
+            SemanticOrigin::GitDelegation {
+                package,
+                repository,
+                revision,
+                family,
+                source,
+                files,
+            } => {
+                self.string(*package)?;
+                self.string(*family)?;
+                let source = self.string(*source)?;
+                // The recorded path is the anchored tail, and it has to
+                // name the repository and revision the origin does.
+                let origin = crate::origin::git_origin(source).ok_or_else(|| {
+                    Error::Corrupt("semantics: delegation source is not a git checkout path".into())
+                })?;
+                require(
+                    origin.path == source,
+                    "delegation source is not anchored at its checkout segment",
+                )?;
+                require(
+                    origin.repository == self.string(*repository)?
+                        && origin.revision == self.string(*revision)?,
+                    "delegation source names another repository or revision",
+                )?;
+                let mut names = BTreeSet::new();
+                for file in files {
+                    require(
+                        names.insert(self.string(file.file)?),
+                        "duplicate source checksum file",
+                    )?;
+                }
+            }
         }
         Ok(())
     }
@@ -185,7 +218,8 @@ impl<'a> Check<'a> {
             | TowerRetry
             | TokioStreamWatchStream
             | TokioUtilReusableBox
-            | TokioStreamStreamMap => {
+            | TokioStreamStreamMap
+            | TokioRustlsStream => {
                 let crate_name = match rule.kind {
                     TracingInstrumented => "tracing",
                     HyperUtilTokioSleep
@@ -209,12 +243,21 @@ impl<'a> Check<'a> {
                     // stream route's.
                     TokioStreamWatchStream | TokioStreamStreamMap => "tokio-stream",
                     TokioUtilReusableBox => "tokio-util",
+                    TokioRustlsStream => "tokio-rustls",
                     _ => "futures-util",
                 };
                 return require(
                     matches!(origin, SemanticOrigin::LibraryDelegation { package, .. }
                     if self.0.strings.get(*package) == Some(crate_name)),
                     "third-party delegation needs source evidence",
+                );
+            }
+            // A crate with no release, reviewed per git revision.
+            SprocketsTlsStream => {
+                return require(
+                    matches!(origin, SemanticOrigin::GitDelegation { package, .. }
+                    if self.0.strings.get(*package) == Some("sprockets-tls")),
+                    "git delegation needs checkout evidence",
                 );
             }
             // A sole-member forwarder binds on its layout — the one
@@ -669,22 +712,51 @@ impl<'a> Check<'a> {
         )
     }
 
-    /// One step of a stream's route, under tokio's route rule: a
-    /// forward to another type, or a socket whose roles are bound at
-    /// exactly this type. That every forward reaches a routed type, and
-    /// every route a socket, is the whole table's to say
-    /// ([`io_routes_end_at_sockets`]).
+    /// One step of a stream's route: a forward to another type, under
+    /// tokio's route rule or a reviewed third-party stream's; a match
+    /// over an enum's variants, under tokio-rustls's; or a socket whose
+    /// roles are bound at exactly this type, under tokio's. That every
+    /// forward reaches a routed type, and every route a socket, is the
+    /// whole table's to say ([`io_routes_end_at_sockets`]).
     fn io_route(&self, record: &TypeSemantics, binding: &IoRouteBinding) -> Result<()> {
-        self.rule(binding.rule, &[SemanticRuleKind::TokioIoRoute])?;
+        use SemanticRuleKind::*;
+        let forward = |inner: &TypedPath| {
+            self.path(record.ty, inner)?;
+            require(
+                inner.target != record.ty,
+                "a stream route forwards to itself",
+            )
+        };
         match &binding.step {
             IoRouteStep::Forward { inner } => {
-                self.path(record.ty, inner)?;
-                require(
-                    inner.target != record.ty,
-                    "a stream route forwards to itself",
-                )
+                self.rule(
+                    binding.rule,
+                    &[TokioIoRoute, TokioRustlsStream, SprocketsTlsStream],
+                )?;
+                forward(inner)
             }
-            IoRouteStep::Socket(socket) => self.roles(record.ty, &socket_roles(*socket)),
+            IoRouteStep::Match { cases } => {
+                self.rule(binding.rule, &[TokioRustlsStream])?;
+                require(!cases.is_empty(), "a stream match has no case")?;
+                let mut variants = BTreeSet::new();
+                for case in cases {
+                    let Some(Step::Variant(variant)) = case.steps.first() else {
+                        return Err(Error::Corrupt(
+                            "semantics: a stream match case selects no variant first".into(),
+                        ));
+                    };
+                    require(
+                        variants.insert(*variant),
+                        "a stream match selects one variant twice",
+                    )?;
+                    forward(case)?;
+                }
+                Ok(())
+            }
+            IoRouteStep::Socket(socket) => {
+                self.rule(binding.rule, &[TokioIoRoute])?;
+                self.roles(record.ty, &socket_roles(*socket))
+            }
         }
     }
 
@@ -1888,10 +1960,11 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
 }
 
 /// Every stream route in the table ends at a socket: following forwards
-/// from any routed type reaches a type whose step is a socket, through
-/// routed types only, in fewer hops than the table has records — so no
-/// route dangles off an unrouted type or runs in a cycle, and a reader
-/// following one never needs a bound of its own.
+/// — every case of a match — from any routed type reaches a type whose
+/// step is a socket, through routed types only, in fewer hops than the
+/// table has records — so no route dangles off an unrouted type or runs
+/// in a cycle, and a reader following one never needs a bound of its
+/// own.
 fn io_routes_end_at_sockets(
     table: &SemanticTable,
     positions: &BTreeMap<BundleTypeId, usize>,
@@ -1902,17 +1975,38 @@ fn io_routes_end_at_sockets(
             .and_then(|&i| table.types[i].io_route.as_ref())
             .map(|route| &route.step)
     };
+    // The types already known to end at a socket, so a route many
+    // others forward to is followed once.
+    let mut ending = BTreeSet::new();
+    fn ends<'t>(
+        ty: BundleTypeId,
+        hops: usize,
+        limit: usize,
+        step: &impl Fn(BundleTypeId) -> Option<&'t IoRouteStep>,
+        ending: &mut BTreeSet<BundleTypeId>,
+    ) -> Result<()> {
+        if ending.contains(&ty) {
+            return Ok(());
+        }
+        require(hops < limit, "a stream route runs in a cycle")?;
+        let current = step(ty).ok_or_else(|| {
+            Error::Corrupt("semantics: a stream route forwards to an unrouted type".into())
+        })?;
+        match current {
+            IoRouteStep::Socket(_) => {}
+            IoRouteStep::Forward { inner } => ends(inner.target, hops + 1, limit, step, ending)?,
+            IoRouteStep::Match { cases } => {
+                for case in cases {
+                    ends(case.target, hops + 1, limit, step, ending)?;
+                }
+            }
+        }
+        ending.insert(ty);
+        Ok(())
+    }
     for record in &table.types {
-        let Some(mut current) = record.io_route.as_ref().map(|route| &route.step) else {
-            continue;
-        };
-        let mut hops = 0;
-        while let IoRouteStep::Forward { inner } = current {
-            hops += 1;
-            require(hops < table.types.len(), "a stream route runs in a cycle")?;
-            current = step(inner.target).ok_or_else(|| {
-                Error::Corrupt("semantics: a stream route forwards to an unrouted type".into())
-            })?;
+        if record.io_route.is_some() {
+            ends(record.ty, 0, table.types.len(), &step, &mut ending)?;
         }
     }
     Ok(())

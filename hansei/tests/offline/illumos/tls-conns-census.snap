@@ -5,8 +5,8 @@ description: "`census` over illumos/tls-conns"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        2
-    1  0   worker           parked           3
+    1  0   worker           in driver        3
+    1  0   worker           parked           2
     1  0   entered runtime  block_on caller  1
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
@@ -19,13 +19,13 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn tls_conns::buffered_server
-       └─ 1  one of several
+       └─ 1  io
     1  async fn tls_conns::closing_client
-       └─ 1  one of several
+       └─ 1  io
     1  async fn tls_conns::drained_server
        └─ 1  oneshot rx
     1  async fn tls_conns::exact_server
-       └─ 1  one of several
+       └─ 1  io
     1  async fn tls_conns::handshaking_client
        └─ 1  one of several
     7  (7 more types)
@@ -41,11 +41,11 @@ COUNT  HELD IN
 
 COUNT  TYPE / WAITING ON
     1  future tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>
-       └─ 1  unknown
+       └─ 1  io
     1  future tokio::io::util::read::Read<tokio::net::tcp::split_owned::OwnedReadHalf>
        └─ 1  io
     1  future tokio::io::util::write_buf::WriteBuf<tokio::io::split::WriteHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>, core::io::cursor::Cursor<Vec<u8>>>
-       └─ 1  unknown
+       └─ 1  io
     1  future tokio::io::util::write_buf::WriteBuf<tokio::net::tcp::split_owned::OwnedWriteHalf, core::io::cursor::Cursor<Vec<u8>>>
        └─ 1  io
     1  future tokio_rustls::common::handshake::MidHandshake<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>

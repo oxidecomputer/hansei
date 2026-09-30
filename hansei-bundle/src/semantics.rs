@@ -578,6 +578,11 @@ pub enum IoRouteStep {
     /// holds it behind one (an `Arc`, a `Box`, a reference). The
     /// target is itself a routed type.
     Forward { inner: TypedPath },
+    /// The value is an enum whose reads and writes are its live
+    /// variant's: one forward per variant with a routed payload, each
+    /// path's first step the variant it selects. A value whose live
+    /// variant has no case has no route.
+    Match { cases: Vec<TypedPath> },
     /// The value is a socket registered with tokio's io driver: the
     /// walk contract's roles rooted at its type reach the registration
     /// and the descriptor.
@@ -847,6 +852,14 @@ pub enum SemanticRuleKind {
     /// buffered wrappers, and its impls for `Box` and `&mut` — and the
     /// sockets their routes end at.
     TokioIoRoute,
+    /// tokio-rustls's streams under a reviewed range: the `TlsStream`
+    /// enum, whose reads and writes are its live variant's, and the
+    /// client and server streams, whose socket reads and writes are
+    /// their `io`'s.
+    TokioRustlsStream,
+    /// sprockets-tls's `Stream` at a reviewed revision, whose reads and
+    /// writes are the TLS stream it holds.
+    SprocketsTlsStream,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -876,6 +889,22 @@ pub enum SemanticOrigin {
         /// the unit's file table carried any. rustc's DWARF 4 builds carry
         /// none, and the list is then empty: the registry path is the
         /// evidence the rule runs on, a checksum a check on top of it.
+        files: Vec<SourceFileEvidence>,
+    },
+    /// A third-party implementation fetched from git, which has no
+    /// release to name: identified by the repository and revision its
+    /// declaration file's checkout path records, each revision reviewed
+    /// on its own.
+    GitDelegation {
+        /// The crate the review names; the checkout path does not.
+        package: StrRef,
+        repository: StrRef,
+        revision: StrRef,
+        family: StrRef,
+        /// The declaration file the origin was read from, cut to its
+        /// `git/checkouts/` tail (see [`crate::origin::git_origin`]).
+        source: StrRef,
+        /// Line-table checksums corroborating the reviewed revision.
         files: Vec<SourceFileEvidence>,
     },
 }

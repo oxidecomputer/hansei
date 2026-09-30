@@ -89,6 +89,16 @@ fn base() -> Bundle {
         "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-util-0.7.19/src/sync/reusable_box.rs",
         "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-stream-0.1.19/src/stream_map.rs",
         "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/time/interval.rs",
+        "tokio-rustls",
+        "0.26.4",
+        "tokio-rustls-stream-0.26.0",
+        "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.26.4/src/lib.rs",
+        "sprockets-tls",
+        "sprockets",
+        "a233079",
+        "sprockets-tls-stream-d2b68e4",
+        "git/checkouts/sprockets-882d17aeeb0cb343/a233079/tls/src/lib.rs",
+        "68a4b3b",
     ] {
         strings.intern(s);
     }
@@ -3720,4 +3730,158 @@ fn test_io_routes_end_at_sockets_and_operations_reach_them() {
         .unwrap()
         .remaining = Some(path(vec![named(FIELD)], BundleTypeId(10)));
     bad(&not_a_word, "not an unsigned word");
+}
+
+/// [`io_routes`] with a third-party stream on top: the state enum
+/// matches its one variant onto the routed parent under tokio-rustls's
+/// rule, and a struct holding the enum forwards to it under
+/// sprockets-tls's, whose origin is a git checkout.
+fn third_party_routes() -> Bundle {
+    let mut b = io_routes();
+    let holder = BundleTypeId(12);
+    b.types.types.push(TypeDef::Struct {
+        name: FIELD,
+        size: 24,
+        members: vec![MemberDef {
+            name: FIELD,
+            ty: STATE,
+            offset: 0,
+        }],
+    });
+    b.semantics.origins.push(SemanticOrigin::LibraryDelegation {
+        package: StrRef(37),
+        version: StrRef(38),
+        family: StrRef(39),
+        source: StrRef(40),
+        files: Vec::new(),
+    });
+    b.semantics.origins.push(SemanticOrigin::GitDelegation {
+        package: StrRef(41),
+        repository: StrRef(42),
+        revision: StrRef(43),
+        family: StrRef(44),
+        source: StrRef(45),
+        files: Vec::new(),
+    });
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::TokioRustlsStream,
+        revision: 1,
+        origin: SemanticOriginId(1),
+    });
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::SprocketsTlsStream,
+        revision: 1,
+        origin: SemanticOriginId(2),
+    });
+    let mut tls = record(STATE);
+    tls.future = None;
+    tls.io_route = Some(IoRouteBinding {
+        rule: SemanticRuleId(2),
+        step: IoRouteStep::Match {
+            cases: vec![path(vec![Step::Variant(VARIANT)], PARENT)],
+        },
+    });
+    let mut stream = record(holder);
+    stream.future = None;
+    stream.io_route = Some(IoRouteBinding {
+        rule: SemanticRuleId(3),
+        step: IoRouteStep::Forward {
+            inner: path(vec![named(FIELD)], STATE),
+        },
+    });
+    let op = b.semantics.types.pop().unwrap();
+    b.semantics.types.extend([tls, op, stream]);
+    b.validate().unwrap();
+    b
+}
+
+/// A match's every case selects its own variant first and ends at a
+/// socket, only under tokio-rustls's rule; a git delegation's origin
+/// re-parses to the repository and revision it records, and only
+/// sprockets-tls's rule stands on one.
+#[test]
+fn test_stream_matches_select_variants_and_git_origins_name_their_checkout() {
+    let b = third_party_routes();
+    let [child, tls] = [0, 2];
+    fn cases(b: &mut Bundle) -> &mut Vec<TypedPath> {
+        match &mut b.semantics.types[2].io_route.as_mut().unwrap().step {
+            IoRouteStep::Match { cases } => cases,
+            _ => unreachable!(),
+        }
+    }
+
+    let mut empty = b.clone();
+    cases(&mut empty).clear();
+    bad(&empty, "a stream match has no case");
+
+    let mut twice = b.clone();
+    let case = cases(&mut twice)[0].clone();
+    cases(&mut twice).push(case);
+    bad(&twice, "selects one variant twice");
+
+    let mut no_variant = b.clone();
+    cases(&mut no_variant)[0] = path(Vec::new(), STATE);
+    bad(&no_variant, "selects no variant first");
+
+    let mut tokio_match = b.clone();
+    tokio_match.semantics.types[tls]
+        .io_route
+        .as_mut()
+        .unwrap()
+        .rule = SemanticRuleId(0);
+    bad(&tokio_match, "incompatible capability");
+
+    let mut rustls_socket = b.clone();
+    rustls_socket.semantics.types[child]
+        .io_route
+        .as_mut()
+        .unwrap()
+        .rule = SemanticRuleId(2);
+    bad(&rustls_socket, "incompatible capability");
+
+    let mut dangling = b.clone();
+    dangling.semantics.types[tls].io_route = None;
+    bad(&dangling, "forwards to an unrouted type");
+
+    // Every case has to end at a socket, not just one.
+    let mut dead_case = b.clone();
+    let TypeDef::Enum { shape, .. } = &mut dead_case.types.types[STATE.0 as usize] else {
+        unreachable!()
+    };
+    shape.variants.push(VariantDef {
+        name: FIELD,
+        discr_values: None,
+        payload: MemberDef {
+            name: FIELD,
+            ty: BundleTypeId(0),
+            offset: 8,
+        },
+        decl: None,
+        await_site: None,
+    });
+    cases(&mut dead_case).push(path(vec![Step::Variant(FIELD)], BundleTypeId(0)));
+    bad(&dead_case, "forwards to an unrouted type");
+
+    let mut other_revision = b.clone();
+    let SemanticOrigin::GitDelegation { revision, .. } = &mut other_revision.semantics.origins[2]
+    else {
+        unreachable!()
+    };
+    *revision = StrRef(46);
+    bad(&other_revision, "names another repository or revision");
+
+    let mut registry = b.clone();
+    let SemanticOrigin::GitDelegation { source, .. } = &mut registry.semantics.origins[2] else {
+        unreachable!()
+    };
+    *source = StrRef(40);
+    bad(&registry, "not a git checkout path");
+
+    let mut released = b.clone();
+    released.semantics.rules[3].origin = SemanticOriginId(1);
+    bad(&released, "git delegation needs checkout evidence");
+
+    let mut checked_out = b.clone();
+    checked_out.semantics.rules[2].origin = SemanticOriginId(2);
+    bad(&checked_out, "third-party delegation needs source evidence");
 }

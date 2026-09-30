@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`graph` over linux/http-conns"
 ---
 TASK                                STATE  WAITING ON
-8                                   idle   oneshot rx
-└─ 10 [its response awaited above]  idle   http1 client
-11                                  idle   oneshot rx, unknown
-└─ 13 [its response awaited above]  idle   http1 client
+7                                   idle   oneshot rx
+└─ 9 [its response awaited above]   idle   http1 client
+10                                  idle   oneshot rx, unknown
+└─ 12 [its response awaited above]  idle   http1 client

@@ -784,15 +784,31 @@ fn assert_io_operation(
             let binding = record_of(ty)
                 .and_then(|r| r.io_route.as_ref())
                 .unwrap_or_else(|| panic!("{program}: {} has no route", type_name_of(bundle, ty)));
+            // Each stream's route binds under its implementer's rule.
+            let stream = type_name_of(bundle, ty);
+            let implementer = if stream.starts_with("tokio_rustls::") {
+                SemanticRuleKind::TokioRustlsStream
+            } else if stream.starts_with("sprockets_tls::") {
+                SemanticRuleKind::SprocketsTlsStream
+            } else {
+                SemanticRuleKind::TokioIoRoute
+            };
             assert_eq!(
-                bundle.semantics.rules[binding.rule.0 as usize].kind,
-                SemanticRuleKind::TokioIoRoute,
-                "{program}: {name}"
+                bundle.semantics.rules[binding.rule.0 as usize].kind, implementer,
+                "{program}: {name}: {stream}"
             );
             match &binding.step {
                 IoRouteStep::Forward { inner } => {
                     crossed.push(route_text(bundle, inner));
                     ty = inner.target;
+                }
+                // Every case reaches a socket (the validator holds the
+                // table to that); the text follows the first.
+                IoRouteStep::Match { cases } => {
+                    let texts: Vec<String> =
+                        cases.iter().map(|case| route_text(bundle, case)).collect();
+                    crossed.push(format!("match {}", texts.join(" | ")));
+                    ty = cases[0].target;
                 }
                 IoRouteStep::Socket(socket) => {
                     crossed.push(format!("socket {socket:?}"));
@@ -2487,6 +2503,29 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         s(*source)
                     );
                 }
+                // Only the TLS fixture links tokio-rustls; its streams'
+                // routes are read off each type's own file.
+                "tokio-rustls" => {
+                    use exegesis::detect::semantics::TOKIO_RUSTLS_STREAM_V0_26_0;
+                    let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
+                        unreachable!()
+                    };
+                    assert_eq!(s(*family), TOKIO_RUSTLS_STREAM_V0_26_0.family, "{program}");
+                    assert_eq!(
+                        TOKIO_RUSTLS_STREAM_V0_26_0.select(&s(*version).parse().unwrap()),
+                        LayoutSelection::ReviewedRange,
+                        "{program}: tokio-rustls {} is outside the reviewed range",
+                        s(*version)
+                    );
+                    assert!(
+                        ["/src/lib.rs", "/src/client.rs", "/src/server.rs"]
+                            .iter()
+                            .any(|file| s(*source).ends_with(file)),
+                        "{program}: {}",
+                        s(*source)
+                    );
+                    assert_eq!(program, "tls-conns", "{program}");
+                }
                 other => panic!("{program}: unexpected delegation origin {other:?}"),
             },
             SemanticOrigin::LibraryLayout {
@@ -3938,14 +3977,85 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             IoOperationKind::WriteBuf,
             &["writer.*", "inner.ptr.pointer.*.data", "socket TcpStream"],
         );
-        // One over a TLS stream binds nothing yet: tokio-rustls's
-        // streams are no route tokio reviews, so each says why.
+        // Over a TLS stream, the route crosses tokio-rustls's streams
+        // to the socket each holds as `io`: directly, through a `Box`
+        // and a `BufStream`'s two buffers, through a reference, and
+        // through a split half onto the enum, whose live variant picks
+        // the stream.
+        let tcp = "tokio::net::tcp::stream::TcpStream";
+        assert_io_operation(
+            program,
+            bundle,
+            &format!("tokio::io::util::read::Read<tokio_rustls::client::TlsStream<{tcp}>>"),
+            IoOperationKind::Read,
+            &["reader.*", "io", "socket TcpStream"],
+        );
+        assert_io_operation(
+            program,
+            bundle,
+            &format!(
+                "tokio::io::util::read_exact::ReadExact<tokio_rustls::server::TlsStream<{tcp}>>"
+            ),
+            IoOperationKind::ReadExact,
+            &["reader.*", "io", "socket TcpStream"],
+        );
+        assert_io_operation(
+            program,
+            bundle,
+            &format!(
+                "tokio::io::util::read_exact::ReadExact<alloc::boxed::Box<\
+                 tokio::io::util::buf_stream::BufStream<tokio_rustls::server::TlsStream<{tcp}>>, \
+                 alloc::alloc::Global>>"
+            ),
+            IoOperationKind::ReadExact,
+            // A `BufStream` is a `BufReader` over a `BufWriter`.
+            &[
+                "reader.*",
+                "*",
+                "inner",
+                "inner",
+                "inner",
+                "io",
+                "socket TcpStream",
+            ],
+        );
+        assert_io_operation(
+            program,
+            bundle,
+            &format!("tokio::io::util::read::Read<&mut tokio_rustls::client::TlsStream<{tcp}>>"),
+            IoOperationKind::Read,
+            &["reader.*", "*", "io", "socket TcpStream"],
+        );
+        assert_io_operation(
+            program,
+            bundle,
+            &format!(
+                "tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<{tcp}>>>"
+            ),
+            IoOperationKind::Read,
+            &[
+                "reader.*",
+                "inner.ptr.pointer.*.data.stream.data.value",
+                "match Client.__0 | Server.__0",
+                "io",
+                "socket TcpStream",
+            ],
+        );
+        // A pointer to a stream is recorded for its route alone: it is
+        // no adapter to a future, which a census following an owned
+        // pointer would take the stream behind it for.
         for key in [
-            "tokio::io::util::read::Read<tokio_rustls::client::TlsStream<",
-            "tokio::io::util::read_exact::ReadExact<alloc::boxed::Box<tokio::io::util::buf_stream::BufStream<",
-            "tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<",
+            "alloc::boxed::Box<tokio::io::util::buf_stream::BufStream<",
+            "&mut tokio_rustls::client::TlsStream<",
         ] {
-            assert_no_resource(program, bundle, key);
+            let mut seen = 0;
+            for (name, _, record) in types_named(bundle, key) {
+                let record = record.unwrap_or_else(|| panic!("{program}: {name} has no record"));
+                assert!(record.io_route.is_some(), "{program}: {name}");
+                assert!(record.access.is_none(), "{program}: {name}: {record:?}");
+                seen += 1;
+            }
+            assert!(seen > 0, "{program}: no type named {key}");
         }
         // Two selects, each over a read on one half of a split stream
         // and a `write_buf` on the other, both pinned locals the select

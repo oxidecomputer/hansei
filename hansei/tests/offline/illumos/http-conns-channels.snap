@@ -12,7 +12,7 @@ oneshot 0xADDR: nothing sent, sender alive
     tx: task 12
 
 mpsc 0xADDR: 1 sender, 0 unread
-    rx: task 5
+    rx: task 4
 
 mpsc 0xADDR: 1 sender, 0 unread
     rx: task 16

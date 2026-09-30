@@ -1899,6 +1899,228 @@ pub const TOKIO_STREAM_MAP_V0_1_14: LibraryConvention = LibraryConvention {
     ],
 };
 
+/// tokio-rustls's streams as 0.26.0 through 0.26.6 implement them. The
+/// `TlsStream<T>` enum (`src/lib.rs`) is `Client(client::TlsStream<T>)
+/// | Server(server::TlsStream<T>)`, and every `AsyncRead`/`AsyncWrite`
+/// method matches on the variant and calls the same method on its
+/// payload and nothing else. The client and server streams
+/// (`src/client.rs`, `src/server.rs`) hold the socket as `io` beside
+/// the rustls session and a `TlsState` in every release (`need_flush`
+/// joins them at 0.26.3, `error` at 0.26.6, neither read); their
+/// `poll_read` (`poll_fill_buf` from 0.26.2) returns `Pending` only
+/// after reading `io` did, and otherwise wakes the task itself, and a
+/// write or flush likewise parks only in a write to `io`. The one
+/// exception is the client's `early-data` feature: a read in the
+/// early-data state parks in the stream's own `early_waker`, which no
+/// reader following the route to the socket finds holding the task, so
+/// such a wait verifies nothing rather than the wrong thing. The file
+/// checksums move with docs, visibility and those two members; the
+/// forwarding is the same text throughout. Each type's origin is its
+/// own method declarations, which name its file.
+pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
+    package: "tokio-rustls",
+    family: "tokio-rustls-stream-0.26.0",
+    floor: (0, 26, 0),
+    ceiling: (0, 26, 6),
+    checksums: &[
+        // src/lib.rs, 0.26.0
+        (
+            "src/lib.rs",
+            [
+                0x28, 0x4f, 0xe9, 0x23, 0x8e, 0x09, 0x49, 0xaa, 0x78, 0xd2, 0xbc, 0x89, 0x23, 0x1a,
+                0xad, 0x8a,
+            ],
+        ),
+        // src/lib.rs, 0.26.1
+        (
+            "src/lib.rs",
+            [
+                0x5f, 0x3e, 0xef, 0x4c, 0x6e, 0x0f, 0x4a, 0xdb, 0xd5, 0x8e, 0xed, 0x3a, 0x09, 0xb2,
+                0x52, 0x88,
+            ],
+        ),
+        // src/lib.rs, 0.26.2
+        (
+            "src/lib.rs",
+            [
+                0x2d, 0xc3, 0x9f, 0x59, 0x36, 0x0f, 0x95, 0x73, 0x3f, 0x06, 0xcc, 0xce, 0xa7, 0xe5,
+                0xcd, 0xd3,
+            ],
+        ),
+        // src/lib.rs, 0.26.3 and 0.26.4
+        (
+            "src/lib.rs",
+            [
+                0x3b, 0x15, 0x4a, 0xa2, 0xc2, 0x57, 0x2e, 0x4e, 0x67, 0x95, 0x4b, 0x86, 0x55, 0x0c,
+                0x45, 0xbb,
+            ],
+        ),
+        // src/lib.rs, 0.26.5 and 0.26.6
+        (
+            "src/lib.rs",
+            [
+                0xac, 0x67, 0x80, 0x72, 0xfd, 0x54, 0x5b, 0x73, 0x65, 0xb8, 0xc2, 0x22, 0x07, 0x4f,
+                0x60, 0x09,
+            ],
+        ),
+        // src/client.rs, 0.26.0 and 0.26.1
+        (
+            "src/client.rs",
+            [
+                0xf5, 0xe1, 0xfe, 0x9c, 0x42, 0xe3, 0x98, 0x3e, 0xa4, 0x9a, 0x9c, 0x3a, 0x57, 0x1a,
+                0x01, 0xcc,
+            ],
+        ),
+        // src/client.rs, 0.26.2
+        (
+            "src/client.rs",
+            [
+                0x52, 0xbc, 0x7a, 0x1c, 0x88, 0x1d, 0x85, 0x85, 0xdf, 0x13, 0x1c, 0x77, 0x4e, 0x80,
+                0x09, 0xd5,
+            ],
+        ),
+        // src/client.rs, 0.26.3 and 0.26.4
+        (
+            "src/client.rs",
+            [
+                0x3e, 0x02, 0x87, 0xc9, 0x9f, 0xfc, 0x6e, 0x87, 0x95, 0xb5, 0x02, 0xea, 0xca, 0x12,
+                0x9d, 0xfa,
+            ],
+        ),
+        // src/client.rs, 0.26.5
+        (
+            "src/client.rs",
+            [
+                0xa0, 0xd6, 0xb0, 0x9f, 0x53, 0xe0, 0x3a, 0x0a, 0xb9, 0x52, 0xe4, 0x9a, 0x84, 0xa6,
+                0x66, 0x9d,
+            ],
+        ),
+        // src/client.rs, 0.26.6
+        (
+            "src/client.rs",
+            [
+                0x8c, 0x55, 0x3b, 0x19, 0x44, 0xb7, 0x03, 0x55, 0x7b, 0x87, 0x93, 0xed, 0x72, 0xf6,
+                0xc8, 0xcc,
+            ],
+        ),
+        // src/server.rs, 0.26.0 and 0.26.1
+        (
+            "src/server.rs",
+            [
+                0x97, 0x30, 0xa2, 0xe6, 0xae, 0x46, 0x55, 0x69, 0x92, 0xe8, 0xb6, 0x91, 0xc1, 0xcc,
+                0x36, 0x42,
+            ],
+        ),
+        // src/server.rs, 0.26.2
+        (
+            "src/server.rs",
+            [
+                0xe6, 0x40, 0x28, 0xc6, 0x7e, 0xf7, 0x6a, 0x00, 0x83, 0x14, 0xd6, 0x4a, 0x48, 0xc0,
+                0xf3, 0xe6,
+            ],
+        ),
+        // src/server.rs, 0.26.3 and 0.26.4
+        (
+            "src/server.rs",
+            [
+                0x02, 0xd5, 0x42, 0xdf, 0x55, 0x04, 0xf0, 0xe5, 0x84, 0x77, 0xf4, 0xea, 0x0b, 0x48,
+                0x29, 0x24,
+            ],
+        ),
+        // src/server.rs, 0.26.5
+        (
+            "src/server.rs",
+            [
+                0x82, 0xcd, 0xcf, 0x02, 0x15, 0x0f, 0x7d, 0x20, 0x2b, 0x2e, 0xa5, 0x23, 0x36, 0x44,
+                0x59, 0x59,
+            ],
+        ),
+        // src/server.rs, 0.26.6
+        (
+            "src/server.rs",
+            [
+                0x19, 0x48, 0x5c, 0x7c, 0x27, 0x10, 0xe1, 0xfd, 0xdd, 0x20, 0x85, 0x47, 0xad, 0xa7,
+                0x15, 0x63,
+            ],
+        ),
+    ],
+};
+
+/// One reviewed third-party implementation fetched from git, which has
+/// no release to select a range by: the crate, the repository cargo
+/// names its checkout after, the crate's directory inside it, the
+/// family the bundle's origin records, the implementing file every
+/// declaration has to lie in, and every reviewed revision — whole,
+/// since cargo's checkout directory names an abbreviation of it — with
+/// that file's checksum there. A revision not in the list is
+/// unreviewed, however little it changed.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct GitConvention {
+    pub package: &'static str,
+    pub repository: &'static str,
+    /// The implementing file, by its path in the repository.
+    pub file: &'static str,
+    pub family: &'static str,
+    /// `(revision, md5)` for every reviewed revision.
+    pub revisions: &'static [(&'static str, [u8; 16])],
+}
+
+impl GitConvention {
+    /// The reviewed revision a checkout's abbreviation names: the one
+    /// reviewed revision it is a prefix of, or `None` for an
+    /// unreviewed revision or one too short to tell two reviewed
+    /// revisions apart.
+    pub fn reviewed_revision(
+        &self,
+        abbreviated: &str,
+    ) -> Option<&'static (&'static str, [u8; 16])> {
+        let mut named = self
+            .revisions
+            .iter()
+            .filter(|(revision, _)| revision.starts_with(abbreviated));
+        let one = named.next()?;
+        named.next().is_none().then_some(one)
+    }
+}
+
+/// sprockets-tls's `Stream<T>` (`tls/src/lib.rs` in oxidecomputer's
+/// sprockets repository) at the three revisions omicron has pinned —
+/// byte-identical in the struct and both impls: the struct is `{ inner:
+/// TlsStream<T>, platform_id, corpus_appraisal_success }`, `TlsStream`
+/// being tokio-rustls's enum, and every `AsyncRead`/`AsyncWrite` method
+/// calls the same method on `inner` and does nothing else. Each new
+/// revision is reviewed before it joins the list; until then its
+/// streams decline.
+pub const SPROCKETS_TLS_STREAM_D2B68E4: GitConvention = GitConvention {
+    package: "sprockets-tls",
+    repository: "sprockets",
+    file: "tls/src/lib.rs",
+    family: "sprockets-tls-stream-d2b68e4",
+    revisions: &[
+        (
+            "d2b68e4f47e3c22bce0455aeb4cfb2e61ad229ba",
+            [
+                0xfc, 0xab, 0x14, 0x9b, 0xa2, 0x50, 0xc0, 0x17, 0x2b, 0xe2, 0x66, 0x26, 0x1a, 0x2f,
+                0x70, 0xbb,
+            ],
+        ),
+        (
+            "68a4b3bf819722f9f57a3f0c99e1393ed01ba392",
+            [
+                0x28, 0x48, 0x00, 0x27, 0xdc, 0x37, 0xaa, 0xcb, 0x18, 0xed, 0x0f, 0x06, 0x78, 0xda,
+                0xce, 0x14,
+            ],
+        ),
+        (
+            "a233079e04d9688454486c452b694587a28c5257",
+            [
+                0x74, 0x48, 0xa3, 0x30, 0xe5, 0x4f, 0x05, 0x28, 0x6d, 0xd6, 0xd9, 0x6f, 0xfe, 0x5d,
+                0xb1, 0xd6,
+            ],
+        ),
+    ],
+};
+
 /// hashbrown's `RawTable` as 0.12.3 through 0.17.1 lay it out, read in
 /// every release of that range (`src/raw/mod.rs`, `src/raw.rs` from
 /// 0.17.0, beside `src/map.rs` and `src/set.rs`): `HashMap` is
@@ -2377,6 +2599,12 @@ mod tests {
                 "0.16.7",
                 "0.17.2",
             ),
+            (
+                &TOKIO_RUSTLS_STREAM_V0_26_0,
+                ["0.26.0", "0.26.3", "0.26.6"].as_slice(),
+                "0.25.0",
+                "0.26.7",
+            ),
         ] {
             for version in inside {
                 assert_eq!(
@@ -2436,6 +2664,29 @@ mod tests {
         for (_, checksum) in TOKIO_SELECT_V1_47.checksums {
             assert!(!TOKIO_INTERVAL_TICK_V1_47.reviewed_checksum(checksum));
         }
+    }
+
+    /// A checkout's abbreviation names the one reviewed revision it
+    /// begins: none for an unreviewed revision, and none where it is
+    /// too short to tell two reviewed revisions apart.
+    #[test]
+    fn test_a_git_convention_names_one_reviewed_revision() {
+        const TWINS: GitConvention = GitConvention {
+            revisions: &[("abc1234000", [0; 16]), ("abc1234fff", [1; 16])],
+            ..SPROCKETS_TLS_STREAM_D2B68E4
+        };
+        assert_eq!(
+            TWINS.reviewed_revision("abc1234f").map(|r| r.0),
+            Some("abc1234fff")
+        );
+        assert_eq!(TWINS.reviewed_revision("abc1234"), None);
+        assert_eq!(TWINS.reviewed_revision("abc1235"), None);
+        let reviewed = &SPROCKETS_TLS_STREAM_D2B68E4;
+        assert_eq!(
+            reviewed.reviewed_revision("a233079").map(|r| r.0),
+            Some(reviewed.revisions[2].0)
+        );
+        assert_eq!(reviewed.reviewed_revision("a233078"), None);
     }
 
     /// A state protocol binds inside its reviewed tokio range and for

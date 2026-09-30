@@ -4,13 +4,13 @@ description: "`tasks --exec trace -n` over illumos/tls-conns"
 ---
 task 3
 #0  future        tokio::io::util::read::Read<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
-      defined at tokio-1.52.4/src/io/util/read.rs:49 (<no_state>, 2 locals)
+      waiting on io fd 10 (readable)
 #1  async fn      tls_conns::plain_client
       awaiting at src/bin/tls-conns.rs:161 (Suspend2, 3 locals)
 
 task 4
 #0  future        tokio::io::util::read_exact::ReadExact<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>
-      defined at tokio-1.52.4/src/io/util/read_exact.rs:53 (<no_state>, 2 locals)
+      waiting on io fd 11 (readable)
 #1  async fn      tls_conns::exact_server
       awaiting at src/bin/tls-conns.rs:176 (Suspend2, 3 locals)
 
@@ -22,7 +22,7 @@ task 5
 
 task 6
 #0  future        tokio::io::util::read_exact::ReadExact<Box<tokio::io::util::buf_stream::BufStream<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>>
-      defined at tokio-1.52.4/src/io/util/read_exact.rs:53 (<no_state>, 2 locals)
+      waiting on io fd 13 (readable)
 #1  async fn      tls_conns::buffered_server
       awaiting at src/bin/tls-conns.rs:212 (Suspend0, 2 locals)
 
@@ -40,7 +40,7 @@ task 8
 
 task 9
 #0  future        tokio::io::util::read::Read<&mut tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
-      defined at tokio-1.52.4/src/io/util/read.rs:49 (<no_state>, 2 locals)
+      waiting on io fd 16 (readable)
 #1  async fn      tls_conns::closing_client
       awaiting at src/bin/tls-conns.rs:256 (Suspend1, 3 locals)
 

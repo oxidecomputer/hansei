@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`futures` over illumos/watch-stream"
 ---
-ADDR       TASK  HELD IN            STATE                                                    WAITING ON                                               ARMED  TYPE
+ADDR      TASK  HELD IN            STATE                                                    WAITING ON                                               ARMED  TYPE
 0xADDR  3     frame 1, `once`    —                                                        oneshot rx                                               yes    future tokio::sync::oneshot::Receiver<u32>
 0xADDR  3     frame 1, `stream`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch rx                                                 yes    async fn tokio_stream::wrappers::watch::make_future<u32>
 0xADDR  3     frame 1, `next`    —                                                        watch rx                                                 yes    future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>

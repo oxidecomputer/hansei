@@ -3,8 +3,8 @@ source: hansei/src/offline.rs
 description: "`connections --with role server --with buffered =0` over illumos/http-conns"
 ---
 TASK  CALLER  ROLE    PHASE             DEADLINE    BUF      PEER  SERVER  METHOD  REQUEST
-4     —       server  idle (11ms)       +TS  0/16302  —     —       —       —
+5     —       server  idle (7ms)        +TS  0/16302  —     —       —       —
 8     —       server  handling request  —           0/16339  —     —       GET     /park
 11    —       server  handling request  —           0/16326  —     —       GET     /park
-15    —       server  idle (8ms)        +TS  0/16343  —     —       —       —
+15    —       server  idle (5ms)        +TS  0/16343  —     —       —       —
 [4 connections]

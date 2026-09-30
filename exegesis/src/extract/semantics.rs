@@ -24,7 +24,7 @@ use super::paths::OwnedLoc;
 use super::sweep::PollSource;
 use crate::TypeId;
 use crate::bundle::names::coroutine_kind;
-use crate::bundle::origin::registry_origin;
+use crate::bundle::origin::{git_origin, registry_origin};
 use crate::bundle::{
     AccessBinding, AccessKind, AcquiresForBinding, BundleTypeId, ContainerBinding, ContainerKind,
     Continuation, CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence,
@@ -48,14 +48,15 @@ use crate::detect::adapters::{
 };
 use crate::detect::semantics::{
     DROPSHOT_HANDLER_V0_17_0, DROPSHOT_SERVER_V0_17_0, FUTURES_UTIL_ADAPTERS_V0_3_30,
-    HASHBROWN_TABLE_V0_12_3, HTTP_REQUEST_V1_0_0, HYPER_H1_CONN_V1_6_0,
+    GitConvention, HASHBROWN_TABLE_V0_12_3, HTTP_REQUEST_V1_0_0, HYPER_H1_CONN_V1_6_0,
     HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_POOL_V0_1_16, HYPER_UTIL_RESPONSE_V0_1_10,
     HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention, PARKING_LOT_RAW_MUTEX_V0_12_1,
     REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0, RustcConvention,
-    TOKIO_INTERVAL_TICK_V1_47, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
-    TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2,
-    TRACING_INSTRUMENTED_V0_1_40, library_convention, rustc_core_pending_convention,
-    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
+    SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_INTERVAL_TICK_V1_47, TOKIO_RUSTLS_STREAM_V0_26_0,
+    TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
+    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2, TRACING_INSTRUMENTED_V0_1_40,
+    library_convention, rustc_core_pending_convention, rustc_coroutine_convention,
+    rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
     rustc_std_futex_mutex_convention, rustc_std_refcount_convention, tokio_acquire_owner,
     tokio_state_protocol,
 };
@@ -690,11 +691,80 @@ impl Seed {
 }
 
 /// A stream's route as its name announced it: the hops to the stream
-/// it holds, or the socket it is.
-#[derive(Clone, Copy, Debug)]
+/// it holds, or the socket it is — or a third-party stream's reviewed
+/// route, with the type's method declarations its origin is read from.
+#[derive(Clone, Debug)]
 enum IoRouteSeed {
     Forward(&'static [Hop<'static>]),
     Socket(IoSocket),
+    Delegated {
+        stream: &'static DelegatedStream,
+        sources: BTreeSet<PollSource>,
+    },
+}
+
+/// A third-party stream whose every read and write is another's: the
+/// name its instantiations start with, the rule it binds under, the
+/// review its origin is checked against, and the route.
+#[derive(Debug)]
+struct DelegatedStream {
+    key: &'static str,
+    kind: SemanticRuleKind,
+    review: Review,
+    route: DelegatedRoute,
+}
+
+/// Which kind of review a third-party stream's origin is checked
+/// against: a registry release's range, or a git revision list.
+#[derive(Debug)]
+enum Review {
+    Release(&'static LibraryConvention),
+    Git(&'static GitConvention),
+}
+
+#[derive(Debug)]
+enum DelegatedRoute {
+    /// The hops to the stream held.
+    Forward(&'static [Hop<'static>]),
+    /// The variants whose one payload is the stream, by name.
+    Match(&'static [&'static str]),
+}
+
+/// The third-party streams whose routes are reviewed (see each
+/// convention for the review): tokio-rustls's enum and its client and
+/// server streams, and sprockets-tls's stream over the enum.
+const IO_DELEGATIONS: [DelegatedStream; 4] = [
+    DelegatedStream {
+        key: "tokio_rustls::TlsStream<",
+        kind: SemanticRuleKind::TokioRustlsStream,
+        review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_26_0),
+        route: DelegatedRoute::Match(&["Client", "Server"]),
+    },
+    DelegatedStream {
+        key: "tokio_rustls::client::TlsStream<",
+        kind: SemanticRuleKind::TokioRustlsStream,
+        review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_26_0),
+        route: DelegatedRoute::Forward(&[Hop::Member("io")]),
+    },
+    DelegatedStream {
+        key: "tokio_rustls::server::TlsStream<",
+        kind: SemanticRuleKind::TokioRustlsStream,
+        review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_26_0),
+        route: DelegatedRoute::Forward(&[Hop::Member("io")]),
+    },
+    DelegatedStream {
+        key: "sprockets_tls::Stream<",
+        kind: SemanticRuleKind::SprocketsTlsStream,
+        review: Review::Git(&SPROCKETS_TLS_STREAM_D2B68E4),
+        route: DelegatedRoute::Forward(&[Hop::Member("inner")]),
+    },
+];
+
+/// The third-party stream a name announces, if its route is reviewed.
+fn io_delegation(name: &str) -> Option<&'static DelegatedStream> {
+    IO_DELEGATIONS
+        .iter()
+        .find(|stream| names_type(stream.key, name))
 }
 
 /// An io operation future as its name announced it: which operation,
@@ -823,10 +893,14 @@ const IO_SOCKETS: [(&str, IoSocket); 2] = [
 ];
 
 /// Whether `name` is a type `key` names: every instantiation of a
-/// generic whose key ends in `<`, the one type an exact key spells.
+/// generic whose key ends in `<` — the instantiation itself, whose
+/// arguments close the name, not a variant's payload type named below
+/// it (`TlsStream<T>::Client`) — or the one type an exact key names.
 fn names_type(key: &str, name: &str) -> bool {
     if key.ends_with('<') {
-        name.starts_with(key)
+        name.strip_prefix(key).is_some_and(|args| {
+            super::sweep::angle_close(args).map(|at| at + 1) == Some(args.len())
+        })
     } else {
         name == key
     }
@@ -1245,6 +1319,11 @@ pub(super) fn collect_semantic_seeds(
             seeds.entry(ty).or_default().pool = Some(seed);
         } else if let Some(route) = io_route_seed(name) {
             seeds.entry(ty).or_default().io_route = Some(route);
+        } else if let Some(stream) = io_delegation(name) {
+            seeds.entry(ty).or_default().io_route = Some(IoRouteSeed::Delegated {
+                stream,
+                sources: type_sources(raw),
+            });
         } else if let Some(op) = io_op_seed(name) {
             seeds.entry(ty).or_default().io_op = Some(op);
         } else if let Some(library) = library_seed(
@@ -1532,6 +1611,20 @@ struct DelegationOrigin {
     files: Vec<(String, [u8; 16])>,
 }
 
+/// A git delegation origin as the binder established it: the crate the
+/// review names, the repository and abbreviated revision the checkout
+/// path records, the family, the anchored path, and whatever checksums
+/// the file tables carried.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct GitDelegationOrigin {
+    package: &'static str,
+    repository: String,
+    revision: String,
+    family: &'static str,
+    source: String,
+    files: Vec<(String, [u8; 16])>,
+}
+
 /// A rule as a plan names it, before ids exist: enough to intern the
 /// origin and the rule once each, in the order the records are emitted.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -1550,6 +1643,10 @@ enum RuleKey {
     Delegation {
         kind: SemanticRuleKind,
         origin: DelegationOrigin,
+    },
+    GitDelegation {
+        kind: SemanticRuleKind,
+        origin: GitDelegationOrigin,
     },
     /// A layout rule over a release its declarations named, under the
     /// origin of that package, release and reviewed family.
@@ -1571,6 +1668,7 @@ struct Rules {
     futures_util: Option<SemanticOriginId>,
     rustc: BTreeMap<(String, &'static str), SemanticOriginId>,
     delegation: BTreeMap<DelegationOrigin, SemanticOriginId>,
+    git: BTreeMap<GitDelegationOrigin, SemanticOriginId>,
     layout: BTreeMap<(&'static str, String, &'static str), SemanticOriginId>,
 }
 
@@ -1584,6 +1682,7 @@ impl Rules {
             futures_util: None,
             rustc: BTreeMap::new(),
             delegation: BTreeMap::new(),
+            git: BTreeMap::new(),
             layout: BTreeMap::new(),
         }
     }
@@ -1690,6 +1789,31 @@ impl Rules {
                                 .collect(),
                         });
                         self.delegation.insert(origin.clone(), id);
+                        id
+                    }
+                };
+                (*kind, id)
+            }
+            RuleKey::GitDelegation { kind, origin } => {
+                let id = match self.git.get(origin) {
+                    Some(id) => *id,
+                    None => {
+                        let id = self.push_origin(SemanticOrigin::GitDelegation {
+                            package: strings.intern(origin.package),
+                            repository: strings.intern(&origin.repository),
+                            revision: strings.intern(&origin.revision),
+                            family: strings.intern(origin.family),
+                            source: strings.intern(&origin.source),
+                            files: origin
+                                .files
+                                .iter()
+                                .map(|(file, md5)| SourceFileEvidence {
+                                    file: strings.intern(file),
+                                    md5: *md5,
+                                })
+                                .collect(),
+                        });
+                        self.git.insert(origin.clone(), id);
                         id
                     }
                 };
@@ -1920,7 +2044,7 @@ struct Draft {
     pool: Option<PoolPlan>,
     /// The route a read or write through a value of the type takes,
     /// where it ends at a socket.
-    io_route: Option<IoRouteStep>,
+    io_route: Option<(RuleKey, IoRouteStep)>,
     /// The stream an io operation polls, where it is one over a routed
     /// stream.
     io: Option<IoOpPlan>,
@@ -2032,14 +2156,13 @@ pub(super) fn bind_semantics(
         let readable = matches!(storage, StoragePolicy::DeclaredMembers);
         draft.resource = seed.resource.filter(|_| readable);
         // A stream's route is a record of its own wherever it ends at a
-        // socket, since a reader follows it type by type; one that runs
-        // off every reviewed route says why beside whatever record the
-        // type has. An operation over no routed stream is no resource,
-        // and that is its continuation's reason.
+        // socket, since a reader follows it type by type (Phase C); one
+        // that runs off every reviewed route says why beside whatever
+        // record the type has. An operation over no routed stream is no
+        // resource, and that is its continuation's reason.
         if readable {
             if let Some(step) = io.routes.get(&ty) {
                 draft.io_route = Some(step.clone());
-                draft.own_record = true;
             }
             if let Some(decline) = io.route_declines.get(&ty) {
                 draft.issues.push(decline.clone());
@@ -2226,8 +2349,10 @@ pub(super) fn bind_semantics(
     // Phase C: which drafts become records. A seed with identity,
     // storage or a library binding always does; a future does; an
     // adapter whose storage leads to a record does, so that discovery
-    // can follow the owned route to it.
-    let mut included: BTreeSet<BundleTypeId> = drafts
+    // can follow the owned route to it. A stream's route makes a record
+    // too, but one discovery has no business following: a pointer to a
+    // stream is no adapter, whatever its type's route says.
+    let mut discovered: BTreeSet<BundleTypeId> = drafts
         .iter()
         .filter(|(_, d)| d.own_record || !d.evidence.is_empty())
         .map(|(&ty, _)| ty)
@@ -2236,17 +2361,22 @@ pub(super) fn bind_semantics(
         let more: Vec<BundleTypeId> = drafts
             .iter()
             .filter(|(ty, d)| {
-                !included.contains(ty)
+                !discovered.contains(ty)
                     && d.plan.as_ref().is_some_and(|p| p.access.is_some())
-                    && d.pointee.is_some_and(|p| included.contains(&p))
+                    && d.pointee.is_some_and(|p| discovered.contains(&p))
             })
             .map(|(&ty, _)| ty)
             .collect();
         if more.is_empty() {
             break;
         }
-        included.extend(more);
+        discovered.extend(more);
     }
+    let included: BTreeSet<BundleTypeId> = drafts
+        .iter()
+        .filter(|(ty, d)| discovered.contains(ty) || d.io_route.is_some())
+        .map(|(&ty, _)| ty)
+        .collect();
 
     // Phase D: number the rules in record order and emit.
     let issue = |kind| SemanticIssue { kind, detail: None };
@@ -2394,10 +2524,13 @@ pub(super) fn bind_semantics(
         let mut access = None;
         // A program is a fact about polling, so it needs a future to be
         // about: an adapter nothing proves a future keeps its storage
-        // access and no continuation, and numbers no poll rule.
+        // access and no continuation, and numbers no poll rule. One
+        // recorded only for its stream route keeps no access either.
         let program = match draft.plan.filter(|_| readable || coroutine.is_some()) {
             Some(plan) => {
-                if let Some((access_rule, kind, target)) = plan.access {
+                if let Some((access_rule, kind, target)) =
+                    plan.access.filter(|_| discovered.contains(&ty))
+                {
                     access = Some(AccessBinding {
                         rule: rules.rule(&access_rule, strings, library),
                         kind,
@@ -2556,8 +2689,8 @@ pub(super) fn bind_semantics(
             },
         });
         // An operation's stream is reached under the operation's own
-        // rule, beside the resource it is; a stream's route under
-        // tokio's route rule.
+        // rule, beside the resource it is; a stream's route under the
+        // rule of whoever implements the stream.
         let io = draft
             .io
             .filter(|_| readable)
@@ -2570,12 +2703,8 @@ pub(super) fn bind_semantics(
         let io_route = draft
             .io_route
             .filter(|_| readable)
-            .map(|step| IoRouteBinding {
-                rule: rules.rule(
-                    &RuleKey::Library(SemanticRuleKind::TokioIoRoute),
-                    strings,
-                    library,
-                ),
+            .map(|(rule, step)| IoRouteBinding {
+                rule: rules.rule(&rule, strings, library),
                 step,
             });
         records.push(TypeSemantics {
@@ -3822,25 +3951,14 @@ fn plan_request(
             &seed.sources,
         ),
     };
-    // A type's own method declarations are the ones in its crate: a
-    // foreign trait implemented on it — reqwest converting its request
-    // into http's — is declared in the implementing crate's file and
-    // says nothing about which http declared the type. Where nothing is
-    // left the whole set goes to the decline, so its reason names what
-    // was found.
-    let own: BTreeSet<PollSource> = sources
-        .iter()
-        .filter(|source| {
-            registry_origin(&source.path).is_some_and(|origin| origin.package == convention.package)
+    let sources = if declared_by == "method" {
+        own_declarations(sources, |path| {
+            registry_origin(path).is_some_and(|origin| origin.package == convention.package)
         })
-        .cloned()
-        .collect();
-    let sources = if declared_by == "method" && !own.is_empty() {
-        &own
     } else {
-        sources
+        Cow::Borrowed(sources)
     };
-    let origin = delegation_origin(sources, convention, declared_by)?;
+    let origin = delegation_origin(&sources, convention, declared_by)?;
     let rule = RuleKey::Delegation { kind, origin };
     fn under(prefix: &[&'static str], rest: &[&'static str]) -> Vec<&'static str> {
         prefix.iter().chain(rest).copied().collect()
@@ -4084,8 +4202,9 @@ fn hop_steps(
 /// socket, and whether one does is a fact about the routes of every
 /// type it forwards through.
 struct IoPlans {
-    /// Every route that ends at a socket, by the type it starts at.
-    routes: BTreeMap<BundleTypeId, IoRouteStep>,
+    /// Every route that ends at a socket, by the type it starts at, with
+    /// the rule it binds under.
+    routes: BTreeMap<BundleTypeId, (RuleKey, IoRouteStep)>,
     /// Every operation over such a stream.
     operations: BTreeMap<BundleTypeId, IoOpPlan>,
     /// Why a screened stream's route did not bind: an issue beside its
@@ -4104,11 +4223,13 @@ struct IoOpPlan {
 
 /// Plan every stream's route and every operation over one. A stream's
 /// route is its seed's hops to the stream it holds, or its socket's
-/// roles bound at its own type; a `Box` or `&mut` whose screen saw a
-/// sized pointee forwards to it, by tokio's impls for both. Only the
+/// roles bound at its own type, or a reviewed third-party stream's
+/// route once its origin checks out; a `Box` or `&mut` whose screen saw
+/// a sized pointee forwards to it, by tokio's impls for both. Only the
 /// routes that end at a socket are kept — a forward counts once the
-/// type it lands on does — so an operation's stream is routed exactly
-/// when a reader following its route reaches a registration.
+/// type it lands on does, a match once any case's does, keeping just
+/// those cases — so an operation's stream is routed exactly when a
+/// reader following its route reaches a registration.
 fn plan_io(
     seeds: &SemanticSeeds,
     types: &TypeTable,
@@ -4116,22 +4237,25 @@ fn plan_io(
     strings: &StringInterner,
     walks: &WalksTable,
 ) -> IoPlans {
-    let mut planned = BTreeMap::new();
+    let tokio = || RuleKey::Library(SemanticRuleKind::TokioIoRoute);
+    let mut planned: BTreeMap<BundleTypeId, (RuleKey, IoRouteStep)> = BTreeMap::new();
     let mut route_declines = BTreeMap::new();
     for (&ty, seed) in seeds {
-        let step = match (seed.io_route, &seed.adapter) {
-            (Some(IoRouteSeed::Forward(hops)), _) => {
-                hop_landing(types, strings, ty, hops).map(|inner| IoRouteStep::Forward { inner })
-            }
+        let step = match (&seed.io_route, &seed.adapter) {
+            (Some(IoRouteSeed::Forward(hops)), _) => hop_landing(types, strings, ty, hops)
+                .map(|inner| (tokio(), IoRouteStep::Forward { inner })),
             (Some(IoRouteSeed::Socket(socket)), _) => {
-                if bound_roots(walks, &socket_roles(socket), &[]).contains(&ty) {
-                    Ok(IoRouteStep::Socket(socket))
+                if bound_roots(walks, &socket_roles(*socket), &[]).contains(&ty) {
+                    Ok((tokio(), IoRouteStep::Socket(*socket)))
                 } else {
                     Err((
                         SemanticIssueKind::MissingLayout,
                         "the socket's registration and descriptor routes are not bound".to_owned(),
                     ))
                 }
+            }
+            (Some(IoRouteSeed::Delegated { stream, sources }), _) => {
+                delegated_route(ty, stream, sources, types, strings)
             }
             (
                 None,
@@ -4142,7 +4266,7 @@ fn plan_io(
                     ..
                 }),
             ) => hop_route(types, strings, ty, &[Hop::Deref], *pointee)
-                .map(|inner| IoRouteStep::Forward { inner }),
+                .map(|inner| (tokio(), IoRouteStep::Forward { inner })),
             _ => continue,
         };
         match step {
@@ -4154,43 +4278,60 @@ fn plan_io(
             }
         }
     }
-    let mut routes: BTreeMap<BundleTypeId, IoRouteStep> = planned
-        .iter()
-        .filter(|(_, step)| matches!(step, IoRouteStep::Socket(_)))
-        .map(|(&ty, step)| (ty, step.clone()))
-        .collect();
+    let mut routed = BTreeSet::new();
     loop {
-        let before = routes.len();
-        for (&ty, step) in &planned {
-            if let IoRouteStep::Forward { inner } = step
-                && !routes.contains_key(&ty)
-                && routes.contains_key(&inner.target)
-            {
-                routes.insert(ty, step.clone());
+        let before = routed.len();
+        for (&ty, (_, step)) in &planned {
+            let ends = match step {
+                IoRouteStep::Socket(_) => true,
+                IoRouteStep::Forward { inner } => routed.contains(&inner.target),
+                IoRouteStep::Match { cases } => {
+                    cases.iter().any(|case| routed.contains(&case.target))
+                }
+            };
+            if ends {
+                routed.insert(ty);
             }
         }
-        if routes.len() == before {
+        if routed.len() == before {
             break;
         }
     }
+    // A match keeps the cases that end at a socket: a value in any
+    // other variant has no route, which a reader finds by its variant.
+    let routes = planned
+        .iter()
+        .filter(|(ty, _)| routed.contains(*ty))
+        .map(|(&ty, (rule, step))| {
+            let step = match step {
+                IoRouteStep::Match { cases } => IoRouteStep::Match {
+                    cases: cases
+                        .iter()
+                        .filter(|case| routed.contains(&case.target))
+                        .cloned()
+                        .collect(),
+                },
+                step => step.clone(),
+            };
+            (ty, (rule.clone(), step))
+        })
+        .collect();
     // A screened stream whose route runs off every reviewed one says
     // so; a `Box` or a reference over anything else is no stream at
     // all, and says nothing.
-    for (&ty, step) in &planned {
-        if !routes.contains_key(&ty) && seeds.get(&ty).is_some_and(|s| s.io_route.is_some()) {
-            let IoRouteStep::Forward { inner } = step else {
-                unreachable!("every socket route is kept")
-            };
-            route_declines.insert(
-                ty,
-                (
-                    SemanticIssueKind::NoRule,
-                    format!(
-                        "the stream it holds, {}, has no reviewed route to a socket",
-                        type_label(names, inner.target)
-                    ),
+    for (&ty, (_, step)) in &planned {
+        if !routed.contains(&ty) && seeds.get(&ty).is_some_and(|s| s.io_route.is_some()) {
+            let detail = match step {
+                IoRouteStep::Forward { inner } => format!(
+                    "the stream it holds, {}, has no reviewed route to a socket",
+                    type_label(names, inner.target)
                 ),
-            );
+                IoRouteStep::Match { .. } => {
+                    "no variant's stream has a reviewed route to a socket".to_owned()
+                }
+                IoRouteStep::Socket(_) => unreachable!("every socket route is kept"),
+            };
+            route_declines.insert(ty, (SemanticIssueKind::NoRule, detail));
         }
     }
 
@@ -4217,12 +4358,88 @@ fn plan_io(
     }
 }
 
+/// A type's own method declarations: the ones `own` places in its
+/// crate. A foreign trait implemented on the type — reqwest converting
+/// its request into http's, or giving tokio-rustls's client stream its
+/// TLS-info trait — is declared in the implementing crate's file and
+/// says nothing about which release declared the type. Where nothing
+/// is left the whole set is kept, so the decline's reason names what
+/// was found.
+fn own_declarations(
+    sources: &BTreeSet<PollSource>,
+    own: impl Fn(&str) -> bool,
+) -> Cow<'_, BTreeSet<PollSource>> {
+    let owned: BTreeSet<PollSource> = sources
+        .iter()
+        .filter(|source| own(&source.path))
+        .cloned()
+        .collect();
+    if owned.is_empty() {
+        Cow::Borrowed(sources)
+    } else {
+        Cow::Owned(owned)
+    }
+}
+
+/// A reviewed third-party stream's route: its origin first — the
+/// type's own method declarations, checked against the review — then
+/// the reviewed route's hops, held to the final table. A match's cases
+/// are each its variant's one payload.
+fn delegated_route(
+    ty: BundleTypeId,
+    stream: &DelegatedStream,
+    sources: &BTreeSet<PollSource>,
+    types: &TypeTable,
+    strings: &StringInterner,
+) -> Result<(RuleKey, IoRouteStep), Decline> {
+    let kind = stream.kind;
+    let rule = match stream.review {
+        Review::Release(convention) => {
+            let sources = own_declarations(sources, |path| {
+                registry_origin(path).is_some_and(|origin| origin.package == convention.package)
+            });
+            RuleKey::Delegation {
+                kind,
+                origin: delegation_origin(&sources, convention, "method")?,
+            }
+        }
+        Review::Git(convention) => {
+            let sources = own_declarations(sources, |path| {
+                git_origin(path).is_some_and(|origin| origin.repository == convention.repository)
+            });
+            RuleKey::GitDelegation {
+                kind,
+                origin: git_delegation_origin(&sources, convention, "method")?,
+            }
+        }
+    };
+    let step = match stream.route {
+        DelegatedRoute::Forward(hops) => IoRouteStep::Forward {
+            inner: hop_landing(types, strings, ty, hops)?,
+        },
+        DelegatedRoute::Match(variants) => IoRouteStep::Match {
+            cases: variants
+                .iter()
+                .map(|variant| {
+                    hop_landing(
+                        types,
+                        strings,
+                        ty,
+                        &[Hop::Variant(variant), Hop::Member("__0")],
+                    )
+                })
+                .collect::<Result<_, _>>()?,
+        },
+    };
+    Ok((rule, step))
+}
+
 /// An operation over a routed stream: its `&mut` crossed to the stream,
 /// which must be routed, and its slice's length where it holds one.
 fn plan_io_operation(
     ty: BundleTypeId,
     op: IoOpSeed,
-    routes: &BTreeMap<BundleTypeId, IoRouteStep>,
+    routes: &BTreeMap<BundleTypeId, (RuleKey, IoRouteStep)>,
     types: &TypeTable,
     names: &[Option<String>],
     strings: &StringInterner,
@@ -4735,6 +4952,86 @@ fn delegation_origin(
     Ok(DelegationOrigin {
         package: convention.package,
         version: version.to_string(),
+        family: convention.family,
+        source,
+        files,
+    })
+}
+
+/// The origin a type's declarations establish for a reviewed
+/// implementation fetched from git. Every declaration has to lie on a
+/// cargo git checkout path of the convention's repository, in its
+/// implementing file; they have to agree on one such path; its revision
+/// has to name exactly one reviewed revision; and a checksum, where a
+/// file table carried one, has to be that revision's. As with a
+/// release, no declaration at all is no origin.
+fn git_delegation_origin(
+    sources: &BTreeSet<PollSource>,
+    convention: &'static GitConvention,
+    declared_by: &str,
+) -> Result<GitDelegationOrigin, Decline> {
+    let decline = |detail: String| (SemanticIssueKind::UnsupportedOrigin, detail);
+    let mut declared: Option<(String, String, String)> = None;
+    let mut files: Vec<(String, [u8; 16])> = Vec::new();
+    if sources.is_empty() {
+        return Err(decline(format!(
+            "no {declared_by} declaration records where this instantiation's implementation lives"
+        )));
+    }
+    for source in sources {
+        let Some(origin) = git_origin(&source.path) else {
+            return Err(decline(format!(
+                "declared in {}, which is not a cargo git checkout path",
+                source.path
+            )));
+        };
+        if origin.repository != convention.repository || origin.file != convention.file {
+            return Err(decline(format!(
+                "declared in {}, which is not {} in the {} repository",
+                source.path, convention.file, convention.repository
+            )));
+        }
+        match &declared {
+            None => {
+                declared = Some((
+                    origin.path.to_owned(),
+                    origin.repository.to_owned(),
+                    origin.revision.to_owned(),
+                ))
+            }
+            Some((path, ..)) if path == origin.path => {}
+            Some((path, ..)) => {
+                return Err(decline(format!(
+                    "declared in both {path} and {}",
+                    origin.path
+                )));
+            }
+        }
+        if let Some(md5) = source.md5 {
+            files.push((origin.path.to_owned(), md5));
+        }
+    }
+    let (source, repository, revision) = declared.expect("at least one source");
+    let Some((_, reviewed)) = convention.reviewed_revision(&revision) else {
+        return Err(decline(format!(
+            "{} revision {revision} is not a reviewed revision of {}",
+            convention.repository, convention.family
+        )));
+    };
+    files.sort();
+    files.dedup();
+    for (file, md5) in &files {
+        if md5 != reviewed {
+            return Err(decline(format!(
+                "{file} has checksum {}, not revision {revision}'s",
+                hex(md5)
+            )));
+        }
+    }
+    Ok(GitDelegationOrigin {
+        package: convention.package,
+        repository,
+        revision,
         family: convention.family,
         source,
         files,
@@ -6713,6 +7010,12 @@ mod tests {
                 "src/time/interval.rs",
                 "tokio-util",
             ),
+            (
+                &TOKIO_RUSTLS_STREAM_V0_26_0,
+                "0.26.4",
+                "src/client.rs",
+                "rustls",
+            ),
         ] {
             let package = convention.package;
             let at = |version: &str| format!("{ROOT}/{package}-{version}/{file}");
@@ -6794,6 +7097,153 @@ mod tests {
                     .contains("not a reviewed revision of")
             );
         }
+    }
+
+    /// A git origin is read off a checkout path of the convention's
+    /// repository, in its implementing file, at a revision the review
+    /// lists — by any abbreviation cargo writes — and corroborated by
+    /// that revision's checksum where the line table carries one. Every
+    /// departure declines with the reason.
+    #[test]
+    fn test_a_git_origin_names_a_reviewed_revision_of_its_file() {
+        const CHECKOUT: &str = "/home/u/.cargo/git/checkouts/sprockets-882d17aeeb0cb343";
+        let convention = &SPROCKETS_TLS_STREAM_D2B68E4;
+        let at = |revision: &str| format!("{CHECKOUT}/{revision}/tls/src/lib.rs");
+        let origin = |sources: &[PollSource]| {
+            git_delegation_origin(&sources.iter().cloned().collect(), convention, "method")
+        };
+        let (_, reviewed) = convention.revisions[2];
+        assert_eq!(
+            origin(&[source(&at("a233079"), Some(reviewed))]).unwrap(),
+            GitDelegationOrigin {
+                package: "sprockets-tls",
+                repository: "sprockets".to_owned(),
+                revision: "a233079".to_owned(),
+                family: convention.family,
+                source: at("a233079")
+                    .strip_prefix("/home/u/.cargo/")
+                    .unwrap()
+                    .to_owned(),
+                files: vec![(
+                    at("a233079")
+                        .strip_prefix("/home/u/.cargo/")
+                        .unwrap()
+                        .to_owned(),
+                    reviewed
+                )],
+            }
+        );
+        // Every reviewed revision, by a longer abbreviation too.
+        for (revision, _) in convention.revisions {
+            assert!(origin(&[source(&at(&revision[..7]), None)]).is_ok());
+            assert!(origin(&[source(&at(&revision[..12]), None)]).is_ok());
+        }
+        let declined = |sources: &[PollSource]| {
+            let (kind, detail) = origin(sources).unwrap_err();
+            assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{detail}");
+            detail
+        };
+        assert!(declined(&[]).contains("no method declaration"));
+        assert!(
+            declined(&[source(&at("0123abc"), None)])
+                .contains("sprockets revision 0123abc is not a reviewed revision")
+        );
+        assert!(
+            declined(&[source(
+                "/home/u/.cargo/registry/src/idx/sprockets-tls-0.1.0/src/lib.rs",
+                None
+            )])
+            .contains("not a cargo git checkout path")
+        );
+        assert!(
+            declined(&[source(
+                &format!("{CHECKOUT}/a233079/tls/src/client.rs"),
+                None
+            )])
+            .contains("which is not tls/src/lib.rs in the sprockets repository")
+        );
+        assert!(
+            declined(&[source(
+                "/home/u/.cargo/git/checkouts/sprocket-882d17aeeb0cb343/a233079/tls/src/lib.rs",
+                None
+            )])
+            .contains("in the sprockets repository")
+        );
+        assert!(
+            declined(&[source(&at("a233079"), None), source(&at("68a4b3b"), None)])
+                .contains("declared in both")
+        );
+        assert!(
+            declined(&[source(&at("a233079"), Some(convention.revisions[0].1))])
+                .contains("not revision a233079's")
+        );
+    }
+
+    /// A third-party stream's origin is read off the declarations in
+    /// its own crate or checkout: a foreign trait implemented on it —
+    /// reqwest's TLS-info trait on tokio-rustls's client stream — is
+    /// passed over where the stream's own declarations are present, and
+    /// is the decline's reason where they are not. An origin that holds
+    /// goes on to the layout, which the empty table here does not have.
+    #[test]
+    fn test_a_stream_origin_passes_over_foreign_declarations() {
+        const ROOT: &str = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
+        let reqwest = source(&format!("{ROOT}/reqwest-0.13.2/src/connect.rs"), None);
+        let checkout = "/home/u/.cargo/git/checkouts/sprockets-882d17aeeb0cb343/a233079";
+        let strings = StringInterner::new();
+        let route = |key: &str, sources: &[&PollSource]| {
+            let stream = io_delegation(key).unwrap();
+            let sources = sources.iter().copied().cloned().collect();
+            delegated_route(
+                BundleTypeId(0),
+                stream,
+                &sources,
+                &TypeTable::default(),
+                &strings,
+            )
+            .map(|_| ())
+            .unwrap_err()
+        };
+        for (key, own) in [
+            (
+                "tokio_rustls::client::TlsStream<u8>",
+                source(&format!("{ROOT}/tokio-rustls-0.26.4/src/client.rs"), None),
+            ),
+            (
+                "sprockets_tls::Stream<u8>",
+                source(&format!("{checkout}/tls/src/lib.rs"), None),
+            ),
+        ] {
+            let (kind, detail) = route(key, &[&own, &reqwest]);
+            assert!(detail.contains("no unique member"), "{key}: {detail}");
+            assert_ne!(
+                kind,
+                SemanticIssueKind::UnsupportedOrigin,
+                "{key}: {detail}"
+            );
+            let (kind, detail) = route(key, &[&reqwest]);
+            assert_eq!(
+                kind,
+                SemanticIssueKind::UnsupportedOrigin,
+                "{key}: {detail}"
+            );
+            assert!(detail.contains("reqwest-0.13.2"), "{key}: {detail}");
+        }
+    }
+
+    /// A generic's key names each instantiation whole, never a
+    /// variant's payload type named below one.
+    #[test]
+    fn test_a_generic_key_names_only_whole_instantiations() {
+        let key = "tokio_rustls::TlsStream<";
+        let tcp = "tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>";
+        assert!(names_type(key, tcp));
+        assert!(names_type(key, "tokio_rustls::TlsStream<a::B<c::D>>"));
+        assert!(!names_type(key, &format!("{tcp}::Client")));
+        assert!(!names_type(key, "tokio_rustls::TlsStream<"));
+        assert!(!names_type(key, "tokio_rustls::TlsStreamX<u8>"));
+        assert!(names_type("a::B", "a::B"));
+        assert!(!names_type("a::B", "a::B<u8>"));
     }
 
     /// The reviewed wrappers plan one exclusive forward each — through

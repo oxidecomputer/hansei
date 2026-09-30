@@ -729,6 +729,22 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 s(*source),
                 files.len()
             ),
+            SemanticOrigin::GitDelegation {
+                package,
+                repository,
+                revision,
+                family,
+                source,
+                files,
+            } => format!(
+                "git delegation {} {}@{} family {} from {} ({} checksummed files)",
+                s(*package),
+                s(*repository),
+                s(*revision),
+                s(*family),
+                s(*source),
+                files.len()
+            ),
         };
         let _ = writeln!(out, "origin {i}: {text}");
     }
@@ -849,6 +865,27 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                     rule.0,
                     path(record.ty, inner),
                     fq_name(bundle, inner.target)
+                );
+            }
+            Some(IoRouteBinding {
+                rule,
+                step: IoRouteStep::Match { cases },
+            }) => {
+                let cases: Vec<String> = cases
+                    .iter()
+                    .map(|case| {
+                        format!(
+                            "{} to {}",
+                            path(record.ty, case),
+                            fq_name(bundle, case.target)
+                        )
+                    })
+                    .collect();
+                let _ = write!(
+                    line,
+                    " io-route rule {} match {}",
+                    rule.0,
+                    cases.join(" | ")
                 );
             }
             Some(IoRouteBinding {
