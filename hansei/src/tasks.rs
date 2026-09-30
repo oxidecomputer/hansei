@@ -460,6 +460,9 @@ pub(crate) fn print_future_entry(
             if let Some(waiting) = &h.waiting_on {
                 writeln!(out, "{pad}  waiting on {waiting}")?;
             }
+            if let Some(tls) = crate::futures::observed_tls(h.observation.as_ref()) {
+                writeln!(out, "{pad}    tls: {}", tls_words(&tls))?;
+            }
             for inner in nested.get(&census::Via::Held(index)).into_iter().flatten() {
                 print_future_entry(*inner, listing, indent + 4, mark_held, out)?;
             }
@@ -501,6 +504,9 @@ pub(crate) fn print_future_entry(
                 writeln!(out, "{before}{name}{state}")?;
                 if let Some(waiting) = &child.waiting_on {
                     writeln!(out, "{pad}      waiting on {waiting}")?;
+                }
+                if let Some(tls) = crate::futures::observed_tls(child.observation.as_ref()) {
+                    writeln!(out, "{pad}        tls: {}", tls_words(&tls))?;
                 }
                 let via = census::Via::SetChild {
                     set: index,

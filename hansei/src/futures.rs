@@ -19,6 +19,7 @@ use crate::{Session, print_warnings, repl, summary};
 use anyhow::{Context as _, Result};
 use hansei_bundle::BundleTypeId;
 use hansei_runtime::tokio::assess::ContinuationStatus;
+use hansei_runtime::tokio::observe::ResourceObservation;
 use hansei_runtime::tokio::{Lifecycle, RawInstant, attribution, bundle, census};
 
 use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
@@ -110,6 +111,10 @@ pub(crate) struct FutureRow {
     /// `waker N:` block per slot where several arm the future — what
     /// each waits on, and where the waker is held.
     pub(crate) slot_lines: Vec<String>,
+    /// The TLS connection the wait's route crossed, where it crossed
+    /// one: its words, or why they did not read — the `tls:` line under
+    /// the wait, as a task block prints it.
+    pub(crate) tls: Option<Result<bundle::TlsReading, String>>,
     /// The concrete future type, folded and never truncated.
     pub(crate) future: String,
     /// That type: what `--group type` buckets the row under.
@@ -496,6 +501,7 @@ impl Rows<'_> {
             armed: false,
             wait_line: None,
             slot_lines: Vec::new(),
+            tls: observed_tls(h.observation.as_ref()),
             future: self.stops.future(h.future),
             future_ty: h.future,
             depth: h.depth,
@@ -543,6 +549,7 @@ impl Rows<'_> {
             armed: false,
             wait_line: None,
             slot_lines: Vec::new(),
+            tls: observed_tls(c.observation.as_ref()),
             future: self.stops.future(future),
             future_ty: future,
             depth: c.depth,
@@ -550,6 +557,18 @@ impl Rows<'_> {
             sets: inside.sets + inside.join_sets,
             sets_summary: inside.sets_summary(),
         }
+    }
+}
+
+/// The TLS connection a find's observed io operation or HTTP
+/// connection reads through, where its route crossed one.
+pub(crate) fn observed_tls(
+    observation: Option<&ResourceObservation>,
+) -> Option<Result<bundle::TlsReading, String>> {
+    match observation? {
+        ResourceObservation::Io(io) => io.tls.clone(),
+        ResourceObservation::HttpConn(http) => http.tls(),
+        _ => None,
     }
 }
 
@@ -739,6 +758,9 @@ impl Blocks<'_> {
             match head {
                 Some(head) => writeln!(out, "    awaiting on: {head}")?,
                 None => writeln!(out, "    awaiting on:")?,
+            }
+            if let Some(tls) = &row.tls {
+                writeln!(out, "        tls: {}", tasks::tls_words(tls))?;
             }
             for line in &row.slot_lines {
                 writeln!(out, "        {line}")?;

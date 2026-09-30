@@ -228,6 +228,17 @@ fn commands(
             }
         }
     }
+    // The finds of a task whose held reads cross TLS connections: each
+    // one's wait carries the connection's words under it, as the
+    // future's own block does. Selecting the task moves the cursor, so
+    // this comes after the first task's cursor commands.
+    if program == "tls-conns"
+        && let Some(held) = session.census().held.first()
+        && let Some(id) = session.tasks.tasks[held.owner].task_id
+    {
+        list.push(("task-held", format!("task {id}")));
+        list.push(("children-held", "children".to_owned()));
+    }
     // The holder's three receivers through the mpsc formatter: a channel
     // with messages queued, one whose senders dropped with a message
     // still ahead of the close slot, and one drained before the close.

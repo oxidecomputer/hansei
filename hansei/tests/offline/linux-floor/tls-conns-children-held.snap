@@ -1,0 +1,12 @@
+---
+source: hansei/src/offline.rs
+description: "`children` over linux-floor/tls-conns"
+---
+held futures: 2
+    (frame 1, `read`): 0xADDR  future tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>
+      waiting on io fd 13 (readable)
+        tls: client, TLSv1_3, established, 1 record read, 0 written
+    (frame 1, `write`): 0xADDR  future tokio::io::util::write_buf::WriteBuf<tokio::io::split::WriteHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>, core::io::cursor::Cursor<Vec<u8>>>
+      waiting on io fd 13 (writable)
+        tls: client, TLSv1_3, established, 1 record read, 0 written
+join sets: 0
