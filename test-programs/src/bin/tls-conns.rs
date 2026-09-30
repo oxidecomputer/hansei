@@ -12,10 +12,11 @@
 //! tokio-rustls's `TlsStream` enum, split with `tokio::io::split`, and
 //! parked in a `select!` over a read on one half and a disabled
 //! `write_buf` on the other, as trust-quorum's connections park; its
-//! server reads through a `BufStream`. (c) The same `select!` over a
-//! plain TCP stream split into owned halves, as bootstore's connections
-//! park, against a server reading its bare `TcpStream`. (d) A client
-//! that sent its close_notify and still reads, against a server that
+//! server reads through a boxed `BufStream`, as sprockets' server does.
+//! (c) The same `select!` over a plain TCP stream split into owned
+//! halves, as bootstore's connections park, against a server reading
+//! its bare `TcpStream`. (d) A client that sent its close_notify and
+//! still reads, through a reference to its stream, against a server that
 //! read to that end of stream and keeps its stream. (e) A client
 //! mid-handshake, its ClientHello sent to a peer that never answers.
 //! (f) A server mid-handshake, waiting for the ClientHello of a peer
@@ -200,9 +201,9 @@ async fn split_client(
     }
 }
 
-/// (b) The server end, reading through a `BufStream`.
+/// (b) The server end, reading through a boxed `BufStream`.
 async fn buffered_server(
-    mut stream: BufStream<server::TlsStream<TcpStream>>,
+    mut stream: Box<BufStream<server::TlsStream<TcpStream>>>,
     ready: oneshot::Sender<()>,
 ) {
     census_expect::task("tls_conns::buffered_server");
@@ -248,8 +249,11 @@ async fn closing_client(mut stream: client::TlsStream<TcpStream>, ready: oneshot
     census_expect::task("tls_conns::closing_client");
     stream.shutdown().await.expect("the close_notify is sent");
     ready.send(()).expect("main waits for readiness");
+    // Read through a reference, so the read's stream is the reference
+    // itself and the route crosses it.
+    let mut reader = &mut stream;
     let mut more = [0u8; 32];
-    let _ = stream.read(&mut more).await;
+    let _ = AsyncReadExt::read(&mut reader, &mut more).await;
 }
 
 /// (d) The server end: read to the end of stream the close_notify
@@ -352,7 +356,7 @@ fn main() {
         let (client, server) = tls_pair(&connector, &acceptor).await;
         let (reader, writer) = tokio::io::split(TlsStream::from(client));
         tokio::spawn(split_client(reader, writer, signal()));
-        tokio::spawn(buffered_server(BufStream::new(server), signal()));
+        tokio::spawn(buffered_server(Box::new(BufStream::new(server)), signal()));
 
         // (c)
         let (client, server) = tcp_pair().await;

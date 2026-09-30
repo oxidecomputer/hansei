@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over illumos/tls-conns"
 ---
 ID  STATE  FUT  AWAITING AT               WAITING ON  TYPE
-3   idle     0  src/bin/tls-conns.rs:160  io          async fn tls_conns::plain_client
-6   idle     0  src/bin/tls-conns.rs:211  io          async fn tls_conns::buffered_server
+3   idle     0  src/bin/tls-conns.rs:161  io          async fn tls_conns::plain_client
+6   idle     0  src/bin/tls-conns.rs:212  io          async fn tls_conns::buffered_server
 [2 tasks]

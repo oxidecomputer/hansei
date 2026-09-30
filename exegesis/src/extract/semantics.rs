@@ -30,14 +30,15 @@ use crate::bundle::{
     Continuation, CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence,
     FutureFacts, FutureTarget, HashTableBinding, HttpClientBinding, HttpConnBinding,
     HttpPoolBinding, HttpRequestBinding, HttpRequestTarget, HttpRole, HttpServerBinding,
-    HttpServiceBinding, IoOperationKind, LayoutSelection, LockBinding, LockWord, MemberRef,
-    PollAction, PollCase, PollProgram, RefcountBinding, ResourceBinding, ResourceKind,
-    SchedulerBinding, SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind,
-    SemanticOrigin, SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind,
-    SemanticTable, SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StringInterner,
-    TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome,
-    WalkRole, WalksTable, container_roles, container_routes, required_resource_roles,
-    required_resource_routes, scheduler_role, semantic_path_target,
+    HttpServiceBinding, IoOperationBinding, IoOperationKind, IoRouteBinding, IoRouteStep, IoSocket,
+    LayoutSelection, LockBinding, LockWord, MemberRef, PollAction, PollCase, PollProgram,
+    RefcountBinding, ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass,
+    SelectBinding, Selector, SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId,
+    SemanticRule, SemanticRuleId, SemanticRuleKind, SemanticTable, SourceFileEvidence, SourceLoc,
+    Step, StoragePolicy, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TypeDef,
+    TypeSemantics, TypeTable, TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles,
+    container_routes, required_resource_roles, required_resource_routes, scheduler_role,
+    semantic_path_target, socket_roles,
 };
 use crate::detect::Family;
 use crate::detect::adapters::{
@@ -645,6 +646,13 @@ pub(super) struct Seed {
     /// hyper-util's pool reaper or checkout, where the type is one: a
     /// fact read wherever a frame holds a value of it.
     pool: Option<PoolSeed>,
+    /// One of tokio's forwarding streams or sockets, where the type is
+    /// one: the route a read or a write through it takes, which binds
+    /// only where it ends at a socket.
+    io_route: Option<IoRouteSeed>,
+    /// One of tokio's io operation futures, where the type is one: a
+    /// resource only over a stream whose route ends at a socket.
+    io_op: Option<IoOpSeed>,
     /// A refcounted allocation's header, where the type is one: the
     /// member its value sits in, and the verdict on its defining units.
     refcount: Option<(&'static str, CompilerVerdict)>,
@@ -675,9 +683,176 @@ impl Seed {
             || self.request.is_some()
             || self.table.is_some()
             || self.pool.is_some()
+            || self.io_op.is_some()
             || self.refcount.is_some()
             || self.lock.is_some()
     }
+}
+
+/// A stream's route as its name announced it: the hops to the stream
+/// it holds, or the socket it is.
+#[derive(Clone, Copy, Debug)]
+enum IoRouteSeed {
+    Forward(&'static [Hop<'static>]),
+    Socket(IoSocket),
+}
+
+/// An io operation future as its name announced it: which operation,
+/// the member holding the `&mut` it polls, and whether it holds the
+/// byte slice whose length says when it completes.
+#[derive(Clone, Copy, Debug)]
+struct IoOpSeed {
+    kind: IoOperationKind,
+    pointer: &'static str,
+    sliced: bool,
+}
+
+/// tokio's io operation futures, by the name every instantiation of
+/// each starts with: the member holding the `&mut` it polls, and
+/// whether its `buf` is a byte slice. A write's slice is a completion
+/// witness — an exhausted one returns before polling — and a read's is
+/// recorded with it; the others hold a `ReadBuf` or a generic buffer.
+const IO_OPERATIONS: [(&str, IoOperationKind, &str, bool); 8] = [
+    (
+        "tokio::io::util::read::Read<",
+        IoOperationKind::Read,
+        "reader",
+        true,
+    ),
+    (
+        "tokio::io::util::read_exact::ReadExact<",
+        IoOperationKind::ReadExact,
+        "reader",
+        false,
+    ),
+    (
+        "tokio::io::util::read_buf::ReadBuf<",
+        IoOperationKind::ReadBuf,
+        "reader",
+        false,
+    ),
+    (
+        "tokio::io::util::write::Write<",
+        IoOperationKind::Write,
+        "writer",
+        true,
+    ),
+    (
+        "tokio::io::util::write_all::WriteAll<",
+        IoOperationKind::WriteAll,
+        "writer",
+        true,
+    ),
+    (
+        "tokio::io::util::write_buf::WriteBuf<",
+        IoOperationKind::WriteBuf,
+        "writer",
+        false,
+    ),
+    (
+        "tokio::io::util::flush::Flush<",
+        IoOperationKind::Flush,
+        "a",
+        false,
+    ),
+    (
+        "tokio::io::util::shutdown::Shutdown<",
+        IoOperationKind::Shutdown,
+        "a",
+        false,
+    ),
+];
+
+/// `io::split`'s halves share the stream behind an `Arc`, under std's
+/// mutex, which a half locks only while one of its polls runs.
+const SPLIT_HALF: [Hop<'static>; 8] = [
+    Hop::Member("inner"),
+    Hop::Member("ptr"),
+    Hop::Member("pointer"),
+    Hop::Deref,
+    Hop::Member("data"),
+    Hop::Member("stream"),
+    Hop::Member("data"),
+    Hop::Member("value"),
+];
+/// A socket's owned halves share it behind an `Arc`.
+const OWNED_HALF: [Hop<'static>; 5] = [
+    Hop::Member("inner"),
+    Hop::Member("ptr"),
+    Hop::Member("pointer"),
+    Hop::Deref,
+    Hop::Member("data"),
+];
+/// A socket's borrowed halves hold a reference to it.
+const BORROWED_HALF: [Hop<'static>; 2] = [Hop::Member("__0"), Hop::Deref];
+/// The buffered wrappers hold the stream by value.
+const BUFFERED: [Hop<'static>; 1] = [Hop::Member("inner")];
+
+/// tokio's streams whose every read and write goes to the stream they
+/// hold (tokio 1.47 through 1.53, `io/split.rs`, `net/tcp/split.rs`,
+/// `net/tcp/split_owned.rs`, their `net/unix` twins, and
+/// `io/util/buf_{reader,writer,stream}.rs`, the same layout across the
+/// range): by name — a generic's prefix, or the whole name of a type
+/// generic over a lifetime only, which the name omits — and the hops
+/// to the stream held. A buffered wrapper serves a read from its buffer
+/// and takes a write into it without touching the stream; it reaches
+/// the stream only when the buffer cannot, so a pending poll through
+/// one is always the stream's.
+const IO_FORWARDS: [(&str, &[Hop<'static>]); 13] = [
+    ("tokio::io::split::ReadHalf<", &SPLIT_HALF),
+    ("tokio::io::split::WriteHalf<", &SPLIT_HALF),
+    ("tokio::net::tcp::split_owned::OwnedReadHalf", &OWNED_HALF),
+    ("tokio::net::tcp::split_owned::OwnedWriteHalf", &OWNED_HALF),
+    ("tokio::net::unix::split_owned::OwnedReadHalf", &OWNED_HALF),
+    ("tokio::net::unix::split_owned::OwnedWriteHalf", &OWNED_HALF),
+    ("tokio::net::tcp::split::ReadHalf", &BORROWED_HALF),
+    ("tokio::net::tcp::split::WriteHalf", &BORROWED_HALF),
+    ("tokio::net::unix::split::ReadHalf", &BORROWED_HALF),
+    ("tokio::net::unix::split::WriteHalf", &BORROWED_HALF),
+    ("tokio::io::util::buf_reader::BufReader<", &BUFFERED),
+    ("tokio::io::util::buf_writer::BufWriter<", &BUFFERED),
+    ("tokio::io::util::buf_stream::BufStream<", &BUFFERED),
+];
+
+/// The sockets a route ends at: each registers with the io driver, and
+/// its `poll_read`/`poll_write` park in the registration's direction
+/// slots and nowhere else.
+const IO_SOCKETS: [(&str, IoSocket); 2] = [
+    ("tokio::net::tcp::stream::TcpStream", IoSocket::TcpStream),
+    ("tokio::net::unix::stream::UnixStream", IoSocket::UnixStream),
+];
+
+/// Whether `name` is a type `key` names: every instantiation of a
+/// generic whose key ends in `<`, the one type an exact key spells.
+fn names_type(key: &str, name: &str) -> bool {
+    if key.ends_with('<') {
+        name.starts_with(key)
+    } else {
+        name == key
+    }
+}
+
+/// The route a stream's name announces, if it is one of tokio's.
+fn io_route_seed(name: &str) -> Option<IoRouteSeed> {
+    if let Some(&(_, hops)) = IO_FORWARDS.iter().find(|(key, _)| names_type(key, name)) {
+        return Some(IoRouteSeed::Forward(hops));
+    }
+    IO_SOCKETS
+        .iter()
+        .find(|(key, _)| names_type(key, name))
+        .map(|&(_, socket)| IoRouteSeed::Socket(socket))
+}
+
+/// The operation an io future's name announces, if it is one of tokio's.
+fn io_op_seed(name: &str) -> Option<IoOpSeed> {
+    IO_OPERATIONS
+        .iter()
+        .find(|(key, ..)| names_type(key, name))
+        .map(|&(_, kind, pointer, sliced)| IoOpSeed {
+            kind,
+            pointer,
+            sliced,
+        })
 }
 
 /// A raw lock as its screen saw it: whose implementation it is, which
@@ -1068,6 +1243,10 @@ pub(super) fn collect_semantic_seeds(
             && let Some(seed) = pool_checkout_seed(layout, bundle_id, type_sources(raw))
         {
             seeds.entry(ty).or_default().pool = Some(seed);
+        } else if let Some(route) = io_route_seed(name) {
+            seeds.entry(ty).or_default().io_route = Some(route);
+        } else if let Some(op) = io_op_seed(name) {
+            seeds.entry(ty).or_default().io_op = Some(op);
         } else if let Some(library) = library_seed(
             reader,
             raw,
@@ -1201,23 +1380,17 @@ fn join_arms(branches: &[(String, TypeId)], arms: &[(TypeId, Vec<OwnedLoc>)]) ->
         .collect()
 }
 
-/// The every-kind order the bindings are attempted in, which is also the
-/// order their rules are numbered: a bundle's rule ids depend on which
-/// kinds bound, never on the order types were met.
-const RESOURCE_KINDS: [(ResourceKind, SemanticRuleKind); 9] = [
+/// The resources the walk contract binds, in the every-kind order the
+/// bindings are attempted in, which is also the order their rules are
+/// numbered: a bundle's rule ids depend on which kinds bound, never on
+/// the order types were met. An io operation over a stream is bound by
+/// its route instead ([`plan_io`]).
+const RESOURCE_KINDS: [(ResourceKind, SemanticRuleKind); 7] = [
     (ResourceKind::Sleep, SemanticRuleKind::TokioSleep),
     (ResourceKind::JoinHandle, SemanticRuleKind::TokioJoinHandle),
     (
         ResourceKind::SemaphoreAcquire,
         SemanticRuleKind::TokioAcquire,
-    ),
-    (
-        ResourceKind::IoOperation(IoOperationKind::Read),
-        SemanticRuleKind::TokioIoOperation,
-    ),
-    (
-        ResourceKind::IoOperation(IoOperationKind::WriteAll),
-        SemanticRuleKind::TokioIoOperation,
     ),
     (
         ResourceKind::IoOperation(IoOperationKind::Readiness),
@@ -1230,6 +1403,18 @@ const RESOURCE_KINDS: [(ResourceKind, SemanticRuleKind); 9] = [
         SemanticRuleKind::TokioOneshotRecv,
     ),
 ];
+
+/// The layout rule a tokio resource binds under.
+fn resource_rule(kind: ResourceKind) -> SemanticRuleKind {
+    match kind {
+        ResourceKind::IoOperation(_) => SemanticRuleKind::TokioIoOperation,
+        kind => RESOURCE_KINDS
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, rule)| *rule)
+            .expect("every walk-bound resource kind has a rule"),
+    }
+}
 
 const CONTAINER_KINDS: [(ContainerKind, SemanticRuleKind); 3] = [
     (ContainerKind::JoinSet, SemanticRuleKind::TokioJoinSet),
@@ -1733,6 +1918,12 @@ struct Draft {
     /// The pooled connections this value names, where its type is a
     /// hyper-util pool's reaper or checkout under a reviewed range.
     pool: Option<PoolPlan>,
+    /// The route a read or write through a value of the type takes,
+    /// where it ends at a socket.
+    io_route: Option<IoRouteStep>,
+    /// The stream an io operation polls, where it is one over a routed
+    /// stream.
+    io: Option<IoOpPlan>,
     /// The header's value member, with the rule it binds under.
     refcount: Option<(RuleKey, MemberRef)>,
     /// The lock's word, with the rule it binds under.
@@ -1788,6 +1979,12 @@ pub(super) fn bind_semantics(
             seeds.entry(ty).or_default().container = Some(kind);
         }
     }
+    // The stream routes, over every seed at once: an operation is a
+    // resource exactly where its stream's route ends at a socket.
+    let io = plan_io(&seeds, types, names, strings, library.walks);
+    for (&ty, op) in &io.operations {
+        seeds.entry(ty).or_default().resource = Some(ResourceKind::IoOperation(op.kind));
+    }
 
     // Phase A: decide storage, layout and the candidate program of every
     // seed, without numbering anything.
@@ -1834,6 +2031,24 @@ pub(super) fn bind_semantics(
         // at a type without it, so this only guards the record's shape.
         let readable = matches!(storage, StoragePolicy::DeclaredMembers);
         draft.resource = seed.resource.filter(|_| readable);
+        // A stream's route is a record of its own wherever it ends at a
+        // socket, since a reader follows it type by type; one that runs
+        // off every reviewed route says why beside whatever record the
+        // type has. An operation over no routed stream is no resource,
+        // and that is its continuation's reason.
+        if readable {
+            if let Some(step) = io.routes.get(&ty) {
+                draft.io_route = Some(step.clone());
+                draft.own_record = true;
+            }
+            if let Some(decline) = io.route_declines.get(&ty) {
+                draft.issues.push(decline.clone());
+            }
+            draft.io = io.operations.get(&ty).cloned();
+            if let Some(decline) = io.operation_declines.get(&ty) {
+                draft.decline = Some(decline.clone());
+            }
+        }
         // A container whose rule declines — the map declared off the
         // registry, or at an unreviewed version — keeps its record and
         // says why, and is walked by no contract.
@@ -2058,11 +2273,7 @@ pub(super) fn bind_semantics(
         });
         let readable = matches!(storage, StoragePolicy::DeclaredMembers);
         let resource = draft.resource.map(|kind| {
-            let rule_kind = RESOURCE_KINDS
-                .iter()
-                .find(|(k, _)| *k == kind)
-                .map(|(_, rule)| *rule)
-                .expect("every resource kind has a rule");
+            let rule_kind = resource_rule(kind);
             // The layout rule binds under whatever family was selected;
             // the state protocol only inside its reviewed range, which
             // the one tokio origin's selection records — so a guessed
@@ -2344,6 +2555,29 @@ pub(super) fn bind_semantics(
                 want,
             },
         });
+        // An operation's stream is reached under the operation's own
+        // rule, beside the resource it is; a stream's route under
+        // tokio's route rule.
+        let io = draft
+            .io
+            .filter(|_| readable)
+            .zip(resource.as_ref())
+            .map(|(plan, resource)| IoOperationBinding {
+                rule: resource.rule,
+                stream: plan.stream,
+                remaining: plan.remaining,
+            });
+        let io_route = draft
+            .io_route
+            .filter(|_| readable)
+            .map(|step| IoRouteBinding {
+                rule: rules.rule(
+                    &RuleKey::Library(SemanticRuleKind::TokioIoRoute),
+                    strings,
+                    library,
+                ),
+                step,
+            });
         records.push(TypeSemantics {
             ty,
             storage,
@@ -2360,6 +2594,8 @@ pub(super) fn bind_semantics(
             request,
             table,
             pool,
+            io_route,
+            io,
             refcount: draft.refcount.map(|(rule, value)| RefcountBinding {
                 rule: rules.rule(&rule, strings, library),
                 value,
@@ -3758,7 +3994,7 @@ fn table_release(
 
 /// One level of a route a review names: a member, a variant, or the
 /// pointee of the pointer the route stands on.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Hop<'a> {
     Member(&'a str),
     Variant(&'a str),
@@ -3774,6 +4010,30 @@ fn hop_route(
     hops: &[Hop<'_>],
     target: BundleTypeId,
 ) -> Result<TypedPath, Decline> {
+    let (steps, _) = hop_steps(types, strings, root, hops)?;
+    checked_path(types, root, steps, target)
+}
+
+/// A route from `root` as a run of hops, checked like [`hop_route`]'s,
+/// landing on whatever type the last hop enters.
+fn hop_landing(
+    types: &TypeTable,
+    strings: &StringInterner,
+    root: BundleTypeId,
+    hops: &[Hop<'_>],
+) -> Result<TypedPath, Decline> {
+    let (steps, landed) = hop_steps(types, strings, root, hops)?;
+    checked_path(types, root, steps, landed)
+}
+
+/// The steps a run of hops takes from `root`, each level checked in the
+/// final table as it is entered, and the type the last one enters.
+fn hop_steps(
+    types: &TypeTable,
+    strings: &StringInterner,
+    root: BundleTypeId,
+    hops: &[Hop<'_>],
+) -> Result<(Vec<Step>, BundleTypeId), Decline> {
     let mut steps = Vec::with_capacity(hops.len());
     let mut current = root;
     for hop in hops {
@@ -3816,7 +4076,220 @@ fn hop_route(
             }
         }
     }
-    checked_path(types, root, steps, target)
+    Ok((steps, current))
+}
+
+/// The io routes and operations a table binds, planned over every seed
+/// at once: an operation binds only over a stream whose route ends at a
+/// socket, and whether one does is a fact about the routes of every
+/// type it forwards through.
+struct IoPlans {
+    /// Every route that ends at a socket, by the type it starts at.
+    routes: BTreeMap<BundleTypeId, IoRouteStep>,
+    /// Every operation over such a stream.
+    operations: BTreeMap<BundleTypeId, IoOpPlan>,
+    /// Why a screened stream's route did not bind: an issue beside its
+    /// record, where it has one.
+    route_declines: BTreeMap<BundleTypeId, Decline>,
+    /// Why a screened operation did not bind: its continuation's reason.
+    operation_declines: BTreeMap<BundleTypeId, Decline>,
+}
+
+#[derive(Clone, Debug)]
+struct IoOpPlan {
+    kind: IoOperationKind,
+    stream: TypedPath,
+    remaining: Option<TypedPath>,
+}
+
+/// Plan every stream's route and every operation over one. A stream's
+/// route is its seed's hops to the stream it holds, or its socket's
+/// roles bound at its own type; a `Box` or `&mut` whose screen saw a
+/// sized pointee forwards to it, by tokio's impls for both. Only the
+/// routes that end at a socket are kept — a forward counts once the
+/// type it lands on does — so an operation's stream is routed exactly
+/// when a reader following its route reaches a registration.
+fn plan_io(
+    seeds: &SemanticSeeds,
+    types: &TypeTable,
+    names: &[Option<String>],
+    strings: &StringInterner,
+    walks: &WalksTable,
+) -> IoPlans {
+    let mut planned = BTreeMap::new();
+    let mut route_declines = BTreeMap::new();
+    for (&ty, seed) in seeds {
+        let step = match (seed.io_route, &seed.adapter) {
+            (Some(IoRouteSeed::Forward(hops)), _) => {
+                hop_landing(types, strings, ty, hops).map(|inner| IoRouteStep::Forward { inner })
+            }
+            (Some(IoRouteSeed::Socket(socket)), _) => {
+                if bound_roots(walks, &socket_roles(socket), &[]).contains(&ty) {
+                    Ok(IoRouteStep::Socket(socket))
+                } else {
+                    Err((
+                        SemanticIssueKind::MissingLayout,
+                        "the socket's registration and descriptor routes are not bound".to_owned(),
+                    ))
+                }
+            }
+            (
+                None,
+                Some(AdapterSeed {
+                    kind: AdapterKind::Box | AdapterKind::MutRef,
+                    pin: None,
+                    pointee: PointeeSeed::Sized(pointee),
+                    ..
+                }),
+            ) => hop_route(types, strings, ty, &[Hop::Deref], *pointee)
+                .map(|inner| IoRouteStep::Forward { inner }),
+            _ => continue,
+        };
+        match step {
+            Ok(step) => {
+                planned.insert(ty, step);
+            }
+            Err(decline) => {
+                route_declines.insert(ty, decline);
+            }
+        }
+    }
+    let mut routes: BTreeMap<BundleTypeId, IoRouteStep> = planned
+        .iter()
+        .filter(|(_, step)| matches!(step, IoRouteStep::Socket(_)))
+        .map(|(&ty, step)| (ty, step.clone()))
+        .collect();
+    loop {
+        let before = routes.len();
+        for (&ty, step) in &planned {
+            if let IoRouteStep::Forward { inner } = step
+                && !routes.contains_key(&ty)
+                && routes.contains_key(&inner.target)
+            {
+                routes.insert(ty, step.clone());
+            }
+        }
+        if routes.len() == before {
+            break;
+        }
+    }
+    // A screened stream whose route runs off every reviewed one says
+    // so; a `Box` or a reference over anything else is no stream at
+    // all, and says nothing.
+    for (&ty, step) in &planned {
+        if !routes.contains_key(&ty) && seeds.get(&ty).is_some_and(|s| s.io_route.is_some()) {
+            let IoRouteStep::Forward { inner } = step else {
+                unreachable!("every socket route is kept")
+            };
+            route_declines.insert(
+                ty,
+                (
+                    SemanticIssueKind::NoRule,
+                    format!(
+                        "the stream it holds, {}, has no reviewed route to a socket",
+                        type_label(names, inner.target)
+                    ),
+                ),
+            );
+        }
+    }
+
+    let mut operations = BTreeMap::new();
+    let mut operation_declines = BTreeMap::new();
+    for (&ty, seed) in seeds {
+        let Some(op) = seed.io_op else {
+            continue;
+        };
+        match plan_io_operation(ty, op, &routes, types, names, strings) {
+            Ok(plan) => {
+                operations.insert(ty, plan);
+            }
+            Err(decline) => {
+                operation_declines.insert(ty, decline);
+            }
+        }
+    }
+    IoPlans {
+        routes,
+        operations,
+        route_declines,
+        operation_declines,
+    }
+}
+
+/// An operation over a routed stream: its `&mut` crossed to the stream,
+/// which must be routed, and its slice's length where it holds one.
+fn plan_io_operation(
+    ty: BundleTypeId,
+    op: IoOpSeed,
+    routes: &BTreeMap<BundleTypeId, IoRouteStep>,
+    types: &TypeTable,
+    names: &[Option<String>],
+    strings: &StringInterner,
+) -> Result<IoOpPlan, Decline> {
+    let (_, pointer, _) = member_named(types, strings, ty, op.pointer).ok_or((
+        SemanticIssueKind::AmbiguousLayout,
+        format!("no unique member {:?}", op.pointer),
+    ))?;
+    let Some(&TypeDef::Pointer { target, .. }) = types.get(pointer) else {
+        return Err((
+            SemanticIssueKind::MissingLayout,
+            format!("its {} is not a pointer", op.pointer),
+        ));
+    };
+    if !routes.contains_key(&target) {
+        return Err((
+            SemanticIssueKind::NoRule,
+            format!(
+                "the stream it polls, {}, has no reviewed route to a socket",
+                type_label(names, target)
+            ),
+        ));
+    }
+    let stream = hop_route(
+        types,
+        strings,
+        ty,
+        &[Hop::Member(op.pointer), Hop::Deref],
+        target,
+    )?;
+    let remaining = if op.sliced {
+        let length = hop_landing(
+            types,
+            strings,
+            ty,
+            &[Hop::Member("buf"), Hop::Member("length")],
+        )?;
+        if !matches!(
+            types.get(length.target),
+            Some(TypeDef::Base {
+                encoding: crate::bundle::Encoding::Unsigned,
+                size: 8,
+                ..
+            })
+        ) {
+            return Err((
+                SemanticIssueKind::MissingLayout,
+                "its buffer's length is not an unsigned word".to_owned(),
+            ));
+        }
+        Some(length)
+    } else {
+        None
+    };
+    Ok(IoOpPlan {
+        kind: op.kind,
+        stream,
+        remaining,
+    })
+}
+
+/// A type's name for a decline's text, or its id where it has none.
+fn type_label(names: &[Option<String>], ty: BundleTypeId) -> String {
+    names
+        .get(ty.0 as usize)
+        .and_then(Option::as_deref)
+        .map_or_else(|| format!("type {}", ty.0), str::to_owned)
 }
 
 enum PoolPlan {
@@ -4794,8 +5267,8 @@ mod tests {
         walks
             .entries
             .insert(JoinHandleRaw, binding(&[2, 3, 4], true));
-        walks.entries.insert(IoReadShared, binding(&[9], true));
-        walks.entries.insert(IoWriteAllShared, binding(&[], false));
+        walks.entries.insert(TcpStreamShared, binding(&[9], true));
+        walks.entries.insert(UnixStreamShared, binding(&[], false));
         assert_eq!(
             bound_roots(&walks, &[SleepDeadline, JoinHandleRaw], &[]),
             ids(&[2, 3])
@@ -4803,7 +5276,7 @@ mod tests {
         assert_eq!(bound_roots(&walks, &[SleepDeadline], &[]), ids(&[1, 2, 3]));
         // A route only has to be bound; it roots elsewhere.
         assert_eq!(
-            bound_roots(&walks, &[SleepDeadline], &[IoReadShared]),
+            bound_roots(&walks, &[SleepDeadline], &[TcpStreamShared]),
             ids(&[1, 2, 3])
         );
         // An entry that recorded roots but no `Bound` outcome — which
@@ -4818,8 +5291,8 @@ mod tests {
         assert!(bound_roots(&walks, &[SleepDeadline], &[AcquireQueued]).is_empty());
         // An unbound route, an unbound role, or a role never recorded
         // binds nothing.
-        assert!(bound_roots(&walks, &[SleepDeadline], &[IoWriteAllShared]).is_empty());
-        assert!(bound_roots(&walks, &[SleepDeadline, IoWriteAllShared], &[]).is_empty());
+        assert!(bound_roots(&walks, &[SleepDeadline], &[UnixStreamShared]).is_empty());
+        assert!(bound_roots(&walks, &[SleepDeadline, UnixStreamShared], &[]).is_empty());
         assert!(bound_roots(&walks, &[SleepDeadline, AcquireNode], &[]).is_empty());
         assert!(bound_roots(&walks, &[SleepDeadline], &[AcquireNode]).is_empty());
     }

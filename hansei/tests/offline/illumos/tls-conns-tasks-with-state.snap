@@ -3,16 +3,16 @@ source: hansei/src/offline.rs
 description: "`tasks --with state idle` over illumos/tls-conns"
 ---
 ID  STATE  FUT  AWAITING AT               WAITING ON  TYPE
-3   idle     0  src/bin/tls-conns.rs:160  io          async fn tls_conns::plain_client
-4   idle     0  src/bin/tls-conns.rs:175  io          async fn tls_conns::exact_server
-5   idle     2  src/bin/tls-conns.rs:197  io          async fn tls_conns::split_client
-6   idle     0  src/bin/tls-conns.rs:211  io          async fn tls_conns::buffered_server
-7   idle     2  src/bin/tls-conns.rs:231  io          async fn tls_conns::owned_split_client
-8   idle     0  src/bin/tls-conns.rs:242  io          async fn tls_conns::tcp_server
-9   idle     0  src/bin/tls-conns.rs:252  io          async fn tls_conns::closing_client
-10  idle     0  src/bin/tls-conns.rs:269  oneshot rx  async fn tls_conns::drained_server
-11  idle     0  src/bin/tls-conns.rs:300  oneshot rx  async fn tls_conns::silent_peer
-12  idle     1  src/bin/tls-conns.rs:283  io          async fn tls_conns::handshaking_client
-13  idle     0  src/bin/tls-conns.rs:320  oneshot rx  async fn tls_conns::mute_peer
-14  idle     1  src/bin/tls-conns.rs:314  io          async fn tls_conns::handshaking_server
+3   idle     0  src/bin/tls-conns.rs:161  io          async fn tls_conns::plain_client
+4   idle     0  src/bin/tls-conns.rs:176  io          async fn tls_conns::exact_server
+5   idle     2  src/bin/tls-conns.rs:198  io          async fn tls_conns::split_client
+6   idle     0  src/bin/tls-conns.rs:212  io          async fn tls_conns::buffered_server
+7   idle     2  src/bin/tls-conns.rs:232  io          async fn tls_conns::owned_split_client
+8   idle     0  src/bin/tls-conns.rs:243  io          async fn tls_conns::tcp_server
+9   idle     0  src/bin/tls-conns.rs:256  io          async fn tls_conns::closing_client
+10  idle     0  src/bin/tls-conns.rs:273  oneshot rx  async fn tls_conns::drained_server
+11  idle     0  src/bin/tls-conns.rs:304  oneshot rx  async fn tls_conns::silent_peer
+12  idle     1  src/bin/tls-conns.rs:287  io          async fn tls_conns::handshaking_client
+13  idle     0  src/bin/tls-conns.rs:324  oneshot rx  async fn tls_conns::mute_peer
+14  idle     1  src/bin/tls-conns.rs:318  io          async fn tls_conns::handshaking_server
 [12 tasks]

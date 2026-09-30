@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: futurelock
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 64 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 58 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -117,12 +117,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -178,7 +172,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: simple-await
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 80 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 74 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -293,12 +287,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -354,7 +342,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: nested-await
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 80 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 74 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -469,12 +457,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -530,7 +512,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: dyn-future
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 74 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 68 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -645,12 +627,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -706,7 +682,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: select-combinator
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 80 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 74 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -821,12 +797,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -882,7 +852,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: many-tasks
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 81 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 75 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -997,12 +967,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -1058,7 +1022,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: sleep-join
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 76 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 70 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1173,12 +1137,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -1234,7 +1192,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: channels
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 44 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 38 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1349,12 +1307,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -1410,7 +1362,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: unordered
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 77 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 71 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1525,12 +1477,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -1586,7 +1532,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: joinset
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 47 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1701,12 +1647,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -1762,7 +1702,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 64 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 58 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1877,12 +1817,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -1938,7 +1872,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: local-set
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 57 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 51 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2053,12 +1987,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -2114,7 +2042,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: local-set-timer
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 57 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 51 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2229,12 +2157,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -2290,7 +2212,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: local-set-io
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 59 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 59 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2405,12 +2327,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  ok      io::Read.reader
-  ok      io::Read.buf.length
-  ok      io::Read.reader.shared
-  ok      io::WriteAll.writer
-  ok      io::WriteAll.buf.length
-  ok      io::WriteAll.writer.shared
   ok      Readiness.scheduled_io
   ok      Readiness.state
   ok      Readiness.waiter
@@ -2466,7 +2382,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: foreign-runtime
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 57 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 51 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2581,12 +2497,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -2642,7 +2552,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: blocking-pool
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 80 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 74 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2757,12 +2667,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -2818,7 +2722,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: delegation-cases
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 80 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 74 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2933,12 +2837,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -2994,7 +2892,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: armed-select
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 53 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 47 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3109,12 +3007,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -3170,7 +3062,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: watch-stream
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 72 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 66 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3285,12 +3177,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -3346,7 +3232,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      StreamMap.entry.key
 
 program: http-conns
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 53 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 47 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3461,12 +3347,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   ok      Readiness.scheduled_io
   ok      Readiness.state
   ok      Readiness.waiter
@@ -3522,7 +3402,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: two-releases
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 80 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 74 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3637,12 +3517,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
@@ -3698,7 +3572,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: tls-conns
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 56 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 53 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3813,12 +3687,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap
   ok      blocking::Task.header
   ok      Trailer.waker
-  ok      io::Read.reader
-  ok      io::Read.buf.length
-  ok      io::Read.reader.shared
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   ok      Readiness.scheduled_io
   ok      Readiness.state
   ok      Readiness.waiter

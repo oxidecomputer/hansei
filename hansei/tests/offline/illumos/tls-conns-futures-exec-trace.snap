@@ -21,14 +21,14 @@ future 0xADDR: future tokio::io::util::read::Read<tokio::net::tcp::split_owned::
 Held by: task 7 — async fn tls_conns::owned_split_client (frame 1, `read`)
 
 #0  future        tokio::io::util::read::Read<tokio::net::tcp::split_owned::OwnedReadHalf>
-      defined at tokio-1.52.4/src/io/util/read.rs:49 (<no_state>, 2 locals)
+      waiting on io fd 14 (readable)
 
 future 0xADDR
 future 0xADDR: future tokio::io::util::write_buf::WriteBuf<tokio::net::tcp::split_owned::OwnedWriteHalf, core::io::cursor::Cursor<Vec<u8>>>
 Held by: task 7 — async fn tls_conns::owned_split_client (frame 1, `write`)
 
 #0  future        tokio::io::util::write_buf::WriteBuf<tokio::net::tcp::split_owned::OwnedWriteHalf, core::io::cursor::Cursor<Vec<u8>>>
-      defined at tokio-1.52.4/src/io/util/write_buf.rs:44 (<no_state>, 2 locals)
+      waiting on io fd 14 (writable)
 
 future 0xADDR
 future 0xADDR: future tokio_rustls::common::handshake::MidHandshake<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>

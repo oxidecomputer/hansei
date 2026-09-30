@@ -43,11 +43,11 @@ COUNT  TYPE / WAITING ON
     1  future tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>
        └─ 1  unknown
     1  future tokio::io::util::read::Read<tokio::net::tcp::split_owned::OwnedReadHalf>
-       └─ 1  unknown
+       └─ 1  io
     1  future tokio::io::util::write_buf::WriteBuf<tokio::io::split::WriteHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>, core::io::cursor::Cursor<Vec<u8>>>
        └─ 1  unknown
     1  future tokio::io::util::write_buf::WriteBuf<tokio::net::tcp::split_owned::OwnedWriteHalf, core::io::cursor::Cursor<Vec<u8>>>
-       └─ 1  unknown
+       └─ 1  io
     1  future tokio_rustls::common::handshake::MidHandshake<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
        └─ 1  unknown
     1  (1 more types)

@@ -43,8 +43,8 @@ use super::attribution::{
     Attributed, AttributedSlot, Attribution, RegistrySlot, member_accounts, verified_accounts,
 };
 use super::bundle::{
-    AwaitChain, AwaitFrame, ChainEnd, Context, IoSlot, Readiness, Registries, Task, TaskList,
-    WaitTarget, WheelState, deadline_text,
+    AwaitChain, AwaitFrame, ChainEnd, Context, Interest, IoSlot, Readiness, Registries, Task,
+    TaskList, WaitTarget, WheelState, deadline_text,
 };
 use super::census::{self, Find, Path, ScanPlan};
 use super::chain::{FutureInspection, InspectionMode, NextFuture};
@@ -1067,23 +1067,55 @@ impl<'b, T: Target> Context<'b, T> {
             );
         }
         for (resource, waiter) in registries.io_of(task.addr.0) {
-            let frames: Vec<Value<'b>> = chain
-                .frames
-                .iter()
-                .chain(chains.iter().flatten().flat_map(|c| c.frames.iter()))
-                .map(|f| f.future)
-                .collect();
+            // A direction slot lies in the `ScheduledIo`, in no branch's
+            // storage: it is the branch's whose operation verified its
+            // wait on this registration in this direction — reached by
+            // the operation's route, which names the descriptor too.
+            let verified = match waiter.slot {
+                IoSlot::Reader | IoSlot::Writer => {
+                    let direction = if waiter.slot == IoSlot::Reader {
+                        Interest::READABLE
+                    } else {
+                        Interest::WRITABLE
+                    };
+                    members.iter().enumerate().find_map(|(i, member)| {
+                        let Some(WaitAssessment::Waiting(wait)) = &member.assessment else {
+                            return None;
+                        };
+                        match wait.target() {
+                            WaitTarget::Io {
+                                addr,
+                                fd,
+                                interest: Some(interest),
+                            } if *addr == resource.addr && *interest == direction => Some((i, *fd)),
+                            _ => None,
+                        }
+                    })
+                }
+                IoSlot::Listed { .. } => None,
+            };
+            let fd = match verified {
+                Some((_, fd)) => fd,
+                None => {
+                    let frames: Vec<Value<'b>> = chain
+                        .frames
+                        .iter()
+                        .chain(chains.iter().flatten().flat_map(|c| c.frames.iter()))
+                        .map(|f| f.future)
+                        .collect();
+                    self.io_resource_fd(&frames, resource.addr)
+                }
+            };
             let slot = SlotRef::Io {
                 resource: resource.addr,
                 slot: waiter.slot,
-                fd: self.io_resource_fd(&frames, resource.addr),
+                fd,
                 ready: resource.ready(),
             };
-            // A listed node lies in the readiness future that owns it;
-            // a direction slot lies in the `ScheduledIo`, in no branch.
+            // A listed node lies in the readiness future that owns it.
             let (index, at) = match waiter.node {
                 Some(node) => (placed(&chains, node), node),
-                None => (None, resource.addr),
+                None => (verified.map(|(i, _)| i), resource.addr),
             };
             arm(&mut members, index, slot, at);
         }
@@ -1667,6 +1699,81 @@ mod tests {
         // Two io slots are one kind twice, counted rather than named.
         assert_eq!(set.cell(), "2x io, timer");
         assert_eq!(set.group_label(), "io, timer");
+    }
+
+    /// A direction slot is in no branch's storage, but a branch whose
+    /// operation verified its wait on that registration, in that
+    /// direction, is the one it belongs to: `tls-conns`'s owned-halves
+    /// client parks its read branch on the socket's reader slot, which
+    /// arms that branch rather than listing beside it — one io wait, not
+    /// two — and names the descriptor the route read. A slot in the
+    /// other direction, which no branch verified, stays on its own.
+    #[test]
+    fn test_a_direction_slot_arms_the_branch_that_verified_it() {
+        let (bundle, snapshot) = load_any("tls-conns");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let mut e = testkit::enumerate(&ctx, &snapshot);
+        e.discover(&ctx, &[]);
+        let task = task_named(&e.list, ctx.view, "owned_split_client");
+        let Branches::Set(set) = branches_of(&ctx, &e.list, task, &e.registries) else {
+            panic!("a set");
+        };
+        let lines: Vec<String> = set
+            .members
+            .iter()
+            .map(|m| format!("{:?} {:?}", m.route, m.cell_entry()))
+            .collect();
+        assert_eq!(set.cell(), "io", "{lines:#?}");
+        let read = set
+            .members
+            .iter()
+            .find(|m| matches!(m.route, MemberRoute::Select { index: 0, .. }))
+            .expect("the read branch");
+        let Some(SlotRef::Io {
+            resource,
+            slot: IoSlot::Reader,
+            fd,
+            ..
+        }) = read.armed
+        else {
+            panic!("the reader slot arms the read branch: {lines:#?}");
+        };
+        let Some(WaitAssessment::Waiting(wait)) = &read.assessment else {
+            panic!("the read branch verified its wait: {lines:#?}");
+        };
+        let WaitTarget::Io {
+            addr, fd: verified, ..
+        } = wait.target()
+        else {
+            panic!("an io wait");
+        };
+        assert_eq!(resource, *addr);
+        assert!(fd.is_some());
+        assert_eq!(fd, *verified);
+
+        let writer = Registries::new(
+            Vec::new(),
+            vec![IoResourceInfo {
+                waiters: vec![IoWaiterInfo {
+                    slot: IoSlot::Writer,
+                    task: Some(task.addr.0),
+                    waker_at: None,
+                    node: None,
+                    ready: None,
+                }],
+                ..io(resource, None, task)
+            }],
+        );
+        let Branches::Set(set) = branches_of(&ctx, &e.list, task, &writer) else {
+            panic!("a set");
+        };
+        assert!(
+            set.members
+                .iter()
+                .any(|m| matches!(m.route, MemberRoute::SlotOnly { within: None })),
+            "{:#?}",
+            set.members
+        );
     }
 
     /// Every other end of a chain — a verified primitive here — has no

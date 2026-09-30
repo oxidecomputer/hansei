@@ -2525,6 +2525,8 @@ mod view_tests {
             request: None,
             table: None,
             pool: None,
+            io_route: None,
+            io: None,
             refcount: None,
             lock: None,
             acquires_for: None,

@@ -634,8 +634,9 @@ fn describe_field(bundle: &Bundle, root: BundleTypeId, fld: &Field) -> String {
 /// order; then each task entry's scheduler class.
 pub fn describe_semantics(bundle: &Bundle) -> String {
     use hansei_bundle::{
-        Continuation, CoroutineState, FutureEvidence, FutureTarget, HttpPoolBinding, PollAction,
-        PollProgram, SemanticIssue, SemanticOrigin, StoragePolicy,
+        Continuation, CoroutineState, FutureEvidence, FutureTarget, HttpPoolBinding,
+        IoRouteBinding, IoRouteStep, PollAction, PollProgram, SemanticIssue, SemanticOrigin,
+        StoragePolicy,
     };
     use std::fmt::Write;
 
@@ -824,6 +825,39 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                     ""
                 }
             );
+        }
+        if let Some(io) = &record.io {
+            let _ = write!(
+                line,
+                " io rule {} stream {}{}",
+                io.rule.0,
+                path(record.ty, &io.stream),
+                io.remaining
+                    .as_ref()
+                    .map(|remaining| format!(" remaining {}", path(record.ty, remaining)))
+                    .unwrap_or_default()
+            );
+        }
+        match &record.io_route {
+            Some(IoRouteBinding {
+                rule,
+                step: IoRouteStep::Forward { inner },
+            }) => {
+                let _ = write!(
+                    line,
+                    " io-route rule {} forward {} to {}",
+                    rule.0,
+                    path(record.ty, inner),
+                    fq_name(bundle, inner.target)
+                );
+            }
+            Some(IoRouteBinding {
+                rule,
+                step: IoRouteStep::Socket(socket),
+            }) => {
+                let _ = write!(line, " io-route rule {} socket {socket:?}", rule.0);
+            }
+            None => {}
         }
         if let Some(container) = &record.container {
             let _ = write!(

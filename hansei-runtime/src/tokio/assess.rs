@@ -1379,7 +1379,12 @@ impl<'b, T: Target> Context<'b, T> {
         }
         let target = WaitTarget::Io {
             addr: io.scheduled_io.addr,
-            fd: self.io_resource_fd(&payloads(chain), io.scheduled_io.addr),
+            // The socket the route ended at names its own descriptor; a
+            // readiness await's registration is matched to a socket some
+            // frame holds.
+            fd: io
+                .fd
+                .or_else(|| self.io_resource_fd(&payloads(chain), io.scheduled_io.addr)),
             interest: Some(io.interest),
         };
         let waiting = || {
@@ -1389,12 +1394,12 @@ impl<'b, T: Target> Context<'b, T> {
                 queue_position: None,
             }))
         };
-        match io.operation {
-            IoOperationKind::Read | IoOperationKind::WriteAll => {
-                let slot = if io.operation == IoOperationKind::Read {
-                    IoSlot::Reader
-                } else {
+        match io.operation.writes() {
+            Some(writes) => {
+                let slot = if writes {
                     IoSlot::Writer
+                } else {
+                    IoSlot::Reader
                 };
                 let Some(waiter) = resource.waiters.iter().find(|w| w.slot == slot) else {
                     return Assessed::unknown(
@@ -1414,7 +1419,7 @@ impl<'b, T: Target> Context<'b, T> {
                     ),
                 }
             }
-            IoOperationKind::Readiness => {
+            None => {
                 let Some(node) = io.waiter_node else {
                     return Assessed::unknown(
                         WaitUnknownReason::ResourceUnreadable,
@@ -1553,7 +1558,9 @@ impl<'b, T: Target> Context<'b, T> {
             }
             ResourceObservation::Io(io) => Some(WaitTarget::Io {
                 addr: io.scheduled_io.addr,
-                fd: self.io_resource_fd(&payloads(chain), io.scheduled_io.addr),
+                fd: io
+                    .fd
+                    .or_else(|| self.io_resource_fd(&payloads(chain), io.scheduled_io.addr)),
                 interest: Some(io.interest),
             }),
             ResourceObservation::Timer(timer) => Some(WaitTarget::Timer {
@@ -3871,7 +3878,20 @@ mod tests {
         // the protocol.
         let writer = task_named(&list, ctx.view, "local_writer");
         let write = primitive_of(&ctx, writer);
-        let len = ctx.walk(WalkRole::IoWriteAllBufLen).walk_at(write).unwrap();
+        let remaining = ctx
+            .type_semantics(write.ty.id())
+            .and_then(|record| record.io.as_ref())
+            .and_then(|io| io.remaining.as_ref())
+            .expect("a write over a socket binds its buffer's length");
+        let len = crate::tokio::contract::execute_steps(
+            &ctx,
+            &ReadContext::none(),
+            write,
+            &remaining.steps,
+        )
+        .unwrap()
+        .at("the buffer's length")
+        .unwrap();
         let patched = Corrupt::new(&snapshot).patch(len.addr, 0);
         let ctx4 = Context::new(&patched, BundleView::new(&bundle)).unwrap();
         let (list4, rows4, _) = assessed(&ctx4, &patched);

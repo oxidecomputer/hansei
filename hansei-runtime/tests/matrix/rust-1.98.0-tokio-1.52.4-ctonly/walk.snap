@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 73 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 67 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -117,12 +117,6 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      blocking::queue.cap (no multi_thread Handle)
   ok      blocking::Task.header
   ok      Trailer.waker
-  absent  io::Read.reader — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.buf.length — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::Read.reader.shared — no tokio::io::util::read::Read<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.buf.length — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
-  absent  io::WriteAll.writer.shared — no tokio::io::util::write_all::WriteAll<…> type over a reviewed socket in the tokio info (the target does not reach one)
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.waiter — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)

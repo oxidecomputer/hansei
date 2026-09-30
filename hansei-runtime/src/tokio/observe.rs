@@ -248,6 +248,12 @@ pub struct IoObservation {
     pub readiness_state: Option<IoFutureState>,
     /// The `is_ready` flag on a readiness await's node.
     pub waiter_ready: Option<bool>,
+    /// The streams an operation's route crossed, from the one its
+    /// `&mut` names down to the socket, outermost first; empty for a
+    /// readiness await, which names its registration outright.
+    pub route: Vec<ValueKey>,
+    /// The socket's descriptor, where the route's end read one.
+    pub fd: Option<i32>,
 }
 
 /// A readiness await's `State`, as its own enumeration spells it.

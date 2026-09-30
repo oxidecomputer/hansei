@@ -3507,143 +3507,143 @@ program: tls-conns
 [tasks]
 task: tls_conns::tcp_server::{async_fn_env#0}
   kind: AsyncFn
-  decl: tls-conns.rs:238
+  decl: tls-conns.rs:239
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<tls_conns::tcp_server::{async_fn_env#0}>
   variants:
-    Unresumed @ tls-conns.rs:238
-    Returned @ tls-conns.rs:243
-    Panicked @ tls-conns.rs:243
-    Suspend0 @ tls-conns.rs:242
+    Unresumed @ tls-conns.rs:239
+    Returned @ tls-conns.rs:244
+    Panicked @ tls-conns.rs:244
+    Suspend0 @ tls-conns.rs:243
 task: tls_conns::silent_peer::{async_fn_env#0}
   kind: AsyncFn
-  decl: tls-conns.rs:288
+  decl: tls-conns.rs:292
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<tls_conns::silent_peer::{async_fn_env#0}>
   variants:
-    Unresumed @ tls-conns.rs:292
-    Returned @ tls-conns.rs:302
-    Panicked @ tls-conns.rs:302
-    Suspend0 @ tls-conns.rs:297 (awaited at tls-conns.rs:295)
-    Suspend1 @ tls-conns.rs:300
+    Unresumed @ tls-conns.rs:296
+    Returned @ tls-conns.rs:306
+    Panicked @ tls-conns.rs:306
+    Suspend0 @ tls-conns.rs:301 (awaited at tls-conns.rs:299)
+    Suspend1 @ tls-conns.rs:304
 task: tls_conns::exact_server::{async_fn_env#0}
   kind: AsyncFn
-  decl: tls-conns.rs:165
+  decl: tls-conns.rs:166
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<tls_conns::exact_server::{async_fn_env#0}>
   variants:
-    Unresumed @ tls-conns.rs:165
-    Returned @ tls-conns.rs:176
-    Panicked @ tls-conns.rs:176
-    Suspend0 @ tls-conns.rs:170 (awaited at tls-conns.rs:168)
-    Suspend1 @ tls-conns.rs:172
-    Suspend2 @ tls-conns.rs:175
+    Unresumed @ tls-conns.rs:166
+    Returned @ tls-conns.rs:177
+    Panicked @ tls-conns.rs:177
+    Suspend0 @ tls-conns.rs:171 (awaited at tls-conns.rs:169)
+    Suspend1 @ tls-conns.rs:173
+    Suspend2 @ tls-conns.rs:176
 task: tls_conns::plain_client::{async_fn_env#0}
   kind: AsyncFn
-  decl: tls-conns.rs:149
+  decl: tls-conns.rs:150
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<tls_conns::plain_client::{async_fn_env#0}>
   variants:
-    Unresumed @ tls-conns.rs:149
-    Returned @ tls-conns.rs:161
-    Panicked @ tls-conns.rs:161
-    Suspend0 @ tls-conns.rs:151
-    Suspend1 @ tls-conns.rs:155 (awaited at tls-conns.rs:153)
-    Suspend2 @ tls-conns.rs:160
+    Unresumed @ tls-conns.rs:150
+    Returned @ tls-conns.rs:162
+    Panicked @ tls-conns.rs:162
+    Suspend0 @ tls-conns.rs:152
+    Suspend1 @ tls-conns.rs:156 (awaited at tls-conns.rs:154)
+    Suspend2 @ tls-conns.rs:161
 task: tls_conns::split_client::{async_fn_env#0}
   kind: AsyncFn
-  decl: tls-conns.rs:182
+  decl: tls-conns.rs:183
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<tls_conns::split_client::{async_fn_env#0}>
   variants:
-    Unresumed @ tls-conns.rs:186
-    Returned @ tls-conns.rs:201
-    Panicked @ tls-conns.rs:201
-    Suspend0 @ select.rs:741 (awaited at tls-conns.rs:197)
+    Unresumed @ tls-conns.rs:187
+    Returned @ tls-conns.rs:202
+    Panicked @ tls-conns.rs:202
+    Suspend0 @ select.rs:741 (awaited at tls-conns.rs:198)
 task: tls_conns::closing_client::{async_fn_env#0}
   kind: AsyncFn
-  decl: tls-conns.rs:247
+  decl: tls-conns.rs:248
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<tls_conns::closing_client::{async_fn_env#0}>
   variants:
-    Unresumed @ tls-conns.rs:247
-    Returned @ tls-conns.rs:253
-    Panicked @ tls-conns.rs:253
-    Suspend0 @ tls-conns.rs:249
-    Suspend1 @ tls-conns.rs:252
+    Unresumed @ tls-conns.rs:248
+    Returned @ tls-conns.rs:257
+    Panicked @ tls-conns.rs:257
+    Suspend0 @ tls-conns.rs:250
+    Suspend1 @ tls-conns.rs:256
 task: tls_conns::drained_server::{async_fn_env#0}
   kind: AsyncFn
-  decl: tls-conns.rs:257
+  decl: tls-conns.rs:261
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<tls_conns::drained_server::{async_fn_env#0}>
   variants:
-    Unresumed @ tls-conns.rs:261
-    Returned @ tls-conns.rs:271
-    Panicked @ tls-conns.rs:271
-    Suspend0 @ tls-conns.rs:266 (awaited at tls-conns.rs:264)
-    Suspend1 @ tls-conns.rs:269
+    Unresumed @ tls-conns.rs:265
+    Returned @ tls-conns.rs:275
+    Panicked @ tls-conns.rs:275
+    Suspend0 @ tls-conns.rs:270 (awaited at tls-conns.rs:268)
+    Suspend1 @ tls-conns.rs:273
 task: tls_conns::buffered_server::{async_fn_env#0}
   kind: AsyncFn
-  decl: tls-conns.rs:204
+  decl: tls-conns.rs:205
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<tls_conns::buffered_server::{async_fn_env#0}>
   variants:
-    Unresumed @ tls-conns.rs:207
-    Returned @ tls-conns.rs:212
-    Panicked @ tls-conns.rs:212
-    Suspend0 @ tls-conns.rs:211
+    Unresumed @ tls-conns.rs:208
+    Returned @ tls-conns.rs:213
+    Panicked @ tls-conns.rs:213
+    Suspend0 @ tls-conns.rs:212
 task: tls_conns::handshaking_client::{async_fn_env#0}
   kind: AsyncFn
-  decl: tls-conns.rs:274
+  decl: tls-conns.rs:278
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<tls_conns::handshaking_client::{async_fn_env#0}>
   variants:
-    Unresumed @ tls-conns.rs:277
-    Returned @ tls-conns.rs:284
-    Panicked @ tls-conns.rs:284
-    Suspend0 @ tls-conns.rs:283
+    Unresumed @ tls-conns.rs:281
+    Returned @ tls-conns.rs:288
+    Panicked @ tls-conns.rs:288
+    Suspend0 @ tls-conns.rs:287
 task: tls_conns::handshaking_server::{async_fn_env#0}
   kind: AsyncFn
-  decl: tls-conns.rs:305
+  decl: tls-conns.rs:309
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<tls_conns::handshaking_server::{async_fn_env#0}>
   variants:
-    Unresumed @ tls-conns.rs:309
-    Returned @ tls-conns.rs:315
-    Panicked @ tls-conns.rs:315
-    Suspend0 @ tls-conns.rs:314
+    Unresumed @ tls-conns.rs:313
+    Returned @ tls-conns.rs:319
+    Panicked @ tls-conns.rs:319
+    Suspend0 @ tls-conns.rs:318
 task: tls_conns::owned_split_client::{async_fn_env#0}
   kind: AsyncFn
-  decl: tls-conns.rs:216
+  decl: tls-conns.rs:217
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<tls_conns::owned_split_client::{async_fn_env#0}>
   variants:
-    Unresumed @ tls-conns.rs:220
-    Returned @ tls-conns.rs:235
-    Panicked @ tls-conns.rs:235
-    Suspend0 @ select.rs:741 (awaited at tls-conns.rs:231)
+    Unresumed @ tls-conns.rs:221
+    Returned @ tls-conns.rs:236
+    Panicked @ tls-conns.rs:236
+    Suspend0 @ select.rs:741 (awaited at tls-conns.rs:232)
 task: tls_conns::mute_peer::{async_fn_env#0}
   kind: AsyncFn
-  decl: tls-conns.rs:318
+  decl: tls-conns.rs:322
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<tls_conns::mute_peer::{async_fn_env#0}>
   variants:
-    Unresumed @ tls-conns.rs:318
-    Returned @ tls-conns.rs:322
-    Panicked @ tls-conns.rs:322
-    Suspend0 @ tls-conns.rs:320
+    Unresumed @ tls-conns.rs:322
+    Returned @ tls-conns.rs:326
+    Panicked @ tls-conns.rs:326
+    Suspend0 @ tls-conns.rs:324
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tls_conns::owned_split_client::{async_fn#0}::{closure_env#0}> (poll)
@@ -3669,86 +3669,87 @@ dyn: tls_conns::tcp_server::{async_fn_env#0} (poll, drop_glue)
 dyn: tls_conns::tls_pair::{async_fn_env#0} (poll, drop_glue)
 
 [env-decls]
-env: tls_conns::buffered_server::{async_fn_env#0} @ tls-conns.rs:204
-env: tls_conns::closing_client::{async_fn_env#0} @ tls-conns.rs:247
-env: tls_conns::drained_server::{async_fn_env#0} @ tls-conns.rs:257
-env: tls_conns::exact_server::{async_fn_env#0} @ tls-conns.rs:165
-env: tls_conns::handshaking_client::{async_fn_env#0} @ tls-conns.rs:274
-env: tls_conns::handshaking_server::{async_fn_env#0} @ tls-conns.rs:305
-env: tls_conns::main::{async_block#0}::{closure_env#0} @ tls-conns.rs:340
-env: tls_conns::main::{async_block_env#0} @ tls-conns.rs:337
-env: tls_conns::mute_peer::{async_fn_env#0} @ tls-conns.rs:318
+env: tls_conns::buffered_server::{async_fn_env#0} @ tls-conns.rs:205
+env: tls_conns::closing_client::{async_fn_env#0} @ tls-conns.rs:248
+env: tls_conns::drained_server::{async_fn_env#0} @ tls-conns.rs:261
+env: tls_conns::exact_server::{async_fn_env#0} @ tls-conns.rs:166
+env: tls_conns::handshaking_client::{async_fn_env#0} @ tls-conns.rs:278
+env: tls_conns::handshaking_server::{async_fn_env#0} @ tls-conns.rs:309
+env: tls_conns::main::{async_block#0}::{closure_env#0} @ tls-conns.rs:344
+env: tls_conns::main::{async_block_env#0} @ tls-conns.rs:341
+env: tls_conns::mute_peer::{async_fn_env#0} @ tls-conns.rs:322
 env: tls_conns::owned_split_client::{async_fn#0}::{closure_env#0} @ select.rs:659
-env: tls_conns::owned_split_client::{async_fn_env#0} @ tls-conns.rs:216
-env: tls_conns::plain_client::{async_fn_env#0} @ tls-conns.rs:149
-env: tls_conns::silent_peer::{async_fn_env#0} @ tls-conns.rs:288
+env: tls_conns::owned_split_client::{async_fn_env#0} @ tls-conns.rs:217
+env: tls_conns::plain_client::{async_fn_env#0} @ tls-conns.rs:150
+env: tls_conns::silent_peer::{async_fn_env#0} @ tls-conns.rs:292
 env: tls_conns::split_client::{async_fn#0}::{closure_env#0} @ select.rs:659
-env: tls_conns::split_client::{async_fn_env#0} @ tls-conns.rs:182
+env: tls_conns::split_client::{async_fn_env#0} @ tls-conns.rs:183
 env: tls_conns::tcp_pair::{async_fn#0}::{closure_env#0} @ join.rs:151
-env: tls_conns::tcp_pair::{async_fn_env#0} @ tls-conns.rs:119
-env: tls_conns::tcp_server::{async_fn_env#0} @ tls-conns.rs:238
+env: tls_conns::tcp_pair::{async_fn_env#0} @ tls-conns.rs:120
+env: tls_conns::tcp_server::{async_fn_env#0} @ tls-conns.rs:239
 env: tls_conns::tls_pair::{async_fn#0}::{closure_env#0} @ join.rs:151
-env: tls_conns::tls_pair::{async_fn_env#0} @ tls-conns.rs:135
+env: tls_conns::tls_pair::{async_fn_env#0} @ tls-conns.rs:136
 
 [poll-decls]
 
 [local-decls]
-local: tls_conns::buffered_server::{async_fn_env#0} :: len @ tls-conns.rs:210
-local: tls_conns::buffered_server::{async_fn_env#0} :: ready @ tls-conns.rs:206
-local: tls_conns::buffered_server::{async_fn_env#0} :: stream @ tls-conns.rs:205
-local: tls_conns::closing_client::{async_fn_env#0} :: more @ tls-conns.rs:251
-local: tls_conns::closing_client::{async_fn_env#0} :: ready @ tls-conns.rs:247
-local: tls_conns::closing_client::{async_fn_env#0} :: stream @ tls-conns.rs:247
-local: tls_conns::drained_server::{async_fn_env#0} :: park @ tls-conns.rs:260
-local: tls_conns::drained_server::{async_fn_env#0} :: ready @ tls-conns.rs:259
-local: tls_conns::drained_server::{async_fn_env#0} :: rest @ tls-conns.rs:263
-local: tls_conns::drained_server::{async_fn_env#0} :: stream @ tls-conns.rs:258
-local: tls_conns::exact_server::{async_fn_env#0} :: len @ tls-conns.rs:174
-local: tls_conns::exact_server::{async_fn_env#0} :: ping @ tls-conns.rs:167
-local: tls_conns::exact_server::{async_fn_env#0} :: ready @ tls-conns.rs:165
-local: tls_conns::exact_server::{async_fn_env#0} :: stream @ tls-conns.rs:165
-local: tls_conns::handshaking_client::{async_fn_env#0} :: connector @ tls-conns.rs:275
-local: tls_conns::handshaking_client::{async_fn_env#0} :: tcp @ tls-conns.rs:276
-local: tls_conns::handshaking_server::{async_fn_env#0} :: acceptor @ tls-conns.rs:306
-local: tls_conns::handshaking_server::{async_fn_env#0} :: ready @ tls-conns.rs:308
-local: tls_conns::handshaking_server::{async_fn_env#0} :: tcp @ tls-conns.rs:307
-local: tls_conns::main::{async_block_env#0} :: acceptor @ tls-conns.rs:338
-local: tls_conns::main::{async_block_env#0} :: connector @ tls-conns.rs:338
-local: tls_conns::main::{async_block_env#0} :: ready @ tls-conns.rs:339
-local: tls_conns::main::{async_block_env#0} :: ready_tx @ tls-conns.rs:339
-local: tls_conns::main::{async_block_env#0} :: signal @ tls-conns.rs:340
-local: tls_conns::mute_peer::{async_fn_env#0} :: park @ tls-conns.rs:318
-local: tls_conns::mute_peer::{async_fn_env#0} :: stream @ tls-conns.rs:318
-local: tls_conns::owned_split_client::{async_fn_env#0} :: buf @ tls-conns.rs:222
-local: tls_conns::owned_split_client::{async_fn_env#0} :: disabled @ tls-conns.rs:231
-local: tls_conns::owned_split_client::{async_fn_env#0} :: futures @ tls-conns.rs:231
-local: tls_conns::owned_split_client::{async_fn_env#0} :: queued @ tls-conns.rs:223
-local: tls_conns::owned_split_client::{async_fn_env#0} :: reader @ tls-conns.rs:217
-local: tls_conns::owned_split_client::{async_fn_env#0} :: ready @ tls-conns.rs:219
-local: tls_conns::owned_split_client::{async_fn_env#0} :: writer @ tls-conns.rs:218
-local: tls_conns::plain_client::{async_fn_env#0} :: more @ tls-conns.rs:159
-local: tls_conns::plain_client::{async_fn_env#0} :: pong @ tls-conns.rs:152
-local: tls_conns::plain_client::{async_fn_env#0} :: ready @ tls-conns.rs:149
-local: tls_conns::plain_client::{async_fn_env#0} :: stream @ tls-conns.rs:149
-local: tls_conns::silent_peer::{async_fn_env#0} :: hello @ tls-conns.rs:294
-local: tls_conns::silent_peer::{async_fn_env#0} :: park @ tls-conns.rs:291
-local: tls_conns::silent_peer::{async_fn_env#0} :: ready @ tls-conns.rs:290
-local: tls_conns::silent_peer::{async_fn_env#0} :: stream @ tls-conns.rs:289
-local: tls_conns::split_client::{async_fn_env#0} :: buf @ tls-conns.rs:188
-local: tls_conns::split_client::{async_fn_env#0} :: disabled @ tls-conns.rs:197
-local: tls_conns::split_client::{async_fn_env#0} :: futures @ tls-conns.rs:197
-local: tls_conns::split_client::{async_fn_env#0} :: queued @ tls-conns.rs:189
-local: tls_conns::split_client::{async_fn_env#0} :: reader @ tls-conns.rs:183
-local: tls_conns::split_client::{async_fn_env#0} :: ready @ tls-conns.rs:185
-local: tls_conns::split_client::{async_fn_env#0} :: writer @ tls-conns.rs:184
-local: tls_conns::tcp_pair::{async_fn_env#0} :: futures @ tls-conns.rs:124
-local: tls_conns::tcp_pair::{async_fn_env#0} :: listener @ tls-conns.rs:120
-local: tls_conns::tcp_server::{async_fn_env#0} :: buf @ tls-conns.rs:241
-local: tls_conns::tcp_server::{async_fn_env#0} :: ready @ tls-conns.rs:238
-local: tls_conns::tcp_server::{async_fn_env#0} :: stream @ tls-conns.rs:238
-local: tls_conns::tls_pair::{async_fn_env#0} :: acceptor @ tls-conns.rs:134
-local: tls_conns::tls_pair::{async_fn_env#0} :: connector @ tls-conns.rs:133
-local: tls_conns::tls_pair::{async_fn_env#0} :: futures @ tls-conns.rs:137
+local: tls_conns::buffered_server::{async_fn_env#0} :: len @ tls-conns.rs:211
+local: tls_conns::buffered_server::{async_fn_env#0} :: ready @ tls-conns.rs:207
+local: tls_conns::buffered_server::{async_fn_env#0} :: stream @ tls-conns.rs:206
+local: tls_conns::closing_client::{async_fn_env#0} :: more @ tls-conns.rs:255
+local: tls_conns::closing_client::{async_fn_env#0} :: reader @ tls-conns.rs:254
+local: tls_conns::closing_client::{async_fn_env#0} :: ready @ tls-conns.rs:248
+local: tls_conns::closing_client::{async_fn_env#0} :: stream @ tls-conns.rs:248
+local: tls_conns::drained_server::{async_fn_env#0} :: park @ tls-conns.rs:264
+local: tls_conns::drained_server::{async_fn_env#0} :: ready @ tls-conns.rs:263
+local: tls_conns::drained_server::{async_fn_env#0} :: rest @ tls-conns.rs:267
+local: tls_conns::drained_server::{async_fn_env#0} :: stream @ tls-conns.rs:262
+local: tls_conns::exact_server::{async_fn_env#0} :: len @ tls-conns.rs:175
+local: tls_conns::exact_server::{async_fn_env#0} :: ping @ tls-conns.rs:168
+local: tls_conns::exact_server::{async_fn_env#0} :: ready @ tls-conns.rs:166
+local: tls_conns::exact_server::{async_fn_env#0} :: stream @ tls-conns.rs:166
+local: tls_conns::handshaking_client::{async_fn_env#0} :: connector @ tls-conns.rs:279
+local: tls_conns::handshaking_client::{async_fn_env#0} :: tcp @ tls-conns.rs:280
+local: tls_conns::handshaking_server::{async_fn_env#0} :: acceptor @ tls-conns.rs:310
+local: tls_conns::handshaking_server::{async_fn_env#0} :: ready @ tls-conns.rs:312
+local: tls_conns::handshaking_server::{async_fn_env#0} :: tcp @ tls-conns.rs:311
+local: tls_conns::main::{async_block_env#0} :: acceptor @ tls-conns.rs:342
+local: tls_conns::main::{async_block_env#0} :: connector @ tls-conns.rs:342
+local: tls_conns::main::{async_block_env#0} :: ready @ tls-conns.rs:343
+local: tls_conns::main::{async_block_env#0} :: ready_tx @ tls-conns.rs:343
+local: tls_conns::main::{async_block_env#0} :: signal @ tls-conns.rs:344
+local: tls_conns::mute_peer::{async_fn_env#0} :: park @ tls-conns.rs:322
+local: tls_conns::mute_peer::{async_fn_env#0} :: stream @ tls-conns.rs:322
+local: tls_conns::owned_split_client::{async_fn_env#0} :: buf @ tls-conns.rs:223
+local: tls_conns::owned_split_client::{async_fn_env#0} :: disabled @ tls-conns.rs:232
+local: tls_conns::owned_split_client::{async_fn_env#0} :: futures @ tls-conns.rs:232
+local: tls_conns::owned_split_client::{async_fn_env#0} :: queued @ tls-conns.rs:224
+local: tls_conns::owned_split_client::{async_fn_env#0} :: reader @ tls-conns.rs:218
+local: tls_conns::owned_split_client::{async_fn_env#0} :: ready @ tls-conns.rs:220
+local: tls_conns::owned_split_client::{async_fn_env#0} :: writer @ tls-conns.rs:219
+local: tls_conns::plain_client::{async_fn_env#0} :: more @ tls-conns.rs:160
+local: tls_conns::plain_client::{async_fn_env#0} :: pong @ tls-conns.rs:153
+local: tls_conns::plain_client::{async_fn_env#0} :: ready @ tls-conns.rs:150
+local: tls_conns::plain_client::{async_fn_env#0} :: stream @ tls-conns.rs:150
+local: tls_conns::silent_peer::{async_fn_env#0} :: hello @ tls-conns.rs:298
+local: tls_conns::silent_peer::{async_fn_env#0} :: park @ tls-conns.rs:295
+local: tls_conns::silent_peer::{async_fn_env#0} :: ready @ tls-conns.rs:294
+local: tls_conns::silent_peer::{async_fn_env#0} :: stream @ tls-conns.rs:293
+local: tls_conns::split_client::{async_fn_env#0} :: buf @ tls-conns.rs:189
+local: tls_conns::split_client::{async_fn_env#0} :: disabled @ tls-conns.rs:198
+local: tls_conns::split_client::{async_fn_env#0} :: futures @ tls-conns.rs:198
+local: tls_conns::split_client::{async_fn_env#0} :: queued @ tls-conns.rs:190
+local: tls_conns::split_client::{async_fn_env#0} :: reader @ tls-conns.rs:184
+local: tls_conns::split_client::{async_fn_env#0} :: ready @ tls-conns.rs:186
+local: tls_conns::split_client::{async_fn_env#0} :: writer @ tls-conns.rs:185
+local: tls_conns::tcp_pair::{async_fn_env#0} :: futures @ tls-conns.rs:125
+local: tls_conns::tcp_pair::{async_fn_env#0} :: listener @ tls-conns.rs:121
+local: tls_conns::tcp_server::{async_fn_env#0} :: buf @ tls-conns.rs:242
+local: tls_conns::tcp_server::{async_fn_env#0} :: ready @ tls-conns.rs:239
+local: tls_conns::tcp_server::{async_fn_env#0} :: stream @ tls-conns.rs:239
+local: tls_conns::tls_pair::{async_fn_env#0} :: acceptor @ tls-conns.rs:135
+local: tls_conns::tls_pair::{async_fn_env#0} :: connector @ tls-conns.rs:134
+local: tls_conns::tls_pair::{async_fn_env#0} :: futures @ tls-conns.rs:138
 
 [infra]
 header: ok

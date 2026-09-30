@@ -6,11 +6,11 @@ task 3
     state: idle
     thread: <none>
     type: async fn tls_conns::plain_client
-    awaiting at: src/bin/tls-conns.rs:160
+    awaiting at: src/bin/tls-conns.rs:161
     awaiting on:
         io 0xADDR read
             waker: the read-waiter slot, awaiting readable, ready: writable
-    spawned at: src/bin/tls-conns.rs:348:9
-    type defined at: src/bin/tls-conns.rs:149
+    spawned at: src/bin/tls-conns.rs:352:9
+    type defined at: src/bin/tls-conns.rs:150
     held futures: 0
     join sets: 0

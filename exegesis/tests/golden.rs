@@ -750,6 +750,62 @@ fn route_text(bundle: &Bundle, path: &hansei_bundle::TypedPath) -> String {
         .join(".")
 }
 
+/// An io operation over a routed stream: every instantiation the key
+/// names is the operation `kind`, its stream reached under the
+/// resource's own rule, and following the route from there crosses
+/// exactly `route` — the operation's own path to its stream, then each
+/// stream's forward, then the socket it ends at — each forward and the
+/// socket under tokio's route rule.
+fn assert_io_operation(
+    program: &str,
+    bundle: &Bundle,
+    key: &str,
+    kind: hansei_bundle::IoOperationKind,
+    route: &[&str],
+) {
+    use hansei_bundle::{IoRouteStep, ResourceKind, SemanticRuleKind};
+    assert_resource(program, bundle, key, ResourceKind::IoOperation(kind));
+    let record_of = |ty| bundle.semantics.types.iter().find(|record| record.ty == ty);
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, key) {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no record"));
+        let io = record
+            .io
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} has no stream binding"));
+        assert_eq!(
+            io.rule,
+            record.resource.as_ref().unwrap().rule,
+            "{program}: {name}"
+        );
+        let mut crossed = vec![route_text(bundle, &io.stream)];
+        let mut ty = io.stream.target;
+        loop {
+            let binding = record_of(ty)
+                .and_then(|r| r.io_route.as_ref())
+                .unwrap_or_else(|| panic!("{program}: {} has no route", type_name_of(bundle, ty)));
+            assert_eq!(
+                bundle.semantics.rules[binding.rule.0 as usize].kind,
+                SemanticRuleKind::TokioIoRoute,
+                "{program}: {name}"
+            );
+            match &binding.step {
+                IoRouteStep::Forward { inner } => {
+                    crossed.push(route_text(bundle, inner));
+                    ty = inner.target;
+                }
+                IoRouteStep::Socket(socket) => {
+                    crossed.push(format!("socket {socket:?}"));
+                    break;
+                }
+            }
+        }
+        assert_eq!(crossed, route, "{program}: {name}");
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no type named {key}");
+}
+
 /// The hash table a type keeps: every instantiation the key names binds
 /// its table under the hashbrown layout rule, at the release `version`
 /// inside the reviewed range, through `outer` to hashbrown's map and
@@ -3849,6 +3905,48 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         );
     }
     if program == "tls-conns" {
+        use hansei_bundle::IoOperationKind;
+        // Every operation over a plain socket binds, through whatever
+        // of tokio's own streams it is read through: the bare socket,
+        // an owned half's `Arc`.
+        assert_io_operation(
+            program,
+            bundle,
+            "tokio::io::util::read::Read<tokio::net::tcp::stream::TcpStream>",
+            IoOperationKind::Read,
+            &["reader.*", "socket TcpStream"],
+        );
+        assert_io_operation(
+            program,
+            bundle,
+            "tokio::io::util::read_exact::ReadExact<tokio::net::tcp::stream::TcpStream>",
+            IoOperationKind::ReadExact,
+            &["reader.*", "socket TcpStream"],
+        );
+        assert_io_operation(
+            program,
+            bundle,
+            "tokio::io::util::read::Read<tokio::net::tcp::split_owned::OwnedReadHalf>",
+            IoOperationKind::Read,
+            &["reader.*", "inner.ptr.pointer.*.data", "socket TcpStream"],
+        );
+        assert_io_operation(
+            program,
+            bundle,
+            "tokio::io::util::write_buf::WriteBuf<tokio::net::tcp::split_owned::OwnedWriteHalf, \
+             core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>",
+            IoOperationKind::WriteBuf,
+            &["writer.*", "inner.ptr.pointer.*.data", "socket TcpStream"],
+        );
+        // One over a TLS stream binds nothing yet: tokio-rustls's
+        // streams are no route tokio reviews, so each says why.
+        for key in [
+            "tokio::io::util::read::Read<tokio_rustls::client::TlsStream<",
+            "tokio::io::util::read_exact::ReadExact<alloc::boxed::Box<tokio::io::util::buf_stream::BufStream<",
+            "tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<",
+        ] {
+            assert_no_resource(program, bundle, key);
+        }
         // Two selects, each over a read on one half of a split stream
         // and a `write_buf` on the other, both pinned locals the select
         // borrows: the TLS client's over `tokio::io::split` halves, the
@@ -4952,7 +5050,8 @@ fn run_golden(program: &str) {
                 // the gated reader's coroutine awaits it, and that
                 // delegation proves it one whether or not its own `poll`
                 // survived as a symbol (ELF keeps it, Mach-O inlines it)
-                // — and never a resource, never a continuation.
+                // — and never a resource, never a continuation: its
+                // stream has no reviewed route, and it says so.
                 let gated = exegesis::describe::explain_future(&bundle, "Gated");
                 let lines: Vec<&str> = gated.lines().collect();
                 assert_eq!(lines.len(), 3, "{program}: {gated}");
@@ -4967,11 +5066,13 @@ fn run_golden(program: &str) {
                     "{program}"
                 );
                 let delegated = |evidence: &str| {
+                    let unrouted = "NoRule: the stream it polls, local_set_io::Gated, has no \
+                                    reviewed route to a socket";
                     format!(
                         "tokio::io::util::read::Read<local_set_io::Gated> :: members \
                          future[{evidence}delegated by \
                          local_set_io::local_gated_reader::{{async_fn_env#0}}] \
-                         continuation unknown (NoRule)"
+                         continuation unknown ({unrouted}) issue ({unrouted})"
                     )
                 };
                 assert!(

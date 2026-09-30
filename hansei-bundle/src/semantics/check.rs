@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::{
-    Bundle, Error, MemberRef, Result, Selector, TypeDef, VariantDef, WalkOutcome, WalkRole,
+    Bundle, Error, MemberRef, Result, Selector, Step, TypeDef, VariantDef, WalkOutcome, WalkRole,
 };
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -247,7 +247,8 @@ impl<'a> Check<'a> {
             | TokioNotifiedState
             | TokioOneshotRecv
             | TokioOneshotRecvState
-            | TokioAcquireOwner => "tokio",
+            | TokioAcquireOwner
+            | TokioIoRoute => "tokio",
             // A layout rule whose version is read off the declarations
             // of hashbrown's map, where std's vendored copy has no cargo
             // registry path to be a delegation origin by.
@@ -630,6 +631,14 @@ impl<'a> Check<'a> {
                     .is_some_and(|http| http.rule == binding.rule),
             "HTTP connection resource and binding disagree",
         )?;
+        // An operation over a stream reaches it by the record's own
+        // path, under the operation's rule; a readiness await names its
+        // registration through walk roles and holds no stream.
+        require(
+            matches!(binding.kind, ResourceKind::IoOperation(op) if op != IoOperationKind::Readiness)
+                == record.io.as_ref().is_some_and(|io| io.rule == binding.rule),
+            "io operation resource and binding disagree",
+        )?;
         if let Some(state_rule) = binding.state_rule {
             let kind = match binding.kind {
                 ResourceKind::Sleep => TokioSleepState,
@@ -658,6 +667,61 @@ impl<'a> Check<'a> {
             !binding.exclusive_pending || binding.state_rule.is_some(),
             "unreviewed exclusive-pending guarantee",
         )
+    }
+
+    /// One step of a stream's route, under tokio's route rule: a
+    /// forward to another type, or a socket whose roles are bound at
+    /// exactly this type. That every forward reaches a routed type, and
+    /// every route a socket, is the whole table's to say
+    /// ([`io_routes_end_at_sockets`]).
+    fn io_route(&self, record: &TypeSemantics, binding: &IoRouteBinding) -> Result<()> {
+        self.rule(binding.rule, &[SemanticRuleKind::TokioIoRoute])?;
+        match &binding.step {
+            IoRouteStep::Forward { inner } => {
+                self.path(record.ty, inner)?;
+                require(
+                    inner.target != record.ty,
+                    "a stream route forwards to itself",
+                )
+            }
+            IoRouteStep::Socket(socket) => self.roles(record.ty, &socket_roles(*socket)),
+        }
+    }
+
+    /// An operation's stream, under the resource's rule: a path through
+    /// the future's `&mut`, landing on a routed type; and the length it
+    /// completes by, where it has one, an unsigned word.
+    fn io_operation(
+        &self,
+        record: &TypeSemantics,
+        binding: &IoOperationBinding,
+        routed: &impl Fn(BundleTypeId) -> bool,
+    ) -> Result<()> {
+        self.rule(binding.rule, &[SemanticRuleKind::TokioIoOperation])?;
+        self.path(record.ty, &binding.stream)?;
+        require(
+            binding.stream.steps.last() == Some(&Step::Deref),
+            "an io operation's stream is not behind its pointer",
+        )?;
+        require(
+            routed(binding.stream.target),
+            "an io operation's stream has no route",
+        )?;
+        if let Some(remaining) = &binding.remaining {
+            self.path(record.ty, remaining)?;
+            require(
+                matches!(
+                    self.ty(remaining.target)?,
+                    TypeDef::Base {
+                        encoding: crate::Encoding::Unsigned,
+                        size: 8,
+                        ..
+                    }
+                ),
+                "an io operation's remaining length is not an unsigned word",
+            )?;
+        }
+        Ok(())
     }
 
     /// A refcount header's value is one member of its own struct, named
@@ -1369,10 +1433,21 @@ impl<'a> Check<'a> {
     }
 }
 
+/// The walk roles rooted at a socket a route ends at: the route to its
+/// registration, and to its descriptor.
+pub fn socket_roles(socket: IoSocket) -> [WalkRole; 2] {
+    use WalkRole::*;
+    match socket {
+        IoSocket::TcpStream => [TcpStreamShared, TcpStreamFd],
+        IoSocket::UnixStream => [UnixStreamShared, UnixStreamFd],
+    }
+}
+
 /// Essential roles rooted at the resource type itself: a binding needs
-/// every one of them bound at exactly that type. An I/O operation's
-/// roots are the reviewed operation-over-socket monomorphizations only;
-/// a contained socket is not an operation identity.
+/// every one of them bound at exactly that type. An io operation over a
+/// stream needs none: the record's own binding reaches the stream, and
+/// the stream's route reaches the socket, whose roles are the ones that
+/// must bind.
 pub fn required_resource_roles(kind: ResourceKind) -> &'static [WalkRole] {
     use WalkRole::*;
     match kind {
@@ -1385,13 +1460,10 @@ pub fn required_resource_roles(kind: ResourceKind) -> &'static [WalkRole] {
             AcquireNeeded,
             AcquireQueued,
         ],
-        ResourceKind::IoOperation(IoOperationKind::Read) => &[IoReadReader, IoReadBufLen],
-        ResourceKind::IoOperation(IoOperationKind::WriteAll) => {
-            &[IoWriteAllWriter, IoWriteAllBufLen]
-        }
         ResourceKind::IoOperation(IoOperationKind::Readiness) => {
             &[ReadinessScheduledIo, ReadinessState, ReadinessWaiter]
         }
+        ResourceKind::IoOperation(_) => &[],
         ResourceKind::MpscRecv => &[MpscRecvRx],
         ResourceKind::Notified => &[NotifiedNotify, NotifiedState, NotifiedCalls, NotifiedWaiter],
         ResourceKind::OneshotRecv => &[OneshotInner],
@@ -1403,20 +1475,18 @@ pub fn required_resource_roles(kind: ResourceKind) -> &'static [WalkRole] {
 
 /// Essential routes chained below those roles — rooted where a role
 /// landed, so at other types — that must also have bound for the
-/// binding to identify its resource: the registration an operation
-/// reaches through its own reader or writer, and the waker, interest
-/// and ready flag inside a readiness await's node.
+/// binding to identify its resource: the waker, interest and ready flag
+/// inside a readiness await's node.
 pub fn required_resource_routes(kind: ResourceKind) -> &'static [WalkRole] {
     use WalkRole::*;
     match kind {
         ResourceKind::Sleep | ResourceKind::JoinHandle | ResourceKind::SemaphoreAcquire => &[],
-        ResourceKind::IoOperation(IoOperationKind::Read) => &[IoReadShared],
-        ResourceKind::IoOperation(IoOperationKind::WriteAll) => &[IoWriteAllShared],
         ResourceKind::IoOperation(IoOperationKind::Readiness) => &[
             ReadinessWaiterWaker,
             ReadinessWaiterInterest,
             ReadinessWaiterReady,
         ],
+        ResourceKind::IoOperation(_) => &[],
         // The channel behind the receiver's `Rx`, and every word the
         // recv protocol reads from it: the sender count, the two list
         // positions, the block chain the head names, the receiver's
@@ -1550,6 +1620,8 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                         && record.request.is_none()
                         && record.table.is_none()
                         && record.pool.is_none()
+                        && record.io_route.is_none()
+                        && record.io.is_none()
                         && record.refcount.is_none()
                         && record.lock.is_none(),
                     "unavailable storage carries a readable capability",
@@ -1623,6 +1695,25 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                 "HTTP pool binding needs declared-member storage",
             )?;
             check.pool(record, pool)?;
+        }
+        if let Some(route) = &record.io_route {
+            require(
+                matches!(record.storage, StoragePolicy::DeclaredMembers),
+                "stream route needs declared-member storage",
+            )?;
+            check.io_route(record, route)?;
+        }
+        if let Some(io) = &record.io {
+            require(
+                matches!(record.storage, StoragePolicy::DeclaredMembers),
+                "io operation binding needs declared-member storage",
+            )?;
+            let routed = |ty| {
+                positions
+                    .get(&ty)
+                    .is_some_and(|&i| table.types[i].io_route.is_some())
+            };
+            check.io_operation(record, io, &routed)?;
         }
         if let Some(refcount) = &record.refcount {
             check.rule(refcount.rule, &[SemanticRuleKind::StdRefcountHeader])?;
@@ -1791,6 +1882,37 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
             // The class's route must have bound at this entry's own S; the
             // shared-state walks root elsewhere and prove nothing about it.
             check.roles(entry.scheduler, &[scheduler_role(binding.class)])?;
+        }
+    }
+    io_routes_end_at_sockets(table, &positions)
+}
+
+/// Every stream route in the table ends at a socket: following forwards
+/// from any routed type reaches a type whose step is a socket, through
+/// routed types only, in fewer hops than the table has records — so no
+/// route dangles off an unrouted type or runs in a cycle, and a reader
+/// following one never needs a bound of its own.
+fn io_routes_end_at_sockets(
+    table: &SemanticTable,
+    positions: &BTreeMap<BundleTypeId, usize>,
+) -> Result<()> {
+    let step = |ty: BundleTypeId| {
+        positions
+            .get(&ty)
+            .and_then(|&i| table.types[i].io_route.as_ref())
+            .map(|route| &route.step)
+    };
+    for record in &table.types {
+        let Some(mut current) = record.io_route.as_ref().map(|route| &route.step) else {
+            continue;
+        };
+        let mut hops = 0;
+        while let IoRouteStep::Forward { inner } = current {
+            hops += 1;
+            require(hops < table.types.len(), "a stream route runs in a cycle")?;
+            current = step(inner.target).ok_or_else(|| {
+                Error::Corrupt("semantics: a stream route forwards to an unrouted type".into())
+            })?;
         }
     }
     Ok(())

@@ -65,19 +65,6 @@ const LOCAL_DATA: &str = "tokio::task::local::LocalData";
 /// The two-word waker pair every registered waker in the walk lands on,
 /// wherever it was registered.
 const RAW_WAKER: &str = "core::task::wake::RawWaker";
-/// The `AsyncReadExt::read` and `AsyncWriteExt::write_all` operation
-/// futures, bound only over the reviewed concrete socket types below:
-/// their `poll` calls the generic reader's or writer's own poll method,
-/// so only an instantiation over a known socket reaches a known
-/// registration.
-const IO_READ: &str = "tokio::io::util::read::Read<";
-const IO_WRITE_ALL: &str = "tokio::io::util::write_all::WriteAll<";
-/// The concrete streams whose `poll_read`/`poll_write` park in the
-/// `ScheduledIo` direction slots and nowhere else.
-const IO_SOCKETS: &[&str] = &[
-    "tokio::net::unix::stream::UnixStream",
-    "tokio::net::tcp::stream::TcpStream",
-];
 /// An `Interest`-based readiness await: the future that pushes its own
 /// embedded `Waiter` node onto the resource's list.
 const READINESS: &str = "tokio::runtime::io::scheduled_io::Readiness";
@@ -103,14 +90,6 @@ fn arc_of(name: &str, inner: &str) -> bool {
     name.strip_prefix("alloc::sync::Arc<")
         .and_then(|rest| rest.strip_prefix(inner))
         .is_some_and(|rest| rest == ">" || rest.starts_with(','))
-}
-
-/// Whether `name` is `key` instantiated over exactly one of `args`.
-fn leaf_over(key: &str, args: &[&str], name: &str) -> bool {
-    debug_assert!(key.ends_with('<'));
-    name.strip_prefix(key)
-        .and_then(|rest| rest.strip_suffix('>'))
-        .is_some_and(|arg| args.contains(&arg))
 }
 
 /// Whether `name` is a type a leaf key names. A key ending in `<` is a
@@ -227,14 +206,6 @@ enum WalkRoot {
     /// io resource, generic-free by construction. Absent like a leaf
     /// when the target reaches none.
     Type(&'static str),
-    /// The monomorphizations of one generic leaf key whose single type
-    /// argument is exactly one of the named types — the bounded set of
-    /// reviewed instantiations of an operation future. Every other
-    /// instantiation is not a root, so a custom `AsyncRead` wrapper's
-    /// `Read<Wrapper>` binds nothing however much of a socket it holds.
-    /// Absent like a leaf when the target reaches none of the reviewed
-    /// ones.
-    LeafOver(&'static str, &'static [&'static str]),
     /// Every emitted `Arc<T>` whose `T` is exactly this fully-qualified
     /// name, with or without the allocator parameter — a task cell's
     /// scheduler `S` for the flavors that are `Arc`s. Absent like a leaf
@@ -1572,49 +1543,6 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
-        // The bounded io operations. `Read<R>`/`WriteAll<W>` hold the
-        // `&mut R` they poll and the buffer they fill or drain; only the
-        // reviewed socket instantiations root here, and the registration
-        // is reached through that reader/writer — the operation's own
-        // route, never a socket found by scanning the frame. The slice
-        // length is the completion witness: an empty read buffer or an
-        // exhausted write buffer completes without parking.
-        decl(
-            WalkRole::IoReadReader,
-            WalkRoot::LeafOver(IO_READ, IO_SOCKETS),
-            Pointer,
-            || vec![reach![Named("reader")]],
-        ),
-        decl(
-            WalkRole::IoReadBufLen,
-            WalkRoot::LeafOver(IO_READ, IO_SOCKETS),
-            Word,
-            || vec![reach![Named("buf"), Named("length")]],
-        ),
-        decl(
-            WalkRole::IoReadShared,
-            Pointee(WalkRole::IoReadReader),
-            Aggregate,
-            shared_of_resource,
-        ),
-        decl(
-            WalkRole::IoWriteAllWriter,
-            WalkRoot::LeafOver(IO_WRITE_ALL, IO_SOCKETS),
-            Pointer,
-            || vec![reach![Named("writer")]],
-        ),
-        decl(
-            WalkRole::IoWriteAllBufLen,
-            WalkRoot::LeafOver(IO_WRITE_ALL, IO_SOCKETS),
-            Word,
-            || vec![reach![Named("buf"), Named("length")]],
-        ),
-        decl(
-            WalkRole::IoWriteAllShared,
-            Pointee(WalkRole::IoWriteAllWriter),
-            Aggregate,
-            shared_of_resource,
-        ),
         // A readiness await: the resource it registered on, its own
         // `Init`/`Waiting`/`Done` state, and the `Waiter` node embedded in
         // the future itself — the exact list entry a pending wait must be
@@ -2606,21 +2534,6 @@ fn resolve_root(
             }
             Roots::Types { types, note: None }
         }
-        WalkRoot::LeafOver(key, args) => {
-            let types: Vec<(String, TypeId)> = em
-                .emitted_named()
-                .filter(|(_, name)| leaf_over(key, args, name))
-                .map(|(tid, name)| (name.to_owned(), tid))
-                .collect();
-            if types.is_empty() {
-                return Roots::Absent(format!(
-                    "no {key}\u{2026}> type over a reviewed socket in the tokio info \
-                     (the target does not reach one)"
-                ));
-            }
-            let note = (types.len() > 1).then(|| format!("{} types", types.len()));
-            Roots::Types { types, note }
-        }
         WalkRoot::ArcOf(inner) => {
             let types: Vec<(String, TypeId)> = em
                 .emitted_named()
@@ -2853,7 +2766,6 @@ pub fn leaf_rooted(role: WalkRole) -> bool {
             // net resources a binary keeps is the target's call too.
             WalkRoot::Leaf(_)
             | WalkRoot::Type(_)
-            | WalkRoot::LeafOver(..)
             | WalkRoot::LeafWhere(..)
             | WalkRoot::ArcOf(_) => true,
             WalkRoot::Infra(_) | WalkRoot::AnyHandle | WalkRoot::TaskCells => false,
@@ -2920,28 +2832,6 @@ mod tests {
             JOIN_HANDLE,
             "tokio::runtime::task::join::JoinHandleFoo"
         ));
-    }
-
-    /// A reviewed operation root is the key over exactly one of the
-    /// reviewed sockets: a wrapper that holds a socket, a split half, or
-    /// a lookalike sibling of the socket is not one.
-    #[test]
-    fn test_leaf_over_admits_only_the_reviewed_instantiations() {
-        let unix = "tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>";
-        let tcp = "tokio::io::util::write_all::WriteAll<tokio::net::tcp::stream::TcpStream>";
-        assert!(leaf_over(IO_READ, IO_SOCKETS, unix));
-        assert!(leaf_over(IO_WRITE_ALL, IO_SOCKETS, tcp));
-        assert!(!leaf_over(IO_WRITE_ALL, IO_SOCKETS, unix));
-        for name in [
-            "tokio::io::util::read::Read<my_crate::Gated<tokio::net::unix::stream::UnixStream>>",
-            "tokio::io::util::read::Read<tokio::net::unix::stream::UnixStreamHalf>",
-            "tokio::io::util::read::Read<tokio::net::unix::split::ReadHalf>",
-            "tokio::io::util::read::Read<&mut tokio::net::unix::stream::UnixStream>",
-            "tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream",
-            "tokio::io::util::read::Read",
-        ] {
-            assert!(!leaf_over(IO_READ, IO_SOCKETS, name), "{name}");
-        }
     }
 
     /// The bounded receiver's `recv` closure is admitted by its path
@@ -3299,70 +3189,6 @@ mod tests {
             resolve_root(&em, &roots, &BTreeMap::new(), &WalkRoot::Leaf(SLEEP))
         else {
             panic!("two emitted leaves resolve");
-        };
-        assert_eq!(types.len(), 2);
-        assert_eq!(note.as_deref(), Some("2 types"));
-    }
-
-    /// A reviewed-operation root counts its instantiations the way a
-    /// leaf does: none is an expected absence, one is unnoted, more are
-    /// noted — and an instantiation over an unreviewed reader is not a
-    /// root at all, however many there are.
-    #[test]
-    fn test_leaf_over_root_admits_and_counts_only_reviewed_instantiations() {
-        let mut reader = DwReader::default();
-        let read_ns = ns(&mut reader, "tokio::io::util::read");
-        let unix = type_id(1);
-        let tcp = type_id(2);
-        let custom = type_id(3);
-        insert_struct(
-            &mut reader,
-            unix,
-            Some(read_ns),
-            "Read<tokio::net::unix::stream::UnixStream>",
-            &[],
-        );
-        insert_struct(
-            &mut reader,
-            tcp,
-            Some(read_ns),
-            "Read<tokio::net::tcp::stream::TcpStream>",
-            &[],
-        );
-        insert_struct(
-            &mut reader,
-            custom,
-            Some(read_ns),
-            "Read<app::Gated<tokio::net::unix::stream::UnixStream>>",
-            &[],
-        );
-        let roots = context_roots(unix);
-        let root = WalkRoot::LeafOver(IO_READ, IO_SOCKETS);
-
-        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
-        em.reserve(custom);
-        assert!(matches!(
-            resolve_root(&em, &roots, &BTreeMap::new(), &root),
-            Roots::Absent(_)
-        ));
-
-        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
-        em.reserve(custom);
-        em.reserve(unix);
-        let Roots::Types { types, note } = resolve_root(&em, &roots, &BTreeMap::new(), &root)
-        else {
-            panic!("one reviewed instantiation resolves");
-        };
-        assert_eq!(types.len(), 1);
-        assert_eq!(note, None);
-
-        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
-        em.reserve(custom);
-        em.reserve(unix);
-        em.reserve(tcp);
-        let Roots::Types { types, note } = resolve_root(&em, &roots, &BTreeMap::new(), &root)
-        else {
-            panic!("two reviewed instantiations resolve");
         };
         assert_eq!(types.len(), 2);
         assert_eq!(note.as_deref(), Some("2 types"));

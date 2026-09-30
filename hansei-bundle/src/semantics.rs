@@ -13,7 +13,7 @@ pub(crate) mod check;
 
 pub use check::{
     container_roles, container_routes, required_resource_roles, required_resource_routes,
-    scheduler_role,
+    scheduler_role, socket_roles,
 };
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
@@ -62,6 +62,14 @@ pub struct TypeSemantics {
     /// a hyper-util client pool's reaper or checkout under a reviewed
     /// range: what names a client connection's far end.
     pub pool: Option<HttpPoolBinding>,
+    /// Where the type is a stream a reviewed range says forwards its
+    /// reads and writes, or a socket registered with tokio's io driver:
+    /// how reading or writing a value of it reaches the registration.
+    pub io_route: Option<IoRouteBinding>,
+    /// Where the type is one of tokio's io operation futures over a
+    /// routed stream: the stream it polls. Present exactly when the
+    /// record's resource is such an operation.
+    pub io: Option<IoOperationBinding>,
     /// Where the type is a refcounted allocation's header — an `Arc`'s
     /// `ArcInner<T>`, an `Rc`'s `RcInner<T>` — the member holding the
     /// value its counts guard: what a path through the pointer names.
@@ -524,11 +532,74 @@ pub enum HttpPoolBinding {
     },
 }
 
+/// tokio's io operation futures, by the `io::util` module each lives
+/// in, and the readiness await the driver's own resources park in.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum IoOperationKind {
     Read,
+    ReadExact,
+    ReadBuf,
+    Write,
     WriteAll,
+    WriteBuf,
+    Flush,
+    Shutdown,
     Readiness,
+}
+
+impl IoOperationKind {
+    /// Whether a pending operation waits for the stream to take bytes
+    /// rather than to yield them: a write, a flush or a shutdown parks
+    /// in the socket's writer slot, a read in its reader slot. `None`
+    /// for a readiness await, which names its interest itself.
+    pub fn writes(self) -> Option<bool> {
+        match self {
+            Self::Read | Self::ReadExact | Self::ReadBuf => Some(false),
+            Self::Write | Self::WriteAll | Self::WriteBuf | Self::Flush | Self::Shutdown => {
+                Some(true)
+            }
+            Self::Readiness => None,
+        }
+    }
+}
+
+/// How reading or writing a value reaches the socket underneath.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct IoRouteBinding {
+    pub rule: SemanticRuleId,
+    pub step: IoRouteStep,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum IoRouteStep {
+    /// Reading or writing the value reads or writes the stream `inner`
+    /// lands on, and nothing else: a path from the value through the
+    /// members that hold it, and through a pointer where the value
+    /// holds it behind one (an `Arc`, a `Box`, a reference). The
+    /// target is itself a routed type.
+    Forward { inner: TypedPath },
+    /// The value is a socket registered with tokio's io driver: the
+    /// walk contract's roles rooted at its type reach the registration
+    /// and the descriptor.
+    Socket(IoSocket),
+}
+
+/// The sockets a route ends at, by the walk roles rooted at each.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum IoSocket {
+    TcpStream,
+    UnixStream,
+}
+
+/// One of tokio's io operation futures, over a routed stream: the path
+/// from the future through its `&mut` to the stream it polls, and, for
+/// an operation whose buffer says when it completes without parking,
+/// the path to that buffer's length.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct IoOperationBinding {
+    pub rule: SemanticRuleId,
+    pub stream: TypedPath,
+    pub remaining: Option<TypedPath>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -770,6 +841,12 @@ pub enum SemanticRuleKind {
     /// of their own module — `Mutex`, `RwLock`, `Semaphore`, a bounded
     /// mpsc channel's capacity — under the family's layout.
     TokioAcquireOwner,
+    /// tokio's own streams under the family's layout: the wrappers whose
+    /// `AsyncRead`/`AsyncWrite` forward to the stream they hold — the
+    /// halves `io::split` and a socket's `split`/`into_split` make, the
+    /// buffered wrappers, and its impls for `Box` and `&mut` — and the
+    /// sockets their routes end at.
+    TokioIoRoute,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

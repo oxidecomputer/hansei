@@ -38,6 +38,8 @@ fn record(ty: BundleTypeId) -> TypeSemantics {
         request: None,
         table: None,
         pool: None,
+        io_route: None,
+        io: None,
         refcount: None,
         lock: None,
         acquires_for: None,
@@ -1166,34 +1168,22 @@ fn test_semantic_primitives_require_each_essential_role() {
             bad(&missing, "essential walk role");
         }
     }
-    // An I/O operation's essential routes are its own reader/writer or
-    // node and the registration reached through it, never a contained
-    // socket's own `shared` route.
-    for (operation, roles, routes) in [
-        (
-            IoOperationKind::Read,
-            vec![WalkRole::IoReadReader, WalkRole::IoReadBufLen],
-            vec![WalkRole::IoReadShared],
-        ),
-        (
-            IoOperationKind::WriteAll,
-            vec![WalkRole::IoWriteAllWriter, WalkRole::IoWriteAllBufLen],
-            vec![WalkRole::IoWriteAllShared],
-        ),
-        (
-            IoOperationKind::Readiness,
-            vec![
-                WalkRole::ReadinessScheduledIo,
-                WalkRole::ReadinessState,
-                WalkRole::ReadinessWaiter,
-            ],
-            vec![
-                WalkRole::ReadinessWaiterWaker,
-                WalkRole::ReadinessWaiterInterest,
-                WalkRole::ReadinessWaiterReady,
-            ],
-        ),
-    ] {
+    // A readiness await's essential routes are its own node and the
+    // registration it names; an operation over a stream has none, its
+    // stream reached by the record's own binding (tested with it).
+    for (operation, roles, routes) in [(
+        IoOperationKind::Readiness,
+        vec![
+            WalkRole::ReadinessScheduledIo,
+            WalkRole::ReadinessState,
+            WalkRole::ReadinessWaiter,
+        ],
+        vec![
+            WalkRole::ReadinessWaiterWaker,
+            WalkRole::ReadinessWaiterInterest,
+            WalkRole::ReadinessWaiterReady,
+        ],
+    )] {
         let mut b = resource();
         b.semantics.rules[0].kind = SemanticRuleKind::TokioIoOperation;
         b.semantics.types[0].resource.as_mut().unwrap().kind = ResourceKind::IoOperation(operation);
@@ -3585,4 +3575,149 @@ fn test_semantic_owner_and_coroutine_kind_rules() {
     let mut wrong_kind = b.clone();
     wrong_kind.semantics.types[0].coroutine_kind = Some(owner);
     bad(&wrong_kind, "incompatible capability");
+}
+
+/// A socket (the child, its registration and descriptor roles bound at
+/// it), a stream forwarding to it (the parent, through its member), and
+/// an operation over the stream (a new type holding a pointer to it),
+/// each under tokio's rule for it.
+fn io_routes() -> Bundle {
+    let mut b = resource();
+    const OP: BundleTypeId = BundleTypeId(11);
+    let parent_ptr = BundleTypeId(10);
+    b.types.types.push(TypeDef::Struct {
+        name: FIELD,
+        size: 8,
+        members: vec![MemberDef {
+            name: FIELD,
+            ty: parent_ptr,
+            offset: 0,
+        }],
+    });
+    b.semantics.rules = vec![
+        SemanticRule {
+            kind: SemanticRuleKind::TokioIoRoute,
+            revision: 1,
+            origin: SemanticOriginId(0),
+        },
+        SemanticRule {
+            kind: SemanticRuleKind::TokioIoOperation,
+            revision: 1,
+            origin: SemanticOriginId(0),
+        },
+    ];
+    let mut socket = record(CHILD);
+    socket.future = None;
+    socket.io_route = Some(IoRouteBinding {
+        rule: SemanticRuleId(0),
+        step: IoRouteStep::Socket(IoSocket::TcpStream),
+    });
+    let mut stream = record(PARENT);
+    stream.future = None;
+    stream.io_route = Some(IoRouteBinding {
+        rule: SemanticRuleId(0),
+        step: IoRouteStep::Forward {
+            inner: path(vec![named(FIELD)], CHILD),
+        },
+    });
+    let mut op = record(OP);
+    op.future = None;
+    op.resource = Some(ResourceBinding {
+        rule: SemanticRuleId(1),
+        kind: ResourceKind::IoOperation(IoOperationKind::ReadExact),
+        state_rule: None,
+        exclusive_pending: false,
+    });
+    op.io = Some(IoOperationBinding {
+        rule: SemanticRuleId(1),
+        stream: path(vec![named(FIELD), Step::Deref], PARENT),
+        remaining: None,
+    });
+    b.semantics.types = vec![socket, stream, op];
+    let walk = b.walks.entries[&WalkRole::JoinHandleRaw].clone();
+    let at_child = WalkBinding {
+        roots: vec![CHILD],
+        ..walk
+    };
+    b.walks.entries = socket_roles(IoSocket::TcpStream)
+        .iter()
+        .map(|role| (*role, at_child.clone()))
+        .collect();
+    b.validate().unwrap();
+    b
+}
+
+/// A route forwards to a routed type and ends at a socket whose roles
+/// are bound at it, under tokio's route rule; an operation reaches a
+/// routed stream through its pointer, under its resource's rule, and
+/// carries its binding exactly when its resource is an operation over
+/// a stream.
+#[test]
+fn test_io_routes_end_at_sockets_and_operations_reach_them() {
+    let b = io_routes();
+    let [child, parent, op] = [0, 1, 2];
+
+    let mut dangling = b.clone();
+    dangling.semantics.types[child].io_route = None;
+    bad(&dangling, "forwards to an unrouted type");
+
+    let mut unbound = b.clone();
+    unbound.walks.entries.remove(&WalkRole::TcpStreamFd);
+    bad(&unbound, "essential walk role is not bound");
+
+    let mut cycle = b.clone();
+    cycle.semantics.types[child].io_route = Some(IoRouteBinding {
+        rule: SemanticRuleId(0),
+        step: IoRouteStep::Forward {
+            inner: path(vec![named(FIELD)], BundleTypeId(0)),
+        },
+    });
+    bad(&cycle, "forwards to an unrouted type");
+
+    let mut to_itself = b.clone();
+    to_itself.semantics.types[parent].io_route = Some(IoRouteBinding {
+        rule: SemanticRuleId(0),
+        step: IoRouteStep::Forward {
+            inner: path(Vec::new(), PARENT),
+        },
+    });
+    bad(&to_itself, "forwards to itself");
+
+    let mut wrong_rule = b.clone();
+    wrong_rule.semantics.types[parent]
+        .io_route
+        .as_mut()
+        .unwrap()
+        .rule = SemanticRuleId(1);
+    bad(&wrong_rule, "incompatible capability");
+
+    let mut unrouted = b.clone();
+    unrouted.semantics.types[child].io_route = None;
+    unrouted.semantics.types[parent].io_route = None;
+    bad(&unrouted, "stream has no route");
+
+    let mut no_pointer = b.clone();
+    no_pointer.semantics.types[op].io.as_mut().unwrap().stream =
+        path(vec![named(FIELD)], BundleTypeId(10));
+    bad(&no_pointer, "not behind its pointer");
+
+    let mut unbound_op = b.clone();
+    unbound_op.semantics.types[op].io = None;
+    bad(&unbound_op, "io operation resource and binding disagree");
+
+    let mut readiness = b.clone();
+    readiness.semantics.types[op]
+        .resource
+        .as_mut()
+        .unwrap()
+        .kind = ResourceKind::IoOperation(IoOperationKind::Readiness);
+    bad(&readiness, "essential walk role is not bound");
+
+    let mut not_a_word = b.clone();
+    not_a_word.semantics.types[op]
+        .io
+        .as_mut()
+        .unwrap()
+        .remaining = Some(path(vec![named(FIELD)], BundleTypeId(10)));
+    bad(&not_a_word, "not an unsigned word");
 }

@@ -2017,18 +2017,26 @@ pub const TOKIO_SLEEP_STATE_V1_47: StateProtocol = StateProtocol {
 
 /// The io operations' protocol, tokio 1.47 through 1.53
 /// (`runtime/io/scheduled_io.rs`, `runtime/io/registration.rs`,
-/// `runtime/io/driver.rs`, `io/util/read.rs`, `io/util/write_all.rs`,
-/// unchanged across the range but for a list type alias): the
-/// registration's readiness word packs the delivered `Ready` bits in
-/// its low sixteen, a tick above them and the shutdown flag at bit 31.
-/// A reviewed stream's `poll_read`/`poll_write` goes through
-/// `Registration::poll_io`, which polls readiness before touching the
-/// buffer — so an empty read buffer parks like any other — and
-/// `poll_readiness` returns `Pending` only when the direction's mask
-/// (readable or read-closed; writable or write-closed) finds no
-/// delivered bit and shutdown is clear, having stored the task's
-/// waker in that direction's slot under the waiters lock. `WriteAll`
-/// returns before polling when its buffer is exhausted. `Readiness`
+/// `runtime/io/driver.rs`, and `io/util/{read,read_exact,read_buf,
+/// write,write_all,write_buf,flush,shutdown}.rs`, unchanged across the
+/// range but for a list type alias): the registration's readiness word
+/// packs the delivered `Ready` bits in its low sixteen, a tick above
+/// them and the shutdown flag at bit 31. Each operation future polls
+/// the stream its `&mut` names and nothing else — `poll_read` for the
+/// three reads, `poll_write` for the three writes, `poll_flush` and
+/// `poll_shutdown` for the other two — and returns `Pending` only when
+/// that poll does. A routed stream's poll reaches its socket's (see
+/// the stream routes), and a socket's `poll_read`/`poll_write` goes
+/// through `Registration::poll_io`, which polls readiness before
+/// touching the buffer — so an empty read buffer parks like any other
+/// — and `poll_readiness` returns `Pending` only when the direction's
+/// mask (readable or read-closed; writable or write-closed) finds no
+/// delivered bit and shutdown is clear, having stored the task's waker
+/// in that direction's slot under the waiters lock. A socket's flush
+/// and shutdown never pend, so a pending flush or shutdown is a write
+/// some stream along the route made, parked in the writer slot.
+/// `WriteAll` returns before polling when its buffer is exhausted.
+/// `Readiness`
 /// moves from `Init` to `Done` when its interest is already delivered
 /// or the resource is shut down, else pushes its own node at the
 /// list's front and enters `Waiting`; in `Waiting` it returns `Ready`

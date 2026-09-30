@@ -6,71 +6,71 @@ task 3
 #0  future        tokio::io::util::read::Read<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
       defined at tokio-1.52.4/src/io/util/read.rs:49 (<no_state>, 2 locals)
 #1  async fn      tls_conns::plain_client
-      awaiting at src/bin/tls-conns.rs:160 (Suspend2, 3 locals)
+      awaiting at src/bin/tls-conns.rs:161 (Suspend2, 3 locals)
 
 task 4
 #0  future        tokio::io::util::read_exact::ReadExact<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>
       defined at tokio-1.52.4/src/io/util/read_exact.rs:53 (<no_state>, 2 locals)
 #1  async fn      tls_conns::exact_server
-      awaiting at src/bin/tls-conns.rs:175 (Suspend2, 3 locals)
+      awaiting at src/bin/tls-conns.rs:176 (Suspend2, 3 locals)
 
 task 5
 #0  future        core::future::poll_fn::PollFn<tls_conns::split_client::{async_fn#0}::{closure_env#0}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
 #1  async fn      tls_conns::split_client
-      awaiting at src/bin/tls-conns.rs:197 (Suspend0, 8 locals; holds 2 pending futures)
+      awaiting at src/bin/tls-conns.rs:198 (Suspend0, 8 locals; holds 2 pending futures)
 
 task 6
-#0  future        tokio::io::util::read_exact::ReadExact<tokio::io::util::buf_stream::BufStream<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>
+#0  future        tokio::io::util::read_exact::ReadExact<Box<tokio::io::util::buf_stream::BufStream<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>>
       defined at tokio-1.52.4/src/io/util/read_exact.rs:53 (<no_state>, 2 locals)
 #1  async fn      tls_conns::buffered_server
-      awaiting at src/bin/tls-conns.rs:211 (Suspend0, 2 locals)
+      awaiting at src/bin/tls-conns.rs:212 (Suspend0, 2 locals)
 
 task 7
 #0  future        core::future::poll_fn::PollFn<tls_conns::owned_split_client::{async_fn#0}::{closure_env#0}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
 #1  async fn      tls_conns::owned_split_client
-      awaiting at src/bin/tls-conns.rs:231 (Suspend0, 8 locals; holds 2 pending futures)
+      awaiting at src/bin/tls-conns.rs:232 (Suspend0, 8 locals; holds 2 pending futures)
 
 task 8
 #0  future        tokio::io::util::read::Read<tokio::net::tcp::stream::TcpStream>
       waiting on io fd 16 (readable)
 #1  async fn      tls_conns::tcp_server
-      awaiting at src/bin/tls-conns.rs:242 (Suspend0, 2 locals)
+      awaiting at src/bin/tls-conns.rs:243 (Suspend0, 2 locals)
 
 task 9
-#0  future        tokio::io::util::read::Read<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
+#0  future        tokio::io::util::read::Read<&mut tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
       defined at tokio-1.52.4/src/io/util/read.rs:49 (<no_state>, 2 locals)
 #1  async fn      tls_conns::closing_client
-      awaiting at src/bin/tls-conns.rs:252 (Suspend1, 2 locals)
+      awaiting at src/bin/tls-conns.rs:256 (Suspend1, 3 locals)
 
 task 10
 #0  future        tokio::sync::oneshot::Receiver<()>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      tls_conns::drained_server
-      awaiting at src/bin/tls-conns.rs:269 (Suspend1, 2 locals)
+      awaiting at src/bin/tls-conns.rs:273 (Suspend1, 2 locals)
 
 task 11
 #0  future        tokio::sync::oneshot::Receiver<()>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      tls_conns::silent_peer
-      awaiting at src/bin/tls-conns.rs:300 (Suspend1, 2 locals)
+      awaiting at src/bin/tls-conns.rs:304 (Suspend1, 2 locals)
 
 task 12
 #0  future        tokio_rustls::client::Connect<tokio::net::tcp::stream::TcpStream>
       defined at tokio-rustls-0.26.4/src/client.rs:185 (<no_state>, 0 locals; holds 1 pending future)
 #1  async fn      tls_conns::handshaking_client
-      awaiting at src/bin/tls-conns.rs:283 (Suspend0, 1 local)
+      awaiting at src/bin/tls-conns.rs:287 (Suspend0, 1 local)
 
 task 13
 #0  future        tokio::sync::oneshot::Receiver<()>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      tls_conns::mute_peer
-      awaiting at src/bin/tls-conns.rs:320 (Suspend0, 1 local)
+      awaiting at src/bin/tls-conns.rs:324 (Suspend0, 1 local)
 
 task 14
 #0  future        tokio_rustls::server::Accept<tokio::net::tcp::stream::TcpStream>
       defined at tokio-rustls-0.26.4/src/server.rs:285 (<no_state>, 0 locals; holds 1 pending future)
 #1  async fn      tls_conns::handshaking_server
-      awaiting at src/bin/tls-conns.rs:314 (Suspend0, 1 local)
+      awaiting at src/bin/tls-conns.rs:318 (Suspend0, 1 local)
 [Executed against 12 tasks, 0 failed]

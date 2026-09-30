@@ -200,17 +200,11 @@ pub fn classify(role: WalkRole) -> Class {
         // an unknown stop, as every other container walk degrades; one
         // without the key alone lists the entries by index.
         StreamMapEntries | StreamMapEntryStream | StreamMapEntryKey => Class::Optional,
-        // The bounded io operations, a readiness await's own node, and
-        // the semaphore's queue state: resource bindings the semantic
-        // table dispatches through. A bundle without them still lists and
-        // traces; it decodes fewer waits.
-        IoReadReader
-        | IoReadBufLen
-        | IoReadShared
-        | IoWriteAllWriter
-        | IoWriteAllBufLen
-        | IoWriteAllShared
-        | ReadinessScheduledIo
+        // A readiness await's own node, and the semaphore's queue state:
+        // resource bindings the semantic table dispatches through. A
+        // bundle without them still lists and traces; it decodes fewer
+        // waits.
+        ReadinessScheduledIo
         | ReadinessState
         | ReadinessWaiter
         | ReadinessWaiterWaker

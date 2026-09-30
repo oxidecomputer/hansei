@@ -35,10 +35,10 @@ use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
     AccessKind, BundleMember, BundleType, BundleTypeId, BundleView, ContainerKind, Continuation,
-    FutureKind, HashTableBinding, IoOperationKind, MemberRef, PollAction, PollProgram,
+    FutureKind, HashTableBinding, IoOperationKind, IoRouteStep, MemberRef, PollAction, PollProgram,
     ResourceKind, SchedulerClass, SelectBinding, StaticRole, Step, StoragePolicy, SymbolLookup,
     TaskEntryId, TaskFutureEntry, TypeClass, TypeDef, TypeSemantics, TypedPath, WalkOutcome,
-    WalkRole, strip_build_prefix, strip_llvm_suffix,
+    WalkRole, socket_roles, strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -52,6 +52,10 @@ use std::collections::BTreeMap;
 /// memory (or a pathological program), and the walk must report it
 /// rather than hang.
 pub(crate) const MAX_AWAIT_DEPTH: usize = 64;
+
+/// Bound on the streams a route crosses to its socket, for a table that
+/// was never validated; a validated one ends every route well short.
+const MAX_IO_ROUTE: usize = 32;
 
 /// Whether `addr` lies in `value`'s storage.
 pub(crate) fn contains(value: Value<'_>, addr: u64) -> bool {
@@ -3864,50 +3868,92 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// A bounded io operation or a readiness await: the registration
     /// it belongs to, reached by the operation's own route — through
-    /// the reader or writer a `Read`/`WriteAll` polls, or named
-    /// outright by a `Readiness` — and what its own storage says.
+    /// the stream its `&mut` names and that stream's route to its
+    /// socket, or named outright by a `Readiness` — and what its own
+    /// storage says.
     fn observe_io(
         &self,
         future: Value<'b>,
         operation: IoOperationKind,
         read: &ReadContext<'_>,
     ) -> Result<IoObservation> {
-        let key = ValueKey::of(future);
-        let (endpoint, length, shared, interest) = match operation {
-            IoOperationKind::Read => (
-                WalkRole::IoReadReader,
-                WalkRole::IoReadBufLen,
-                WalkRole::IoReadShared,
-                Interest::READABLE,
-            ),
-            IoOperationKind::WriteAll => (
-                WalkRole::IoWriteAllWriter,
-                WalkRole::IoWriteAllBufLen,
-                WalkRole::IoWriteAllShared,
-                Interest::WRITABLE,
-            ),
-            IoOperationKind::Readiness => return self.observe_readiness(future, read),
+        let Some(writes) = operation.writes() else {
+            return self.observe_readiness(future, read);
         };
-        // The reader is a `&mut` to the reviewed stream, and the
-        // registration is reached through it: the one dereference,
-        // held to `read`, then the stream's own route to its
-        // `ScheduledIo`.
-        let pointer = self.walk(endpoint).walk_at_with(read, future)?;
-        let stream = contract::execute_steps(self, read, pointer, &[Step::Deref])
-            .with_context(|| format!("walk path {}", endpoint.name()))?
-            .at(endpoint.name())?;
-        let scheduled_io = self.walk(shared).walk_at_with(read, stream)?;
-        let remaining: u64 = self.walk(length).read_with(read, future)?;
+        let binding = self
+            .type_semantics(future.ty.id())
+            .and_then(|record| record.io.as_ref())
+            .ok_or_else(|| anyhow!("{} has no io operation binding", future.ty.name()))?;
+        // The stream is behind the operation's `&mut`: the one
+        // dereference, held to `read`, then the stream's own route.
+        let stream = contract::execute_steps(self, read, future, &binding.stream.steps)
+            .context("the operation's stream")?
+            .at("the operation's stream")?;
+        let (route, scheduled_io, fd) = self.follow_io_route(stream, read)?;
+        let remaining = binding
+            .remaining
+            .as_ref()
+            .map(|path| -> Result<u64> {
+                let length = contract::execute_steps(self, read, future, &path.steps)
+                    .context("the operation's buffer length")?
+                    .at("the operation's buffer length")?;
+                Ok(length.parse(self.proc)?)
+            })
+            .transpose()?;
         Ok(IoObservation {
-            future: key,
+            future: ValueKey::of(future),
             operation,
             scheduled_io: ValueKey::of(scheduled_io),
-            interest,
+            interest: if writes {
+                Interest::WRITABLE
+            } else {
+                Interest::READABLE
+            },
             waiter_node: None,
-            remaining: Some(remaining),
+            remaining,
             readiness_state: None,
             waiter_ready: None,
+            route,
+            fd,
         })
+    }
+
+    /// Follow a stream's route to its socket: each routed type's
+    /// forward, every pointer it crosses held to `read`, until a
+    /// socket's roles reach its registration and its descriptor. The
+    /// streams crossed come back outermost first, the socket last. The
+    /// table's validation proves every route ends at a socket in fewer
+    /// hops than it has records; the bound here only stops a table that
+    /// was never validated.
+    pub(crate) fn follow_io_route(
+        &self,
+        stream: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<(Vec<ValueKey>, Value<'b>, Option<i32>)> {
+        let mut current = stream;
+        let mut route = Vec::new();
+        while route.len() < MAX_IO_ROUTE {
+            route.push(ValueKey::of(current));
+            let step = self
+                .type_semantics(current.ty.id())
+                .and_then(|record| record.io_route.as_ref())
+                .map(|binding| &binding.step)
+                .ok_or_else(|| anyhow!("{} has no stream route", current.ty.name()))?;
+            match step {
+                IoRouteStep::Forward { inner } => {
+                    current = contract::execute_steps(self, read, current, &inner.steps)
+                        .with_context(|| format!("the route through {}", current.ty.name()))?
+                        .at("the stream held")?;
+                }
+                IoRouteStep::Socket(socket) => {
+                    let [shared, fd] = socket_roles(*socket);
+                    let scheduled_io = self.walk(shared).walk_at_with(read, current)?;
+                    let fd = self.walk(fd).try_read::<i32>(current).ok().flatten();
+                    return Ok((route, scheduled_io, fd));
+                }
+            }
+        }
+        bail!("the stream route runs past {MAX_IO_ROUTE} streams")
     }
 
     /// A `Readiness` await: the registration it names, its own state,
@@ -3958,6 +4004,8 @@ impl<'b, T: Target> Context<'b, T> {
             remaining: None,
             readiness_state: Some(state),
             waiter_ready: Some(ready),
+            route: Vec::new(),
+            fd: None,
         })
     }
 
@@ -6039,7 +6087,18 @@ mod tests {
         let list = testkit::tasks(&ctx, snapshot);
         let task = task_named(&list, ctx.view, "local_reader");
         let read = leaf_of(&ctx, task);
-        let reader = ctx.walk(WalkRole::IoReadReader).walk_at(read).unwrap();
+        // The operation's `&mut`: its stream path short of the final
+        // dereference.
+        let binding = ctx
+            .type_semantics(read.ty.id())
+            .and_then(|record| record.io.as_ref())
+            .expect("a read over a socket binds its stream");
+        let (deref, to_pointer) = binding.stream.steps.split_last().unwrap();
+        assert_eq!(deref, &Step::Deref);
+        let reader = contract::execute_steps(&ctx, &ReadContext::none(), read, to_pointer)
+            .unwrap()
+            .at("reader")
+            .unwrap();
         let stream: u64 = reader.parse(ctx.proc).unwrap();
         let stream_ty = reader.ty.pointer_target().unwrap();
         let freed = FakeHeap::new().freed(stream..stream + stream_ty.size());
