@@ -276,7 +276,7 @@ pub(crate) enum SeqError {
 
 impl SeqError {
     /// The parse-path spelling.
-    fn into_error(self, ty: &str) -> Error {
+    pub(crate) fn into_error(self, ty: &str) -> Error {
         match self {
             SeqError::Invalid(why) => Error::invalid_sequence(ty, why),
             SeqError::Unreadable(e) => e,

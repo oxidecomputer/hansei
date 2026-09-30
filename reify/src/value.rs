@@ -12,8 +12,8 @@
 //! [`proc::Target::read_bytes`]), so a view costs a pointer
 //! and a length and copies nothing.
 
-use crate::debug_type::{TypeKind, bundle_variant_error};
-use crate::elements::Elements;
+use crate::debug_type::{DisplayNode, TypeKind, bundle_variant_error};
+use crate::elements::{Elements, decode_header};
 use crate::parse::ParseWithDbgInfo;
 use crate::{Error, Result};
 use proc::Target;
@@ -200,6 +200,35 @@ impl<'a> Value<'a> {
     /// [`Elements`].
     pub fn elements<T: Target>(&self, proc: &'a T) -> Result<Elements<'a>> {
         Elements::of(self, proc)
+    }
+
+    /// Where a value that keeps its contents in a buffer of their own
+    /// keeps them — a `Vec`, a boxed or borrowed slice, a string: the
+    /// address of the first byte and how many bytes the value's length
+    /// says the contents take. `None` for a value whose contents are
+    /// its own bytes, which is every other one, an inline array
+    /// included. Only the header is decoded and nothing is read, so
+    /// whether the target holds the buffer is the caller's question.
+    pub fn buffer(&self) -> Option<Result<(u64, u64)>> {
+        let (header, stride) = match DisplayNode::resolve(self.ty)? {
+            DisplayNode::Slice {
+                header,
+                element_size,
+                ..
+            } => (header, u64::from(element_size)),
+            DisplayNode::Str { header, .. } => (header, 1),
+            _ => return None,
+        };
+        let name = self.ty.name();
+        let extent = decode_header(self.bytes, &header, stride)
+            .map_err(|e| e.into_error(name))
+            .and_then(|(base, count)| {
+                count
+                    .checked_mul(stride)
+                    .map(|len| (base, len))
+                    .ok_or_else(|| Error::invalid_sequence(name, "the length overflows a u64"))
+            });
+        Some(extent)
     }
 
     /// The active variant and its payload as declared — no peel. A

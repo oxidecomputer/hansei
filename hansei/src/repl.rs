@@ -635,7 +635,7 @@ const HELP_SECTIONS: &[(&str, &[&str])] = &[
     (
         "Inspection",
         &[
-            "trace", "locals", "children", "print", "regs", "runtime", "whatis",
+            "trace", "locals", "children", "print", "dump", "regs", "runtime", "whatis",
         ],
     ),
     (
@@ -1096,6 +1096,11 @@ fn candidates(
                 .last()
                 .filter(|a| a.get_num_args().expect("built").max_values() > 1)
         });
+    // `dump`'s positionals are `print`'s grammar, behind its flags.
+    if cmd.get_name() == "dump" {
+        let rest: Vec<String> = positional_words.iter().map(|w| w.to_string()).collect();
+        return path_candidates(&rest, current, answer);
+    }
     match positional {
         Some(arg) => values_of(
             cmd,
@@ -1897,6 +1902,80 @@ mod tests {
         // Member names are not cached: the cursor may have moved.
         complete_with(&mut c, "print foo[0].");
         assert_eq!(asked.lock().unwrap().len(), 2);
+    }
+
+    /// `dump` completes its path as `print` does, behind whatever flags
+    /// come first, and still offers its own flags and an address's type.
+    #[test]
+    fn test_completion_walks_a_dump_path_behind_its_flags() {
+        let (mut c, asked) = frame_completer();
+        assert_eq!(complete_with(&mut c, "dump f"), ["foo"]);
+        assert_eq!(complete_with(&mut c, "dump foo."), ["foo.x", "foo.y"]);
+        assert_eq!(
+            complete_with(&mut c, "dump -n 0x40 -g 4 -v foo.x."),
+            ["foo.x.a", "foo.x.b"]
+        );
+        assert_eq!(
+            complete_with(&mut c, "dump --length 64 foo .x."),
+            [".x.a", ".x.b"]
+        );
+        assert!(
+            asked
+                .lock()
+                .unwrap()
+                .contains(&vec!["foo".to_string(), ".x.".to_string()]),
+        );
+        assert_eq!(
+            complete_with(&mut c, "dump 0x7f10 alloc::"),
+            ["alloc::string::String", "\"alloc::vec::Vec<(u64, u64)>\""]
+        );
+        let flags = complete_with(&mut c, "dump -");
+        for flag in ["--length", "--group", "--no-squeezing"] {
+            assert!(flags.iter().any(|f| f == flag), "{flags:?}");
+        }
+    }
+
+    /// `dump`'s flags go anywhere on the line, around the words it
+    /// hands on as `print`'s; a group size is a number's width.
+    #[test]
+    fn test_dump_parses_flags_around_its_path() {
+        let Command::Dump {
+            length,
+            group,
+            no_squeezing,
+            args,
+        } = Line::try_parse_from([
+            "dump",
+            "-n",
+            "0x40",
+            "self.read_buf[0..3]",
+            "--group",
+            "4",
+            "-v",
+        ])
+        .expect("dump takes flags and a path")
+        .command
+        else {
+            panic!("dump parsed as another command");
+        };
+        assert_eq!(length, Some(0x40));
+        assert_eq!(group, 4);
+        assert!(no_squeezing);
+        assert_eq!(args, ["self.read_buf[0..3]"]);
+
+        let Command::Dump {
+            length,
+            group,
+            no_squeezing,
+            ..
+        } = Line::try_parse_from(["dump", "0x7a55458"])
+            .expect("a bare address parses")
+            .command
+        else {
+            panic!("dump parsed as another command");
+        };
+        assert_eq!((length, group, no_squeezing), (None, 1, false));
+        assert!(Line::try_parse_from(["dump", "-g", "3", "0x10"]).is_err());
     }
 
     /// After an address the word being typed is a type, offered from

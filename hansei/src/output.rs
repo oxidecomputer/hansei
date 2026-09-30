@@ -106,12 +106,46 @@ impl Theme {
         self.paint("32", text)
     }
 
+    /// The hue a byte of raw memory prints in, by its kind — hexyl's
+    /// scheme, so a `dump` reads the way that tool's output does. The
+    /// character panel beside the bytes names the same kinds in plain
+    /// text (`⋄`, `_`, `•`, `×`), so the hue repeats what is written.
+    pub(crate) fn byte<'a>(&self, kind: ByteKind, text: &'a str) -> Cow<'a, str> {
+        let sgr = match kind {
+            ByteKind::Null => "90",
+            ByteKind::Printable => "36",
+            ByteKind::OtherAscii => "32",
+            ByteKind::NonAscii => "33",
+        };
+        self.paint(sgr, text)
+    }
+
+    /// The hue of a `dump`'s positions and squeeze marks: hexyl's, the
+    /// same bright black as a null byte.
+    pub(crate) fn offset<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        self.paint("90", text)
+    }
+
     fn paint<'a>(&self, sgr: &str, text: &'a str) -> Cow<'a, str> {
         match self.enabled && !text.is_empty() {
             true => Cow::Owned(format!("\x1b[{sgr}m{text}\x1b[0m")),
             false => Cow::Borrowed(text),
         }
     }
+}
+
+/// The kinds of byte a `dump` tells apart, as hexyl does.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum ByteKind {
+    /// `0x00`.
+    Null,
+    /// Printable ASCII, `!` through `~`.
+    Printable,
+    /// The rest of ASCII: the space, other whitespace and the control
+    /// characters.
+    OtherAscii,
+    /// `0x80` and above.
+    NonAscii,
 }
 
 /// The columns stdout has, when it is a terminal whose size can be

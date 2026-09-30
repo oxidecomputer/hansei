@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 mod bundle_cmd;
 mod connections;
 mod cursor;
+mod dump;
 mod futures;
 mod graph;
 mod info;
@@ -645,6 +646,35 @@ pub enum Command {
         /// an address followed by the type to read it as; later words
         /// are further steps, each starting with `.`, `[` or `*`.
         #[arg(value_name = "LOCAL[PATH] | ADDR TYPE")]
+        args: Vec<String>,
+    },
+
+    /// Print the raw bytes of the target in 'xxd(1)' style. The target
+    /// may be an address, e.g. 0x12345, or an expression, e.g.
+    /// "self.inner.0[5]".
+    Dump {
+        /// The number of bytes to display. Defaults to 256, or the size
+        /// of the target if an expression is passed.
+        #[arg(long, short = 'n', value_name = "N", value_parser = parse_length)]
+        length: Option<u64>,
+
+        /// Displays bytes in groups of bytes. Defaults to one.
+        #[arg(
+            long,
+            short = 'g',
+            value_name = "N",
+            default_value = "1",
+            value_parser = parse_group_size
+        )]
+        group: usize,
+
+        /// Don't elide lines identical to the previous line.
+        #[arg(long = "no-squeezing", short = 'v')]
+        no_squeezing: bool,
+
+        /// An address alone, or the local and path `print` would take,
+        /// or an address, the type to read it as and a path.
+        #[arg(value_name = "ADDR | LOCAL[PATH] | ADDR TYPE")]
         args: Vec<String>,
     },
 
@@ -1453,6 +1483,24 @@ fn parse_hex_addr(s: &str) -> std::result::Result<u64, String> {
     u64::from_str_radix(digits, 16).map_err(|e| format!("invalid hex address {s:?}: {e}"))
 }
 
+/// A byte count: decimal, or hex with a leading 0x.
+fn parse_length(s: &str) -> std::result::Result<u64, String> {
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(digits) => u64::from_str_radix(digits, 16),
+        None => s.parse(),
+    }
+    .map_err(|e| format!("invalid length {s:?}: {e}"))
+}
+
+/// A `dump` group size: one of the widths a little-endian number comes
+/// in.
+fn parse_group_size(s: &str) -> std::result::Result<usize, String> {
+    match s.parse() {
+        Ok(n @ (1 | 2 | 4 | 8)) => Ok(n),
+        _ => Err(format!("a group is 1, 2, 4 or 8 bytes, got {s:?}")),
+    }
+}
+
 /// What `trace` was pointed at: a task, by decimal id, or a future, by
 /// the hex address `futures` prints.
 #[derive(Clone, Copy, Debug)]
@@ -2136,6 +2184,19 @@ pub fn dispatch<T: Target>(
         Command::Print { args } => {
             let render = RenderOpts::from_settings(&session.settings.borrow());
             print::exec_print(session, &args, render, out)?
+        }
+        Command::Dump {
+            length,
+            group,
+            no_squeezing,
+            args,
+        } => {
+            let opts = dump::DumpOpts {
+                length,
+                group,
+                squeeze: !no_squeezing,
+            };
+            dump::exec_dump(session, &args, opts, theme, out)?
         }
         Command::Regs => registers::exec_regs(session, out)?,
         Command::Runtime { scope } => {

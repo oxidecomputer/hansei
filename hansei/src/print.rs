@@ -15,7 +15,7 @@ use std::io;
 
 /// Where a `print` starts.
 #[derive(Debug, PartialEq, Eq)]
-enum Root<'w> {
+pub(crate) enum Root<'w> {
     /// The cursor frame, whose locals the path names.
     Frame,
     /// Memory at an address, read as the type named.
@@ -52,7 +52,7 @@ pub(crate) fn exec_print<T: proc::Target>(
 }
 
 /// The value the root spelling names.
-fn root_value<'b, T: proc::Target>(
+pub(crate) fn root_value<'b, T: proc::Target>(
     session: &Session<'b, T>,
     root: Root<'_>,
 ) -> Result<reify::Value<'b>> {
@@ -131,7 +131,7 @@ pub(crate) fn is_address(word: &str) -> bool {
 /// that name, which a leading `.` may spell out — and may carry steps
 /// behind it (`values[..10]`). Every later word is a step, starting
 /// with `.`, `[` or `*`.
-fn parse_args(args: &[String]) -> Result<(Root<'_>, String)> {
+pub(crate) fn parse_args(args: &[String]) -> Result<(Root<'_>, String)> {
     let is_step = |s: &str| s.starts_with(['.', '[', '*']);
     let Some((first, rest)) = args.split_first() else {
         return Ok((Root::Frame, String::new()));
