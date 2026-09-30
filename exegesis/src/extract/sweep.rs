@@ -664,10 +664,14 @@ fn note_impl_self(reader: &DwReader<'_>, name: &str, func: &Func<'_>, out: &mut 
 /// `<a::b::Type<T>>::method…` or `<Type as Trait>::method…` — as the
 /// plain path with generic arguments stripped (`a::b::Type`).
 /// `expected` is the path segment the method chain must open with,
-/// guarding against a demangling this parser does not understand.
+/// guarding against a demangling this parser does not understand. A
+/// member of a generic impl is named with the impl's arguments
+/// (`poll_write<TcpStream>`), which the demangled chain writes on the
+/// self type instead, so they are cut from it first.
 /// `None` for a self type that is not a plain path (`&mut F`, a tuple,
-/// `dyn …`) — or a legacy demangling, which spells no leading `<`.
+/// `dyn …`) — or a legacy demangling, which writes no leading `<`.
 fn impl_self_type(demangled: &str, expected: &str) -> Option<String> {
+    let expected = expected.find('<').map_or(expected, |at| &expected[..at]);
     let inner = demangled.strip_prefix('<')?;
     let close = angle_close(inner)?;
     let chain = inner[close + 1..].strip_prefix("::")?;
@@ -695,7 +699,7 @@ fn impl_self_type(demangled: &str, expected: &str) -> Option<String> {
 /// The index in `s` of the `>` matching an angle bracket already open
 /// when it starts, skipping the `>` of `->` (a fn-pointer return type
 /// inside the generic arguments).
-fn angle_close(s: &str) -> Option<usize> {
+pub(super) fn angle_close(s: &str) -> Option<usize> {
     let mut depth = 1usize;
     let mut prev = '\0';
     for (i, c) in s.char_indices() {
@@ -1748,6 +1752,17 @@ mod tests {
         assert_eq!(
             impl_self_type("<h::H<<x::X as y::Y>::Out> as t::T>::go", "go").as_deref(),
             Some("h::H")
+        );
+        // A member of a generic impl is named with the impl's
+        // arguments, which the chain does not repeat.
+        assert_eq!(
+            impl_self_type(
+                "<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream> \
+                 as tokio::io::async_write::AsyncWrite>::poll_write",
+                "poll_write<tokio::net::tcp::stream::TcpStream>"
+            )
+            .as_deref(),
+            Some("tokio_rustls::client::TlsStream")
         );
     }
 
