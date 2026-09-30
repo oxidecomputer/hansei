@@ -930,6 +930,7 @@ impl<'b, T: Target> Context<'b, T> {
                 header_read_timer: false,
                 via,
                 caller,
+                tls: http.tls(),
             },
             primitive,
             queue_position: None,
@@ -1637,6 +1638,7 @@ impl<'b, T: Target> Context<'b, T> {
                         header_read_timer: false,
                         via,
                         caller: in_flight_caller(phase, client),
+                        tls: http.tls(),
                     })
                 }
                 HttpRole::Server => {
@@ -1652,6 +1654,7 @@ impl<'b, T: Target> Context<'b, T> {
                         header_read_timer: server.header_read_timer_running,
                         via: None,
                         caller: None,
+                        tls: http.tls(),
                     })
                 }
             },
@@ -1665,6 +1668,7 @@ impl<'b, T: Target> Context<'b, T> {
                 header_read_timer: false,
                 via: None,
                 caller: None,
+                tls: None,
             }),
         }
     }
@@ -1873,6 +1877,7 @@ pub fn assess_http_server(http: &HttpConnObservation, primitive: ValueKey) -> As
             header_read_timer: server.header_read_timer_running,
             via: None,
             caller: None,
+            tls: http.tls(),
         },
         primitive,
         queue_position: None,
@@ -1899,6 +1904,7 @@ pub fn assess_http_negotiating(
             header_read_timer: false,
             via: None,
             caller: None,
+            tls: None,
         },
         primitive,
         queue_position: None,
@@ -2185,6 +2191,7 @@ mod tests {
                 want: Some(0x81f4c90),
             }),
             server: None,
+            stream: None,
         }
     }
 
@@ -2391,6 +2398,7 @@ mod tests {
                 context: Some("app::Context".to_owned()),
                 request: None,
             }),
+            stream: None,
         }
     }
 

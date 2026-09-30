@@ -49,16 +49,16 @@ use crate::detect::adapters::{
 use crate::detect::semantics::{
     DROPSHOT_HANDLER_V0_17_0, DROPSHOT_SERVER_V0_17_0, FUTURES_UTIL_ADAPTERS_V0_3_30,
     GitConvention, HASHBROWN_TABLE_V0_12_3, HTTP_REQUEST_V1_0_0, HYPER_H1_CONN_V1_6_0,
-    HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_POOL_V0_1_16, HYPER_UTIL_RESPONSE_V0_1_10,
-    HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention, PARKING_LOT_RAW_MUTEX_V0_12_1,
-    REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0, RUSTLS_SESSION_V0_23_23,
-    RustcConvention, SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_INTERVAL_TICK_V1_47,
-    TOKIO_RUSTLS_STREAM_V0_26_0, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
-    TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2,
-    TRACING_INSTRUMENTED_V0_1_40, library_convention, rustc_core_pending_convention,
-    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
-    rustc_std_futex_mutex_convention, rustc_std_refcount_convention, tokio_acquire_owner,
-    tokio_state_protocol,
+    HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_IO_V0_1_10, HYPER_UTIL_POOL_V0_1_16,
+    HYPER_UTIL_RESPONSE_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
+    PARKING_LOT_RAW_MUTEX_V0_12_1, REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0,
+    RUSTLS_SESSION_V0_23_23, RustcConvention, SPROCKETS_TLS_STREAM_D2B68E4,
+    TOKIO_INTERVAL_TICK_V1_47, TOKIO_RUSTLS_STREAM_V0_26_0, TOKIO_SELECT_V1_47,
+    TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
+    TOWER_RETRY_V0_5_2, TRACING_INSTRUMENTED_V0_1_40, library_convention,
+    rustc_core_pending_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
+    rustc_std_adapter_convention, rustc_std_futex_mutex_convention, rustc_std_refcount_convention,
+    tokio_acquire_owner, tokio_state_protocol,
 };
 
 use std::borrow::Cow;
@@ -756,8 +756,9 @@ enum DelegatedRoute {
 
 /// The third-party streams whose routes are reviewed (see each
 /// convention for the review): tokio-rustls's enum and its client and
-/// server streams, and sprockets-tls's stream over the enum.
-const IO_DELEGATIONS: [DelegatedStream; 4] = [
+/// server streams, sprockets-tls's stream over the enum, hyper-util's
+/// io adapters, and dropshot's TLS connection.
+const IO_DELEGATIONS: [DelegatedStream; 7] = [
     DelegatedStream {
         key: "tokio_rustls::TlsStream<",
         kind: SemanticRuleKind::TokioRustlsStream,
@@ -791,6 +792,30 @@ const IO_DELEGATIONS: [DelegatedStream; 4] = [
         // The platform id the attestation verified, a
         // `dice_mfg_msgs::PlatformId` newtype over its bytes.
         peer: Some(&[Hop::Member("platform_id"), Hop::Member("__0")]),
+    },
+    DelegatedStream {
+        key: "hyper_util::rt::tokio::TokioIo<",
+        kind: SemanticRuleKind::HyperUtilStream,
+        review: Review::Release(&HYPER_UTIL_IO_V0_1_10),
+        route: DelegatedRoute::Forward(&[Hop::Member("inner")]),
+        tls: None,
+        peer: None,
+    },
+    DelegatedStream {
+        key: "hyper_util::common::rewind::Rewind<",
+        kind: SemanticRuleKind::HyperUtilStream,
+        review: Review::Release(&HYPER_UTIL_IO_V0_1_10),
+        route: DelegatedRoute::Forward(&[Hop::Member("inner")]),
+        tls: None,
+        peer: None,
+    },
+    DelegatedStream {
+        key: "dropshot::server::TlsConn",
+        kind: SemanticRuleKind::DropshotTlsConn,
+        review: Review::Release(&DROPSHOT_SERVER_V0_17_0),
+        route: DelegatedRoute::Forward(&[Hop::Member("stream")]),
+        tls: None,
+        peer: None,
     },
 ];
 
@@ -2296,6 +2321,33 @@ pub(super) fn bind_semantics(
             match plan_http(ty, http, &seed.poll_sources, types, strings) {
                 Ok(mut plan) => {
                     draft.issues.extend(plan.peer_declined.take());
+                    // The stream hyper's buffered io holds, where its
+                    // route ends at a socket: what the connection reads
+                    // and writes, beside the words its state keeps. One
+                    // with no reviewed route says why, and the words
+                    // stand without it.
+                    match hop_landing(
+                        types,
+                        strings,
+                        ty,
+                        &[
+                            Hop::Member(hyper_h1::CONN),
+                            Hop::Member(hyper_h1::IO),
+                            Hop::Member(hyper_h1::IO),
+                        ],
+                    ) {
+                        Ok(stream) if io.routes.contains_key(&stream.target) => {
+                            plan.stream = Some(stream);
+                        }
+                        Ok(stream) => draft.issues.push((
+                            SemanticIssueKind::NoRule,
+                            format!(
+                                "the stream it reads, {}, has no reviewed route to a socket",
+                                type_label(names, stream.target)
+                            ),
+                        )),
+                        Err(decline) => draft.issues.push(decline),
+                    }
                     draft.http = Some(plan);
                 }
                 Err(decline) => draft.decline = Some(decline),
@@ -2514,6 +2566,7 @@ pub(super) fn bind_semantics(
                     is_closing: plan.is_closing,
                     read_buf_len: plan.read_buf_len,
                     read_buf_cap: plan.read_buf_cap,
+                    stream: plan.stream,
                     client: plan.client,
                     server: plan.server.map(|server| HttpServerBinding {
                         in_flight: server.in_flight,
@@ -3671,6 +3724,9 @@ struct HttpPlan {
     read_buf_cap: TypedPath,
     client: Option<HttpClientBinding>,
     server: Option<HttpServerPlan>,
+    /// The stream the connection reads and writes, where its type's
+    /// route ends at a socket; set once the routes are known.
+    stream: Option<TypedPath>,
     /// Why the peer was not routed, where the service was recognized
     /// and its crate's origin declined: a fact beside the binding, not
     /// a reason to decline it.
@@ -3976,6 +4032,7 @@ fn plan_http(
         read_buf_cap,
         client,
         server,
+        stream: None,
         peer_declined,
     })
 }
@@ -5265,13 +5322,38 @@ fn delegation_origin(
             files.push((origin.path.to_owned(), md5));
         }
     }
+    // Several files of one release declare one type where its impls
+    // sit apart — `TokioIo`'s io impls beside its `Connection` impl —
+    // and the review read each of them; a file it did not read is a
+    // type it did not describe. Such a release counts once, under its
+    // first file.
+    declared.sort();
+    let mut releases: Vec<(String, semver::Version)> = Vec::new();
+    for (path, version) in declared {
+        match releases.last() {
+            Some((first, last)) if *last == version => {
+                let reviewed = |path: &str| {
+                    registry_origin(path).is_some_and(|origin| {
+                        convention
+                            .checksums
+                            .iter()
+                            .any(|(file, _)| *file == origin.file)
+                    })
+                };
+                if !(reviewed(first) && reviewed(&path)) {
+                    return Err(decline(format!("declared in both {first} and {path}")));
+                }
+            }
+            _ => releases.push((path, version)),
+        }
+    }
+    let mut declared = releases;
     // A target linking two releases of one crate — two reqwests, each
     // with its own copy of the type — declares the type in both, and
     // the layouts are one type here only because they are identical.
     // Where every release declared is inside the reviewed range the
     // binding holds for each of them, and the origin names the newest;
-    // a release outside it is the decline it would be alone, and two
-    // files of one release is a type the review did not describe.
+    // a release outside it is the decline it would be alone.
     declared.sort_by(|a, b| a.1.cmp(&b.1));
     let (source, version) = match declared.as_slice() {
         [] => unreachable!("at least one source"),
@@ -7471,6 +7553,57 @@ mod tests {
                     .contains("not a reviewed revision of")
             );
         }
+    }
+
+    /// A type whose impls sit in several files of one release is one
+    /// declaration where the review read every file, named by the
+    /// first; a file the review did not read declines. Two releases
+    /// still bind together where both are inside the range, as before.
+    #[test]
+    fn test_one_release_may_declare_a_type_in_its_reviewed_files() {
+        const ROOT: &str = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
+        let convention = &HYPER_UTIL_IO_V0_1_10;
+        let at = |version: &str, file: &str| {
+            source(&format!("{ROOT}/hyper-util-{version}/{file}"), None)
+        };
+        let origin = |sources: &[PollSource]| {
+            delegation_origin(&sources.iter().cloned().collect(), convention, "method")
+        };
+        let both = origin(&[
+            at("0.1.20", "src/rt/tokio.rs"),
+            at("0.1.20", "src/client/legacy/connect/http.rs"),
+        ])
+        .unwrap();
+        assert_eq!(both.version, "0.1.20");
+        assert!(
+            both.source
+                .ends_with("hyper-util-0.1.20/src/client/legacy/connect/http.rs"),
+            "{}",
+            both.source
+        );
+        let (kind, detail) = origin(&[
+            at("0.1.20", "src/rt/tokio.rs"),
+            at("0.1.20", "src/other.rs"),
+        ])
+        .unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
+        assert!(detail.contains("declared in both"), "{detail}");
+        let two = origin(&[
+            at("0.1.19", "src/rt/tokio.rs"),
+            at("0.1.20", "src/rt/tokio.rs"),
+            at("0.1.20", "src/common/rewind.rs"),
+        ])
+        .unwrap();
+        assert_eq!(two.version, "0.1.20");
+        assert!(
+            origin(&[
+                at("0.1.20", "src/rt/tokio.rs"),
+                at("0.1.21", "src/rt/tokio.rs")
+            ])
+            .unwrap_err()
+            .1
+            .contains("outside the reviewed range")
+        );
     }
 
     /// A git origin is read off a checkout path of the convention's

@@ -6,5 +6,5 @@ TASK  CALLER  PROTO  ROLE    PHASE             DEADLINE    BUF      PEER  SERVER
 4     —       http1  server  idle (8ms)        +TS  0/16302  —     —       —       —
 8     —       http1  server  handling request  —           0/16339  —     —       GET     /park
 11    —       http1  server  handling request  —           0/16326  —     —       GET     /park
-15    —       http1  server  idle (6ms)        +TS  0/16343  —     —       —       —
+15    —       http1  server  idle (4ms)        +TS  0/16343  —     —       —       —
 [4 connections]

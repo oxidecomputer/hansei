@@ -3983,6 +3983,7 @@ mod join_tests {
                     header_read_timer: false,
                     via: Some(Box::new(via)),
                     caller: None,
+                    tls: None,
                 },
                 None,
             )
@@ -4051,6 +4052,7 @@ mod join_tests {
                 header_read_timer: false,
                 via: None,
                 caller: None,
+                tls: None,
             },
             None,
         );

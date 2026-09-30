@@ -89,6 +89,8 @@ pub struct RegistryOrigin<'a> {
     pub package: &'a str,
     /// The crate version the directory spells.
     pub version: Version,
+    /// The file's path inside the crate.
+    pub file: &'a str,
     /// The path from its `registry/src/` segment on — the host-independent
     /// tail a bundle records, so a reader can re-parse it with this same
     /// function.
@@ -130,6 +132,7 @@ pub fn registry_origin(path: &str) -> Option<RegistryOrigin<'_>> {
                 index,
                 package,
                 version,
+                file,
                 path: anchored,
             });
         }
@@ -148,6 +151,7 @@ mod tests {
         assert_eq!(origin.index, "index.crates.io-1949cf8c6b5b557f");
         assert_eq!(origin.package, "tracing");
         assert_eq!(origin.version, Version::new(0, 1, 40));
+        assert_eq!(origin.file, "src/instrument.rs");
         assert_eq!(
             origin.path,
             "registry/src/index.crates.io-1949cf8c6b5b557f/tracing-0.1.40/src/instrument.rs"

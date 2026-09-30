@@ -1196,8 +1196,12 @@ fn test_the_census_accounting_is_exact_per_program() {
         // two selects' pinned branch futures are four finds by descent
         // through their pins, each met again through the select's
         // borrow of it. Each handshake's `MidHandshake` is a direct
-        // member of the `Connect` or `Accept` its task awaits.
-        ("tls-conns", 0, 12, 4, 0, 4),
+        // member of the `Connect` or `Accept` its task awaits. The HTTPS
+        // pair's two tasks add five: every frame under each — the
+        // server's two connection wrappers and its dispatcher, the
+        // client's connection and its dispatcher — met in the slot
+        // holding it, one of them through a descent into a member.
+        ("tls-conns", 0, 17, 5, 0, 4),
     ];
     let named: Vec<&str> = ACCOUNTING.iter().map(|row| row.0).collect();
     assert_eq!(named, PROGRAMS, "every program is accounted for");

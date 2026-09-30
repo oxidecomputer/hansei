@@ -5100,6 +5100,7 @@ mod table_tests {
                 side: OneshotSide::Tx,
             })),
             caller: Some(caller),
+            tls: None,
         };
         let slot = AttributedSlot {
             hit: 0,

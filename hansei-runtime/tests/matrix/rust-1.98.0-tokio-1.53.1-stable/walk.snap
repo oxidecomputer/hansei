@@ -3614,13 +3614,13 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
-  ok      Cell.stage (26 cells)
-  ok      Cell.stage_running (26 cells)
-  ok      Cell.stage_finished (26 cells)
-  ok      Cell.stage_consumed (26 cells)
-  ok      Cell.trailer (26 cells)
-  ok      Cell.task_id (26 cells)
-  ok      Cell.scheduler (26 cells)
+  ok      Cell.stage (34 cells)
+  ok      Cell.stage_running (34 cells)
+  ok      Cell.stage_finished (34 cells)
+  ok      Cell.stage_consumed (34 cells)
+  ok      Cell.trailer (34 cells)
+  ok      Cell.task_id (34 cells)
+  ok      Cell.scheduler (34 cells)
   absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
@@ -3703,19 +3703,19 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
   absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
   absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  ok      mpsc::Receiver.chan.inner.data
-  ok      Chan.tx_count
-  ok      Chan.tx.tail_position
-  ok      Chan.rx_fields.list.index
-  ok      Chan.rx_fields.list.head
-  ok      Chan.rx_fields.rx_closed
-  ok      Chan.rx_waker.state
-  ok      Chan.rx_waker.waker
+  ok      mpsc::Receiver.chan.inner.data (2 types)
+  ok      Chan.tx_count (2 types)
+  ok      Chan.tx.tail_position (2 types)
+  ok      Chan.rx_fields.list.index (2 types)
+  ok      Chan.rx_fields.list.head (2 types)
+  ok      Chan.rx_fields.rx_closed (2 types)
+  ok      Chan.rx_waker.state (2 types)
+  ok      Chan.rx_waker.waker (2 types)
   absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
   absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  ok      Block.header.start_index
-  ok      Block.header.next
-  ok      Block.header.ready_slots
+  ok      Block.header.start_index (2 types)
+  ok      Block.header.next (2 types)
+  ok      Block.header.ready_slots (2 types)
   ok      Notified.notify
   ok      Notified.state
   ok      Notified.notify_waiters_calls
@@ -3726,12 +3726,12 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
-  ok      oneshot::Receiver.inner
-  ok      oneshot::Sender.inner
-  ok      oneshot::Inner.state
-  ok      oneshot::Inner.rx_task (spelling 1 of 2)
-  ok      oneshot::Inner.tx_task (spelling 1 of 2)
-  ok      oneshot::Inner.value
+  ok      oneshot::Receiver.inner (2 types)
+  ok      oneshot::Sender.inner (4 types)
+  ok      oneshot::Inner.state (2 types)
+  ok      oneshot::Inner.rx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.value (2 types)
   absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)

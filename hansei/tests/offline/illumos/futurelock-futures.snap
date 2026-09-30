@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`futures` over illumos/futurelock"
 ---
-ADDR      TASK  HELD IN             STATE                                WAITING ON          ARMED  TYPE
+ADDR       TASK  HELD IN             STATE                                WAITING ON          ARMED  TYPE
 0xADDR  5     frame 5, `future1`  Suspend0 — src/bin/futurelock.rs:90  unarmed: semaphore  no     async fn futurelock::do_async_thing
 [1 future]

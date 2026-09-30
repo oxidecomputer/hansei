@@ -1116,6 +1116,9 @@ pub enum WaitTarget {
         /// Who awaits the response, for a client with a request in
         /// flight; `None` in every other phase.
         caller: Option<HttpCaller>,
+        /// The TLS connection the connection's stream crosses, where it
+        /// crosses one: its words, or why they did not read.
+        tls: Option<Result<TlsReading, String>>,
     },
 }
 
@@ -1558,7 +1561,7 @@ impl WaitTarget {
     /// one: the `tls:` line under the wait's own.
     pub fn tls(&self) -> Option<&Result<TlsReading, String>> {
         match self {
-            Self::Io { tls, .. } => tls.as_ref(),
+            Self::Io { tls, .. } | Self::HttpConn { tls, .. } => tls.as_ref(),
             _ => None,
         }
     }
@@ -2080,6 +2083,7 @@ mod tests {
                 header_read_timer: false,
                 via: via.map(Box::new),
                 caller: None,
+                tls: None,
             }
         };
         let rx = WaitTarget::Channel {
@@ -2198,6 +2202,7 @@ mod tests {
             header_read_timer: false,
             via: None,
             caller: None,
+            tls: None,
         };
         assert_eq!(
             negotiating.to_string(),
@@ -2215,6 +2220,7 @@ mod tests {
             header_read_timer: false,
             via: None,
             caller: None,
+            tls: None,
         };
         assert_eq!(
             handling.to_string(),
@@ -2234,6 +2240,7 @@ mod tests {
             header_read_timer: true,
             via: None,
             caller: None,
+            tls: None,
         };
         let idle = armed(HttpPhase::Idle);
         assert_eq!(
@@ -2749,6 +2756,7 @@ mod caller_tests {
             header_read_timer: false,
             via: None,
             caller: Some(task.clone()),
+            tls: None,
         };
         assert_eq!(conn.caller(), Some(&task));
         assert_eq!(

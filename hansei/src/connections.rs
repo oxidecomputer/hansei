@@ -32,10 +32,12 @@ use std::time::Duration;
 /// dispatcher's words were read.
 #[derive(Clone, Debug)]
 pub(crate) struct ConnRow {
-    /// The `Conn`'s address — the wrapper's own for a connection still
-    /// choosing its version — or, for a socket read through a stream,
-    /// its registration's, which tells one connection from another and
-    /// orders a task's rows; nothing else prints it, so no cell does.
+    /// The socket's registration, where the connection's stream reaches
+    /// one — every socket read through a stream, and an HTTP connection
+    /// whose stream is routed — else the `Conn`'s address, the
+    /// wrapper's own for a connection still choosing its version. It
+    /// tells one connection from another and orders a task's rows;
+    /// nothing else prints it, so no cell does.
     pub(crate) addr: u64,
     /// The task driving the connection, as an index and as `tasks`
     /// names it.
@@ -110,11 +112,13 @@ impl std::fmt::Display for RequestLine {
 }
 
 /// What a connection speaks on top of its socket: HTTP/1 through
-/// hyper, TLS through rustls, or nothing a reviewed rule reads — the
-/// socket's own kind.
+/// hyper — over TLS where its stream's route crosses a TLS connection —
+/// TLS through rustls, or nothing a reviewed rule reads: the socket's
+/// own kind.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) enum Proto {
     Http1,
+    Http1Tls,
     Tls,
     Tcp,
     Unix,
@@ -124,6 +128,7 @@ impl Proto {
     fn word(self) -> &'static str {
         match self {
             Proto::Http1 => "http1",
+            Proto::Http1Tls => "http1/tls",
             Proto::Tls => "tls",
             Proto::Tcp => "tcp",
             Proto::Unix => "unix",
@@ -572,9 +577,16 @@ fn conn_row(
                     .and_then(|want| pools.authority(want))
                     .map(str::to_string),
             };
+            // The socket, where the stream's route read one: the row's
+            // key, so a pending read on the same socket elsewhere is
+            // this row and not another.
+            let socket = http.stream.as_ref().and_then(|stream| stream.as_ref().ok());
             Some(ConnRow {
-                addr: http.conn,
-                proto: Proto::Http1,
+                addr: socket.map_or(http.conn, |socket| socket.scheduled_io.addr),
+                proto: match http.tls() {
+                    Some(_) => Proto::Http1Tls,
+                    None => Proto::Http1,
+                },
                 role: Some(http.role),
                 phase: phase.map(RowPhase::Http),
                 method: http.method.clone(),
@@ -737,7 +749,7 @@ pub(crate) enum Field {
     Task,
     /// The owner's group index `runtimes` prints — exact.
     Rt,
-    /// `http1`, `tls`, `tcp` or `unix`.
+    /// `http1`, `http1/tls`, `tls`, `tcp` or `unix`.
     Proto,
     /// `client` or `server`.
     Role,
@@ -1290,6 +1302,7 @@ mod tests {
                 context: Some("app::Context".to_string()),
                 request: None,
             }),
+            stream: None,
         }
     }
 
@@ -1404,6 +1417,54 @@ mod tests {
         );
         assert_eq!(fill(client(Some(0xdef0)), held, stopped).peer, None);
         assert_eq!(fill(client(None), held, stopped).peer, None);
+        // A connection whose stream's route read is keyed by its
+        // socket, and speaks HTTP over TLS where the route crossed a
+        // TLS connection — words that did not read still crossed it; a
+        // route that did not read keys it by its `Conn`, as before.
+        {
+            use hansei_runtime::tokio::bundle::TlsReading;
+            use hansei_runtime::tokio::observe::SocketReading;
+            let tls = TlsReading {
+                side: "Client".to_string(),
+                version: Some("TLSv1_3".to_string()),
+                failed: false,
+                may_send_application_data: true,
+                may_receive_application_data: true,
+                has_sent_close_notify: false,
+                has_received_close_notify: false,
+                has_seen_eof: false,
+                sent_fatal_alert: false,
+                read_seq: 1,
+                write_seq: 1,
+                deframer: (0, 4096),
+                stream_state: "Stream".to_string(),
+            };
+            let over = |stream| HttpConnObservation {
+                stream,
+                ..client(Some(0xabc0))
+            };
+            let socket = |tls| {
+                Some(Ok(SocketReading {
+                    scheduled_io: key(0x6500),
+                    fd: Some(9),
+                    socket: IoSocket::TcpStream,
+                    tls,
+                    peer: None,
+                }))
+            };
+            let plain = fill(over(socket(None)), held, stopped);
+            assert_eq!((plain.addr, plain.proto), (0x6500, Proto::Http1));
+            let secure = fill(over(socket(Some(Ok(tls)))), held, stopped);
+            assert_eq!((secure.addr, secure.proto), (0x6500, Proto::Http1Tls));
+            assert_eq!(secure.label(), "client task 7");
+            let unread = fill(over(socket(Some(Err("x".into())))), held, stopped);
+            assert_eq!(unread.proto, Proto::Http1Tls);
+            let unrouted = fill(over(Some(Err("x".into()))), held, stopped);
+            assert_eq!((unrouted.addr, unrouted.proto), (0x7b78948, Proto::Http1));
+            // The HTTP row's own words are the listing's, TLS or not.
+            assert_eq!(secure.read_buf, plain.read_buf);
+            assert_eq!(row_cells(&secure)[2], "http1/tls");
+        }
         // A client between exchanges has no caller and no request; one
         // with a request in flight has the caller its callback names,
         // and what that caller sent.

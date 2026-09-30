@@ -2297,6 +2297,7 @@ fn http_conn() -> (Bundle, HttpClientBinding, [TypedPath; 3]) {
             vec![named(conn), named(io), named(read_buf), named(cap)],
             word,
         ),
+        stream: None,
         client: Some(client_binding.clone()),
         server: None,
     });
@@ -2369,6 +2370,17 @@ fn test_semantic_http_conn_binding_routes_every_word() {
     let mut wrong = b.clone();
     wrong.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
     bad(&wrong, "unavailable storage carries a readable capability");
+    // The stream, where one is bound, lands on a routed type through
+    // the connection: the read buffer's words are neither.
+    let mut wrong = b.clone();
+    http(&mut wrong).stream = Some(http(&mut wrong).read_buf_len.clone());
+    bad(&wrong, "HTTP connection stream has no route");
+    let mut wrong = b.clone();
+    http(&mut wrong).stream = Some(http(&mut wrong).is_closing.clone());
+    bad(
+        &wrong,
+        "HTTP connection stream is not reached through the connection",
+    );
     // Each word is the shape the verdict reads.
     let mut wrong = b.clone();
     http(&mut wrong).keep_alive = http(&mut wrong).reading.clone();

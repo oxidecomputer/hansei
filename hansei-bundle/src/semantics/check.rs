@@ -219,15 +219,18 @@ impl<'a> Check<'a> {
             | TokioStreamWatchStream
             | TokioUtilReusableBox
             | TokioStreamStreamMap
-            | TokioRustlsStream => {
+            | TokioRustlsStream
+            | HyperUtilStream
+            | DropshotTlsConn => {
                 let crate_name = match rule.kind {
                     TracingInstrumented => "tracing",
                     HyperUtilTokioSleep
                     | HyperUtilAutoConn
                     | HyperUtilPool
-                    | HyperUtilResponseFuture => "hyper-util",
+                    | HyperUtilResponseFuture
+                    | HyperUtilStream => "hyper-util",
                     HyperH1Conn => "hyper",
-                    DropshotRequestHandler | DropshotRequestContext => "dropshot",
+                    DropshotRequestHandler | DropshotRequestContext | DropshotTlsConn => "dropshot",
                     ReqwestPendingRequest | ReqwestCookie => "reqwest",
                     TowerRetry => "tower",
                     HttpRequest => "http",
@@ -735,7 +738,13 @@ impl<'a> Check<'a> {
             IoRouteStep::Forward { inner } => {
                 self.rule(
                     binding.rule,
-                    &[TokioIoRoute, TokioRustlsStream, SprocketsTlsStream],
+                    &[
+                        TokioIoRoute,
+                        TokioRustlsStream,
+                        SprocketsTlsStream,
+                        HyperUtilStream,
+                        DropshotTlsConn,
+                    ],
                 )?;
                 forward(inner)
             }
@@ -1084,7 +1093,12 @@ impl<'a> Check<'a> {
         )
     }
 
-    fn http(&self, record: &TypeSemantics, binding: &HttpConnBinding) -> Result<()> {
+    fn http(
+        &self,
+        record: &TypeSemantics,
+        binding: &HttpConnBinding,
+        routed: &impl Fn(BundleTypeId) -> bool,
+    ) -> Result<()> {
         self.rule(binding.rule, &[SemanticRuleKind::HyperH1Conn])?;
         // The binding is the resource's: the words it routes to are
         // what the connection resource reads. That the resource is the
@@ -1159,6 +1173,16 @@ impl<'a> Check<'a> {
                 word.steps.first() == binding.keep_alive.steps.first(),
                 &format!("HTTP connection {what} is not reached through the connection"),
             )?;
+        }
+        // The stream the connection reads, where one is bound: through
+        // the connection member, onto a routed type.
+        if let Some(stream) = &binding.stream {
+            self.path(record.ty, stream)?;
+            require(
+                stream.steps.first() == binding.keep_alive.steps.first(),
+                "HTTP connection stream is not reached through the connection",
+            )?;
+            require(routed(stream.target), "HTTP connection stream has no route")?;
         }
         require(
             (binding.role == HttpRole::Client) == binding.client.is_some()
@@ -1893,7 +1917,12 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                 matches!(record.storage, StoragePolicy::DeclaredMembers),
                 "HTTP connection binding needs declared-member storage",
             )?;
-            check.http(record, http)?;
+            let routed = |ty| {
+                positions
+                    .get(&ty)
+                    .is_some_and(|&i| table.types[i].io_route.is_some())
+            };
+            check.http(record, http, &routed)?;
         }
         if let Some(request) = &record.request {
             require(

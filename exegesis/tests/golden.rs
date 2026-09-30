@@ -763,9 +763,8 @@ fn assert_io_operation(
     kind: hansei_bundle::IoOperationKind,
     route: &[&str],
 ) {
-    use hansei_bundle::{IoRouteStep, ResourceKind, SemanticRuleKind};
+    use hansei_bundle::ResourceKind;
     assert_resource(program, bundle, key, ResourceKind::IoOperation(kind));
-    let record_of = |ty| bundle.semantics.types.iter().find(|record| record.ty == ty);
     let mut seen = 0;
     for (name, _, record) in types_named(bundle, key) {
         let record = record.unwrap_or_else(|| panic!("{program}: {name} has no record"));
@@ -778,48 +777,90 @@ fn assert_io_operation(
             record.resource.as_ref().unwrap().rule,
             "{program}: {name}"
         );
-        let mut crossed = vec![route_text(bundle, &io.stream)];
-        let mut ty = io.stream.target;
-        loop {
-            let binding = record_of(ty)
-                .and_then(|r| r.io_route.as_ref())
-                .unwrap_or_else(|| panic!("{program}: {} has no route", type_name_of(bundle, ty)));
-            // Each stream's route binds under its implementer's rule.
-            let stream = type_name_of(bundle, ty);
-            let implementer = if stream.starts_with("tokio_rustls::") {
-                SemanticRuleKind::TokioRustlsStream
-            } else if stream.starts_with("sprockets_tls::") {
-                SemanticRuleKind::SprocketsTlsStream
-            } else {
-                SemanticRuleKind::TokioIoRoute
-            };
-            assert_eq!(
-                bundle.semantics.rules[binding.rule.0 as usize].kind, implementer,
-                "{program}: {name}: {stream}"
-            );
-            match &binding.step {
-                IoRouteStep::Forward { inner } => {
-                    crossed.push(route_text(bundle, inner));
-                    ty = inner.target;
-                }
-                // Every case reaches a socket (the validator holds the
-                // table to that); the text follows the first.
-                IoRouteStep::Match { cases } => {
-                    let texts: Vec<String> =
-                        cases.iter().map(|case| route_text(bundle, case)).collect();
-                    crossed.push(format!("match {}", texts.join(" | ")));
-                    ty = cases[0].target;
-                }
-                IoRouteStep::Socket(socket) => {
-                    crossed.push(format!("socket {socket:?}"));
-                    break;
-                }
-            }
-        }
-        assert_eq!(crossed, route, "{program}: {name}");
+        assert_eq!(
+            route_from(program, bundle, name, &io.stream),
+            route,
+            "{program}: {name}"
+        );
         seen += 1;
     }
     assert!(seen > 0, "{program}: no type named {key}");
+}
+
+/// Every HTTP/1 dispatcher the key names binds the stream its buffered
+/// io holds, and following that stream's route crosses exactly `route`.
+fn assert_http_stream(program: &str, bundle: &Bundle, key: &str, route: &[&str]) {
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, key) {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no record"));
+        let stream = record
+            .http
+            .as_ref()
+            .and_then(|http| http.stream.as_ref())
+            .unwrap_or_else(|| panic!("{program}: {name} has no stream"));
+        assert_eq!(
+            route_from(program, bundle, name, stream),
+            route,
+            "{program}: {name}"
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no type named {key}");
+}
+
+/// The route a path to a stream starts, as text: the path itself, then
+/// each stream's forward — a match's cases together, followed by the
+/// first — then the socket it ends at. Each stream's route binds under
+/// its implementer's rule.
+fn route_from(
+    program: &str,
+    bundle: &Bundle,
+    name: &str,
+    start: &hansei_bundle::TypedPath,
+) -> Vec<String> {
+    use hansei_bundle::{IoRouteStep, SemanticRuleKind};
+    let record_of = |ty| bundle.semantics.types.iter().find(|record| record.ty == ty);
+    let mut crossed = vec![route_text(bundle, start)];
+    let mut ty = start.target;
+    loop {
+        let binding = record_of(ty)
+            .and_then(|r| r.io_route.as_ref())
+            .unwrap_or_else(|| panic!("{program}: {} has no route", type_name_of(bundle, ty)));
+        let stream = type_name_of(bundle, ty);
+        let implementer = if stream.starts_with("tokio_rustls::") {
+            SemanticRuleKind::TokioRustlsStream
+        } else if stream.starts_with("sprockets_tls::") {
+            SemanticRuleKind::SprocketsTlsStream
+        } else if stream.starts_with("hyper_util::") {
+            SemanticRuleKind::HyperUtilStream
+        } else if stream.starts_with("dropshot::") {
+            SemanticRuleKind::DropshotTlsConn
+        } else {
+            SemanticRuleKind::TokioIoRoute
+        };
+        assert_eq!(
+            bundle.semantics.rules[binding.rule.0 as usize].kind, implementer,
+            "{program}: {name}: {stream}"
+        );
+        match &binding.step {
+            IoRouteStep::Forward { inner } => {
+                crossed.push(route_text(bundle, inner));
+                ty = inner.target;
+            }
+            // Every case reaches a socket (the validator holds the
+            // table to that); the text follows the first.
+            IoRouteStep::Match { cases } => {
+                let texts: Vec<String> =
+                    cases.iter().map(|case| route_text(bundle, case)).collect();
+                crossed.push(format!("match {}", texts.join(" | ")));
+                ty = cases[0].target;
+            }
+            IoRouteStep::Socket(socket) => {
+                crossed.push(format!("socket {socket:?}"));
+                return crossed;
+            }
+        }
+    }
 }
 
 /// A TLS stream: every instantiation the key names binds its
@@ -2307,10 +2348,11 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 "tracing" => {
                     assert_eq!(s(*version), "0.1.40", "{program}");
                     // The delegation fixture instruments a future itself;
-                    // the hyper fixture links h2, whose handshake wraps its
+                    // the hyper fixtures link h2 through hyper-util's
+                    // version-choosing server, and h2's handshake wraps its
                     // preface futures in trace spans.
                     assert!(
-                        ["delegation-cases", "http-conns"].contains(&program),
+                        ["delegation-cases", "http-conns", "tls-conns"].contains(&program),
                         "{program}: only the delegation and hyper fixtures instrument a future"
                     );
                 }
@@ -2395,8 +2437,9 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 // target's call (the Mach-O build inlines the sleep's).
                 "hyper-util" => {
                     use exegesis::detect::semantics::{
-                        HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_POOL_V0_1_16,
-                        HYPER_UTIL_RESPONSE_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
+                        HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_IO_V0_1_10,
+                        HYPER_UTIL_POOL_V0_1_16, HYPER_UTIL_RESPONSE_V0_1_10,
+                        HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
                     };
                     let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
                         unreachable!()
@@ -2407,6 +2450,8 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         &HYPER_UTIL_POOL_V0_1_16
                     } else if s(*family) == HYPER_UTIL_RESPONSE_V0_1_10.family {
                         &HYPER_UTIL_RESPONSE_V0_1_10
+                    } else if s(*family) == HYPER_UTIL_IO_V0_1_10.family {
+                        &HYPER_UTIL_IO_V0_1_10
                     } else {
                         assert_eq!(
                             s(*family),
@@ -2430,7 +2475,8 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         s(*source),
                         convention.family
                     );
-                    assert_eq!(program, "http-conns", "{program}");
+                    // The TLS fixture's HTTPS pair links hyper-util too.
+                    assert!(["http-conns", "tls-conns"].contains(&program), "{program}");
                 }
                 // hyper's HTTP/1 connection: the dispatcher and the client
                 // wrappers, each read off its own file of the reviewed set,
@@ -2455,7 +2501,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         "{program}: {} is not a reviewed file",
                         s(*source)
                     );
-                    assert_eq!(program, "http-conns", "{program}");
+                    assert!(["http-conns", "tls-conns"].contains(&program), "{program}");
                 }
                 // The request bindings: reqwest's in-flight request off its
                 // `poll`, http's request off the type's own methods, each
@@ -2493,7 +2539,14 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         s(*source),
                         convention.family
                     );
-                    assert_eq!(program, "http-conns", "{program}");
+                    // The TLS fixture's HTTPS client builds an http
+                    // request, and sends nothing through reqwest.
+                    assert!(
+                        program == "http-conns"
+                            || (program == "tls-conns" && s(*package) == "http"),
+                        "{program}: {}",
+                        s(*package)
+                    );
                 }
                 // The `select!` rule is the one tokio delegation read
                 // off a declaration file (`Coop` binds on its layout,
@@ -2700,6 +2753,9 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::TokioIntervalTick,
         SemanticRuleKind::ReqwestCookie,
         SemanticRuleKind::HyperUtilResponseFuture,
+        // hyper's HTTP/1 `Connection`, a newtype over its dispatcher
+        // (the TLS fixture's HTTPS client drives one).
+        SemanticRuleKind::HyperH1Conn,
     ];
     let delegate_kinds = [
         SemanticRuleKind::StdBoxPoll,
@@ -2716,6 +2772,9 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::TokioIntervalTick,
         SemanticRuleKind::ReqwestCookie,
         SemanticRuleKind::HyperUtilResponseFuture,
+        // hyper's HTTP/1 `Connection`, a newtype over its dispatcher
+        // (the TLS fixture's HTTPS client drives one).
+        SemanticRuleKind::HyperH1Conn,
     ];
     // A wrapper's program is not a storage access: only the std
     // adapters, which are pointers, carry one. `Next` holds a `&mut`
@@ -2732,6 +2791,9 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::TokioIntervalTick,
         SemanticRuleKind::ReqwestCookie,
         SemanticRuleKind::HyperUtilResponseFuture,
+        // hyper's HTTP/1 `Connection`, a newtype over its dispatcher
+        // (the TLS fixture's HTTPS client drives one).
+        SemanticRuleKind::HyperH1Conn,
     ];
     // Compiler storage: every async fn or async block environment binds
     // its states under the reviewed convention (the fixtures' toolchains
@@ -4128,6 +4190,29 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
                 "io",
                 "socket TcpStream",
             ],
+        );
+        // HTTP/1 over TLS: each dispatcher's buffered io holds a stream
+        // routed through hyper-util's adapters — the server's rewound
+        // by the version-choosing server, the client's bare — to the
+        // TLS stream and its socket.
+        let tcp = "tokio::net::tcp::stream::TcpStream";
+        assert_http_stream(
+            program,
+            bundle,
+            &format!(
+                "hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<\
+                 http_body_util::empty::Empty<bytes::bytes::Bytes>>, \
+                 http_body_util::empty::Empty<bytes::bytes::Bytes>, \
+                 hyper_util::rt::tokio::TokioIo<tokio_rustls::client::TlsStream<{tcp}>>, \
+                 hyper::proto::h1::role::Client>"
+            ),
+            &["conn.io.io", "inner", "io", "socket TcpStream"],
+        );
+        assert_http_stream(
+            program,
+            bundle,
+            "hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<",
+            &["conn.io.io", "inner", "inner", "io", "socket TcpStream"],
         );
         // Each of tokio-rustls's streams holds its rustls connection,
         // whose words bind under rustls's session rule at the pinned

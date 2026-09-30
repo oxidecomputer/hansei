@@ -450,6 +450,31 @@ pub struct HttpConnObservation {
     pub client: Option<HttpClientObservation>,
     /// The server dispatch's words, for a server.
     pub server: Option<HttpServerObservation>,
+    /// The socket the connection's stream reaches, where its route is
+    /// bound: what it read, or why it did not.
+    pub stream: Option<Result<SocketReading, String>>,
+}
+
+/// The socket a connection's stream route ended at, and what the route
+/// crossed on the way.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SocketReading {
+    /// The socket's registration with the io driver.
+    pub scheduled_io: ValueKey,
+    pub fd: Option<i32>,
+    pub socket: IoSocket,
+    /// The TLS connection the route crossed, where it crossed one.
+    pub tls: Option<Result<TlsReading, String>>,
+    /// The peer a stream on the route names, where one does.
+    pub peer: Option<Result<String, String>>,
+}
+
+impl HttpConnObservation {
+    /// The TLS connection under the connection, where its stream's
+    /// route read and crossed one.
+    pub fn tls(&self) -> Option<Result<TlsReading, String>> {
+        self.stream.as_ref()?.as_ref().ok()?.tls.clone()
+    }
 }
 
 /// The client dispatch as one read found it.

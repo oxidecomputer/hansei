@@ -23,8 +23,9 @@ use super::observe::{
     HttpServerObservation, HttpWriting, IoFutureState, IoObservation, JoinObservation, KeepAlive,
     NotifiedObservation, NotifiedState, NotifyObservation, Observed, OneshotObservation,
     QueueObservation, ReadContext, RecvObservation, ReferenceSink, ReferenceSource,
-    ResourceObservation, ScanBudget, ScanLimits, SlotState, TaskReference, TimerObservation,
-    TimerRegistrationState, ValueKey, WalkIssue, WalkIssueKind, issue_of, lock_consistency,
+    ResourceObservation, ScanBudget, ScanLimits, SlotState, SocketReading, TaskReference,
+    TimerObservation, TimerRegistrationState, ValueKey, WalkIssue, WalkIssueKind, issue_of,
+    lock_consistency,
 };
 use super::semantics::SemanticIndex;
 use super::work::{DiscoveryWorld, Registry, Roots, sweep};
@@ -3701,6 +3702,29 @@ impl<'b, T: Target> Context<'b, T> {
             }
             None => None,
         };
+        // The socket under the connection, where its stream's route is
+        // bound: a fact beside the verdict, which stands on the words.
+        let stream = binding.stream.as_ref().map(|path| {
+            (|| -> Result<SocketReading> {
+                let stream = word(path, "stream")?;
+                let FollowedRoute {
+                    scheduled_io,
+                    fd,
+                    tls,
+                    socket,
+                    peer,
+                    ..
+                } = self.follow_io_route(stream, read)?;
+                Ok(SocketReading {
+                    scheduled_io: ValueKey::of(scheduled_io),
+                    fd,
+                    socket,
+                    tls,
+                    peer,
+                })
+            })()
+            .map_err(|e| format!("{e:#}"))
+        });
         Ok(HttpConnObservation {
             dispatcher: ValueKey::of(dispatcher),
             conn,
@@ -3713,6 +3737,7 @@ impl<'b, T: Target> Context<'b, T> {
             read_buf,
             client,
             server,
+            stream,
         })
     }
 

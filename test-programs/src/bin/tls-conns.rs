@@ -20,7 +20,10 @@
 //! read to that end of stream and keeps its stream. (e) A client
 //! mid-handshake, its ClientHello sent to a peer that never answers.
 //! (f) A server mid-handshake, waiting for the ClientHello of a peer
-//! that never sends one.
+//! that never sends one. (g) An HTTP/1 exchange over TLS, after which
+//! both ends park between exchanges: the server through hyper-util's
+//! version-choosing server, as dropshot serves HTTPS, the client
+//! through hyper's own connection.
 //!
 //! The certificate authority and the `localhost` certificate it signed
 //! are embedded below: generated once with openssl, ECDSA P-256, valid
@@ -29,10 +32,17 @@
 //! connection has reached its parked state; readiness is observed over
 //! channels, with no timing sleeps.
 
+use std::convert::Infallible;
 use std::io::Cursor;
 use std::sync::Arc;
 
-use bytes::Buf;
+use bytes::{Buf, Bytes};
+use http_body_util::{BodyExt, Empty, Full};
+use hyper::body::Incoming;
+use hyper::service::service_fn;
+use hyper::{Request, Response};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use test_programs::census_expect;
@@ -325,6 +335,30 @@ async fn mute_peer(stream: TcpStream, park: oneshot::Receiver<()>) {
     drop(stream);
 }
 
+/// (g) The server end: hyper-util's version-choosing server over the
+/// TLS stream, answering every request, parked reading the next.
+async fn https_server(stream: server::TlsStream<TcpStream>) {
+    census_expect::task("tls_conns::https_server");
+    let service = service_fn(|_: Request<Incoming>| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"hello"))))
+    });
+    let _ = auto::Builder::new(TokioExecutor::new())
+        .serve_connection_with_upgrades(TokioIo::new(stream), service)
+        .await;
+}
+
+/// (g) The client end: hyper's connection over the TLS stream, driven
+/// by its own task, parked between exchanges.
+async fn https_client(
+    conn: hyper::client::conn::http1::Connection<
+        TokioIo<client::TlsStream<TcpStream>>,
+        Empty<Bytes>,
+    >,
+) {
+    census_expect::task("tls_conns::https_client");
+    let _ = conn.await;
+}
+
 /// A oneshot whose sender is gone for good without ever being dropped,
 /// so its receiver parks forever.
 fn never() -> oneshot::Receiver<()> {
@@ -383,6 +417,29 @@ fn main() {
         while let Some(rx) = ready.recv().await {
             rx.await.expect("every parked task reports");
         }
+
+        // (g) One GET, answered and read whole, leaves both ends
+        // between exchanges; the sender is kept, so the client's
+        // connection stays open.
+        let (client, server) = tls_pair(&connector, &acceptor).await;
+        tokio::spawn(https_server(server));
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(client))
+            .await
+            .expect("the HTTP/1 handshake completes");
+        tokio::spawn(https_client(conn));
+        let request = Request::get("/")
+            .header("host", "localhost")
+            .body(Empty::<Bytes>::new())
+            .expect("a request");
+        let response = sender
+            .send_request(request)
+            .await
+            .expect("the response arrives");
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("the body arrives");
 
         test_programs::quiesce();
         println!("READY");

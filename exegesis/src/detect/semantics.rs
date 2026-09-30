@@ -529,6 +529,127 @@ pub const HYPER_UTIL_AUTO_CONN_V0_1_10: LibraryConvention = LibraryConvention {
     ],
 };
 
+/// hyper-util's io adapters as 0.1.10 through 0.1.20 implement them.
+/// `TokioIo<T>` (`src/rt/tokio.rs`, the struct and both directions'
+/// impls identical across the range) is `{ inner: T }`, and every
+/// `hyper::rt::Read`/`Write` method — and every tokio `AsyncRead`/
+/// `AsyncWrite` one, the impls for the other direction — calls the same
+/// method on `inner` and nothing else. `Rewind<T>` (`src/common/
+/// rewind.rs`) is `{ pre: Option<Bytes>, inner: T }`: a read is served
+/// from `pre` while it holds bytes, returning ready, and is `inner`'s
+/// otherwise; every write is `inner`'s. So a pending read or write
+/// through either is its `inner`'s, which is what a route needs. The
+/// releases differ in the rewind's own buffer helpers (0.1.12), and in
+/// `src/rt/tokio.rs` in its timer and executor, none of it in the
+/// adapters. `src/client/legacy/connect/http.rs` holds `TokioIo`'s
+/// `Connection` impl, which asks `inner` for its connection info and
+/// moves nothing; it is read so a declaration there is the reviewed
+/// crate's rather than a stranger's.
+pub const HYPER_UTIL_IO_V0_1_10: LibraryConvention = LibraryConvention {
+    package: "hyper-util",
+    family: "hyper-util-io-0.1.10",
+    floor: (0, 1, 10),
+    ceiling: (0, 1, 20),
+    checksums: &[
+        // src/common/rewind.rs, 0.1.10 and 0.1.11
+        (
+            "src/common/rewind.rs",
+            [
+                0xc1, 0x58, 0xd7, 0xa8, 0x08, 0xbe, 0xf8, 0xa3, 0x75, 0x4f, 0x05, 0xb8, 0xa0, 0xff,
+                0xb5, 0x12,
+            ],
+        ),
+        // src/common/rewind.rs, 0.1.12 through 0.1.20
+        (
+            "src/common/rewind.rs",
+            [
+                0xac, 0x4f, 0xcb, 0x08, 0x93, 0xaa, 0x98, 0xbc, 0x0e, 0xe9, 0x38, 0x0f, 0x6e, 0x07,
+                0x1c, 0x2d,
+            ],
+        ),
+        // src/rt/tokio.rs, 0.1.10
+        (
+            "src/rt/tokio.rs",
+            [
+                0x1c, 0xd3, 0x1e, 0x4f, 0x80, 0xb7, 0x5a, 0x9a, 0xe8, 0xfd, 0x45, 0x30, 0xe1, 0x9d,
+                0x43, 0x5d,
+            ],
+        ),
+        // src/rt/tokio.rs, 0.1.11 through 0.1.16
+        (
+            "src/rt/tokio.rs",
+            [
+                0x5b, 0x0e, 0x28, 0xad, 0xea, 0xfd, 0xa6, 0x44, 0x6e, 0x58, 0x42, 0x4d, 0x18, 0x18,
+                0x51, 0x51,
+            ],
+        ),
+        // src/rt/tokio.rs, 0.1.17
+        (
+            "src/rt/tokio.rs",
+            [
+                0x4a, 0x0f, 0xe6, 0x73, 0xd1, 0x7f, 0x35, 0xf0, 0xed, 0x2d, 0xa3, 0x3f, 0x9a, 0x2b,
+                0xc4, 0x27,
+            ],
+        ),
+        // src/rt/tokio.rs, 0.1.18 through 0.1.20
+        (
+            "src/rt/tokio.rs",
+            [
+                0xf2, 0x23, 0xf4, 0x72, 0x6f, 0xff, 0x7b, 0x25, 0xdb, 0xfd, 0x94, 0xfc, 0x45, 0x3f,
+                0xad, 0xf6,
+            ],
+        ),
+        // src/client/legacy/connect/http.rs, 0.1.10
+        (
+            "src/client/legacy/connect/http.rs",
+            [
+                0x3b, 0x8b, 0x7c, 0xab, 0x16, 0x1f, 0xbd, 0x82, 0x78, 0xca, 0x21, 0x2a, 0xcc, 0x35,
+                0xc9, 0xcb,
+            ],
+        ),
+        // src/client/legacy/connect/http.rs, 0.1.11 and 0.1.12
+        (
+            "src/client/legacy/connect/http.rs",
+            [
+                0x92, 0xbc, 0x8b, 0x00, 0xc6, 0xe6, 0x42, 0x55, 0xab, 0xba, 0x23, 0x3a, 0x16, 0x7f,
+                0xcb, 0x0f,
+            ],
+        ),
+        // src/client/legacy/connect/http.rs, 0.1.13
+        (
+            "src/client/legacy/connect/http.rs",
+            [
+                0x51, 0x33, 0x0d, 0x55, 0xef, 0x10, 0xc6, 0xf0, 0x00, 0x46, 0x99, 0x46, 0x28, 0xca,
+                0x52, 0x00,
+            ],
+        ),
+        // src/client/legacy/connect/http.rs, 0.1.14 through 0.1.16
+        (
+            "src/client/legacy/connect/http.rs",
+            [
+                0x02, 0x83, 0xff, 0xd0, 0x81, 0x35, 0x2b, 0x62, 0xad, 0xe0, 0x35, 0xec, 0x14, 0x96,
+                0xee, 0xa8,
+            ],
+        ),
+        // src/client/legacy/connect/http.rs, 0.1.17 through 0.1.19
+        (
+            "src/client/legacy/connect/http.rs",
+            [
+                0xb3, 0x5c, 0x1f, 0xfc, 0xc5, 0x15, 0x41, 0xc4, 0xa8, 0x48, 0xd2, 0xe0, 0x92, 0x61,
+                0xbc, 0x63,
+            ],
+        ),
+        // src/client/legacy/connect/http.rs, 0.1.20
+        (
+            "src/client/legacy/connect/http.rs",
+            [
+                0x12, 0xa0, 0x22, 0xca, 0xa9, 0xed, 0xd6, 0xb5, 0xf1, 0xb9, 0x5d, 0x8c, 0x97, 0x0a,
+                0xbd, 0xb7,
+            ],
+        ),
+    ],
+};
+
 /// hyper-util's `TokioSleep` as 0.1.10 through 0.1.20 implement it
 /// (`src/rt/tokio.rs`, whose `struct TokioSleep { inner:
 /// tokio::time::Sleep }` and `Future` impl are identical across the
@@ -820,6 +941,11 @@ pub const REQWEST_COOKIE_V0_12_24: LibraryConvention = LibraryConvention {
 /// (`server: Arc<DropshotState<C>>`, whose `private: C` holds it), so
 /// the handler's own type names which of a program's servers a
 /// connection was accepted by.
+///
+/// `TlsConn` (the same file, identical in both releases) is `{ stream:
+/// tokio_rustls::server::TlsStream<TcpStream>, remote_addr }`, and its
+/// `AsyncRead`/`AsyncWrite` impls call the same method on `stream` and
+/// nothing else: a stream route forwards through it.
 ///
 /// The ceiling is the newest release the cores on hand build; it
 /// advances by hand when a newer one is read.
@@ -2632,6 +2758,12 @@ mod tests {
                 ["0.26.0", "0.26.3", "0.26.6"].as_slice(),
                 "0.25.0",
                 "0.26.7",
+            ),
+            (
+                &HYPER_UTIL_IO_V0_1_10,
+                ["0.1.10", "0.1.15", "0.1.20"].as_slice(),
+                "0.1.9",
+                "0.1.21",
             ),
             (
                 &RUSTLS_SESSION_V0_23_23,

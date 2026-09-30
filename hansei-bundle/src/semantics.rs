@@ -372,6 +372,11 @@ pub struct HttpConnBinding {
     /// the member that holds it.
     pub read_buf_len: TypedPath,
     pub read_buf_cap: TypedPath,
+    /// `conn.io.io`: the stream the connection reads and writes, where
+    /// its type is routed to a socket — the route a reader follows to
+    /// the connection's registration and descriptor, and to the TLS
+    /// connection on the way where there is one.
+    pub stream: Option<TypedPath>,
     /// The client's dispatch, where `T` is `role::Client`.
     pub client: Option<HttpClientBinding>,
     /// The server's dispatch, where `T` is `role::Server`.
@@ -931,6 +936,12 @@ pub enum SemanticRuleKind {
     /// rustls's connection state under a reviewed range, read as the
     /// words of a TLS session.
     RustlsSession,
+    /// hyper-util's io adapters under a reviewed range — `TokioIo`,
+    /// `Rewind` — whose reads and writes are the stream they hold.
+    HyperUtilStream,
+    /// dropshot's `TlsConn` under a reviewed range, whose reads and
+    /// writes are the TLS stream it holds.
+    DropshotTlsConn,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

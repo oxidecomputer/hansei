@@ -2,7 +2,9 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waker` over illumos/tls-conns"
 ---
-COUNT  WAITING ON  TASKS
-    9  io          3, 4, 5, …
-    3  oneshot rx  10, 11, 13
-[2 groups]
+COUNT  WAITING ON         TASKS
+    9  io                 3, 4, 5, …
+    3  oneshot rx         10, 11, 13
+    1  http1 client idle  16
+    1  http1 server idle  15
+[4 groups]

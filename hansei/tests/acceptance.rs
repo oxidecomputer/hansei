@@ -4106,19 +4106,23 @@ fn test_http_conns_connections_acceptance() {
 /// bare stream, open. Each TLS row's buffer is the deframer's, empty,
 /// out of the 4 KiB rustls starts it at; no row names a peer — the
 /// fixture has no sprockets stream, the one this listing reads a peer
-/// from. The handshakes in progress and the tasks parked on anything
-/// but a socket are no rows. Grouping by protocol files the seven
-/// under two buckets, and a filter on it keeps the TCP pair.
+/// from. The HTTP/1 pair over TLS is two rows of their own, idle
+/// between exchanges, each keyed by its socket as the listing reaches
+/// it through the dispatcher's stream: the server's buffer is what its
+/// one request left of a fresh 16 KiB, the client's hyper's 8 KiB
+/// start. The handshakes in progress and the tasks parked on anything
+/// but a socket are no rows. Grouping by protocol files the nine under
+/// three buckets, and a filter on it keeps the TCP pair.
 #[test]
 fn test_tls_conns_connections_acceptance() {
     let bundle = fixtures().bundle("tls-conns");
     with_core("tls-conns", |core| {
         let out = hansei_ok(&bundle, core, "connections");
-        assert!(out.ends_with("[7 connections]\n"), "{out}");
+        assert!(out.ends_with("[9 connections]\n"), "{out}");
         let mut rows: Vec<String> = out
             .lines()
             .skip(1)
-            .take(7)
+            .take(9)
             .map(|line| {
                 line.split_whitespace()
                     .skip(1)
@@ -4130,6 +4134,8 @@ fn test_tls_conns_connections_acceptance() {
         assert_eq!(
             rows,
             [
+                "— http1/tls client idle — 0/8192 — — — —",
+                "— http1/tls server idle — 0/16349 — — — —",
                 "— tcp — open — — — — — —",
                 "— tcp — open — — — — — —",
                 "— tls client closing — 0/4096 — — — —",
@@ -4141,7 +4147,7 @@ fn test_tls_conns_connections_acceptance() {
             "{out}"
         );
         let grouped = hansei_ok(&bundle, core, "connections --group proto");
-        for bucket in ["5  tls", "2  tcp"] {
+        for bucket in ["5  tls", "2  tcp", "2  http1/tls"] {
             assert!(grouped.contains(bucket), "{grouped}");
         }
         let tcp = hansei_ok(&bundle, core, "connections --with proto tcp");
