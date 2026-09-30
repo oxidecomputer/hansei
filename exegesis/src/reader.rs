@@ -129,9 +129,10 @@ pub struct DwReader<'dw> {
     pub namespaces: Namespaces,
     /// Interned string table for all strings found in types and variables.
     pub strings: FrozenStrings<'dw>,
-    /// The `DW_AT_producer` of the first compile unit that carries one
-    /// (compiler identification, e.g. the rustc version). Display metadata
-    /// only: semantic compatibility must use each type's defining origins.
+    /// The `DW_AT_producer` naming the binary's compiler (see
+    /// [`Self::compiler_producer`]), e.g. the rustc version. Display
+    /// metadata only: semantic compatibility must use each type's defining
+    /// origins.
     pub producer: Option<StrId>,
     /// Every type by name, canonical or not — a lookup filters through
     /// [`Self::is_canonical`]. Built beside finalization's alias passes,
@@ -439,8 +440,22 @@ impl<'dw> DwReader<'dw> {
         // take ownership of the interned strings.
         collector.strings = interner.freeze();
         collector.namespaces = namespaces.freeze();
+        collector.producer = collector.compiler_producer();
         pool.install(|| collector.finalize_types());
         Ok(collector)
+    }
+
+    /// The producer that names the binary's compiler: the first unit's
+    /// by section offset whose producer is rustc's, or with none, the
+    /// first unit's that carries any. A Rust binary links other
+    /// compilers' objects too — a crate's C sources name clang or gcc —
+    /// and units arrive at the collector in no fixed order, so the
+    /// first unit to arrive names whichever compiler won the race.
+    fn compiler_producer(&self) -> Option<StrId> {
+        let producers = || self.origins.values().filter_map(|origin| origin.producer);
+        producers()
+            .find(|&p| crate::provenance::rustc_version(self.strings.get(p)).is_some())
+            .or_else(|| producers().next())
     }
 
     fn new() -> Self {
@@ -471,10 +486,6 @@ impl<'dw> DwReader<'dw> {
     /// deduplication is deferred to [`Self::finalize_types`], so neither
     /// forward references nor arrival order can affect the result.
     fn ingest(&mut self, cgu: InternedCgu) {
-        if self.producer.is_none() {
-            self.producer = cgu.origin.producer;
-        }
-
         self.origins.insert(cgu.origin_id, cgu.origin);
 
         for (type_id, ty) in cgu.types {
@@ -2592,6 +2603,44 @@ mod tests {
                 Err(OriginDecline::MissingProducer(missing))
             );
         }
+    }
+
+    /// The compiler's producer is rustc's wherever a rustc unit is, even
+    /// behind a C unit at a lower offset; with none, the first unit's
+    /// producer of any kind; with no producer at all, none.
+    #[test]
+    fn test_compiler_producer_prefers_rustc_over_linked_c_units() {
+        let chosen = |producers: &[Option<&'static str>]| {
+            let mut reader = DwReader::new();
+            let name = reader.strings.intern("unit");
+            for (i, producer) in producers.iter().enumerate() {
+                let offset = 0x10 + 0x20 * i;
+                let producer = producer.map(|p| reader.strings.intern(p));
+                reader.origins.insert(
+                    OriginId(UnitSectionOffset(offset)),
+                    UnitOrigin {
+                        name,
+                        producer,
+                        end_offset: UnitSectionOffset(offset + 0x20),
+                        dwarf_version: 4,
+                        line_version: None,
+                        source_files: Vec::new(),
+                    },
+                );
+            }
+            reader
+                .compiler_producer()
+                .map(|p| reader.strings.get(p).to_owned())
+        };
+        let clang = "Apple clang version 21.0.0 (clang-2100.1.1.101)";
+        let rustc = "clang LLVM (rustc version 1.98.0 (88d9e12ae 2026-08-18))";
+        assert_eq!(
+            chosen(&[None, Some(clang), Some(rustc)]).as_deref(),
+            Some(rustc)
+        );
+        assert_eq!(chosen(&[Some(rustc), Some(clang)]).as_deref(), Some(rustc));
+        assert_eq!(chosen(&[None, Some(clang)]).as_deref(), Some(clang));
+        assert_eq!(chosen(&[None, None]), None);
     }
 
     #[test]
