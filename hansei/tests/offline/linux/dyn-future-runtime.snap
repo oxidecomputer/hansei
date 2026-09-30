@@ -7,7 +7,7 @@ runtime 0 @ 0xADDR
     tasks: 3
     futures: 3
     workers: 2
-    threads: 3 (lwp 2487567, 2487570, 2487569)
+    threads: 3 (lwp 3800051, 3800054, 3800053)
     found via: a thread's runtime context
     drivers:
       tokio::runtime::driver::Handle {

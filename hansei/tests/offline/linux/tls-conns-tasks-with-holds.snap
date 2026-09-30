@@ -1,0 +1,10 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --with holds >0` over linux/tls-conns"
+---
+ID  STATE  FUT  AWAITING AT               WAITING ON  TYPE
+5   idle     2  src/bin/tls-conns.rs:197  io          async fn tls_conns::split_client
+7   idle     2  src/bin/tls-conns.rs:231  io          async fn tls_conns::owned_split_client
+12  idle     1  src/bin/tls-conns.rs:283  io          async fn tls_conns::handshaking_client
+14  idle     1  src/bin/tls-conns.rs:314  io          async fn tls_conns::handshaking_server
+[4 tasks]

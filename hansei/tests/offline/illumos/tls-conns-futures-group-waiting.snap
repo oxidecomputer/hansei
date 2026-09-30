@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --group waiting-on` over illumos/tls-conns"
+---
+COUNT  WAITING ON                                                         FUTURES
+    2  unarmed: unknown at tokio::io::util::read::Read                    0xADDR, 0xADDR
+    2  unarmed: unknown at tokio::io::util::write_buf::WriteBuf           0xADDR, 0xADDR
+    2  unarmed: unknown at tokio_rustls::common::handshake::MidHandshake  0xADDR, 0xADDR
+[3 groups]

@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`future 0x5557d9d622c0` over linux/tls-conns"
+---
+future 0xADDR
+    type: future tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>
+    held by: task 5 (frame 1, `read`)
+    depth: 1 frame
+    awaiting on: unarmed: unknown at tokio::io::util::read::Read
+    held futures: 0
+    join sets: 0

@@ -1,0 +1,12 @@
+---
+source: hansei/src/offline.rs
+description: "`futures` over linux/tls-conns"
+---
+ADDR            TASK  HELD IN           STATE  WAITING ON                                                         ARMED  TYPE
+0xADDR  5     frame 1, `read`   —      unarmed: unknown at tokio::io::util::read::Read                    no     future tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>
+0xADDR  5     frame 1, `write`  —      unarmed: unknown at tokio::io::util::write_buf::WriteBuf           no     future tokio::io::util::write_buf::WriteBuf<tokio::io::split::WriteHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>, core::io::cursor::Cursor<Vec<u8>>>
+0xADDR  7     frame 1, `read`   —      unarmed: unknown at tokio::io::util::read::Read                    no     future tokio::io::util::read::Read<tokio::net::tcp::split_owned::OwnedReadHalf>
+0xADDR  7     frame 1, `write`  —      unarmed: unknown at tokio::io::util::write_buf::WriteBuf           no     future tokio::io::util::write_buf::WriteBuf<tokio::net::tcp::split_owned::OwnedWriteHalf, core::io::cursor::Cursor<Vec<u8>>>
+0xADDR  12    frame 0, `__0`    —      unarmed: unknown at tokio_rustls::common::handshake::MidHandshake  no     future tokio_rustls::common::handshake::MidHandshake<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
+0xADDR  14    frame 0, `__0`    —      unarmed: unknown at tokio_rustls::common::handshake::MidHandshake  no     future tokio_rustls::common::handshake::MidHandshake<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>
+[6 futures]

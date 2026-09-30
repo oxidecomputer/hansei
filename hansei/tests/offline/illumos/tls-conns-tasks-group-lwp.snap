@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group lwp` over illumos/tls-conns"
+---
+COUNT  LWP      TASKS
+   12  <empty>  3, 4, 5, …
+[1 group]

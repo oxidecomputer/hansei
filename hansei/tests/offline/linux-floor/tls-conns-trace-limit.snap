@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 3 -l 1` over linux-floor/tls-conns"
+---
+#0  future        tokio::io::util::read::Read<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
+      defined at tokio-1.47.5/src/io/util/read.rs:49 (<no_state>, 2 locals)
+[2 frames, 1 shown]

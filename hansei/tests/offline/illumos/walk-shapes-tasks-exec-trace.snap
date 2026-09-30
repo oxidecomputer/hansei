@@ -55,15 +55,15 @@ task 7
       awaiting at src/bin/walk-shapes.rs:207 (Suspend0, 1 local)
 
 task 8
-the chain ends in a future that has never been polled
-#0  async fn      walk_shapes::side_parker
-      state Unresumed
-
-task 9
 #0  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 7
 #1  async fn      walk_shapes::joiner
       awaiting at src/bin/walk-shapes.rs:214 (Suspend0, 0 locals)
+
+task 9
+the chain ends in a future that has never been polled
+#0  async fn      walk_shapes::side_parker
+      state Unresumed
 
 task 10
 #0  future        tokio::sync::batch_semaphore::Acquire

@@ -497,6 +497,7 @@ offline_commands! {
     test_watch_stream_commands: "watch-stream",
     test_http_conns_commands: "http-conns",
     test_two_releases_commands: "two-releases",
+    test_tls_conns_commands: "tls-conns",
 }
 
 /// The macro above and [`testkit::PROGRAMS`] name the same population:
@@ -526,6 +527,7 @@ fn test_every_program_has_a_command_golden() {
         "watch-stream",
         "http-conns",
         "two-releases",
+        "tls-conns",
     ];
     assert_eq!(COVERED, PROGRAMS);
 }

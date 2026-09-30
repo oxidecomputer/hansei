@@ -1,0 +1,46 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --exec trace -l 1` over linux/tls-conns"
+---
+future 0xADDR
+future 0xADDR: future tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>
+Held by: task 5 — async fn tls_conns::split_client (frame 1, `read`)
+
+#0  future        tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>
+      defined at tokio-1.52.4/src/io/util/read.rs:49 (<no_state>, 2 locals)
+
+future 0xADDR
+future 0xADDR: future tokio::io::util::write_buf::WriteBuf<tokio::io::split::WriteHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>, core::io::cursor::Cursor<Vec<u8>>>
+Held by: task 5 — async fn tls_conns::split_client (frame 1, `write`)
+
+#0  future        tokio::io::util::write_buf::WriteBuf<tokio::io::split::WriteHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>, core::io::cursor::Cursor<Vec<u8>>>
+      defined at tokio-1.52.4/src/io/util/write_buf.rs:44 (<no_state>, 2 locals)
+
+future 0xADDR
+future 0xADDR: future tokio::io::util::read::Read<tokio::net::tcp::split_owned::OwnedReadHalf>
+Held by: task 7 — async fn tls_conns::owned_split_client (frame 1, `read`)
+
+#0  future        tokio::io::util::read::Read<tokio::net::tcp::split_owned::OwnedReadHalf>
+      defined at tokio-1.52.4/src/io/util/read.rs:49 (<no_state>, 2 locals)
+
+future 0xADDR
+future 0xADDR: future tokio::io::util::write_buf::WriteBuf<tokio::net::tcp::split_owned::OwnedWriteHalf, core::io::cursor::Cursor<Vec<u8>>>
+Held by: task 7 — async fn tls_conns::owned_split_client (frame 1, `write`)
+
+#0  future        tokio::io::util::write_buf::WriteBuf<tokio::net::tcp::split_owned::OwnedWriteHalf, core::io::cursor::Cursor<Vec<u8>>>
+      defined at tokio-1.52.4/src/io/util/write_buf.rs:44 (<no_state>, 2 locals)
+
+future 0xADDR
+future 0xADDR: future tokio_rustls::common::handshake::MidHandshake<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
+Held by: task 12 — async fn tls_conns::handshaking_client (frame 0, `__0`)
+
+#0  future        tokio_rustls::common::handshake::MidHandshake<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
+      defined at tokio-rustls-0.26.4/src/common/handshake.rs:45 (<no_state>, 0 locals)
+
+future 0xADDR
+future 0xADDR: future tokio_rustls::common::handshake::MidHandshake<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>
+Held by: task 14 — async fn tls_conns::handshaking_server (frame 0, `__0`)
+
+#0  future        tokio_rustls::common::handshake::MidHandshake<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>
+      defined at tokio-rustls-0.26.4/src/common/handshake.rs:45 (<no_state>, 0 locals)
+[Executed against 6 futures, 0 failed]

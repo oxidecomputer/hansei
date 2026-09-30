@@ -91,6 +91,7 @@ const PROGRAMS: &[&str] = &[
     "watch-stream",
     "http-conns",
     "two-releases",
+    "tls-conns",
 ];
 
 fn test_programs_dir() -> PathBuf {

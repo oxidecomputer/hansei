@@ -5,7 +5,7 @@ description: "`graph` over illumos/walk-shapes"
 TASK                                   STATE  WAITING ON
 4                                      idle   semaphore
 └─ 3 [queued ahead of the task above]  idle   notify rx
-9                                      idle   task 7
+8                                      idle   task 7
 └─ 7                                   idle   notify rx
 
 futurelock: task 3 holds place 0 in the wake queue of a tokio::sync::Mutex (semaphore 0xADDR) in a future it cannot poll until the future tokio::sync::notify::Notified it awaits completes:

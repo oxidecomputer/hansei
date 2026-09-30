@@ -1710,11 +1710,12 @@ fn assert_adapter_programs(program: &str, bundle: &Bundle) {
 
 /// The fixtures that expand a `tokio::select!`, and so carry the
 /// select rule: each program's one stop and its branch count.
-const SELECT_PROGRAMS: [&str; 5] = [
+const SELECT_PROGRAMS: [&str; 6] = [
     "armed-select",
     "channels",
     "futurelock",
     "select-combinator",
+    "tls-conns",
     "watch-stream",
 ];
 
@@ -3847,6 +3848,26 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "data.notify_rx",
         );
     }
+    if program == "tls-conns" {
+        // Two selects, each over a read on one half of a split stream
+        // and a `write_buf` on the other, both pinned locals the select
+        // borrows: the TLS client's over `tokio::io::split` halves, the
+        // TCP client's over owned halves. No arm binds anything.
+        assert_select(
+            program,
+            bundle,
+            "core::future::poll_fn::PollFn<tls_conns::split_client::{async_fn#0}::{closure_env#",
+            2,
+            &[None, None],
+        );
+        assert_select(
+            program,
+            bundle,
+            "core::future::poll_fn::PollFn<tls_conns::owned_split_client::{async_fn#0}::{closure_env#",
+            2,
+            &[None, None],
+        );
+    }
     if program == "watch-stream" {
         // Two selects, each over a oneshot and a stream's `next()`,
         // both pinned locals the select borrows: the resolver's over
@@ -5180,6 +5201,11 @@ fn test_golden_http_conns() {
 #[test]
 fn test_golden_two_releases() {
     run_golden("two-releases");
+}
+
+#[test]
+fn test_golden_tls_conns() {
+    run_golden("tls-conns");
 }
 
 #[test]

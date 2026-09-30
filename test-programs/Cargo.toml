@@ -61,7 +61,14 @@ oxide-tokio-rt = { version = "0.1.2", optional = true }
 # reads build it: it puts reqwest's cookie layer in every client's
 # in-flight stack, so the fixture walks the layers they do.
 reqwest = { version = "=0.13.2", default-features = false, features = ["cookies"] }
+# `tls-conns` parks rustls connections through tokio-rustls. Both are
+# pinned exactly, at the releases the cores on hand build, since the TLS
+# session's words are read under reviewed ranges of each; they advance
+# by hand, like hyper. ring is the provider, not aws-lc-rs, whose C
+# build is the heavier one on the capture hosts.
+rustls = { version = "=0.23.41", default-features = false, features = ["ring", "std", "tls12"] }
 tokio = { version = ">=1.47", default-features = false }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
 # `watch-stream` parks on tokio-stream's `WatchStream` and `StreamMap`;
 # the box behind a `WatchStream` is tokio-util's `ReusableBoxFuture`.
 tokio-stream = { version = "0.1.14", features = ["sync"] }

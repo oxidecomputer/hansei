@@ -353,6 +353,7 @@ pub const PROGRAMS: &[&str] = &[
     "watch-stream",
     "http-conns",
     "two-releases",
+    "tls-conns",
 ];
 
 /// Mask the run-varying values analysis output carries — heap

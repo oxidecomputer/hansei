@@ -6,10 +6,10 @@ TASK  CALLER  ROLE    PHASE              DEADLINE                               
 4     —       client  idle               —                                            0/8192   —                —       —       —
 5     —       server  idle               TS on the target's monotonic clock  0/16302  —                —       —       —
 8     —       server  handling request   —                                            0/16339  —                —       GET     /park
-9     7       client  awaiting response  —                                            0/8192   127.0.0.1:43851  —       GET     —
+9     7       client  awaiting response  —                                            0/8192   127.0.0.1:38843  —       GET     —
 11    —       server  handling request   —                                            0/16326  —                —       GET     /park
-12    10      client  awaiting response  —                                            0/8192   127.0.0.1:43851  —       GET     http://127.0.0.1:43851/park
+12    10      client  awaiting response  —                                            0/8192   127.0.0.1:38843  —       GET     http://127.0.0.1:38843/park
 13    —       server  negotiating        —                                            —        —                —       —       —
 15    —       server  idle               TS on the target's monotonic clock  0/16343  —                —       —       —
-16    —       client  idle               —                                            0/8192   127.0.0.1:43851  —       —       —
+16    —       client  idle               —                                            0/8192   127.0.0.1:38843  —       —       —
 [9 connections]

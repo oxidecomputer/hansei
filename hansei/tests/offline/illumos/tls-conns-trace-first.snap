@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 3 -n` over illumos/tls-conns"
+---
+#0  future        tokio::io::util::read::Read<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
+      defined at tokio-1.52.4/src/io/util/read.rs:49 (<no_state>, 2 locals)
+#1  async fn      tls_conns::plain_client
+      awaiting at src/bin/tls-conns.rs:160 (Suspend2, 3 locals)

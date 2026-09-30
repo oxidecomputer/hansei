@@ -90,6 +90,7 @@ const PROGRAMS: &[&str] = &[
     "watch-stream",
     "http-conns",
     "two-releases",
+    "tls-conns",
 ];
 
 fn workspace_root() -> &'static Path {
