@@ -22,7 +22,7 @@
 //! hashes, the last pairs with the last release.
 
 use hansei_bundle::{Bundle, BundleTypeId, ReleaseSize, StrRef, StringTable, TypeDef};
-use proc::{Mappings, Target};
+use proc::{LoadedObjectWithPath, Mappings, Target};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -67,23 +67,45 @@ struct Observation<'a> {
 /// Pair the target's crate hashes, reading its symbols and its
 /// file-backed data for vtables of the bundle's `release_sizes`.
 pub fn pair<T: Target>(bundle: &Bundle, proc: &T, mappings: &Mappings) -> Pairing {
-    let evidence = Evidence::new(&bundle.strings, &bundle.types.release_sizes);
-    if evidence.by_name.is_empty() {
-        return Pairing::default();
-    }
     let Ok(symbols) = proc.symbols() else {
         return Pairing::default();
     };
-    let (glue, hashes) = evidence.glue(symbols.iter().map(|s| (s.st_value, s.name.as_str())));
+    let regions = mappings
+        .as_slice()
+        .iter()
+        .filter(|region| holds_vtables(region))
+        .filter_map(|region| proc.read_bytes(region.vaddr, region.size).ok());
+    pair_in(
+        &bundle.strings,
+        &bundle.types.release_sizes,
+        symbols.iter().map(|s| (s.st_value, s.name.as_str())),
+        regions,
+    )
+}
+
+/// Whether a mapping is one a vtable can be in: a file's data, not its
+/// text, and not anonymous memory, where a word that only looks like a
+/// vtable proves nothing.
+fn holds_vtables(region: &LoadedObjectWithPath) -> bool {
+    !region.flags.is_exec() && region.path.is_some()
+}
+
+/// [`pair`] over symbols and the bytes of the regions to scan, which are
+/// read only when some symbol is the drop glue of an evidence type.
+fn pair_in<'s, 'r>(
+    strings: &StringTable,
+    entries: &[ReleaseSize],
+    symbols: impl Iterator<Item = (u64, &'s str)>,
+    regions: impl Iterator<Item = &'r [u8]>,
+) -> Pairing {
+    let evidence = Evidence::new(strings, entries);
+    if evidence.by_name.is_empty() {
+        return Pairing::default();
+    }
+    let (glue, hashes) = evidence.glue(symbols);
     let mut observations = Vec::new();
     if !glue.is_empty() {
-        for region in mappings.as_slice() {
-            if region.flags.is_exec() || region.path.is_none() {
-                continue;
-            }
-            let Ok(bytes) = proc.read_bytes(region.vaddr, region.size) else {
-                continue;
-            };
+        for bytes in regions {
             observations.extend(vtables(bytes, &glue));
         }
     }
@@ -449,6 +471,287 @@ mod tests {
         // An array type's length is no crate.
         assert_eq!(crate_hashes("[u8; 4]"), vec![]);
         assert_eq!(crate_hashes("x[12]"), vec![("x", "12")]);
+        // Each part a crate root needs, missing alone: the name, the
+        // hash, a hash in hex, a name that is no identifier.
+        assert_eq!(crate_hashes("<[ab]>"), vec![]);
+        assert_eq!(crate_hashes("x[]"), vec![]);
+        assert_eq!(crate_hashes("x[zz]"), vec![]);
+        assert_eq!(crate_hashes("a 9x[ab]"), vec![]);
+        // One root written twice is one root.
+        assert_eq!(crate_hashes("x[ab]::y<x[ab]::z>"), vec![("x", "ab")]);
+    }
+
+    /// Only a file's data is scanned: not its text, and not anonymous
+    /// memory.
+    #[test]
+    fn test_vtables_are_read_from_file_data_alone() {
+        use super::holds_vtables;
+        use proc::{LoadedObjectWithPath, MapFlags};
+        let region = |path: Option<&str>, flags| LoadedObjectWithPath {
+            path: path.map(str::to_owned),
+            vaddr: 0x1000,
+            size: 0x1000,
+            flags: MapFlags(flags),
+        };
+        const READ: u32 = 0x04;
+        const EXEC: u32 = 0x01;
+        assert!(holds_vtables(&region(Some("/bin/x"), READ)));
+        assert!(!holds_vtables(&region(Some("/bin/x"), READ | EXEC)));
+        assert!(!holds_vtables(&region(None, READ)));
+    }
+
+    /// The whole pass over symbols and bytes: the vtable after a piece
+    /// of glue pairs its hash, the crate's other hash pairs by
+    /// elimination — and no region is read when no symbol is the glue of
+    /// an evidence type, or when the bundle records no evidence.
+    #[test]
+    fn test_pairing_reads_regions_only_for_evidence_glue() {
+        use super::pair_in;
+        let (strings, entries) = table();
+        let backend = mangle_glue("reqwest", "1a", "tls", "TlsBackend");
+        let other = mangle_glue("reqwest", "2b", "tls", "Other");
+        let words = [7u64, 0x1000, 344, 8]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect::<Vec<u8>>();
+        let pairing = pair_in(
+            &strings,
+            &entries,
+            [(0x1000, backend.as_str()), (0x2000, other.as_str())].into_iter(),
+            std::iter::once(words.as_slice()),
+        );
+        assert_eq!(pairing.release("reqwest", "1a"), Some("0.13.2"));
+        assert_eq!(pairing.release("reqwest", "2b"), Some("0.12.28"));
+
+        let untouched = || std::iter::from_fn(|| -> Option<&[u8]> { panic!("a region was read") });
+        let pairing = pair_in(
+            &strings,
+            &entries,
+            [(0x2000, other.as_str())].into_iter(),
+            untouched(),
+        );
+        assert_eq!(pairing, Default::default());
+        let pairing = pair_in(
+            &strings,
+            &[],
+            [(0x1000, backend.as_str())].into_iter(),
+            untouched(),
+        );
+        assert_eq!(pairing, Default::default());
+    }
+
+    /// A target of whole mappings, one run of bytes each, and a symbol
+    /// table: what [`super::pair`] reads, and nothing else.
+    struct Mapped {
+        regions: Vec<(u64, Vec<u8>)>,
+        symbols: Vec<(u64, String)>,
+    }
+
+    impl proc::Target for Mapped {
+        fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
+            self.regions
+                .iter()
+                .find(|(base, bytes)| addr == *base && len == bytes.len() as u64)
+                .map(|(_, bytes)| bytes.as_slice())
+                .ok_or_else(|| proc::Error::unmapped(addr, len))
+        }
+        fn lookup_symbol_by_addr(&self, _: u64) -> Option<proc::SymbolBuf> {
+            None
+        }
+        fn lookup_symbol_by_name(&self, _: &str) -> Option<proc::SymbolBuf> {
+            None
+        }
+        fn symbols(&self) -> proc::Result<Vec<proc::SymbolBuf>> {
+            Ok(self
+                .symbols
+                .iter()
+                .map(|(addr, name)| proc::SymbolBuf {
+                    name: name.clone(),
+                    st_name: 0,
+                    st_info: 0,
+                    st_other: 0,
+                    st_shndx: 0,
+                    st_value: *addr,
+                    st_size: 0,
+                })
+                .collect())
+        }
+        fn mappings(&self) -> proc::Result<proc::Mappings> {
+            unimplemented!("pair is handed its mappings")
+        }
+        fn lwps(&self) -> proc::Result<Vec<proc::LwpInfo>> {
+            unimplemented!("pair reads no threads")
+        }
+        fn tls_var_addr(&self, _: &proc::Regs, _: &proc::SymbolBuf) -> proc::Result<Option<u64>> {
+            unimplemented!("pair reads no thread-local")
+        }
+    }
+
+    /// `pair` over a target: the vtable in a file's data mapping pairs
+    /// its hash; the same words in anonymous memory pair nothing.
+    #[test]
+    fn test_pair_reads_the_targets_file_backed_data() {
+        use super::pair;
+        use proc::{LoadedObjectWithPath, MapFlags};
+
+        let (mut bundle, _) = crate::testkit::load_any("dyn-future");
+        let (strings, entries) = table();
+        bundle.strings = strings;
+        bundle.types.release_sizes = entries;
+        let vtable = [7u64, 0x1000, 344, 8]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect::<Vec<u8>>();
+        let target = Mapped {
+            regions: vec![(0x10_000, vtable.clone())],
+            symbols: vec![
+                (0x1000, mangle_glue("reqwest", "1a", "tls", "TlsBackend")),
+                (0x2000, mangle_glue("reqwest", "2b", "tls", "Other")),
+            ],
+        };
+        let mapping = |path: Option<&str>| {
+            std::iter::once(LoadedObjectWithPath {
+                path: path.map(str::to_owned),
+                vaddr: 0x10_000,
+                size: vtable.len() as u64,
+                flags: MapFlags(0x04),
+            })
+            .collect::<proc::Mappings>()
+        };
+        let pairing = pair(&bundle, &target, &mapping(Some("/bin/target")));
+        assert_eq!(pairing.release("reqwest", "1a"), Some("0.13.2"));
+        assert_eq!(pairing.release("reqwest", "2b"), Some("0.12.28"));
+        assert_eq!(
+            pair(&bundle, &target, &mapping(None)),
+            Default::default(),
+            "anonymous memory is not read"
+        );
+    }
+
+    /// What ties a type to a release: its own single-release label, or
+    /// one reached through each kind of edge in turn — a struct or union
+    /// member, an enum payload, a pointer's target, an array's element.
+    /// A label naming both releases ties to neither, and a walk past its
+    /// bound ties to nothing.
+    #[test]
+    fn test_a_type_is_tied_to_the_release_its_parts_reach() {
+        use super::{MAX_TIE_WALK, releases_of};
+        use hansei_bundle::{
+            BundleTypeId, CrateLabel, MemberDef, TypeDef, VariantDef, VariantShape,
+        };
+
+        let (mut b, _) = crate::testkit::load_any("dyn-future");
+        let mut strings = StringInterner::new();
+        for s in b.strings.iter() {
+            strings.intern(s);
+        }
+        let demo = strings.intern("demo");
+        let (one, two) = (strings.intern("1.0.0"), strings.intern("2.0.0"));
+        let name = strings.intern("demo::T");
+        b.strings = strings.finish();
+        let next = |b: &hansei_bundle::Bundle| BundleTypeId(b.types.types.len() as u32);
+        let member = |ty| MemberDef {
+            name,
+            ty,
+            offset: 0,
+        };
+        let strukt = |members| TypeDef::Struct {
+            name,
+            size: 8,
+            members,
+        };
+
+        let labeled = next(&b);
+        b.types.types.push(strukt(vec![]));
+        b.types.crate_labels.insert(
+            labeled,
+            CrateLabel {
+                package: demo,
+                versions: vec![one],
+            },
+        );
+        let both = next(&b);
+        b.types.types.push(strukt(vec![]));
+        b.types.crate_labels.insert(
+            both,
+            CrateLabel {
+                package: demo,
+                versions: vec![one, two],
+            },
+        );
+        let by_member = next(&b);
+        b.types.types.push(strukt(vec![member(labeled)]));
+        let by_union = next(&b);
+        b.types.types.push(TypeDef::Union {
+            name,
+            size: 8,
+            members: vec![member(labeled)],
+        });
+        let by_payload = next(&b);
+        b.types.types.push(TypeDef::Enum {
+            name,
+            size: 8,
+            shape: VariantShape {
+                discr: None,
+                variants: vec![VariantDef {
+                    name,
+                    discr_values: None,
+                    payload: member(labeled),
+                    decl: None,
+                    await_site: None,
+                }],
+            },
+        });
+        let by_pointer = next(&b);
+        b.types.types.push(TypeDef::Pointer {
+            name: None,
+            target: labeled,
+        });
+        let by_array = next(&b);
+        b.types.types.push(TypeDef::Array {
+            elem: labeled,
+            count: 2,
+        });
+        let over_both = next(&b);
+        b.types.types.push(strukt(vec![member(both)]));
+
+        let tied = |b: &hansei_bundle::Bundle, ty| {
+            releases_of(b, ty, "demo")
+                .into_iter()
+                .collect::<Vec<String>>()
+        };
+        for (ty, what) in [
+            (labeled, "its own label"),
+            (by_member, "a struct member"),
+            (by_union, "a union member"),
+            (by_payload, "an enum payload"),
+            (by_pointer, "a pointer's target"),
+            (by_array, "an array's element"),
+        ] {
+            assert_eq!(tied(&b, ty), ["1.0.0"], "tied through {what}");
+        }
+        assert!(tied(&b, over_both).is_empty(), "a label naming both");
+        assert!(
+            releases_of(&b, labeled, "other").is_empty(),
+            "another package"
+        );
+
+        // A chain of pointers ending at the labeled type: the walk visits
+        // every pointer and the type, so a chain of exactly the bound is
+        // tied and one a type longer is not.
+        let chain = |b: &mut hansei_bundle::Bundle, pointers: usize| {
+            let mut target = labeled;
+            for _ in 0..pointers {
+                let ty = next(b);
+                b.types.types.push(TypeDef::Pointer { name: None, target });
+                target = ty;
+            }
+            target
+        };
+        let at_bound = chain(&mut b, MAX_TIE_WALK - 1);
+        assert_eq!(tied(&b, at_bound), ["1.0.0"], "a walk of exactly the bound");
+        let past_bound = chain(&mut b, MAX_TIE_WALK);
+        assert!(tied(&b, past_bound).is_empty(), "a walk past the bound");
     }
 
     /// Two reqwest types the releases size differently.

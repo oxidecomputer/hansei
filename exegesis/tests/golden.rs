@@ -2925,6 +2925,11 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         labels.values().filter(|l| l.versions.len() > 1).count(),
         "{program}: crate labels naming several releases"
     );
+    assert_eq!(
+        stats.release_sizes,
+        bundle.types.release_sizes.len(),
+        "{program}: release size count"
+    );
     // The impl table records only what the bundle's strings mention —
     // an entry nothing names is dead weight the emit filter should have
     // dropped. (Sortedness and the plain-path value rules are the
@@ -4056,6 +4061,35 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         // that crate's file: no path names async-channel, and the type
         // carries no label rather than a wrong one.
         assert_split(program, bundle, RECV, &[(24, Some(OLD)), (16, None)]);
+        // What tells a target's two async-channel hashes apart: the one
+        // plain type both releases declare at two sizes. `Recv` is two
+        // sizes too, but the new release declares it in another crate's
+        // file, so only the old one names its release; `Channel` is one
+        // size in both.
+        let text = |r| bundle.strings.get(r).unwrap();
+        // Package, type name, and each release with its size.
+        type Entry<'a> = (&'a str, &'a str, Vec<(&'a str, u64)>);
+        let release_sizes: Vec<Entry<'_>> = bundle
+            .types
+            .release_sizes
+            .iter()
+            .map(|e| {
+                (
+                    text(e.package),
+                    text(e.name),
+                    e.sizes.iter().map(|&(v, s)| (text(v), s)).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            release_sizes,
+            [(
+                "async-channel",
+                RECEIVER,
+                vec![("1.9.0", 24), ("2.5.0", 16)]
+            )],
+            "{program}: release sizes"
+        );
         // The same size in both releases, split by what its members
         // reference; and a pointer-wide end over it, split the same way.
         assert_split(

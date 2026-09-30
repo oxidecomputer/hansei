@@ -209,7 +209,310 @@ fn is_environment(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_environment;
+    use super::{Plainness, is_environment};
+    use crate::raw_types::{
+        RawArray, RawBase, RawEnum, RawMember, RawPointer, RawStruct, RawType, RawUnion,
+        RawVariant, VariantShape,
+    };
+    use crate::{DwReader, Encoding, TypeId};
+
+    use gimli::UnitSectionOffset;
+
+    fn id(n: usize) -> TypeId {
+        TypeId(UnitSectionOffset(n))
+    }
+
+    /// A reader holding the types `plain` is asked about: a word, an
+    /// environment, and one type per edge the check follows — a struct
+    /// member, a union member, an enum payload, an array element — each
+    /// holding the environment by value, beside a struct that holds it
+    /// only through a pointer and one that reaches itself that way.
+    fn reader() -> DwReader<'static> {
+        let mut r = DwReader::default();
+        let name = |r: &mut DwReader<'static>, s: &'static str| Some(r.strings.intern(s));
+        let member = |t: TypeId| RawMember {
+            name: None,
+            offset: 0,
+            type_id: t,
+            source_loc: None,
+        };
+        let strukt = |r: &mut DwReader<'static>, n: &'static str, members: Vec<TypeId>| {
+            RawType::Struct(RawStruct {
+                name: name(r, n),
+                namespace: None,
+                size: 8,
+                members: members.into_iter().map(member).collect(),
+                template_params: Box::new([]),
+                source_loc: None,
+            })
+        };
+        let word = RawType::Base(RawBase {
+            name: name(&mut r, "u64"),
+            namespace: None,
+            encoding: Encoding::Unsigned,
+            size: 8,
+            alignment: None,
+        });
+        r.types.insert(id(1), word);
+        let env = strukt(&mut r, "{closure_env#0}", vec![id(1)]);
+        r.types.insert(id(2), env);
+        let plain = strukt(&mut r, "Plain", vec![id(1)]);
+        r.types.insert(id(3), plain);
+        let holder = strukt(&mut r, "Holder", vec![id(1), id(2)]);
+        r.types.insert(id(4), holder);
+        let union = RawType::Union(RawUnion {
+            name: name(&mut r, "Either"),
+            namespace: None,
+            size: 8,
+            members: vec![member(id(1)), member(id(2))].into_boxed_slice(),
+            template_params: Box::new([]),
+            source_loc: None,
+        });
+        r.types.insert(id(5), union);
+        let enumeration = RawType::Enum(RawEnum {
+            name: name(&mut r, "Choice"),
+            namespace: None,
+            size: 8,
+            alignment: None,
+            shape: VariantShape::One(RawVariant {
+                member: member(id(2)),
+            }),
+            template_params: Box::new([]),
+            source_loc: None,
+        });
+        r.types.insert(id(6), enumeration);
+        r.types.insert(
+            id(7),
+            RawType::Array(RawArray {
+                elem_type_id: id(2),
+                count: 2,
+            }),
+        );
+        let to_env = RawType::Pointer(RawPointer {
+            name: None,
+            target_type_id: id(2),
+        });
+        r.types.insert(id(8), to_env);
+        let by_pointer = strukt(&mut r, "ByPointer", vec![id(8)]);
+        r.types.insert(id(9), by_pointer);
+        let to_self = RawType::Pointer(RawPointer {
+            name: None,
+            target_type_id: id(10),
+        });
+        r.types.insert(id(11), to_self);
+        let node = strukt(&mut r, "Node", vec![id(1), id(11)]);
+        r.types.insert(id(10), node);
+        r
+    }
+
+    #[test]
+    fn test_a_type_is_plain_unless_it_holds_an_environment_by_value() {
+        let r = reader();
+        let mut plain = Plainness::default();
+        for (n, expected, what) in [
+            (1, true, "a word"),
+            (3, true, "a struct of words"),
+            (9, true, "an environment behind a pointer"),
+            (10, true, "a struct reaching itself through a pointer"),
+            (2, false, "the environment itself"),
+            (4, false, "a struct member"),
+            (5, false, "a union member"),
+            (6, false, "an enum payload"),
+            (7, false, "an array element"),
+            (99, false, "a type the reader lacks"),
+        ] {
+            assert_eq!(plain.is_plain(&r, id(n)), expected, "{what}");
+        }
+    }
+
+    /// The candidates are the named structs, unions and enums that are
+    /// no environment: not a base type, an environment, a pointer or an
+    /// array.
+    #[test]
+    fn test_the_candidates_are_named_aggregates_other_than_environments() {
+        let r = reader();
+        let mut found: Vec<TypeId> = super::candidates(&r).into_iter().collect();
+        found.sort();
+        let mut expected = vec![id(3), id(4), id(5), id(6), id(9), id(10)];
+        expected.sort();
+        assert_eq!(found, expected);
+    }
+
+    /// Each crate at two releases or more gives an entry for every plain
+    /// type its releases size differently — a struct, an enum, a union,
+    /// and across three releases as across two — and nothing for a type
+    /// sized alike, a type both releases declare as one, a type holding
+    /// an environment, or a crate at one release.
+    #[test]
+    fn test_release_sizes_are_the_plain_types_the_releases_size_apart() {
+        use super::super::labels::Declared;
+        use super::release_sizes;
+        use std::collections::{BTreeMap, HashSet};
+
+        let mut r = reader();
+        let demo = r.strings.intern("demo");
+        let tri = r.strings.intern("tri");
+        let one = r.strings.intern("one");
+        let (demo, tri, one) = (
+            r.namespaces.insert(None, demo),
+            r.namespaces.insert(None, tri),
+            r.namespaces.insert(None, one),
+        );
+        let mut next = 100;
+        let mut labels: BTreeMap<TypeId, (String, Vec<semver::Version>)> = BTreeMap::new();
+        let mut declare =
+            |r: &mut DwReader<'static>,
+             ns,
+             package: &str,
+             name: &'static str,
+             raw: fn(Option<crate::StrId>, crate::NsId, u64, TypeId) -> RawType<crate::StrId>,
+             size: u64,
+             members: TypeId,
+             versions: &[&str]| {
+                next += 1;
+                let name = Some(r.strings.intern(name));
+                r.types.insert(id(next), raw(name, ns, size, members));
+                labels.insert(
+                    id(next),
+                    (
+                        package.to_owned(),
+                        versions
+                            .iter()
+                            .map(|v| semver::Version::parse(v).unwrap())
+                            .collect(),
+                    ),
+                );
+            };
+        fn strukt(
+            name: Option<crate::StrId>,
+            ns: crate::NsId,
+            size: u64,
+            m: TypeId,
+        ) -> RawType<crate::StrId> {
+            RawType::Struct(RawStruct {
+                name,
+                namespace: Some(ns),
+                size,
+                members: Box::new([RawMember {
+                    name: None,
+                    offset: 0,
+                    type_id: m,
+                    source_loc: None,
+                }]),
+                template_params: Box::new([]),
+                source_loc: None,
+            })
+        }
+        fn union(
+            name: Option<crate::StrId>,
+            ns: crate::NsId,
+            size: u64,
+            m: TypeId,
+        ) -> RawType<crate::StrId> {
+            RawType::Union(RawUnion {
+                name,
+                namespace: Some(ns),
+                size,
+                members: Box::new([RawMember {
+                    name: None,
+                    offset: 0,
+                    type_id: m,
+                    source_loc: None,
+                }]),
+                template_params: Box::new([]),
+                source_loc: None,
+            })
+        }
+        fn enumeration(
+            name: Option<crate::StrId>,
+            ns: crate::NsId,
+            size: u64,
+            m: TypeId,
+        ) -> RawType<crate::StrId> {
+            RawType::Enum(RawEnum {
+                name,
+                namespace: Some(ns),
+                size,
+                alignment: None,
+                shape: VariantShape::One(RawVariant {
+                    member: RawMember {
+                        name: None,
+                        offset: 0,
+                        type_id: m,
+                        source_loc: None,
+                    },
+                }),
+                template_params: Box::new([]),
+                source_loc: None,
+            })
+        }
+        let (word, env) = (id(1), id(2));
+        for (v, s) in [("1.0.0", 8), ("2.0.0", 16)] {
+            declare(&mut r, demo, "demo", "S", strukt, s, word, &[v]);
+        }
+        for (v, s) in [("1.0.0", 4), ("2.0.0", 8)] {
+            declare(&mut r, demo, "demo", "E", enumeration, s, word, &[v]);
+        }
+        for (v, s) in [("1.0.0", 1), ("2.0.0", 2)] {
+            declare(&mut r, demo, "demo", "U", union, s, word, &[v]);
+        }
+        for v in ["1.0.0", "2.0.0"] {
+            declare(&mut r, demo, "demo", "Alike", strukt, 8, word, &[v]);
+        }
+        declare(
+            &mut r,
+            demo,
+            "demo",
+            "Both",
+            strukt,
+            8,
+            word,
+            &["1.0.0", "2.0.0"],
+        );
+        for (v, s) in [("1.0.0", 8), ("2.0.0", 16)] {
+            declare(&mut r, demo, "demo", "Held", strukt, s, env, &[v]);
+        }
+        for (v, s) in [("1.0.0", 1), ("2.0.0", 2), ("3.0.0", 3)] {
+            declare(&mut r, tri, "tri", "T", strukt, s, word, &[v]);
+        }
+        declare(&mut r, one, "one", "O", strukt, 8, word, &["1.0.0"]);
+
+        let declared = Declared {
+            labels,
+            declined: HashSet::new(),
+        };
+        // Package, type name, and each release with its size.
+        type Entry = (String, String, Vec<(String, u64)>);
+        let found: Vec<Entry> = release_sizes(&r, &declared)
+            .into_iter()
+            .map(|e| {
+                (
+                    e.package,
+                    e.name,
+                    e.sizes
+                        .into_iter()
+                        .map(|(v, s)| (v.to_string(), s))
+                        .collect(),
+                )
+            })
+            .collect();
+        let entry = |p: &str, n: &str, sizes: &[(&str, u64)]| {
+            (
+                p.to_owned(),
+                n.to_owned(),
+                sizes.iter().map(|&(v, s)| (v.to_owned(), s)).collect(),
+            )
+        };
+        assert_eq!(
+            found,
+            vec![
+                entry("demo", "demo::E", &[("1.0.0", 4), ("2.0.0", 8)]),
+                entry("demo", "demo::S", &[("1.0.0", 8), ("2.0.0", 16)]),
+                entry("demo", "demo::U", &[("1.0.0", 1), ("2.0.0", 2)]),
+                entry("tri", "tri::T", &[("1.0.0", 1), ("2.0.0", 2), ("3.0.0", 3)]),
+            ]
+        );
+    }
 
     #[test]
     fn test_environments_are_named_by_their_env_segment() {

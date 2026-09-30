@@ -471,4 +471,11 @@ exclude_re = [
     # the validator's pointer and word checks) hold the rest of the
     # layout either way.
     "replace && with \\|\\| in hyper_util_pool_reaper",
+    # Equivalent mutant: the crate-hash pairing's symbol pre-filter.
+    # It skips a symbol that is not v0 or names no evidence crate
+    # before demangling it; with `&&` more symbols are demangled, and
+    # each is then kept only for the crate hashes it names and the drop
+    # glue whose type is an evidence entry — which a skipped symbol has
+    # neither of. The filter is a cost, not an answer.
+    "replace \\|\\| with && in Evidence<'a>::glue",
 ]
