@@ -23,7 +23,10 @@
 //! that never sends one. (g) An HTTP/1 exchange over TLS, after which
 //! both ends park between exchanges: the server through hyper-util's
 //! version-choosing server, as dropshot serves HTTPS, the client
-//! through hyper's own connection.
+//! through hyper's own connection. (h) A client whose writes filled
+//! its socket, against a server that reads nothing, parked reading
+//! with records its connection holds unsent: what a write without a
+//! flush leaves, as sprockets' `send_msg` did before it flushed.
 //!
 //! The certificate authority and the `localhost` certificate it signed
 //! are embedded below: generated once with openssl, ECDSA P-256, valid
@@ -353,6 +356,33 @@ async fn https_client(
     let _ = conn.await;
 }
 
+/// (h) The client end: write until the socket takes no more, then read
+/// a reply without flushing. Each write hands its bytes to rustls,
+/// which writes the records the socket takes and keeps the rest; the
+/// write that leaves records behind is the one the socket refused, and
+/// nothing writes them again but another write or a flush.
+async fn unflushed_client(mut stream: client::TlsStream<TcpStream>, ready: oneshot::Sender<()>) {
+    census_expect::task("tls_conns::unflushed_client");
+    let chunk = vec![0u8; 64 * 1024];
+    while !stream.get_ref().1.wants_write() {
+        let _ = stream
+            .write(&chunk)
+            .await
+            .expect("the socket takes a write");
+    }
+    ready.send(()).expect("main waits for readiness");
+    let mut reply = [0u8; 4];
+    let _ = stream.read(&mut reply).await;
+}
+
+/// (h) The server end: hold the stream and read nothing, so the
+/// client's writes fill the socket.
+async fn deaf_server(stream: server::TlsStream<TcpStream>, park: oneshot::Receiver<()>) {
+    census_expect::task("tls_conns::deaf_server");
+    let _ = park.await;
+    drop(stream);
+}
+
 /// A oneshot whose sender is gone for good without ever being dropped,
 /// so its receiver parks forever.
 fn never() -> oneshot::Receiver<()> {
@@ -406,6 +436,11 @@ fn main() {
         let (client, server) = tcp_pair().await;
         tokio::spawn(mute_peer(client, never()));
         tokio::spawn(handshaking_server(acceptor.clone(), server, signal()));
+
+        // (h)
+        let (client, server) = tls_pair(&connector, &acceptor).await;
+        tokio::spawn(deaf_server(server, never()));
+        tokio::spawn(unflushed_client(client, signal()));
 
         drop(ready_tx);
         while let Some(rx) = ready.recv().await {

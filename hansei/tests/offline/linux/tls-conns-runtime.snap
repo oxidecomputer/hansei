@@ -4,10 +4,10 @@ description: "`runtime` over linux/tls-conns"
 ---
 runtime 0 @ 0xADDR
     flavor: multi_thread
-    tasks: 14
-    futures: 18
+    tasks: 16
+    futures: 20
     workers: 2
-    threads: 3 (lwp 425094, 425097, 425096)
+    threads: 3 (lwp 613666, 613669, 613668)
     found via: a thread's runtime context
     drivers:
       tokio::runtime::driver::Handle {
@@ -95,7 +95,7 @@ runtime 0 @ 0xADDR
           },
           scheduler_metrics: tokio::runtime::metrics::scheduler::SchedulerMetrics {
               remote_schedule_count: tokio::util::metric_atomics::MetricAtomicU64 {
-                  value: 15,
+                  value: 17,
               },
               budget_forced_yield_count: tokio::util::metric_atomics::MetricAtomicU64 {
                   value: 0,

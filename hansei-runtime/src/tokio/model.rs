@@ -1023,8 +1023,9 @@ pub enum WaitTarget {
         /// `Connect`/`Accept`) rather than a read or write.
         handshake: bool,
         /// The TLS connection the operation's route crossed, where it
-        /// crossed one: its words, or why they did not read.
-        tls: Option<Result<TlsReading, String>>,
+        /// crossed one: its words, or why they did not read. Boxed: the
+        /// words are several times any other wait's.
+        tls: Option<Box<Result<TlsReading, String>>>,
     },
     /// `batch_semaphore::Acquire`: queued on the semaphore that backs
     /// tokio's Mutex, RwLock, and Semaphore.
@@ -1121,7 +1122,7 @@ pub enum WaitTarget {
         caller: Option<HttpCaller>,
         /// The TLS connection the connection's stream crosses, where it
         /// crosses one: its words, or why they did not read.
-        tls: Option<Result<TlsReading, String>>,
+        tls: Option<Box<Result<TlsReading, String>>>,
         /// The socket's descriptor, where the connection's stream route
         /// read one.
         fd: Option<i32>,
@@ -1580,7 +1581,7 @@ impl WaitTarget {
     /// one: the `tls:` line under the wait's own.
     pub fn tls(&self) -> Option<&Result<TlsReading, String>> {
         match self {
-            Self::Io { tls, .. } | Self::HttpConn { tls, .. } => tls.as_ref(),
+            Self::Io { tls, .. } | Self::HttpConn { tls, .. } => tls.as_deref(),
             _ => None,
         }
     }
@@ -1628,6 +1629,10 @@ pub struct TlsReading {
     /// The bytes read off the socket and not yet deframed, and the
     /// size of the buffer they are read into.
     pub deframer: (u64, u64),
+    /// The records written into the connection that it has not yet
+    /// written to its socket, and their bytes: what the next write or
+    /// flush sends, and nothing else will — a read never does.
+    pub unsent: (u64, u64),
     /// The stream's own state variant: `Stream` while both directions
     /// are open, `ReadShutdown`, `WriteShutdown`, `FullyShutdown`, or
     /// `EarlyData` before a client's handshake finishes.
@@ -1706,14 +1711,21 @@ impl fmt::Display for TlsReading {
         }
         write!(f, ", {}, ", self.verdict())?;
         if self.read_seq == self.write_seq {
-            write!(f, "{} each way", counted_noun(self.read_seq, "record"))
+            write!(f, "{} each way", counted_noun(self.read_seq, "record"))?;
         } else {
             write!(
                 f,
                 "{} read, {} written",
                 counted_noun(self.read_seq, "record"),
                 self.write_seq
-            )
+            )?;
+        }
+        // Records written into the connection and never to its socket:
+        // what a flush would send, and a peer waiting on them never
+        // sees.
+        match self.unsent {
+            (0, _) => Ok(()),
+            (records, bytes) => write!(f, ", {records} unsent ({})", counted_noun(bytes, "byte")),
         }
     }
 }
@@ -2686,6 +2698,7 @@ mod tests {
             read_seq: 9239,
             write_seq: 9239,
             deframer: (0, 4096),
+            unsent: (0, 0),
             stream_state: "Stream".to_owned(),
         };
         assert_eq!(
@@ -2697,6 +2710,21 @@ mod tests {
             f(&mut reading);
             reading
         };
+        // Records the connection holds unwritten close the line; a
+        // lone record's byte is counted singular too.
+        assert_eq!(
+            with(&|r| {
+                r.read_seq = 3;
+                r.write_seq = 6;
+                r.unsent = (2, 80);
+            })
+            .to_string(),
+            "client, TLSv1_3, established, 3 records read, 6 written, 2 unsent (80 bytes)"
+        );
+        assert_eq!(
+            with(&|r| r.unsent = (1, 1)).to_string(),
+            "client, TLSv1_3, established, 9239 records each way, 1 unsent (1 byte)"
+        );
         let verdict = |f: &dyn Fn(&mut TlsReading)| with(f).verdict();
         // Either direction not yet open is a handshake in progress.
         assert_eq!(

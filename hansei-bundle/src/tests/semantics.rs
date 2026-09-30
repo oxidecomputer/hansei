@@ -3965,8 +3965,22 @@ fn tls_session() -> Bundle {
         "Option",
     ]
     .map(&mut name);
-    let [connection_name, stream_name, platform_id] =
-        ["ConnectionCommon", "TlsStream", "platform_id"].map(&mut name);
+    let [
+        connection_name,
+        stream_name,
+        platform_id,
+        buf,
+        len,
+        record_name,
+    ] = [
+        "ConnectionCommon",
+        "TlsStream",
+        "platform_id",
+        "buf",
+        "len",
+        "Vec",
+    ]
+    .map(&mut name);
     b.strings = strings.finish();
     let member = |name, ty, offset| MemberDef { name, ty, offset };
     let variant = |name, discr: Option<u128>, payload| VariantDef {
@@ -3976,7 +3990,7 @@ fn tls_session() -> Bundle {
         decl: None,
         await_site: None,
     };
-    let peer_t = BundleTypeId(20);
+    let (peer_t, ring_t, record_t) = (BundleTypeId(20), BundleTypeId(21), BundleTypeId(22));
     let (u8_t, result_t, side_t, version_t, option_t, session_t, stream_t) = (
         BundleTypeId(13),
         BundleTypeId(14),
@@ -4036,7 +4050,7 @@ fn tls_session() -> Bundle {
         ),
         TypeDef::Struct {
             name: connection_name,
-            size: 32,
+            size: 40,
             members: vec![
                 member(state, result_t, 0),
                 member(side, side_t, 2),
@@ -4049,6 +4063,7 @@ fn tls_session() -> Bundle {
                 member(fatal, u8_t, 10),
                 member(read_seq, BundleTypeId(0), 16),
                 member(write_seq, BundleTypeId(0), 24),
+                member(buf, ring_t, 32),
             ],
         },
         TypeDef::Struct {
@@ -4063,6 +4078,15 @@ fn tls_session() -> Bundle {
         TypeDef::Array {
             elem: u8_t,
             count: 4,
+        },
+        TypeDef::Pointer {
+            name: None,
+            target: record_t,
+        },
+        TypeDef::Struct {
+            name: record_name,
+            size: 24,
+            members: vec![member(len, BundleTypeId(0), 16)],
         },
     ]);
     // The sprockets stream names its peer beside the stream it holds.
@@ -4102,6 +4126,15 @@ fn tls_session() -> Bundle {
         write_seq: word(write_seq),
         deframer_used: word(read_seq),
         deframer_len: word(write_seq),
+        sendable: SendableBinding {
+            prefix_used: word(read_seq),
+            head: word(read_seq),
+            len: word(write_seq),
+            buf: path(vec![named(buf)], ring_t),
+            cap: word(write_seq),
+            record: record_t,
+            record_len: path(vec![named(len)], BundleTypeId(0)),
+        },
     });
     let mut stream = record(stream_t);
     stream.future = None;
@@ -4165,6 +4198,22 @@ fn test_tls_words_bind_by_shape_under_their_rules() {
     session(&mut narrow_seq).write_seq = words.sent_fatal_alert.clone();
     bad(&narrow_seq, "TLS session count is not an unsigned word");
 
+    let mut narrow_ring = b.clone();
+    session(&mut narrow_ring).sendable.len = words.sent_fatal_alert.clone();
+    bad(&narrow_ring, "TLS session count is not an unsigned word");
+
+    let mut unpointed = b.clone();
+    session(&mut unpointed).sendable.buf = words.read_seq.clone();
+    bad(&unpointed, "record ring is not behind a pointer");
+
+    let mut unsized_record = b.clone();
+    session(&mut unsized_record).sendable.record = BundleTypeId(13);
+    bad(&unsized_record, "TLS session record is not a sized struct");
+
+    let mut record_word = b.clone();
+    session(&mut record_word).sendable.record_len = path(Vec::new(), BundleTypeId(22));
+    bad(&record_word, "record length is not an unsigned word");
+
     let mut wrong_rule = b.clone();
     session(&mut wrong_rule).rule = SemanticRuleId(2);
     bad(&wrong_rule, "incompatible capability");
@@ -4222,6 +4271,7 @@ fn test_tls_words_bind_by_shape_under_their_rules() {
     bad(&not_an_array, "stream peer name is not an array");
 
     let mut wide = b.clone();
+    let words = BundleTypeId(wide.types.types.len() as u32);
     wide.types.types.push(TypeDef::Array {
         elem: BundleTypeId(0),
         count: 4,
@@ -4229,9 +4279,9 @@ fn test_tls_words_bind_by_shape_under_their_rules() {
     let TypeDef::Struct { members, size, .. } = &mut wide.types.types[12] else {
         unreachable!()
     };
-    members.last_mut().unwrap().ty = BundleTypeId(21);
+    members.last_mut().unwrap().ty = words;
     *size = 56;
-    peer(&mut wide).name = path(inner, BundleTypeId(21));
+    peer(&mut wide).name = path(inner, words);
     bad(&wide, "stream peer name is not an array of bytes");
 }
 

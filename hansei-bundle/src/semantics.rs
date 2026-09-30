@@ -675,6 +675,37 @@ pub struct TlsSessionBinding {
     /// deframed, and the buffer's size.
     pub deframer_used: TypedPath,
     pub deframer_len: TypedPath,
+    /// `core.common_state.sendable_tls`: the records written into the
+    /// connection and not yet written to its socket — a `VecDeque` ring
+    /// of encoded records, one `Vec<u8>` each, whose first one has
+    /// `prefix_used` bytes already sent. What the next flush or write
+    /// would send, and nothing else will.
+    pub sendable: SendableBinding,
+}
+
+/// rustls's `ChunkVecBuffer` of outgoing records, reached from the
+/// connection: the ring's words, by std's member names, and the record
+/// type it strides by. Every path but `record_len` starts at the
+/// connection.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SendableBinding {
+    /// `….sendable_tls.prefix_used`: the bytes of the first record
+    /// already written.
+    pub prefix_used: TypedPath,
+    /// `….sendable_tls.chunks.head` and `.len`: the ring's first slot
+    /// and how many records it holds, unsigned words (through the index
+    /// newtype where the standard library wraps one).
+    pub head: TypedPath,
+    pub len: TypedPath,
+    /// `….sendable_tls.chunks.buf.inner.ptr.pointer.pointer`: the ring's
+    /// storage; `….buf.inner.cap` its capacity in records (through the
+    /// niche newtype where the standard library wraps one).
+    pub buf: TypedPath,
+    pub cap: TypedPath,
+    /// The record type the ring holds, `Vec<u8>`, whose size strides the
+    /// storage, and the path from it to its length.
+    pub record: BundleTypeId,
+    pub record_len: TypedPath,
 }
 
 /// A TLS stream's words: the rustls connection it holds, and its own

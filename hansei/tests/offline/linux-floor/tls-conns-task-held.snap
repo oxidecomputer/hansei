@@ -6,11 +6,11 @@ task 5
     state: idle
     thread: <none>
     type: async fn tls_conns::split_client
-    awaiting at: src/bin/tls-conns.rs:208
+    awaiting at: src/bin/tls-conns.rs:211
     awaiting on:
         select!:
             held in: frame 1
-            awaiting at: src/bin/tls-conns.rs:208
+            awaiting at: src/bin/tls-conns.rs:211
             branch 0 (borrowed): tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>
                 held in: frame 1 `read`
                 awaiting on: io fd 13 (readable)
@@ -19,7 +19,7 @@ task 5
                 waker: io 0xADDR read: the read-waiter slot, awaiting readable, ready: writable
             branch 1: tokio::io::util::write_buf::WriteBuf<tokio::io::split::WriteHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>, core::io::cursor::Cursor<Vec<u8>>>: disabled
                 type defined at: tokio-1.47.5/src/io/util/write_buf.rs:44
-    spawned at: src/bin/tls-conns.rs:386:9
-    type defined at: src/bin/tls-conns.rs:193
+    spawned at: src/bin/tls-conns.rs:416:9
+    type defined at: src/bin/tls-conns.rs:196
     held futures: 2
     join sets: 0

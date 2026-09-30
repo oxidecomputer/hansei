@@ -2,16 +2,17 @@
 source: hansei/src/offline.rs
 description: "`connections` over illumos/tls-conns"
 ---
-TASK  CALLER  PROTO      ROLE    PHASE        DEADLINE  BUF      PEER  SERVER  METHOD  REQUEST
-3     —       tls        client  established  —         0/4096   —     —       —       —
-4     —       tls        server  established  —         0/4096   —     —       —       —
-5     —       tls        client  established  —         0/4096   —     —       —       —
-6     —       tls        server  established  —         0/4096   —     —       —       —
-7     —       tcp        —       open         —         —        —     —       —       —
-8     —       tcp        —       open         —         —        —     —       —       —
-9     —       tls        client  closing      —         0/4096   —     —       —       —
-12    —       tls        client  handshaking  —         0/4096   —     —       —       —
-14    —       tls        server  handshaking  —         0/4096   —     —       —       —
-15    —       http1/tls  server  idle         —         0/16349  —     —       —       —
-16    —       http1/tls  client  idle         —         0/8192   —     —       —       —
-[11 connections]
+TASK  CALLER  PROTO      ROLE    PHASE        DEADLINE  BUF      SENDQ  PEER  SERVER  METHOD  REQUEST
+3     —       tls        client  established  —         0/4096   0      —     —       —       —
+4     —       tls        server  established  —         0/4096   0      —     —       —       —
+5     —       tls        client  established  —         0/4096   0      —     —       —       —
+6     —       tls        server  established  —         0/4096   0      —     —       —       —
+7     —       tcp        —       open         —         —        —      —     —       —       —
+8     —       tcp        —       open         —         —        —      —     —       —       —
+9     —       tls        client  closing      —         0/4096   0      —     —       —       —
+12    —       tls        client  handshaking  —         0/4096   0      —     —       —       —
+14    —       tls        server  handshaking  —         0/4096   0      —     —       —       —
+16    —       tls        client  established  —         0/4096   184    —     —       —       —
+17    —       http1/tls  server  idle         —         0/16349  0      —     —       —       —
+18    —       http1/tls  client  idle         —         0/8192   0      —     —       —       —
+[12 connections]

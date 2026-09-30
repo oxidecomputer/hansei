@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x1f9a200` over illumos/tls-conns"
+description: "`whatis 0x1873200` over illumos/tls-conns"
 ---
 Status: live
 Size:   2448 byte block
@@ -9,4 +9,4 @@ Offset: +16 in block
 Task 3: async fn tls_conns::plain_client
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
-    Spawned at: src/bin/tls-conns.rs:380:9
+    Spawned at: src/bin/tls-conns.rs:410:9

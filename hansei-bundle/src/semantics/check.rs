@@ -883,26 +883,56 @@ impl<'a> Check<'a> {
                 "TLS session flag is not one byte",
             )?;
         }
+        let sendable = &binding.sendable;
         for seq in [
             &binding.read_seq,
             &binding.write_seq,
             &binding.deframer_used,
             &binding.deframer_len,
+            &sendable.prefix_used,
+            &sendable.head,
+            &sendable.len,
+            &sendable.cap,
         ] {
             self.path(record.ty, seq)?;
-            require(
-                matches!(
-                    self.ty(seq.target)?,
-                    TypeDef::Base {
-                        encoding: crate::Encoding::Unsigned,
-                        size: 8,
-                        ..
-                    }
-                ),
-                "TLS session count is not an unsigned word",
-            )?;
+            self.unsigned_word(seq, "TLS session count is not an unsigned word")?;
         }
-        Ok(())
+        // The ring's storage is a pointer its records stride from, each
+        // one a sized record whose length is a word.
+        self.path(record.ty, &sendable.buf)?;
+        require(
+            matches!(self.ty(sendable.buf.target)?, TypeDef::Pointer { .. }),
+            "TLS session record ring is not behind a pointer",
+        )?;
+        require(
+            matches!(self.ty(sendable.record)?, TypeDef::Struct { .. })
+                && self
+                    .0
+                    .types
+                    .size_of(sendable.record)
+                    .is_some_and(|size| size > 0),
+            "TLS session record is not a sized struct",
+        )?;
+        self.path(sendable.record, &sendable.record_len)?;
+        self.unsigned_word(
+            &sendable.record_len,
+            "TLS session record length is not an unsigned word",
+        )
+    }
+
+    /// Whether a path lands on a `u64`.
+    fn unsigned_word(&self, path: &TypedPath, what: &str) -> Result<()> {
+        require(
+            matches!(
+                self.ty(path.target)?,
+                TypeDef::Base {
+                    encoding: crate::Encoding::Unsigned,
+                    size: 8,
+                    ..
+                }
+            ),
+            what,
+        )
     }
 
     /// A TLS stream's words, under its route's rule: the connection it

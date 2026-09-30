@@ -6,4 +6,4 @@ description: "`trace 3 -n` over linux/tls-conns"
       waiting on io fd 11 (readable)
       tls client, TLSv1_3, established, 2 records read, 1 written
 #1  async fn      tls_conns::plain_client
-      awaiting at src/bin/tls-conns.rs:171 (Suspend2, 3 locals)
+      awaiting at src/bin/tls-conns.rs:174 (Suspend2, 3 locals)

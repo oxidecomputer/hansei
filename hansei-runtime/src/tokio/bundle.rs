@@ -38,9 +38,9 @@ use hansei_bundle::{
     AccessKind, BundleMember, BundleType, BundleTypeId, BundleView, ContainerKind, Continuation,
     DynStreamCase, DynStreamLayout, FutureKind, HashTableBinding, IoOperationKind, IoRouteStep,
     IoSocket, MemberRef, PollAction, PollProgram, ResourceKind, SchedulerClass, SelectBinding,
-    StaticRole, Step, StoragePolicy, StreamPeerBinding, SymbolLookup, TaskEntryId, TaskFutureEntry,
-    TlsStreamBinding, TypeClass, TypeDef, TypeSemantics, TypedPath, WalkOutcome, WalkRole,
-    socket_roles, strip_build_prefix, strip_llvm_suffix,
+    SendableBinding, StaticRole, Step, StoragePolicy, StreamPeerBinding, SymbolLookup, TaskEntryId,
+    TaskFutureEntry, TlsStreamBinding, TypeClass, TypeDef, TypeSemantics, TypedPath, WalkOutcome,
+    WalkRole, socket_roles, strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -4250,8 +4250,55 @@ impl<'b, T: Target> Context<'b, T> {
                 seq(&words.deframer_used, "deframer's fill")?,
                 seq(&words.deframer_len, "deframer's size")?,
             ),
+            unsent: self.unsent_records(&words.sendable, &seq, read)?,
             stream_state: stream_state.to_owned(),
         })
+    }
+
+    /// The records in rustls's outgoing ring and their bytes, less the
+    /// first one's prefix already written: the ring's `len` slots from
+    /// `head`, wrapping at `cap`, each a record read as its recorded
+    /// type at its stride.
+    fn unsent_records(
+        &self,
+        ring: &SendableBinding,
+        seq: &dyn Fn(&TypedPath, &str) -> Result<u64>,
+        read: &ReadContext<'_>,
+    ) -> Result<(u64, u64)> {
+        let len = seq(&ring.len, "outgoing records' count")?;
+        if len == 0 {
+            return Ok((0, 0));
+        }
+        let head = seq(&ring.head, "outgoing records' head")?;
+        let cap = seq(&ring.cap, "outgoing records' capacity")?;
+        let buf = seq(&ring.buf, "outgoing records' storage")?;
+        ensure!(
+            len <= cap && head < cap,
+            "the outgoing ring claims {len} records from slot {head} of {cap}"
+        );
+        let record = self
+            .view
+            .ty(ring.record)
+            .ok_or_else(|| anyhow!("the tokio info has no type entry for an outgoing record"))?;
+        let stride = record.size();
+        let mut bytes = 0u64;
+        for i in 0..len {
+            let slot = (head + i) % cap;
+            let addr = buf + slot * stride;
+            let value = Value::read(self.proc, record, addr)
+                .with_context(|| format!("outgoing record {i} at {addr:#x}"))?;
+            let len = contract::execute_steps(self, read, value, &ring.record_len.steps)
+                .with_context(|| format!("outgoing record {i}'s length"))?
+                .at("outgoing record's length")?
+                .parse::<u64>(self.proc)?;
+            bytes = bytes.saturating_add(len);
+        }
+        let sent = seq(&ring.prefix_used, "outgoing prefix written")?;
+        ensure!(
+            sent <= bytes,
+            "the outgoing ring's written prefix {sent} exceeds its {bytes} bytes"
+        );
+        Ok((len, bytes - sent))
     }
 
     /// A `Readiness` await: the registration it names, its own state,

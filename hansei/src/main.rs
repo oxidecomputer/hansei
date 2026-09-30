@@ -732,7 +732,8 @@ pub enum Command {
     /// tallies the survivors. The string fields — proto, role, phase,
     /// method, peer, server, request — are case-insensitive regexes over the
     /// printed value; task, caller and rt are exact; buffered compares
-    /// the bytes read and not yet parsed, written '>N', '<N' or '=N'
+    /// the bytes read and not yet parsed, and sendq a TLS connection's
+    /// bytes written and not yet sent, written '>N', '<N' or '=N'
     /// (quote them from a shell).
     Connections {
         /// Show at most this many connections — or, under --group,
@@ -745,7 +746,7 @@ pub enum Command {
         /// Keep only the connections whose FIELD matches ARG; repeat
         /// for more clauses, which AND. Fields: proto, role, phase, method,
         /// peer, server, request (case-insensitive regexes); task,
-        /// caller, rt (exact); buffered ('>N', '<N', '=N'). ARG may list
+        /// caller, rt (exact); buffered, sendq ('>N', '<N', '=N'). ARG may list
         /// alternatives, `idle,closing`, of which any matches; a
         /// literal comma is `\,`.
         #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]

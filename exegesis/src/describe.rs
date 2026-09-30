@@ -1019,13 +1019,20 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 ("write-seq", &session.write_seq),
                 ("deframer-used", &session.deframer_used),
                 ("deframer-len", &session.deframer_len),
+                ("unsent-prefix", &session.sendable.prefix_used),
+                ("unsent-head", &session.sendable.head),
+                ("unsent-len", &session.sendable.len),
+                ("unsent-buf", &session.sendable.buf),
+                ("unsent-cap", &session.sendable.cap),
             ]
             .map(|(what, word)| format!("{what} {}", path(record.ty, word)));
             let _ = write!(
                 line,
-                " tls-session rule {} {}",
+                " tls-session rule {} {} unsent-record {} len {}",
                 session.rule.0,
-                words.join(" ")
+                words.join(" "),
+                fq_name(bundle, session.sendable.record),
+                path(session.sendable.record, &session.sendable.record_len)
             );
         }
         if let Some(stream) = &record.tls_stream {

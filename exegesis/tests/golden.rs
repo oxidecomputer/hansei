@@ -1000,9 +1000,41 @@ fn assert_tls_stream(program: &str, bundle: &Bundle, key: &str) {
             ),
             (&session.deframer_used, "deframer_buffer.used".to_owned()),
             (&session.deframer_len, "deframer_buffer.buf.len".to_owned()),
+            (
+                &session.sendable.prefix_used,
+                format!("{common}.sendable_tls.prefix_used"),
+            ),
+            // The pinned toolchain wraps the ring's head and capacity
+            // in the standard library's newtypes.
+            (
+                &session.sendable.head,
+                format!("{common}.sendable_tls.chunks.head.__0"),
+            ),
+            (
+                &session.sendable.len,
+                format!("{common}.sendable_tls.chunks.len"),
+            ),
+            (
+                &session.sendable.buf,
+                format!("{common}.sendable_tls.chunks.buf.inner.ptr.pointer.pointer"),
+            ),
+            (
+                &session.sendable.cap,
+                format!("{common}.sendable_tls.chunks.buf.inner.cap.__0"),
+            ),
         ] {
             assert_eq!(route_text(bundle, word), expected, "{program}: {name}");
         }
+        assert_eq!(
+            type_name_of(bundle, session.sendable.record),
+            "alloc::vec::Vec<u8, alloc::alloc::Global>",
+            "{program}: {name}"
+        );
+        assert_eq!(
+            route_text(bundle, &session.sendable.record_len),
+            "len",
+            "{program}: {name}"
+        );
         seen += 1;
     }
     assert!(seen > 0, "{program}: no type named {key}");

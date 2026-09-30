@@ -4066,15 +4066,15 @@ fn test_http_conns_connections_acceptance() {
         assert_eq!(
             rows,
             [
-                "CALLER http1 client awaiting response — 0/8192 127.0.0.1:PORT — GET http://127.0.0.1:PORT/park",
-                "CALLER http1 client awaiting response — 0/8192 127.0.0.1:PORT — GET —",
-                "— http1 client idle — 0/8192 127.0.0.1:PORT — — —",
-                "— http1 client idle — 0/8192 — — — —",
-                "— http1 server handling request — 0/16326 — — GET /park",
-                "— http1 server handling request — 0/16339 — — GET /park",
-                "— http1 server idle DEADLINE 0/16302 — — — —",
-                "— http1 server idle DEADLINE 0/16343 — — — —",
-                "— http1 server negotiating — — — — — —",
+                "CALLER http1 client awaiting response — 0/8192 — 127.0.0.1:PORT — GET http://127.0.0.1:PORT/park",
+                "CALLER http1 client awaiting response — 0/8192 — 127.0.0.1:PORT — GET —",
+                "— http1 client idle — 0/8192 — 127.0.0.1:PORT — — —",
+                "— http1 client idle — 0/8192 — — — — —",
+                "— http1 server handling request — 0/16326 — — — GET /park",
+                "— http1 server handling request — 0/16339 — — — GET /park",
+                "— http1 server idle DEADLINE 0/16302 — — — — —",
+                "— http1 server idle DEADLINE 0/16343 — — — — —",
+                "— http1 server negotiating — — — — — — —",
             ],
             "{out}"
         );
@@ -4112,49 +4112,64 @@ fn test_http_conns_connections_acceptance() {
 /// one request left of a fresh 16 KiB, the client's hyper's 8 KiB
 /// start. The two handshakes in progress are rows too, handshaking,
 /// and each task driving one waits on its socket as handshaking, not
-/// as a read — both for the peer's first flight. The tasks parked on
-/// anything but a socket are no rows. Grouping by protocol files the
-/// eleven under three buckets, and a filter on it keeps the TCP pair.
+/// as a read — both for the peer's first flight. Every connection
+/// through TLS has nothing queued to send, but the client whose writes
+/// filled its socket: the records its connection kept, unwritten, are
+/// its `SENDQ`, the one row a filter on it keeps, and the words its
+/// read's wait carries. The tasks parked on anything but a socket are
+/// no rows. Grouping by protocol files the twelve under three buckets,
+/// and a filter on it keeps the TCP pair.
 #[test]
 fn test_tls_conns_connections_acceptance() {
     let bundle = fixtures().bundle("tls-conns");
     with_core("tls-conns", |core| {
         let out = hansei_ok(&bundle, core, "connections");
-        assert!(out.ends_with("[11 connections]\n"), "{out}");
+        assert!(out.ends_with("[12 connections]\n"), "{out}");
+        // How much the socket took before it refused is the kernel's
+        // to say: a nonzero `SENDQ` reads as `N`.
         let mut rows: Vec<String> = out
             .lines()
             .skip(1)
-            .take(11)
+            .take(12)
             .map(|line| {
-                line.split_whitespace()
-                    .skip(1)
-                    .collect::<Vec<_>>()
-                    .join(" ")
+                let mut cells: Vec<&str> = line.split_whitespace().skip(1).collect();
+                if cells[6].parse::<u64>().is_ok_and(|queued| queued > 0) {
+                    cells[6] = "N";
+                }
+                cells.join(" ")
             })
             .collect();
         rows.sort();
         assert_eq!(
             rows,
             [
-                "— http1/tls client idle — 0/8192 — — — —",
-                "— http1/tls server idle — 0/16349 — — — —",
-                "— tcp — open — — — — — —",
-                "— tcp — open — — — — — —",
-                "— tls client closing — 0/4096 — — — —",
-                "— tls client established — 0/4096 — — — —",
-                "— tls client established — 0/4096 — — — —",
-                "— tls client handshaking — 0/4096 — — — —",
-                "— tls server established — 0/4096 — — — —",
-                "— tls server established — 0/4096 — — — —",
-                "— tls server handshaking — 0/4096 — — — —",
+                "— http1/tls client idle — 0/8192 0 — — — —",
+                "— http1/tls server idle — 0/16349 0 — — — —",
+                "— tcp — open — — — — — — —",
+                "— tcp — open — — — — — — —",
+                "— tls client closing — 0/4096 0 — — — —",
+                "— tls client established — 0/4096 0 — — — —",
+                "— tls client established — 0/4096 0 — — — —",
+                "— tls client established — 0/4096 N — — — —",
+                "— tls client handshaking — 0/4096 0 — — — —",
+                "— tls server established — 0/4096 0 — — — —",
+                "— tls server established — 0/4096 0 — — — —",
+                "— tls server handshaking — 0/4096 0 — — — —",
             ],
             "{out}"
         );
         let grouped = hansei_ok(&bundle, core, "connections --group proto");
-        for bucket in ["7  tls", "2  tcp", "2  http1/tls"] {
+        for bucket in ["8  tls", "2  tcp", "2  http1/tls"] {
             assert!(grouped.contains(bucket), "{grouped}");
         }
+        let queued = hansei_ok(&bundle, core, "connections --with sendq >0");
+        assert!(queued.ends_with("[1 connection]\n"), "{queued}");
         let tasks = list_tasks(&bundle, core);
+        let unflushed = task_with_future(&tasks, "async fn tls_conns::unflushed_client");
+        let block = hansei_ok(&bundle, core, &format!("task {}", unflushed.id));
+        let unsent = regex::Regex::new(r"(?m)^        tls: client, TLSv1_3, established, .* written, [1-9][0-9]* unsent \([0-9]+ bytes\)$")
+            .unwrap();
+        assert!(unsent.is_match(&block), "{block}");
         for side in ["client", "server"] {
             let task = task_with_future(&tasks, &format!("async fn tls_conns::handshaking_{side}"));
             assert!(

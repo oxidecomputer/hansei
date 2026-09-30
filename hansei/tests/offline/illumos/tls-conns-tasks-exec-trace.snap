@@ -7,58 +7,58 @@ task 3
       waiting on io fd 10 (readable)
       tls client, TLSv1_3, established, 2 records read, 1 written
 #1  async fn      tls_conns::plain_client
-      awaiting at src/bin/tls-conns.rs:171 (Suspend2, 3 locals)
+      awaiting at src/bin/tls-conns.rs:174 (Suspend2, 3 locals)
 
 task 4
 #0  future        tokio::io::util::read_exact::ReadExact<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>
       waiting on io fd 11 (readable)
       tls server, TLSv1_3, established, 1 record read, 2 written
 #1  async fn      tls_conns::exact_server
-      awaiting at src/bin/tls-conns.rs:186 (Suspend2, 3 locals)
+      awaiting at src/bin/tls-conns.rs:189 (Suspend2, 3 locals)
 
 task 5
 #0  future        core::future::poll_fn::PollFn<tls_conns::split_client::{async_fn#0}::{closure_env#0}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
 #1  async fn      tls_conns::split_client
-      awaiting at src/bin/tls-conns.rs:208 (Suspend0, 8 locals; holds 2 pending futures)
+      awaiting at src/bin/tls-conns.rs:211 (Suspend0, 8 locals; holds 2 pending futures)
 
 task 6
 #0  future        tokio::io::util::read_exact::ReadExact<Box<tokio::io::util::buf_stream::BufStream<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>>
       waiting on io fd 13 (readable)
       tls server, TLSv1_3, established, 0 records read, 1 written
 #1  async fn      tls_conns::buffered_server
-      awaiting at src/bin/tls-conns.rs:222 (Suspend0, 2 locals)
+      awaiting at src/bin/tls-conns.rs:225 (Suspend0, 2 locals)
 
 task 7
 #0  future        core::future::poll_fn::PollFn<tls_conns::owned_split_client::{async_fn#0}::{closure_env#0}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
 #1  async fn      tls_conns::owned_split_client
-      awaiting at src/bin/tls-conns.rs:242 (Suspend0, 8 locals; holds 2 pending futures)
+      awaiting at src/bin/tls-conns.rs:245 (Suspend0, 8 locals; holds 2 pending futures)
 
 task 8
 #0  future        tokio::io::util::read::Read<tokio::net::tcp::stream::TcpStream>
       waiting on io fd 15 (readable)
 #1  async fn      tls_conns::tcp_server
-      awaiting at src/bin/tls-conns.rs:253 (Suspend0, 2 locals)
+      awaiting at src/bin/tls-conns.rs:256 (Suspend0, 2 locals)
 
 task 9
 #0  future        tokio::io::util::read::Read<&mut tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
       waiting on io fd 16 (readable)
       tls client, TLSv1_3, closing, 1 record each way
 #1  async fn      tls_conns::closing_client
-      awaiting at src/bin/tls-conns.rs:266 (Suspend1, 3 locals)
+      awaiting at src/bin/tls-conns.rs:269 (Suspend1, 3 locals)
 
 task 10
 #0  future        tokio::sync::oneshot::Receiver<()>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      tls_conns::drained_server
-      awaiting at src/bin/tls-conns.rs:283 (Suspend1, 2 locals)
+      awaiting at src/bin/tls-conns.rs:286 (Suspend1, 2 locals)
 
 task 11
 #0  future        tokio::sync::oneshot::Receiver<()>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      tls_conns::silent_peer
-      awaiting at src/bin/tls-conns.rs:310 (Suspend1, 2 locals)
+      awaiting at src/bin/tls-conns.rs:313 (Suspend1, 2 locals)
 
 task 12
 #0  future        tokio_rustls::common::handshake::MidHandshake<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
@@ -67,13 +67,13 @@ task 12
 #1  future        tokio_rustls::client::Connect<tokio::net::tcp::stream::TcpStream>
       defined at tokio-rustls-0.26.4/src/client.rs:185 (<no_state>, 0 locals)
 #2  async fn      tls_conns::handshaking_client
-      awaiting at src/bin/tls-conns.rs:293 (Suspend0, 1 local)
+      awaiting at src/bin/tls-conns.rs:296 (Suspend0, 1 local)
 
 task 13
 #0  future        tokio::sync::oneshot::Receiver<()>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      tls_conns::mute_peer
-      awaiting at src/bin/tls-conns.rs:328 (Suspend0, 1 local)
+      awaiting at src/bin/tls-conns.rs:331 (Suspend0, 1 local)
 
 task 14
 #0  future        tokio_rustls::common::handshake::MidHandshake<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>
@@ -82,26 +82,39 @@ task 14
 #1  future        tokio_rustls::server::Accept<tokio::net::tcp::stream::TcpStream>
       defined at tokio-rustls-0.26.4/src/server.rs:285 (<no_state>, 0 locals)
 #2  async fn      tls_conns::handshaking_server
-      awaiting at src/bin/tls-conns.rs:322 (Suspend0, 1 local)
+      awaiting at src/bin/tls-conns.rs:325 (Suspend0, 1 local)
 
 task 15
+#0  future        tokio::sync::oneshot::Receiver<()>
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+#1  async fn      tls_conns::deaf_server
+      awaiting at src/bin/tls-conns.rs:382 (Suspend0, 1 local)
+
+task 16
+#0  future        tokio::io::util::read::Read<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
+      waiting on io fd 22 (readable)
+      tls client, TLSv1_3, established, 1 record read, 8 written, 1 unsent (184 bytes)
+#1  async fn      tls_conns::unflushed_client
+      awaiting at src/bin/tls-conns.rs:375 (Suspend1, 3 locals)
+
+task 17
 #0  future        hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<tls_conns::https_server::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>, hyper::proto::h1::role::Server>
-      waiting on http1 server 0xADDR fd 23 (idle, keep-alive)
+      waiting on http1 server 0xADDR fd 25 (idle, keep-alive)
       tls server, TLSv1_3, established, 1 record read, 2 written
 #1  future        hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>, hyper::service::util::ServiceFn<tls_conns::https_server::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
       defined at hyper-1.10.1/src/server/conn/http1.rs:550 (Some, 0 locals)
 #2  future        hyper_util::server::conn::auto::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<tls_conns::https_server::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper_util::rt::tokio::TokioExecutor>
       defined at hyper-util-0.1.20/src/server/conn/auto/mod.rs:664 (H1, 1 local)
 #3  async fn      tls_conns::https_server
-      awaiting at src/bin/tls-conns.rs:339 (Suspend0, 0 locals)
+      awaiting at src/bin/tls-conns.rs:342 (Suspend0, 0 locals)
 
-task 16
+task 18
 #0  future        hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>, hyper::proto::h1::role::Client>
-      waiting on http1 client 0xADDR fd 22 (idle, keep-alive)
+      waiting on http1 client 0xADDR fd 24 (idle, keep-alive)
       via mpsc rx 0xADDR (1 sender, 0 unread)
       tls client, TLSv1_3, established, 2 records read, 1 written
 #1  future        hyper::client::conn::http1::Connection<hyper_util::rt::tokio::TokioIo<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
       defined at hyper-1.10.1/src/client/conn/http1.rs:310 (<no_state>, 1 local)
 #2  async fn      tls_conns::https_client
-      awaiting at src/bin/tls-conns.rs:353 (Suspend0, 0 locals)
-[Executed against 14 tasks, 0 failed]
+      awaiting at src/bin/tls-conns.rs:356 (Suspend0, 0 locals)
+[Executed against 16 tasks, 0 failed]

@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --with type execute<Pin --exec task` over linux-floor/http-conns"
 ---
-task 4
+task 5
     state: idle
     thread: <none>
     type: async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
@@ -11,6 +11,7 @@ task 4
         via: mpsc rx 0xADDR (1 sender, 0 unread)
         io 0xADDR read
             waker: the read-waiter slot, awaiting readable, ready: writable
+        unknown @ 0xADDR
     spawned at: src/bin/http-conns.rs:75:9
     type defined at: src/bin/http-conns.rs:75
     held futures: 0

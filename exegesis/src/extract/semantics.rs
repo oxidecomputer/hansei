@@ -35,11 +35,11 @@ use crate::bundle::{
     PollAction, PollCase, PollProgram, RefcountBinding, ResourceBinding, ResourceKind,
     SchedulerBinding, SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind,
     SemanticOrigin, SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind,
-    SemanticTable, SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StreamPeerBinding,
-    StringInterner, TaskEntryId, TaskFutureEntry, TlsSessionBinding, TlsStreamBinding, TypeDef,
-    TypeSemantics, TypeTable, TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles,
-    container_routes, required_resource_roles, required_resource_routes, scheduler_role,
-    semantic_path_target, socket_roles,
+    SemanticTable, SendableBinding, SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef,
+    StreamPeerBinding, StringInterner, TaskEntryId, TaskFutureEntry, TlsSessionBinding,
+    TlsStreamBinding, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome, WalkRole,
+    WalksTable, container_roles, container_routes, required_resource_roles,
+    required_resource_routes, scheduler_role, semantic_path_target, socket_roles,
 };
 use crate::detect::Family;
 use crate::detect::adapters::{
@@ -3008,6 +3008,7 @@ pub(super) fn bind_semantics(
                 write_seq: plan.write_seq,
                 deframer_used: plan.deframer_used,
                 deframer_len: plan.deframer_len,
+                sendable: plan.sendable,
             });
         records.push(TypeSemantics {
             ty,
@@ -4559,18 +4560,27 @@ struct TlsSessionPlan {
     write_seq: TypedPath,
     deframer_used: TypedPath,
     deframer_len: TypedPath,
+    sendable: SendableBinding,
 }
+
+/// The ring rustls keeps its outgoing records in, as std names it, and
+/// the record it holds.
+const SENDABLE_RING: &str =
+    "alloc::collections::vec_deque::VecDeque<alloc::vec::Vec<u8, alloc::alloc::Global>, ";
+const SENDABLE_RECORD: &str = "alloc::vec::Vec<u8, alloc::alloc::Global>";
 
 /// Plan a rustls connection's words: the release first, read off the
 /// type's declarations and inside the reviewed range, then each word
 /// by the reviewed layout's member names, held to the shape the
 /// reading takes — the state a `Result`, the version an `Option` over
 /// an enum, the side a C-like enum, the flags single bytes and the
-/// sequence counts unsigned words.
+/// sequence counts unsigned words; the outgoing records' ring by std's
+/// member names, its storage a pointer, its record `Vec<u8>` by name.
 fn plan_tls_session(
     ty: BundleTypeId,
     sources: &BTreeSet<PollSource>,
     types: &TypeTable,
+    names: &[Option<String>],
     strings: &StringInterner,
 ) -> Result<TlsSessionPlan, Decline> {
     use Hop::{Member, Variant};
@@ -4683,6 +4693,102 @@ fn plan_tls_session(
             &[Member("deframer_buffer"), Member("buf"), Member("len")],
             "deframer's size",
         )?,
+        sendable: plan_sendable(ty, &count, types, names, strings)?,
+    })
+}
+
+/// A session word's plan: the hops from the connection to an unsigned
+/// word, and what the decline calls it.
+type WordPlan<'a> = dyn Fn(&[Hop<'_>], &str) -> Result<TypedPath, Decline> + 'a;
+
+/// rustls's outgoing records: `core.common_state.sendable_tls`, a
+/// `ChunkVecBuffer` over a `VecDeque<Vec<u8>>`. The ring's head and
+/// capacity are words the standard library wraps in a newtype
+/// (`WrappedIndex`, `UsizeNoHighBit`) in some releases and not in
+/// others, which the toolchain decides, not rustls: each is the word
+/// itself or its newtype's `__0`.
+fn plan_sendable(
+    ty: BundleTypeId,
+    count: &WordPlan<'_>,
+    types: &TypeTable,
+    names: &[Option<String>],
+    strings: &StringInterner,
+) -> Result<SendableBinding, Decline> {
+    use Hop::Member;
+    let at = |tail: &[Hop<'static>]| -> Vec<Hop<'static>> {
+        let mut hops = vec![
+            Member("core"),
+            Member("common_state"),
+            Member("sendable_tls"),
+        ];
+        hops.extend_from_slice(tail);
+        hops
+    };
+    let wrapped = |tail: &[Hop<'static>], what: &str| {
+        let hops = at(tail);
+        count(&hops, what).or_else(|first| {
+            let mut inside = hops.clone();
+            inside.push(Member("__0"));
+            count(&inside, what).map_err(|_| first)
+        })
+    };
+    let missing = |what: &str| (SemanticIssueKind::MissingLayout, what.to_owned());
+    let ring = hop_landing(types, strings, ty, &at(&[Member("chunks")]))?;
+    let ring_name = names.get(ring.target.0 as usize).cloned().flatten();
+    if !ring_name.is_some_and(|name| name.starts_with(SENDABLE_RING)) {
+        return Err(missing("its outgoing records are not a ring of Vec<u8>"));
+    }
+    let buf = hop_landing(
+        types,
+        strings,
+        ty,
+        &at(&[
+            Member("chunks"),
+            Member("buf"),
+            Member("inner"),
+            Member("ptr"),
+            Member("pointer"),
+            Member("pointer"),
+        ]),
+    )?;
+    if !matches!(types.get(buf.target), Some(TypeDef::Pointer { .. })) {
+        return Err(missing("its outgoing records' storage is no pointer"));
+    }
+    let mut records = names
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| name.as_deref() == Some(SENDABLE_RECORD))
+        .map(|(at, _)| BundleTypeId(at as u32));
+    let (Some(record), None) = (records.next(), records.next()) else {
+        return Err(missing("no one Vec<u8> in the final table"));
+    };
+    let record_len = hop_landing(types, strings, record, &[Member("len")])?;
+    if !matches!(
+        types.get(record_len.target),
+        Some(TypeDef::Base {
+            encoding: crate::bundle::Encoding::Unsigned,
+            size: 8,
+            ..
+        })
+    ) {
+        return Err(missing("its outgoing record's length is no word"));
+    }
+    Ok(SendableBinding {
+        prefix_used: count(&at(&[Member("prefix_used")]), "sent prefix")?,
+        head: wrapped(&[Member("chunks"), Member("head")], "ring's head")?,
+        len: wrapped(&[Member("chunks"), Member("len")], "ring's length")?,
+        buf,
+        cap: wrapped(
+            &[
+                Member("chunks"),
+                Member("buf"),
+                Member("inner"),
+                Member("cap"),
+            ],
+            "ring's capacity",
+        )?,
+        record,
+        record_len,
     })
 }
 
@@ -4782,7 +4888,7 @@ fn plan_io(
     let mut tls_declines = BTreeMap::new();
     for (&ty, seed) in seeds {
         if let Some(sources) = &seed.tls_session {
-            match plan_tls_session(ty, sources, types, strings) {
+            match plan_tls_session(ty, sources, types, names, strings) {
                 Ok(plan) => {
                     sessions.insert(ty, plan);
                 }

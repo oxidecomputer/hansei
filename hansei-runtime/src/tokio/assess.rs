@@ -931,7 +931,7 @@ impl<'b, T: Target> Context<'b, T> {
                 header_read_timer: false,
                 via,
                 caller,
-                tls: http.tls(),
+                tls: http.tls().map(Box::new),
                 fd: http.fd(),
             },
             primitive,
@@ -1419,7 +1419,7 @@ impl<'b, T: Target> Context<'b, T> {
                 .or_else(|| self.io_resource_fd(&payloads(chain), io.scheduled_io.addr)),
             interest: Some(interest),
             handshake,
-            tls: io.tls.clone(),
+            tls: io.tls.clone().map(Box::new),
         };
         let waiting = || {
             Assessed::of(WaitAssessment::Waiting(VerifiedWait {
@@ -1600,7 +1600,7 @@ impl<'b, T: Target> Context<'b, T> {
                     .or_else(|| self.io_resource_fd(&payloads(chain), io.scheduled_io.addr)),
                 interest: Some(io.interest),
                 handshake: io.operation == IoOperationKind::Handshake,
-                tls: io.tls.clone(),
+                tls: io.tls.clone().map(Box::new),
             }),
             ResourceObservation::Timer(timer) => Some(WaitTarget::Timer {
                 deadline: timer.deadline?,
@@ -1674,7 +1674,7 @@ impl<'b, T: Target> Context<'b, T> {
                         header_read_timer: false,
                         via,
                         caller: in_flight_caller(phase, client),
-                        tls: http.tls(),
+                        tls: http.tls().map(Box::new),
                         fd: http.fd(),
                     })
                 }
@@ -1691,7 +1691,7 @@ impl<'b, T: Target> Context<'b, T> {
                         header_read_timer: server.header_read_timer_running,
                         via: None,
                         caller: None,
-                        tls: http.tls(),
+                        tls: http.tls().map(Box::new),
                         fd: http.fd(),
                     })
                 }
@@ -1916,7 +1916,7 @@ pub fn assess_http_server(http: &HttpConnObservation, primitive: ValueKey) -> As
             header_read_timer: server.header_read_timer_running,
             via: None,
             caller: None,
-            tls: http.tls(),
+            tls: http.tls().map(Box::new),
             fd: http.fd(),
         },
         primitive,

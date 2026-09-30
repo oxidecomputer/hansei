@@ -5,39 +5,39 @@ description: "`census` over linux/tls-conns"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        425097
-    1  0   worker           parked           425096
-    1  0   entered runtime  block_on caller  425094
+    1  0   worker           in driver        613668
+    1  0   worker           parked           613669
+    1  0   entered runtime  block_on caller  613666
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
-Tasks: 14 owned by runtime 0 @ 0xADDR
+Tasks: 16 owned by runtime 0 @ 0xADDR
 
 COUNT  STATE
-   14  idle
-[14 tasks]
+   16  idle
+[16 tasks]
 
 COUNT  TYPE / WAITING ON
     1  async fn tls_conns::buffered_server
        └─ 1  io
     1  async fn tls_conns::closing_client
        └─ 1  io
+    1  async fn tls_conns::deaf_server
+       └─ 1  oneshot rx
     1  async fn tls_conns::drained_server
        └─ 1  oneshot rx
     1  async fn tls_conns::exact_server
        └─ 1  io
-    1  async fn tls_conns::handshaking_client
-       └─ 1  io
-    9  (9 more types)
-[14 types, 5 shown]
+   11  (11 more types)
+[16 types, 5 shown]
 
-Futures: 18 in flight, on 37 await-chain frames, up to 4 deep
+Futures: 20 in flight, on 41 await-chain frames, up to 4 deep
 
 COUNT  HELD IN
-   14  task (its own await chain)
+   16  task (its own await chain)
     4  frame (off any await chain)
     0  set (0 FuturesUnordered)
-[18 futures]
+[20 futures]
 
 COUNT  TYPE / WAITING ON
     1  future tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>

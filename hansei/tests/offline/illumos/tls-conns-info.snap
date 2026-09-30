@@ -4,11 +4,11 @@ description: "`info` over illumos/tls-conns"
 ---
 core:       <snapshot>
 tokio info: <tokio info>
-symbols resolved: 45/45
-allocator evidence: libumem index (58 caches, 55 slabs)
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 397.7 KiB swept in 3917 chunks
-    hits: 23 task-pattern, 0 set-pattern; 15 admitted; 8 unlisted headers
-    by class: 15 umem live, 8 lwp stack
-    attributed: 11 by a registry, 4 by owner type, 0 by holding type, 0 from another task's side, 0 unknown; 0 stale
+symbols resolved: 49/49
+allocator evidence: libumem index (58 caches, 61 slabs)
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 484.8 KiB swept in 4065 chunks
+    hits: 25 task-pattern, 0 set-pattern; 18 admitted; 7 unlisted headers
+    by class: 18 umem live, 7 lwp stack
+    attributed: 13 by a registry, 5 by owner type, 0 by holding type, 0 from another task's side, 0 unknown; 0 stale
 process: not recorded by this target
 signal: none recorded
