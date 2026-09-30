@@ -263,7 +263,10 @@ fn kind_matches(kind: bundle::WaitKind, slot: &attribution::AttributedSlot) -> b
     use attribution::{Attribution, OwnerKind, RegistrySlot};
     match (kind, &slot.attribution) {
         (bundle::WaitKind::Timer { .. }, Attribution::Registry(RegistrySlot::Timer { .. })) => true,
-        (bundle::WaitKind::Io { .. }, Attribution::Registry(RegistrySlot::Io { .. })) => true,
+        (
+            bundle::WaitKind::Io { addr, .. },
+            Attribution::Registry(RegistrySlot::Io { resource, .. }),
+        ) => *resource == addr,
         (bundle::WaitKind::Task { addr }, Attribution::Registry(RegistrySlot::Join { task })) => {
             task.addr.0 == addr
         }
@@ -290,8 +293,10 @@ fn kind_matches(kind: bundle::WaitKind, slot: &attribution::AttributedSlot) -> b
 /// Whether a slot is the slot of the primitive a find's wait names:
 /// the receiver cell of the channel a `recv` polls, the node queued on
 /// the `Notify` a `Notified` waits on, the trailer of the task a
-/// `JoinHandle` awaits. Only waits that name an address qualify; a
-/// timer's entry is in the find's own storage and needs no join.
+/// `JoinHandle` awaits, the reader or writer cell of the registration
+/// an io operation parks on — a heap `ScheduledIo`, in no find's
+/// storage. Only waits that name an address qualify; a timer's entry
+/// is in the find's own storage and needs no join.
 fn names_primitive(kind: bundle::WaitKind, slot: &attribution::AttributedSlot) -> bool {
     use attribution::{Attribution, OwnerKind, RegistrySlot};
     match (kind, &slot.attribution) {
@@ -330,6 +335,10 @@ fn names_primitive(kind: bundle::WaitKind, slot: &attribution::AttributedSlot) -
         (bundle::WaitKind::Task { addr }, Attribution::Registry(RegistrySlot::Join { task })) => {
             task.addr.0 == addr
         }
+        (
+            bundle::WaitKind::Io { addr, .. },
+            Attribution::Registry(RegistrySlot::Io { resource, .. }),
+        ) => *resource == addr,
         _ => false,
     }
 }
@@ -1478,7 +1487,10 @@ mod tests {
         // reader's cell speaks for a slot of the reader's kind.
         let mut reading = held(0, 0xa000, None);
         reading.waiting_on = Some("io fd 3 (readable)".to_string());
-        reading.wait = Some(WaitKind::Io { handshake: false });
+        reading.wait = Some(WaitKind::Io {
+            addr: 0x9500,
+            handshake: false,
+        });
         let mut locking = held(0, 0xb000, None);
         locking.waiting_on = Some("the semaphore at 0x9300".to_string());
         locking.wait = Some(WaitKind::Semaphore { owner: None });
@@ -1501,11 +1513,38 @@ mod tests {
         changed.wait = Some(WaitKind::Watch { addr: 0x9700 });
         let mut joiner = child(0x2010, Some("app::child"));
         joiner.waiting_on = Some("task 28".to_string());
+        // Reads parked on registrations in the heap, in no find's
+        // storage: the direction cell of the socket the reader names
+        // arms it, owned by the task or — for one under a set child —
+        // by the child; another socket's cell arms nothing.
+        let io = |addr: u64, fd: u32, via| {
+            let mut read = held(0, addr, via);
+            read.waiting_on = Some(format!("io fd {fd} (readable)"));
+            read.wait = Some(WaitKind::Io {
+                addr: 0x9000 + u64::from(fd) * 0x100,
+                handshake: false,
+            });
+            read
+        };
+        let polled = io(0x10000, 9, None);
+        let stranger = io(0x11000, 10, None);
+        let under_child = io(0x12000, 11, Some(Via::SetChild { set: 0, child: 1 }));
         let census = census(
             vec![
-                sleep, recv, notified, reading, locking, queued, joining, awaiting, changed,
+                sleep,
+                recv,
+                notified,
+                reading,
+                locking,
+                queued,
+                joining,
+                awaiting,
+                changed,
+                polled,
+                stranger,
+                under_child,
             ],
-            vec![set(0, vec![joiner])],
+            vec![set(0, vec![joiner, child(0x2020, Some("app::child"))])],
         );
 
         let owner = Owner::Task {
@@ -1701,22 +1740,51 @@ mod tests {
                 },
                 None,
             ),
+            // The reader cell of fd 9's registration, the task's.
+            slot(
+                0x9910,
+                Attribution::Registry(RegistrySlot::Io {
+                    resource: 0x9900,
+                    slot: IoSlot::Reader,
+                    ready: None,
+                }),
+                None,
+            ),
         ]);
-        let child_slots = Attributed::from_slots(vec![AttributedSlot {
-            hit: 9,
-            slot: 0x1c50,
-            owner: Owner::Child { set: 0, child: 0 },
-            attribution: Attribution::Registry(RegistrySlot::Join {
-                task: TaskRef {
-                    addr: TaskAddr(0x1c00),
-                    task_id: Some(28),
-                },
-            }),
+        let child_slot = |hit: usize, slot: u64, child: usize, attribution| AttributedSlot {
+            hit,
+            slot,
+            owner: Owner::Child { set: 0, child },
+            attribution,
             within: None,
             through: Vec::new(),
             aliases: Vec::new(),
             reach: hansei_runtime::tokio::attribution::Reach::Unlocated,
-        }]);
+        };
+        let child_slots = Attributed::from_slots(vec![
+            child_slot(
+                9,
+                0x1c50,
+                0,
+                Attribution::Registry(RegistrySlot::Join {
+                    task: TaskRef {
+                        addr: TaskAddr(0x1c00),
+                        task_id: Some(28),
+                    },
+                }),
+            ),
+            // The reader cell of fd 11's registration, the child's.
+            child_slot(
+                10,
+                0x9b10,
+                1,
+                Attribution::Registry(RegistrySlot::Io {
+                    resource: 0x9b00,
+                    slot: IoSlot::Reader,
+                    ready: None,
+                }),
+            ),
+        ]);
 
         let rows = with_slots(rows_of(&census), &list(), &census, &slots, None);
         let row = |addr: u64| rows.iter().find(|r| r.addr == addr).unwrap();
@@ -1775,8 +1843,25 @@ mod tests {
         assert!(!survives(&clause("armed", "yes", false), row(0x7000)));
         assert!(survives(&clause("armed", "no", false), row(0x7000)));
         assert!(matcher(Field::Armed, "maybe", &[]).is_err());
+        // A read's cell in the heap arms the read naming its socket,
+        // and no other.
+        assert!(row(0x10000).armed);
+        assert_eq!(row(0x10000).waiting_on.as_deref(), Some("io"));
+        assert_eq!(
+            row(0x10000).wait_line.as_deref(),
+            Some("io fd 9 (readable)")
+        );
+        assert!(!row(0x11000).armed);
+        assert_eq!(row(0x11000).waiting_on.as_deref(), Some("unarmed: io"));
+        // The read under the child: no slot of the task's is its.
+        assert!(!row(0x12000).armed);
 
         let rows = with_slots(rows_of(&census), &list(), &census, &child_slots, None);
+        let row = |addr: u64| rows.iter().find(|r| r.addr == addr).unwrap();
+        // The child's own cell arms the read held under it.
+        assert!(row(0x12000).armed);
+        assert_eq!(row(0x12000).waiting_on.as_deref(), Some("io"));
+        assert!(!row(0x10000).armed);
         let joiner = rows.iter().find(|r| r.addr == 0x2010).unwrap();
         assert!(joiner.armed);
         // The cell names the task the wait tallies, whatever the

@@ -2355,7 +2355,15 @@ mod tests {
         const LONG: &str = "a::very::long::module::path::to::some::future_type";
         let list = empty();
         let held: Vec<HeldFuture> = (0..2)
-            .map(|_| held(LONG, Some(WaitKind::Io { handshake: false })))
+            .map(|_| {
+                held(
+                    LONG,
+                    Some(WaitKind::Io {
+                        addr: 0x7000,
+                        handshake: false,
+                    }),
+                )
+            })
             .chain([held(LONG, Some(WaitKind::Task { addr: 0x7100 }))])
             .collect();
         let mut facts = facts(&list, &[]);

@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over illumos/tls-conns"
 ---
-COUNT  WAITING ON   FUTURES
-    4  unarmed: io  0xADDR, 0xADDR, 0xADDR, …
+COUNT  WAITING ON  FUTURES
+    4  io          0xADDR, 0xADDR, 0xADDR, …
 [1 group]

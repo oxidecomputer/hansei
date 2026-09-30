@@ -1405,10 +1405,11 @@ pub enum WaitKind {
     /// `Header` that identifies it — so a find that merely holds a
     /// handle still names the task on the other end of it.
     Task { addr: u64 },
-    /// An io resource, through the driver's registration: a TLS
-    /// handshake's wait on its socket when `handshake` is set, any
-    /// other operation's otherwise.
-    Io { handshake: bool },
+    /// An io resource, by the address of the `ScheduledIo` its
+    /// registration shares with the driver — the resource a slot in
+    /// its reader or writer cell names: a TLS handshake's wait on its
+    /// socket when `handshake` is set, any other operation's otherwise.
+    Io { addr: u64, handshake: bool },
     /// A semaphore, named by the primitive wrapping it where the frame
     /// awaiting it says which (`tokio::sync::Mutex`, …).
     Semaphore { owner: Option<&'static str> },
@@ -1444,8 +1445,12 @@ impl WaitKind {
         match self {
             Self::Timer { .. } => "timer",
             Self::Task { .. } => "task",
-            Self::Io { handshake: false } => "io",
-            Self::Io { handshake: true } => "handshaking",
+            Self::Io {
+                handshake: false, ..
+            } => "io",
+            Self::Io {
+                handshake: true, ..
+            } => "handshaking",
             Self::Semaphore { .. } => "semaphore",
             Self::Channel { .. } => "mpsc rx",
             Self::Notify { .. } => "notify rx",
@@ -1538,7 +1543,10 @@ impl WaitTarget {
                 }),
             },
             Self::Task { addr, .. } => WaitKind::Task { addr: *addr },
-            Self::Io { handshake, .. } => WaitKind::Io {
+            Self::Io {
+                addr, handshake, ..
+            } => WaitKind::Io {
+                addr: *addr,
                 handshake: *handshake,
             },
             Self::Semaphore { owner, .. } => WaitKind::Semaphore { owner: *owner },
