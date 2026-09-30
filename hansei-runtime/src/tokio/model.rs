@@ -1017,8 +1017,11 @@ pub enum WaitTarget {
         /// owns the registration — the `ScheduledIo` records none
         /// itself.
         fd: Option<i32>,
-        /// The readiness awaited, where the parked slot spelled one.
+        /// The readiness awaited, where the parked slot named one.
         interest: Option<Interest>,
+        /// Whether the operation is a TLS handshake (tokio-rustls's
+        /// `Connect`/`Accept`) rather than a read or write.
+        handshake: bool,
         /// The TLS connection the operation's route crossed, where it
         /// crossed one: its words, or why they did not read.
         tls: Option<Result<TlsReading, String>>,
@@ -1402,8 +1405,10 @@ pub enum WaitKind {
     /// `Header` that identifies it — so a find that merely holds a
     /// handle still names the task on the other end of it.
     Task { addr: u64 },
-    /// An io resource, through the driver's registration.
-    Io,
+    /// An io resource, through the driver's registration: a TLS
+    /// handshake's wait on its socket when `handshake` is set, any
+    /// other operation's otherwise.
+    Io { handshake: bool },
     /// A semaphore, named by the primitive wrapping it where the frame
     /// awaiting it says which (`tokio::sync::Mutex`, …).
     Semaphore { owner: Option<&'static str> },
@@ -1439,7 +1444,8 @@ impl WaitKind {
         match self {
             Self::Timer { .. } => "timer",
             Self::Task { .. } => "task",
-            Self::Io => "io",
+            Self::Io { handshake: false } => "io",
+            Self::Io { handshake: true } => "handshaking",
             Self::Semaphore { .. } => "semaphore",
             Self::Channel { .. } => "mpsc rx",
             Self::Notify { .. } => "notify rx",
@@ -1476,7 +1482,7 @@ impl WaitTarget {
                 Some(id) => format!("task {id}"),
                 None => format!("the task at {addr:#x}"),
             },
-            Self::Io { .. } => "io".to_string(),
+            Self::Io { handshake, .. } => if *handshake { "handshaking" } else { "io" }.to_string(),
             Self::Semaphore { addr, owner, .. } => match owner {
                 Some(owner) => format!("a {owner} (semaphore {addr:#x})"),
                 None => format!("the semaphore at {addr:#x}"),
@@ -1532,7 +1538,9 @@ impl WaitTarget {
                 }),
             },
             Self::Task { addr, .. } => WaitKind::Task { addr: *addr },
-            Self::Io { .. } => WaitKind::Io,
+            Self::Io { handshake, .. } => WaitKind::Io {
+                handshake: *handshake,
+            },
             Self::Semaphore { owner, .. } => WaitKind::Semaphore { owner: *owner },
             Self::Channel { addr, .. } => WaitKind::Channel { addr: *addr },
             Self::Notify { addr, .. } => WaitKind::Notify { addr: *addr },
@@ -1881,11 +1889,16 @@ impl fmt::Display for WaitTarget {
                 Ok(())
             }
             Self::Io {
-                addr, fd, interest, ..
+                addr,
+                fd,
+                interest,
+                handshake,
+                ..
             } => {
+                let word = if *handshake { "handshaking" } else { "io" };
                 match fd {
-                    Some(fd) => write!(f, "io fd {fd}")?,
-                    None => write!(f, "io {addr:#x}")?,
+                    Some(fd) => write!(f, "{word} fd {fd}")?,
+                    None => write!(f, "{word} {addr:#x}")?,
                 }
                 match interest {
                     Some(interest) => write!(f, " ({interest})"),
@@ -2470,6 +2483,7 @@ mod tests {
             addr: 0xa000,
             fd,
             interest,
+            handshake: false,
             tls: None,
         };
         assert_eq!(
@@ -2482,6 +2496,17 @@ mod tests {
         );
         assert_eq!(io(None, None).to_string(), "io 0xa000 (readiness)");
         assert_eq!(io(None, None).group_label(), "io");
+        assert_eq!(io(None, None).kind().word(), "io");
+        let handshaking = WaitTarget::Io {
+            addr: 0xa000,
+            fd: Some(9),
+            interest: Some(Interest(0b01)),
+            handshake: true,
+            tls: None,
+        };
+        assert_eq!(handshaking.to_string(), "handshaking fd 9 (readable)");
+        assert_eq!(handshaking.group_label(), "handshaking");
+        assert_eq!(handshaking.kind().word(), "handshaking");
     }
 
     /// The wheel-state sentinels and the bit spellings: what the `-v`
@@ -2796,6 +2821,7 @@ mod caller_tests {
             addr: 0x8058d80,
             fd: None,
             interest: None,
+            handshake: false,
             tls: None,
         };
         assert!(io.caller().is_none());

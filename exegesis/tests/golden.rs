@@ -713,6 +713,66 @@ fn assert_resource(program: &str, bundle: &Bundle, key: &str, kind: hansei_bundl
     assert!(seen > 0, "{program}: no type named {key}");
 }
 
+/// A TLS handshake in progress: every instantiation the key names is a
+/// handshake operation under tokio-rustls's handshake rule — its own
+/// protocol, with the exclusive-pending guarantee its review gives —
+/// polled as the primitive boundary, whose stream is reached under the
+/// same rule and routes across exactly `route`.
+fn assert_handshake(program: &str, bundle: &Bundle, key: &str, route: &[&str]) {
+    use hansei_bundle::{
+        Continuation, IoOperationKind, PollAction, PollProgram, ResourceKind, SemanticRuleKind,
+    };
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, key) {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no semantic record"));
+        let resource = record
+            .resource
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} has no resource binding"));
+        assert_eq!(
+            resource.kind,
+            ResourceKind::IoOperation(IoOperationKind::Handshake),
+            "{program}: {name}"
+        );
+        assert_eq!(
+            bundle.semantics.rules[resource.rule.0 as usize].kind,
+            SemanticRuleKind::TokioRustlsHandshake,
+            "{program}: {name}"
+        );
+        assert_eq!(
+            resource.state_rule,
+            Some(resource.rule),
+            "{program}: {name}"
+        );
+        assert!(resource.exclusive_pending, "{program}: {name}");
+        let facts = record
+            .future
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} is no future"));
+        assert!(
+            matches!(
+                &facts.continuation,
+                Continuation::Bound { rule, program: PollProgram::Direct(PollAction::Primitive) }
+                    if *rule == resource.rule
+            ),
+            "{program}: {name}: {:?}",
+            facts.continuation
+        );
+        let io = record
+            .io
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} has no stream binding"));
+        assert_eq!(io.rule, resource.rule, "{program}: {name}");
+        assert_eq!(
+            route_from(program, bundle, name, &io.stream),
+            route,
+            "{program}: {name}"
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no type named {key}");
+}
+
 /// A type that must carry no resource binding: an operation over a
 /// custom reader, however much of a socket it holds.
 fn assert_no_resource(program: &str, bundle: &Bundle, key: &str) {
@@ -2646,24 +2706,34 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 }
                 // Only the TLS fixture links tokio-rustls; its streams'
                 // routes are read off each type's own file.
+                // The streams' routes, and the handshake futures: each
+                // family under its own reviewed range, off its own
+                // reviewed files.
                 "tokio-rustls" => {
-                    use exegesis::detect::semantics::TOKIO_RUSTLS_STREAM_V0_26_0;
+                    use exegesis::detect::semantics::{
+                        TOKIO_RUSTLS_HANDSHAKE_V0_26_0, TOKIO_RUSTLS_STREAM_V0_26_0,
+                    };
                     let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
                         unreachable!()
                     };
-                    assert_eq!(s(*family), TOKIO_RUSTLS_STREAM_V0_26_0.family, "{program}");
+                    let convention = [TOKIO_RUSTLS_STREAM_V0_26_0, TOKIO_RUSTLS_HANDSHAKE_V0_26_0]
+                        .into_iter()
+                        .find(|convention| convention.family == s(*family))
+                        .unwrap_or_else(|| panic!("{program}: family {}", s(*family)));
                     assert_eq!(
-                        TOKIO_RUSTLS_STREAM_V0_26_0.select(&s(*version).parse().unwrap()),
+                        convention.select(&s(*version).parse().unwrap()),
                         LayoutSelection::ReviewedRange,
                         "{program}: tokio-rustls {} is outside the reviewed range",
                         s(*version)
                     );
                     assert!(
-                        ["/src/lib.rs", "/src/client.rs", "/src/server.rs"]
+                        convention
+                            .checksums
                             .iter()
-                            .any(|file| s(*source).ends_with(file)),
-                        "{program}: {}",
-                        s(*source)
+                            .any(|(file, _)| s(*source).ends_with(&format!("/{file}"))),
+                        "{program}: {} is not a reviewed file of {}",
+                        s(*source),
+                        convention.family
                     );
                     assert_eq!(program, "tls-conns", "{program}");
                 }
@@ -2769,6 +2839,9 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         // hyper's HTTP/1 `Connection`, a newtype over its dispatcher
         // (the TLS fixture's HTTPS client drives one).
         SemanticRuleKind::HyperH1Conn,
+        // tokio-rustls's `Connect` and `Accept`, newtypes over the
+        // handshake future (the TLS fixture's handshakes).
+        SemanticRuleKind::TokioRustlsHandshake,
     ];
     let delegate_kinds = [
         SemanticRuleKind::StdBoxPoll,
@@ -2788,6 +2861,9 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         // hyper's HTTP/1 `Connection`, a newtype over its dispatcher
         // (the TLS fixture's HTTPS client drives one).
         SemanticRuleKind::HyperH1Conn,
+        // tokio-rustls's `Connect` and `Accept`, newtypes over the
+        // handshake future (the TLS fixture's handshakes).
+        SemanticRuleKind::TokioRustlsHandshake,
     ];
     // A wrapper's program is not a storage access: only the std
     // adapters, which are pointers, carry one. `Next` holds a `&mut`
@@ -2807,6 +2883,9 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         // hyper's HTTP/1 `Connection`, a newtype over its dispatcher
         // (the TLS fixture's HTTPS client drives one).
         SemanticRuleKind::HyperH1Conn,
+        // tokio-rustls's `Connect` and `Accept`, newtypes over the
+        // handshake future (the TLS fixture's handshakes).
+        SemanticRuleKind::TokioRustlsHandshake,
     ];
     // Compiler storage: every async fn or async block environment binds
     // its states under the reviewed convention (the fixtures' toolchains
@@ -4204,6 +4283,34 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
                 "socket TcpStream",
             ],
         );
+        // A handshake in progress: tokio-rustls's `Connect` and `Accept`
+        // forward their poll to the handshake future inside, which
+        // waits on the stream it holds while handshaking.
+        for side in ["client", "server"] {
+            assert_handshake(
+                program,
+                bundle,
+                &format!(
+                    "tokio_rustls::common::handshake::MidHandshake<\
+                     tokio_rustls::{side}::TlsStream<{tcp}>>"
+                ),
+                &["Handshaking.__0", "io", "socket TcpStream"],
+            );
+        }
+        let table = exegesis::describe::describe_semantics(bundle);
+        for (wrapper, side) in [("Connect", "client"), ("Accept", "server")] {
+            let wrapper = format!("tokio_rustls::{side}::{wrapper}<{tcp}>");
+            assert_eq!(
+                semantic_line(&table, &format!("{wrapper} ::")),
+                format!(
+                    "{wrapper} :: members future[poll, delegated by \
+                     tls_conns::handshaking_{side}::{{async_fn_env#0}}] continuation rule # \
+                     delegate (exclusive) __0@+0 -> tokio_rustls::common::handshake::MidHandshake<\
+                     tokio_rustls::{side}::TlsStream<{tcp}>>"
+                ),
+                "{program}"
+            );
+        }
         // HTTP/1 over TLS: each dispatcher's buffered io holds a stream
         // routed through hyper-util's adapters — the server's rewound
         // by the version-choosing server, the client's bare — to the

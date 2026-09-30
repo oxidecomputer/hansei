@@ -32,8 +32,9 @@
 //! consumer from turning a weaker relation into one.
 
 use super::bundle::{
-    AwaitChain, ChainEnd, Context, HttpCaller, HttpPhase, HttpRole, HttpVersion, IoResourceInfo,
-    IoSlot, OneshotSide, QueuedWaker, Task, TaskKind, TaskList, WaitTarget, semaphore_owner,
+    AwaitChain, ChainEnd, Context, HttpCaller, HttpPhase, HttpRole, HttpVersion, Interest,
+    IoResourceInfo, IoSlot, OneshotSide, QueuedWaker, Task, TaskKind, TaskList, WaitTarget,
+    semaphore_owner,
 };
 use super::chain::{FutureInspection, InspectionMode};
 use super::graph::TaskRef;
@@ -1367,17 +1368,46 @@ impl<'b, T: Target> Context<'b, T> {
         if word & ready::SHUTDOWN != 0 {
             return Assessed::of(WaitAssessment::ResourceReady(ReadyReason::IoShutdown));
         }
-        if word & ready::MASK & ready::direction_mask(io.interest.0) != 0 {
-            return Assessed::of(WaitAssessment::ResourceReady(ReadyReason::IoReady));
-        }
-        if resource.consistency != Consistency::Quiescent {
-            return Assessed::unknown(
+        let unsettled = || {
+            Assessed::unknown(
                 WaitUnknownReason::ResourceStateUnproven,
                 match resource.consistency {
                     Consistency::Mutating => "the registration's waiters are locked",
                     _ => "the registration's guard could not be decoded",
                 },
-            );
+            )
+        };
+        let handshake = io.operation == IoOperationKind::Handshake;
+        // A handshake reads or writes as its protocol step needs, so
+        // the direction it waits in is whichever slot holds this task's
+        // waker — both, where it parked in each — read only from a
+        // settled list.
+        let interest = if handshake {
+            if resource.consistency != Consistency::Quiescent {
+                return unsettled();
+            }
+            let parked = resource
+                .waiters
+                .iter()
+                .filter(|w| w.task == Some(task.addr.0))
+                .filter(|w| matches!(w.slot, IoSlot::Reader | IoSlot::Writer))
+                .filter_map(|w| w.slot.interest())
+                .reduce(Interest::union);
+            let Some(parked) = parked else {
+                return Assessed::unknown(
+                    WaitUnknownReason::ConflictingEvidence,
+                    "no direction slot holds this task's waker",
+                );
+            };
+            parked
+        } else {
+            io.interest
+        };
+        if word & ready::MASK & ready::direction_mask(interest.0) != 0 {
+            return Assessed::of(WaitAssessment::ResourceReady(ReadyReason::IoReady));
+        }
+        if resource.consistency != Consistency::Quiescent {
+            return unsettled();
         }
         let target = WaitTarget::Io {
             addr: io.scheduled_io.addr,
@@ -1387,7 +1417,8 @@ impl<'b, T: Target> Context<'b, T> {
             fd: io
                 .fd
                 .or_else(|| self.io_resource_fd(&payloads(chain), io.scheduled_io.addr)),
-            interest: Some(io.interest),
+            interest: Some(interest),
+            handshake,
             tls: io.tls.clone(),
         };
         let waiting = || {
@@ -1422,6 +1453,9 @@ impl<'b, T: Target> Context<'b, T> {
                     ),
                 }
             }
+            // The slots holding this task's waker chose the interest
+            // above.
+            None if handshake => waiting(),
             None => {
                 let Some(node) = io.waiter_node else {
                     return Assessed::unknown(
@@ -1565,6 +1599,7 @@ impl<'b, T: Target> Context<'b, T> {
                     .fd
                     .or_else(|| self.io_resource_fd(&payloads(chain), io.scheduled_io.addr)),
                 interest: Some(io.interest),
+                handshake: io.operation == IoOperationKind::Handshake,
                 tls: io.tls.clone(),
             }),
             ResourceObservation::Timer(timer) => Some(WaitTarget::Timer {
@@ -3965,6 +4000,7 @@ mod tests {
                 addr: 7,
                 fd: None,
                 interest: None,
+                handshake: false,
                 tls: None,
             },
             primitive: at,

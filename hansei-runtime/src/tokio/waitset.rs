@@ -344,6 +344,7 @@ impl SlotRef {
                     addr: *resource,
                     fd: *fd,
                     interest: slot.interest(),
+                    handshake: false,
                     tls: None,
                 }
                 .to_string(),
@@ -1070,8 +1071,9 @@ impl<'b, T: Target> Context<'b, T> {
         for (resource, waiter) in registries.io_of(task.addr.0) {
             // A direction slot lies in the `ScheduledIo`, in no branch's
             // storage: it is the branch's whose operation verified its
-            // wait on this registration in this direction — reached by
-            // the operation's route, which names the descriptor too.
+            // wait on this registration in this direction (among others,
+            // for a handshake parked in both) — reached by the
+            // operation's route, which names the descriptor too.
             let verified = match waiter.slot {
                 IoSlot::Reader | IoSlot::Writer => {
                     let direction = if waiter.slot == IoSlot::Reader {
@@ -1089,7 +1091,9 @@ impl<'b, T: Target> Context<'b, T> {
                                 fd,
                                 interest: Some(interest),
                                 ..
-                            } if *addr == resource.addr && *interest == direction => Some((i, *fd)),
+                            } if *addr == resource.addr && interest.0 & direction.0 != 0 => {
+                                Some((i, *fd))
+                            }
                             _ => None,
                         }
                     })
@@ -1831,6 +1835,7 @@ mod tests {
             addr: 0x7000,
             fd: None,
             interest: None,
+            handshake: false,
             tls: None,
         };
         let notes = ctx.slot_diagnostics(&inspection.chain, &io_target, &facts, &loud);

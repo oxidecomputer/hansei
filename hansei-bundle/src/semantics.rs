@@ -560,20 +560,25 @@ pub enum IoOperationKind {
     Flush,
     Shutdown,
     Readiness,
+    /// A TLS handshake in progress, tokio-rustls's `MidHandshake`: it
+    /// reads and writes its stream as the protocol needs, so which
+    /// readiness it waits for is the direction slot its waker sits in.
+    Handshake,
 }
 
 impl IoOperationKind {
     /// Whether a pending operation waits for the stream to take bytes
     /// rather than to yield them: a write, a flush or a shutdown parks
     /// in the socket's writer slot, a read in its reader slot. `None`
-    /// for a readiness await, which names its interest itself.
+    /// for a readiness await, which names its interest itself, and for
+    /// a handshake, whose direction is the slot holding its waker.
     pub fn writes(self) -> Option<bool> {
         match self {
             Self::Read | Self::ReadExact | Self::ReadBuf => Some(false),
             Self::Write | Self::WriteAll | Self::WriteBuf | Self::Flush | Self::Shutdown => {
                 Some(true)
             }
-            Self::Readiness => None,
+            Self::Readiness | Self::Handshake => None,
         }
     }
 }
@@ -982,6 +987,10 @@ pub enum SemanticRuleKind {
     /// hyper-rustls's `MaybeHttpsStream` under a reviewed range, whose
     /// reads and writes are its live variant's.
     HyperRustlsStream,
+    /// tokio-rustls's handshake under a reviewed range: `MidHandshake`,
+    /// an io operation over the stream its `Handshaking` variant holds,
+    /// and the `Connect`/`Accept` newtypes that poll it and nothing else.
+    TokioRustlsHandshake,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

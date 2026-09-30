@@ -263,7 +263,7 @@ fn kind_matches(kind: bundle::WaitKind, slot: &attribution::AttributedSlot) -> b
     use attribution::{Attribution, OwnerKind, RegistrySlot};
     match (kind, &slot.attribution) {
         (bundle::WaitKind::Timer { .. }, Attribution::Registry(RegistrySlot::Timer { .. })) => true,
-        (bundle::WaitKind::Io, Attribution::Registry(RegistrySlot::Io { .. })) => true,
+        (bundle::WaitKind::Io { .. }, Attribution::Registry(RegistrySlot::Io { .. })) => true,
         (bundle::WaitKind::Task { addr }, Attribution::Registry(RegistrySlot::Join { task })) => {
             task.addr.0 == addr
         }
@@ -1478,7 +1478,7 @@ mod tests {
         // reader's cell speaks for a slot of the reader's kind.
         let mut reading = held(0, 0xa000, None);
         reading.waiting_on = Some("io fd 3 (readable)".to_string());
-        reading.wait = Some(WaitKind::Io);
+        reading.wait = Some(WaitKind::Io { handshake: false });
         let mut locking = held(0, 0xb000, None);
         locking.waiting_on = Some("the semaphore at 0x9300".to_string());
         locking.wait = Some(WaitKind::Semaphore { owner: None });

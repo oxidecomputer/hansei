@@ -5,9 +5,9 @@ description: "`census` over linux-floor/tls-conns"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        333385
-    1  0   worker           parked           333384
-    1  0   entered runtime  block_on caller  333382
+    1  0   worker           in driver        438383
+    1  0   worker           parked           438384
+    1  0   entered runtime  block_on caller  438381
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -27,17 +27,17 @@ COUNT  TYPE / WAITING ON
     1  async fn tls_conns::exact_server
        └─ 1  io
     1  async fn tls_conns::handshaking_client
-       └─ 1  one of several
+       └─ 1  io
     9  (9 more types)
 [14 types, 5 shown]
 
-Futures: 20 in flight, on 37 await-chain frames, up to 4 deep
+Futures: 18 in flight, on 37 await-chain frames, up to 4 deep
 
 COUNT  HELD IN
    14  task (its own await chain)
-    6  frame (off any await chain)
+    4  frame (off any await chain)
     0  set (0 FuturesUnordered)
-[20 futures]
+[18 futures]
 
 COUNT  TYPE / WAITING ON
     1  future tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>
@@ -48,7 +48,4 @@ COUNT  TYPE / WAITING ON
        └─ 1  io
     1  future tokio::io::util::write_buf::WriteBuf<tokio::net::tcp::split_owned::OwnedWriteHalf, core::io::cursor::Cursor<Vec<u8>>>
        └─ 1  io
-    1  future tokio_rustls::common::handshake::MidHandshake<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
-       └─ 1  unknown
-    1  (1 more types)
-[6 types, 5 shown]
+[4 types]

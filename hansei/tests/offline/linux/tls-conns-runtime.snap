@@ -5,9 +5,9 @@ description: "`runtime` over linux/tls-conns"
 runtime 0 @ 0xADDR
     flavor: multi_thread
     tasks: 14
-    futures: 20
+    futures: 18
     workers: 2
-    threads: 3 (lwp 325019, 325022, 325021)
+    threads: 3 (lwp 425094, 425097, 425096)
     found via: a thread's runtime context
     drivers:
       tokio::runtime::driver::Handle {

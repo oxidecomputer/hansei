@@ -1448,6 +1448,30 @@ fn hyper_h1_upgradeable(
     })
 }
 
+/// Screen `id` as one of tokio-rustls's handshake newtypes — `Connect`,
+/// `Accept`, `FallibleConnect`, `FallibleAccept`, in the crate root or
+/// beside its side's stream — whose one member `__0` holds the
+/// `MidHandshake` its poll forwards to.
+pub(crate) fn tokio_rustls_handshake(reader: &DwReader<'_>, id: TypeId) -> Option<ForwardLayout> {
+    let st = [
+        "tokio_rustls",
+        "tokio_rustls::client",
+        "tokio_rustls::server",
+    ]
+    .into_iter()
+    .flat_map(|module| {
+        ["Connect<", "Accept<", "FallibleConnect<", "FallibleAccept<"]
+            .map(|prefix| declared_in(reader, id, module, prefix))
+    })
+    .flatten()
+    .next()?;
+    let forward = sole_member(reader, st, "__0")?;
+    // The handshake is an enum, which `declared_in` does not screen.
+    fq_name(reader, forward.inner)?
+        .starts_with("tokio_rustls::common::handshake::MidHandshake<")
+        .then_some(forward)
+}
+
 /// Screen `id` as hyper's `Connection<T, B>` of `client::conn::http1`:
 /// one member `inner` holding the `Dispatcher` its poll forwards to.
 pub(crate) fn hyper_h1_client_connection(

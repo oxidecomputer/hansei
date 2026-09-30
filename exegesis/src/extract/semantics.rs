@@ -55,12 +55,13 @@ use crate::detect::semantics::{
     LibraryConvention, PARKING_LOT_RAW_MUTEX_V0_12_1, REQWEST_CONN_READ_SLOT,
     REQWEST_CONN_V0_12_14, REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0,
     RUSTLS_SESSION_V0_23_23, RustcConvention, SPROCKETS_TLS_STREAM_D2B68E4,
-    TOKIO_INTERVAL_TICK_V1_47, TOKIO_RUSTLS_STREAM_V0_26_0, TOKIO_SELECT_V1_47,
-    TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
-    TOWER_RETRY_V0_5_2, TRACING_INSTRUMENTED_V0_1_40, library_convention,
-    rustc_core_pending_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
-    rustc_std_adapter_convention, rustc_std_futex_mutex_convention, rustc_std_refcount_convention,
-    tokio_acquire_owner, tokio_state_protocol,
+    TOKIO_INTERVAL_TICK_V1_47, TOKIO_RUSTLS_HANDSHAKE_V0_26_0, TOKIO_RUSTLS_STREAM_V0_26_0,
+    TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
+    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2, TRACING_INSTRUMENTED_V0_1_40,
+    library_convention, rustc_core_pending_convention, rustc_coroutine_convention,
+    rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
+    rustc_std_futex_mutex_convention, rustc_std_refcount_convention, tokio_acquire_owner,
+    tokio_state_protocol,
 };
 
 use std::borrow::Cow;
@@ -246,6 +247,9 @@ enum LibrarySeed {
     /// over the dispatcher in its `inner`, `server::conn::http1`'s over
     /// the one in its `conn` — which its poll forwards to.
     HyperConnection(String, BundleTypeId),
+    /// tokio-rustls's `Connect`, `Accept` or their fallible twins: the
+    /// member holding the `MidHandshake` its poll forwards to.
+    TokioRustlsHandshake(String, BundleTypeId),
     /// hyper's `UpgradeableConnection` of either side: the member
     /// holding the `Option<Connection>`, the option, the connection's
     /// member holding the dispatcher, and the dispatcher its poll
@@ -306,6 +310,7 @@ impl LibrarySeed {
                 SemanticRuleKind::HyperH1Conn
             }
             LibrarySeed::HyperUtilAuto { .. } => SemanticRuleKind::HyperUtilAutoConn,
+            LibrarySeed::TokioRustlsHandshake(..) => SemanticRuleKind::TokioRustlsHandshake,
             LibrarySeed::Map { .. } | LibrarySeed::MapWrapper(..) => {
                 SemanticRuleKind::FuturesUtilMap
             }
@@ -330,6 +335,7 @@ impl LibrarySeed {
                 &HYPER_H1_CONN_V1_6_0
             }
             LibrarySeed::HyperUtilAuto { .. } => &HYPER_UTIL_AUTO_CONN_V0_1_10,
+            LibrarySeed::TokioRustlsHandshake(..) => &TOKIO_RUSTLS_HANDSHAKE_V0_26_0,
             LibrarySeed::HyperUtilResponse { .. } => &HYPER_UTIL_RESPONSE_V0_1_10,
             LibrarySeed::TowerRetry { .. } => &TOWER_RETRY_V0_5_2,
             LibrarySeed::ReqwestCookie(..) => &REQWEST_COOKIE_V0_12_24,
@@ -659,6 +665,9 @@ pub(super) struct Seed {
     /// rustls's connection state, where the type is it: the type's own
     /// method declarations, which its release is read off.
     tls_session: Option<BTreeSet<PollSource>>,
+    /// Whether the type is tokio-rustls's `MidHandshake`: an io operation
+    /// over the stream it handshakes on, whose origin is its `poll`.
+    handshake: bool,
     /// The linkage names of the type's `hyper::rt::Read::poll_read`, by
     /// which a stream trait object's vtable names it.
     read_symbols: BTreeSet<String>,
@@ -693,6 +702,7 @@ impl Seed {
             || self.table.is_some()
             || self.pool.is_some()
             || self.io_op.is_some()
+            || self.handshake
             || self.refcount.is_some()
             || self.lock.is_some()
     }
@@ -877,9 +887,26 @@ const IO_DELEGATIONS: [DelegatedStream; 11] = [
     },
 ];
 
+/// tokio-rustls's handshake newtypes, by the names their instantiations
+/// start with: in the crate root through 0.26.2, beside each side's
+/// stream from 0.26.3.
+const TOKIO_RUSTLS_HANDSHAKES: [&str; 8] = [
+    "tokio_rustls::Connect<",
+    "tokio_rustls::Accept<",
+    "tokio_rustls::FallibleConnect<",
+    "tokio_rustls::FallibleAccept<",
+    "tokio_rustls::client::Connect<",
+    "tokio_rustls::server::Accept<",
+    "tokio_rustls::client::FallibleConnect<",
+    "tokio_rustls::server::FallibleAccept<",
+];
+
 /// rustls's connection state, by the name every instantiation starts
 /// with.
 const RUSTLS_CONNECTION: &str = "rustls::conn::ConnectionCommon<";
+
+/// tokio-rustls's handshake in progress, by the same.
+const MID_HANDSHAKE: &str = "tokio_rustls::common::handshake::MidHandshake<";
 
 /// The third-party stream a name announces, if its route is reviewed.
 fn io_delegation(name: &str) -> Option<&'static DelegatedStream> {
@@ -1155,6 +1182,12 @@ fn library_seed(
             boxed: bundle_id(layout.boxed)?,
             source: env_source(layout.env),
         })
+    } else if TOKIO_RUSTLS_HANDSHAKES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+    {
+        let (member, inner) = forward(adapters::tokio_rustls_handshake(reader, raw))?;
+        Some(LibrarySeed::TokioRustlsHandshake(member, inner))
     } else if name.starts_with("hyper::client::conn::http1::Connection<") {
         let (member, inner) = forward(adapters::hyper_h1_client_connection(reader, raw))?;
         Some(LibrarySeed::HyperConnection(member, inner))
@@ -1450,6 +1483,8 @@ pub(super) fn collect_semantic_seeds(
                 stream,
                 sources: type_sources(raw),
             });
+        } else if names_type(MID_HANDSHAKE, name) {
+            seeds.entry(ty).or_default().handshake = true;
         } else if names_type(RUSTLS_CONNECTION, name) {
             seeds.entry(ty).or_default().tls_session = Some(type_sources(raw));
         } else if let Some(op) = io_op_seed(name) {
@@ -1625,6 +1660,9 @@ const RESOURCE_KINDS: [(ResourceKind, SemanticRuleKind); 7] = [
 /// The layout rule a tokio resource binds under.
 fn resource_rule(kind: ResourceKind) -> SemanticRuleKind {
     match kind {
+        ResourceKind::IoOperation(IoOperationKind::Handshake) => {
+            SemanticRuleKind::TokioRustlsHandshake
+        }
         ResourceKind::IoOperation(_) => SemanticRuleKind::TokioIoOperation,
         kind => RESOURCE_KINDS
             .iter()
@@ -2594,13 +2632,26 @@ pub(super) fn bind_semantics(
             // family observes and never assesses. Each reviewed
             // primitive polls nothing else while pending, which is the
             // exclusive-pending guarantee the barrier proof needs.
-            let rule = rules.rule(&RuleKey::Library(rule_kind), strings, library);
-            let state_rule = tokio_state_protocol(kind, library.tokio_version)
-                .filter(|_| {
-                    Family::layout_selection(library.tokio_version)
-                        == LayoutSelection::ReviewedRange
-                })
-                .map(|protocol| rules.rule(&RuleKey::Library(protocol.kind), strings, library));
+            // tokio's own under its one origin; an operation of another
+            // crate's under the rule its plan read the origin of.
+            let rule = match draft.io.as_ref().and_then(|io| io.rule.as_ref()) {
+                Some(key) => rules.rule(key, strings, library),
+                None => rules.rule(&RuleKey::Library(rule_kind), strings, library),
+            };
+            // A handshake's protocol is its own rule, as a connection's
+            // is: tokio-rustls's origin binds only inside the reviewed
+            // range, and a pending `MidHandshake` polls its stream and
+            // nothing else.
+            let state_rule = if kind == ResourceKind::IoOperation(IoOperationKind::Handshake) {
+                Some(rule)
+            } else {
+                tokio_state_protocol(kind, library.tokio_version)
+                    .filter(|_| {
+                        Family::layout_selection(library.tokio_version)
+                            == LayoutSelection::ReviewedRange
+                    })
+                    .map(|protocol| rules.rule(&RuleKey::Library(protocol.kind), strings, library))
+            };
             ResourceBinding {
                 rule,
                 kind,
@@ -3548,6 +3599,12 @@ fn plan_library(
         // hyper's connection, either side, polls the dispatcher in its
         // one member and acts on its output alone.
         LibrarySeed::HyperConnection(member, inner) => Delegation::Direct {
+            target: Target::Value(forward(member, *inner, strings)?),
+            exclusive: true,
+        },
+        // `Connect` and `Accept` poll the handshake they hold and
+        // nothing else.
+        LibrarySeed::TokioRustlsHandshake(member, inner) => Delegation::Direct {
             target: Target::Value(forward(member, *inner, strings)?),
             exclusive: true,
         },
@@ -4700,6 +4757,9 @@ struct IoOpPlan {
     kind: IoOperationKind,
     stream: TypedPath,
     remaining: Option<TypedPath>,
+    /// The rule an operation of another crate binds under; tokio's
+    /// bind under tokio's one origin.
+    rule: Option<RuleKey>,
 }
 
 /// Plan every stream's route and every operation over one. A stream's
@@ -4882,10 +4942,12 @@ fn plan_io(
     let mut operations = BTreeMap::new();
     let mut operation_declines = BTreeMap::new();
     for (&ty, seed) in seeds {
-        let Some(op) = seed.io_op else {
-            continue;
+        let planned = match (seed.io_op, seed.handshake) {
+            (Some(op), _) => plan_io_operation(ty, op, &routes, types, names, strings),
+            (None, true) => plan_handshake(ty, &seed.poll_sources, &routes, types, names, strings),
+            (None, false) => continue,
         };
-        match plan_io_operation(ty, op, &routes, types, names, strings) {
+        match planned {
             Ok(plan) => {
                 operations.insert(ty, plan);
             }
@@ -5119,6 +5181,47 @@ fn plan_io_operation(
         kind: op.kind,
         stream,
         remaining,
+        rule: None,
+    })
+}
+
+/// tokio-rustls's handshake as an operation over its stream: the origin
+/// first — every declaration of its `poll` in tokio-rustls, inside the
+/// reviewed range — then the path through the `Handshaking` variant to
+/// the stream it holds, which has to be routed. In any other state it
+/// holds no stream to wait on, which the reader finds by its variant.
+fn plan_handshake(
+    ty: BundleTypeId,
+    sources: &BTreeSet<PollSource>,
+    routes: &BTreeMap<BundleTypeId, (RuleKey, PlannedStep)>,
+    types: &TypeTable,
+    names: &[Option<String>],
+    strings: &StringInterner,
+) -> Result<IoOpPlan, Decline> {
+    let origin = delegation_origin(sources, &TOKIO_RUSTLS_HANDSHAKE_V0_26_0, "poll")?;
+    let stream = hop_landing(
+        types,
+        strings,
+        ty,
+        &[Hop::Variant("Handshaking"), Hop::Member("__0")],
+    )?;
+    if !routes.contains_key(&stream.target) {
+        return Err((
+            SemanticIssueKind::NoRule,
+            format!(
+                "the stream it handshakes over, {}, has no reviewed route to a socket",
+                type_label(names, stream.target)
+            ),
+        ));
+    }
+    Ok(IoOpPlan {
+        kind: IoOperationKind::Handshake,
+        stream,
+        remaining: None,
+        rule: Some(RuleKey::Delegation {
+            kind: SemanticRuleKind::TokioRustlsHandshake,
+            origin,
+        }),
     })
 }
 

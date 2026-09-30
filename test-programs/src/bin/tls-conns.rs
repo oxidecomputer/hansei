@@ -290,10 +290,6 @@ async fn handshaking_client(
     tcp: TcpStream,
 ) -> Option<client::TlsStream<TcpStream>> {
     census_expect::task("tls_conns::handshaking_client");
-    // tokio-rustls's `Connect` is a newtype over its own handshake
-    // future, which the census finds inside it at an address the
-    // fixture cannot name.
-    census_expect::held_by_task("tls_conns::handshaking_client", "MidHandshake");
     connector.connect(localhost(), tcp).await.ok()
 }
 
@@ -322,8 +318,6 @@ async fn handshaking_server(
     ready: oneshot::Sender<()>,
 ) -> Option<server::TlsStream<TcpStream>> {
     census_expect::task("tls_conns::handshaking_server");
-    // `Accept` holds the same handshake future `Connect` does.
-    census_expect::held_by_task("tls_conns::handshaking_server", "MidHandshake");
     ready.send(()).expect("main waits for readiness");
     acceptor.accept(tcp).await.ok()
 }

@@ -4110,19 +4110,21 @@ fn test_http_conns_connections_acceptance() {
 /// between exchanges, each keyed by its socket as the listing reaches
 /// it through the dispatcher's stream: the server's buffer is what its
 /// one request left of a fresh 16 KiB, the client's hyper's 8 KiB
-/// start. The handshakes in progress and the tasks parked on anything
-/// but a socket are no rows. Grouping by protocol files the nine under
-/// three buckets, and a filter on it keeps the TCP pair.
+/// start. The two handshakes in progress are rows too, handshaking,
+/// and each task driving one waits on its socket as handshaking, not
+/// as a read — both for the peer's first flight. The tasks parked on
+/// anything but a socket are no rows. Grouping by protocol files the
+/// eleven under three buckets, and a filter on it keeps the TCP pair.
 #[test]
 fn test_tls_conns_connections_acceptance() {
     let bundle = fixtures().bundle("tls-conns");
     with_core("tls-conns", |core| {
         let out = hansei_ok(&bundle, core, "connections");
-        assert!(out.ends_with("[9 connections]\n"), "{out}");
+        assert!(out.ends_with("[11 connections]\n"), "{out}");
         let mut rows: Vec<String> = out
             .lines()
             .skip(1)
-            .take(9)
+            .take(11)
             .map(|line| {
                 line.split_whitespace()
                     .skip(1)
@@ -4141,14 +4143,25 @@ fn test_tls_conns_connections_acceptance() {
                 "— tls client closing — 0/4096 — — — —",
                 "— tls client established — 0/4096 — — — —",
                 "— tls client established — 0/4096 — — — —",
+                "— tls client handshaking — 0/4096 — — — —",
                 "— tls server established — 0/4096 — — — —",
                 "— tls server established — 0/4096 — — — —",
+                "— tls server handshaking — 0/4096 — — — —",
             ],
             "{out}"
         );
         let grouped = hansei_ok(&bundle, core, "connections --group proto");
-        for bucket in ["5  tls", "2  tcp", "2  http1/tls"] {
+        for bucket in ["7  tls", "2  tcp", "2  http1/tls"] {
             assert!(grouped.contains(bucket), "{grouped}");
+        }
+        let tasks = list_tasks(&bundle, core);
+        for side in ["client", "server"] {
+            let task = task_with_future(&tasks, &format!("async fn tls_conns::handshaking_{side}"));
+            assert!(
+                task.waiting.starts_with("handshaking fd ")
+                    && task.waiting.ends_with(" (readable)"),
+                "{task:?}"
+            );
         }
         let tcp = hansei_ok(&bundle, core, "connections --with proto tcp");
         assert!(tcp.ends_with("[2 connections]\n"), "{tcp}");

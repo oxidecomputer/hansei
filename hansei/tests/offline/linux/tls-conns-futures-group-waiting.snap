@@ -2,7 +2,6 @@
 source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over linux/tls-conns"
 ---
-COUNT  WAITING ON                                                         FUTURES
-    4  unarmed: io                                                        0xADDR, 0xADDR, 0xADDR, …
-    2  unarmed: unknown at tokio_rustls::common::handshake::MidHandshake  0xADDR, 0xADDR
-[2 groups]
+COUNT  WAITING ON   FUTURES
+    4  unarmed: io  0xADDR, 0xADDR, 0xADDR, …
+[1 group]

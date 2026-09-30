@@ -223,7 +223,8 @@ impl<'a> Check<'a> {
             | HyperUtilStream
             | DropshotTlsConn
             | ReqwestConn
-            | HyperRustlsStream => {
+            | HyperRustlsStream
+            | TokioRustlsHandshake => {
                 let crate_name = match rule.kind {
                     TracingInstrumented => "tracing",
                     HyperUtilTokioSleep
@@ -249,7 +250,7 @@ impl<'a> Check<'a> {
                     // stream route's.
                     TokioStreamWatchStream | TokioStreamStreamMap => "tokio-stream",
                     TokioUtilReusableBox => "tokio-util",
-                    TokioRustlsStream => "tokio-rustls",
+                    TokioRustlsStream | TokioRustlsHandshake => "tokio-rustls",
                     _ => "futures-util",
                 };
                 return require(
@@ -662,6 +663,7 @@ impl<'a> Check<'a> {
             ResourceKind::Sleep => &[TokioSleep],
             ResourceKind::JoinHandle => &[TokioJoinHandle],
             ResourceKind::SemaphoreAcquire => &[TokioAcquire],
+            ResourceKind::IoOperation(IoOperationKind::Handshake) => &[TokioRustlsHandshake],
             ResourceKind::IoOperation(_) => &[TokioIoOperation],
             ResourceKind::MpscRecv => &[TokioMpscRecv],
             ResourceKind::Notified => &[TokioNotified],
@@ -697,6 +699,15 @@ impl<'a> Check<'a> {
                 ResourceKind::Sleep => TokioSleepState,
                 ResourceKind::JoinHandle => TokioJoinHandleState,
                 ResourceKind::SemaphoreAcquire => TokioAcquireState,
+                // A handshake's protocol, like a connection's, is its
+                // own rule.
+                ResourceKind::IoOperation(IoOperationKind::Handshake) => {
+                    require(
+                        state_rule == binding.rule,
+                        "a handshake's protocol is not the handshake's own rule",
+                    )?;
+                    rule.kind
+                }
                 ResourceKind::IoOperation(_) => TokioIoState,
                 ResourceKind::MpscRecv => TokioMpscRecvState,
                 ResourceKind::Notified => TokioNotifiedState,
@@ -965,12 +976,27 @@ impl<'a> Check<'a> {
         binding: &IoOperationBinding,
         routed: &impl Fn(BundleTypeId) -> bool,
     ) -> Result<()> {
-        self.rule(binding.rule, &[SemanticRuleKind::TokioIoOperation])?;
-        self.path(record.ty, &binding.stream)?;
-        require(
-            binding.stream.steps.last() == Some(&Step::Deref),
-            "an io operation's stream is not behind its pointer",
+        let rule = self.rule(
+            binding.rule,
+            &[
+                SemanticRuleKind::TokioIoOperation,
+                SemanticRuleKind::TokioRustlsHandshake,
+            ],
         )?;
+        self.path(record.ty, &binding.stream)?;
+        // tokio's operations poll a stream they borrow; a handshake
+        // holds its stream in the variant it is handshaking in.
+        if rule.kind == SemanticRuleKind::TokioRustlsHandshake {
+            require(
+                matches!(binding.stream.steps.first(), Some(Step::Variant(_))),
+                "a handshake's stream is not selected from its state",
+            )?;
+        } else {
+            require(
+                binding.stream.steps.last() == Some(&Step::Deref),
+                "an io operation's stream is not behind its pointer",
+            )?;
+        }
         require(
             routed(binding.stream.target),
             "an io operation's stream has no route",
@@ -1477,6 +1503,7 @@ impl<'a> Check<'a> {
                         TowerRetry,
                         ReqwestCookie,
                         HyperUtilResponseFuture,
+                        TokioRustlsHandshake,
                     ],
                 )?;
                 self.target(record.ty, target)?;
@@ -1500,7 +1527,9 @@ impl<'a> Check<'a> {
                 // `Either` polls the side it holds, tower's retry the
                 // future its state holds, reqwest's cookie layer the
                 // service's future, and hyper-util's response future the
-                // box its wrapper lends, each and nothing else.
+                // box its wrapper lends, each and nothing else, as
+                // tokio-rustls's `Connect` and `Accept` poll the handshake
+                // they hold.
                 let reviewed = matches!(
                     binding.kind,
                     RustcAsyncFn
@@ -1522,6 +1551,7 @@ impl<'a> Check<'a> {
                         | TowerRetry
                         | ReqwestCookie
                         | HyperUtilResponseFuture
+                        | TokioRustlsHandshake
                 );
                 require(!exclusive || reviewed, "unreviewed delegation exclusivity")?;
                 let path = match target {
@@ -1554,6 +1584,7 @@ impl<'a> Check<'a> {
                         TokioOneshotRecv,
                         HyperH1Conn,
                         HyperUtilAutoConn,
+                        TokioRustlsHandshake,
                     ],
                 )?;
                 require(
@@ -1635,6 +1666,7 @@ impl<'a> Check<'a> {
                 TowerRetry,
                 ReqwestCookie,
                 HyperUtilResponseFuture,
+                TokioRustlsHandshake,
             ],
         )?;
         require(

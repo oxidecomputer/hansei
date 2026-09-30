@@ -5,5 +5,5 @@ description: "`graph` over linux/http-conns"
 TASK                                STATE  WAITING ON
 7                                   idle   oneshot rx
 └─ 9 [its response awaited above]   idle   http1 client
-10                                  idle   oneshot rx
+10                                  idle   oneshot rx, unknown
 └─ 12 [its response awaited above]  idle   http1 client

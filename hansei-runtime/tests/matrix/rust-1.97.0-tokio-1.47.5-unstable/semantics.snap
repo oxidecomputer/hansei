@@ -2403,7 +2403,10 @@ origin 16: delegation hyper 1.10.1 family hyper-h1-conn-1.6.0 from registry/src/
 origin 17: delegation tokio-rustls 0.26.4 family tokio-rustls-stream-0.26.0 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.26.4/src/client.rs (0 checksummed files)
 origin 18: delegation tokio 1.47.5 family tokio-select-1.47 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.47.5/src/macros/select.rs (0 checksummed files)
 origin 19: delegation tokio-rustls 0.26.4 family tokio-rustls-stream-0.26.0 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.26.4/src/lib.rs (0 checksummed files)
-origin 20: rustc rustc-core-pending-1.97 (clang LLVM (rustc version 1.97.0 (2d8144b78 2026-07-07)))
+origin 20: delegation tokio-rustls 0.26.4 family tokio-rustls-handshake-0.26.0 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.26.4/src/client.rs (0 checksummed files)
+origin 21: delegation tokio-rustls 0.26.4 family tokio-rustls-handshake-0.26.0 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.26.4/src/common/handshake.rs (0 checksummed files)
+origin 22: delegation tokio-rustls 0.26.4 family tokio-rustls-handshake-0.26.0 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.26.4/src/server.rs (0 checksummed files)
+origin 23: rustc rustc-core-pending-1.97 (clang LLVM (rustc version 1.97.0 (2d8144b78 2026-07-07)))
 rule 0: RustcAsyncBlock rev 1 origin 0
 rule 1: StdRefcountHeader rev 1 origin 1
 rule 2: HttpRequest rev 1 origin 2
@@ -2435,14 +2438,17 @@ rule 27: StdMutRefPoll rev 1 origin 3
 rule 28: StdPinMutRefAccess rev 1 origin 3
 rule 29: StdPinMutRefPoll rev 1 origin 3
 rule 30: TokioRustlsStream rev 1 origin 19
-rule 31: TokioJoinHandle rev 1 origin 8
-rule 32: TokioJoinHandleState rev 1 origin 8
-rule 33: CorePending rev 1 origin 20
-rule 34: TokioNotified rev 1 origin 8
-rule 35: TokioNotifiedState rev 1 origin 8
-rule 36: TokioCurrentThreadScheduler rev 1 origin 8
-rule 37: TokioMultiThreadScheduler rev 1 origin 8
-rule 38: TokioBlockingScheduler rev 1 origin 8
+rule 31: TokioRustlsHandshake rev 1 origin 20
+rule 32: TokioRustlsHandshake rev 1 origin 21
+rule 33: TokioRustlsHandshake rev 1 origin 22
+rule 34: TokioJoinHandle rev 1 origin 8
+rule 35: TokioJoinHandleState rev 1 origin 8
+rule 36: CorePending rev 1 origin 23
+rule 37: TokioNotified rev 1 origin 8
+rule 38: TokioNotifiedState rev 1 origin 8
+rule 39: TokioCurrentThreadScheduler rev 1 origin 8
+rule 40: TokioMultiThreadScheduler rev 1 origin 8
+rule 41: TokioBlockingScheduler rev 1 origin 8
 hyper::proto::h2::server::H2Stream<tls_conns::https_server::{async_fn#0}::{closure#0}::{async_block_env#0}, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioExecutor> :: members future[task 0, task 1, poll] continuation unknown (NoRule)
 tls_conns::https_server::{async_fn#0}::{closure#0}::{async_block_env#0} :: states future[coroutine rule 0] continuation rule 0 match <self>@+0 -> tls_conns::https_server::{async_fn#0}::{closure#0}::{async_block_env#0} {0: unresumed} {1: returned} {2: panicked} coroutine rule 0 {0:Unresumed[]() 1:Returned[]() 2:Panicked[]()} kind rule 0
 hyper::proto::h2::PipeToSendStream<http_body_util::full::Full<bytes::bytes::Bytes>> :: members future[poll] continuation unknown (NoRule)
@@ -2561,8 +2567,8 @@ tokio::io::util::buf_stream::BufStream<tokio_rustls::server::TlsStream<tokio::ne
 tokio::io::util::buf_reader::BufReader<tokio::io::util::buf_writer::BufWriter<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>> :: members io-route rule 9 forward inner@+0 -> tokio::io::util::buf_writer::BufWriter<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>> to tokio::io::util::buf_writer::BufWriter<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>
 tokio::io::util::buf_writer::BufWriter<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>> :: members io-route rule 9 forward inner@+0 -> tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream> to tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>
 tls_conns::handshaking_client::{async_fn_env#0} :: states future[task 24, task 25, coroutine rule 6] continuation rule 6 match <self>@+0 -> tls_conns::handshaking_client::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+48 -> tokio_rustls::client::Connect<tokio::net::tcp::stream::TcpStream>} coroutine rule 6 {0:Unresumed[connector,tcp]() 1:Returned[]() 2:Panicked[]() 3:Suspended[connector,__awaitee,__2]()} kind rule 6
-tokio_rustls::client::Connect<tokio::net::tcp::stream::TcpStream> :: members future[poll, delegated by tls_conns::handshaking_client::{async_fn_env#0}] continuation unknown (NoRule)
-tokio_rustls::common::handshake::MidHandshake<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>> :: members future[poll] continuation unknown (NoRule)
+tokio_rustls::client::Connect<tokio::net::tcp::stream::TcpStream> :: members future[poll, delegated by tls_conns::handshaking_client::{async_fn_env#0}] continuation rule 31 delegate (exclusive) __0@+0 -> tokio_rustls::common::handshake::MidHandshake<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
+tokio_rustls::common::handshake::MidHandshake<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>> :: members future[poll, delegated by tokio_rustls::client::Connect<tokio::net::tcp::stream::TcpStream>] continuation rule 32 primitive resource IoOperation(Handshake) rule 32 state rule 32 exclusive-pending io rule 32 stream {Handshaking}.__0@+0 -> tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>
 alloc::sync::ArcInner<rustls::client::client_conn::ClientConfig> :: members refcount rule 1 value data
 alloc::sync::ArcInner<rustls::crypto::CryptoProvider> :: members refcount rule 1 value data
 alloc::sync::ArcInner<rustls::compress::CompressionCache> :: members refcount rule 1 value data
@@ -2572,8 +2578,8 @@ alloc::sync::ArcInner<dyn rustls::time_provider::TimeProvider> :: members refcou
 alloc::sync::ArcInner<dyn rustls::verify::ServerCertVerifier> :: members refcount rule 1 value data
 alloc::sync::ArcInner<dyn rustls::client::client_conn::ClientSessionStore> :: members refcount rule 1 value data
 tls_conns::handshaking_server::{async_fn_env#0} :: states future[task 26, task 27, coroutine rule 6] continuation rule 6 match <self>@+0 -> tls_conns::handshaking_server::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+56 -> tokio_rustls::server::Accept<tokio::net::tcp::stream::TcpStream>} coroutine rule 6 {0:Unresumed[acceptor,tcp,ready]() 1:Returned[]() 2:Panicked[]() 3:Suspended[acceptor,__awaitee,__2,__3]()} kind rule 6
-tokio_rustls::server::Accept<tokio::net::tcp::stream::TcpStream> :: members future[poll, delegated by tls_conns::handshaking_server::{async_fn_env#0}] continuation unknown (NoRule)
-tokio_rustls::common::handshake::MidHandshake<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>> :: members future[poll] continuation unknown (NoRule)
+tokio_rustls::server::Accept<tokio::net::tcp::stream::TcpStream> :: members future[poll, delegated by tls_conns::handshaking_server::{async_fn_env#0}] continuation rule 33 delegate (exclusive) __0@+0 -> tokio_rustls::common::handshake::MidHandshake<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>
+tokio_rustls::common::handshake::MidHandshake<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>> :: members future[poll, delegated by tokio_rustls::server::Accept<tokio::net::tcp::stream::TcpStream>] continuation rule 32 primitive resource IoOperation(Handshake) rule 32 state rule 32 exclusive-pending io rule 32 stream {Handshaking}.__0@+0 -> tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>
 alloc::sync::ArcInner<rustls::server::server_conn::ServerConfig> :: members refcount rule 1 value data
 alloc::sync::ArcInner<dyn rustls::server::server_conn::StoresServerSessions> :: members refcount rule 1 value data
 alloc::sync::ArcInner<dyn rustls::server::server_conn::ProducesTickets> :: members refcount rule 1 value data
@@ -2616,7 +2622,7 @@ core::future::poll_fn::PollFn<fn(&mut core::task::wake::Context) -> core::task::
 tokio::runtime::io::scheduled_io::{impl#5}::readiness::{async_fn_env#0} :: states future[coroutine rule 6, delegated by tokio::runtime::io::registration::{impl#2}::readiness::{async_fn_env#0}] continuation rule 6 match <self>@+0 -> tokio::runtime::io::scheduled_io::{impl#5}::readiness::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+16 -> tokio::runtime::io::scheduled_io::Readiness} coroutine rule 6 {0:Unresumed[self,interest]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee]()} kind rule 6
 tokio::runtime::io::scheduled_io::Readiness :: members future[poll, delegated by tokio::runtime::io::scheduled_io::{impl#5}::readiness::{async_fn_env#0}] continuation rule 19 primitive resource IoOperation(Readiness) rule 19 state rule 20 exclusive-pending
 http_body_util::combinators::collect::Collect<hyper::body::incoming::Incoming> :: members future[poll, delegated by tls_conns::main::{async_block_env#0}] continuation unknown (NoRule)
-tokio::runtime::task::join::JoinHandle<core::result::Result<alloc::vec::into_iter::IntoIter<core::net::socket_addr::SocketAddr, alloc::alloc::Global>, std::io::error::Error>> :: members future[poll] continuation rule 31 primitive resource JoinHandle rule 31 state rule 32 exclusive-pending
+tokio::runtime::task::join::JoinHandle<core::result::Result<alloc::vec::into_iter::IntoIter<core::net::socket_addr::SocketAddr, alloc::alloc::Global>, std::io::error::Error>> :: members future[poll] continuation rule 34 primitive resource JoinHandle rule 34 state rule 35 exclusive-pending
 tokio::net::tcp::listener::{impl#0}::bind::{async_fn_env#0}<&str> :: states future[coroutine rule 6, delegated by tls_conns::tcp_pair::{async_fn_env#0}] continuation rule 6 match <self>@+0 -> tokio::net::tcp::listener::{impl#0}::bind::{async_fn_env#0}<&str> {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+16 -> tokio::net::addr::sealed::MaybeReady} coroutine rule 6 {0:Unresumed[addr]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee]()} kind rule 6
 tokio::net::addr::sealed::MaybeReady :: members future[poll, delegated by tokio::net::tcp::listener::{impl#0}::bind::{async_fn_env#0}<&str>] continuation unknown (NoRule)
 hyper::client::conn::http1::{impl#7}::handshake::{async_block_env#0}<hyper_util::rt::tokio::TokioIo<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>, http_body_util::empty::Empty<bytes::bytes::Bytes>> :: states future[coroutine rule 0, delegated by hyper::client::conn::http1::handshake::{async_fn_env#0}<hyper_util::rt::tokio::TokioIo<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>, http_body_util::empty::Empty<bytes::bytes::Bytes>>] continuation rule 0 match <self>@+0 -> hyper::client::conn::http1::{impl#7}::handshake::{async_block_env#0}<hyper_util::rt::tokio::TokioIo<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>, http_body_util::empty::Empty<bytes::bytes::Bytes>> {0: unresumed} {1: returned} {2: panicked} coroutine rule 0 {0:Unresumed[io,opts__h09_responses,opts__h1_parser_config,opts__h1_writev,opts__h1_title_case_headers,opts__h1_preserve_header_case,opts__h1_max_headers,opts__h1_read_buf_exact_size,opts__h1_max_buf_size]() 1:Returned[]() 2:Panicked[]()} kind rule 0
@@ -2626,12 +2632,12 @@ tls_conns::tls_pair::{async_fn_env#0} :: states future[coroutine rule 6, delegat
 tls_conns::tcp_pair::{async_fn_env#0} :: states future[coroutine rule 6, delegated by tls_conns::main::{async_block_env#0}, delegated by tls_conns::tls_pair::{async_fn_env#0}] continuation rule 6 match <self>@+0 -> tls_conns::tcp_pair::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+8 -> tokio::net::tcp::listener::{impl#0}::bind::{async_fn_env#0}<&str>} {4: delegate (exclusive) {4}.__awaitee@+376 -> core::future::poll_fn::PollFn<tls_conns::tcp_pair::{async_fn#0}::{closure_env#0}>} coroutine rule 6 {0:Unresumed[]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee]() 4:Suspended[listener,futures,__awaitee]()} kind rule 6
 tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn_env#0}<tokio::sync::oneshot::Receiver<()>> :: states future[coroutine rule 6, delegated by tls_conns::main::{async_block_env#0}] continuation rule 6 match <self>@+0 -> tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn_env#0}<tokio::sync::oneshot::Receiver<()>> {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+8 -> core::future::poll_fn::PollFn<tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn#0}::{closure_env#0}<tokio::sync::oneshot::Receiver<()>>>} coroutine rule 6 {0:Unresumed[self]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee]()} kind rule 6
 hyper::client::conn::http1::{impl#2}::send_request::{async_block_env#0}<http_body_util::empty::Empty<bytes::bytes::Bytes>> :: states future[coroutine rule 0, delegated by tls_conns::main::{async_block_env#0}] continuation rule 0 match <self>@+0 -> hyper::client::conn::http1::{impl#2}::send_request::{async_block_env#0}<http_body_util::empty::Empty<bytes::bytes::Bytes>> {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+224 -> tokio::sync::oneshot::Receiver<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::error::Error>>} coroutine rule 0 {0:Unresumed[sent]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee](sent)} kind rule 0
-core::future::pending::Pending<()> :: members future[delegated by tls_conns::main::{async_block_env#0}] continuation rule 33 never ready
+core::future::pending::Pending<()> :: members future[delegated by tls_conns::main::{async_block_env#0}] continuation rule 36 never ready
 core::future::poll_fn::PollFn<tls_conns::tls_pair::{async_fn#0}::{closure_env#0}> :: members future[poll, delegated by tls_conns::tls_pair::{async_fn_env#0}] continuation unknown (NoRule)
 core::future::poll_fn::PollFn<tls_conns::tcp_pair::{async_fn#0}::{closure_env#0}> :: members future[poll, delegated by tls_conns::tcp_pair::{async_fn_env#0}] continuation unknown (NoRule)
 core::future::poll_fn::PollFn<tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn#0}::{closure_env#0}<tokio::sync::oneshot::Receiver<()>>> :: members future[poll, delegated by tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn_env#0}<tokio::sync::oneshot::Receiver<()>>] continuation unknown (NoRule)
 alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<tokio::sync::oneshot::Receiver<()>, tokio::sync::mpsc::unbounded::Semaphore>> :: members refcount rule 1 value data
-tokio::sync::notify::Notified :: members future[poll] continuation rule 34 primitive resource Notified rule 34 state rule 35 exclusive-pending
+tokio::sync::notify::Notified :: members future[poll] continuation rule 37 primitive resource Notified rule 37 state rule 38 exclusive-pending
 tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn_env#0}<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> :: states future[coroutine rule 6] continuation rule 6 match <self>@+0 -> tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn_env#0}<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+8 -> core::future::poll_fn::PollFn<tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn#0}::{closure_env#0}<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>>} coroutine rule 6 {0:Unresumed[self]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee]()} kind rule 6
 core::future::poll_fn::PollFn<tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn#0}::{closure_env#0}<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>> :: members future[delegated by tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn_env#0}<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>] continuation unknown (NoRule)
 &mut tokio::sync::oneshot::Receiver<()> :: members future[poll] continuation rule 27 delegate (exclusive) *@+0 -> tokio::sync::oneshot::Receiver<()> access Borrowed rule 26 *@+0 -> tokio::sync::oneshot::Receiver<()>
@@ -2642,37 +2648,37 @@ core::pin::Pin<&mut tokio::sync::notify::Notified> :: members access Borrowed ru
 core::pin::Pin<&mut tls_conns::main::{async_block_env#0}> :: members future[poll] continuation rule 29 delegate (exclusive) pointer.*@+0 -> tls_conns::main::{async_block_env#0} access Borrowed rule 28 pointer.*@+0 -> tls_conns::main::{async_block_env#0}
 &mut tokio::sync::notify::Notified :: members access Borrowed rule 26 *@+0 -> tokio::sync::notify::Notified
 &mut tls_conns::main::{async_block_env#0} :: members access Borrowed rule 26 *@+0 -> tls_conns::main::{async_block_env#0}
-task 0: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 1: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 2: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 3: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 4: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 5: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 6: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 7: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 8: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 9: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 10: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 11: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 12: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 13: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 14: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 15: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 16: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 17: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 18: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 19: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 20: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 21: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 22: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 23: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 24: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 25: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 26: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 27: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 28: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 29: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 30: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 36
-task 31: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 37
-task 32: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocking rule 38
-task 33: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocking rule 38
+task 0: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 1: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 2: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 3: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 4: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 5: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 6: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 7: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 8: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 9: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 10: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 11: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 12: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 13: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 14: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 15: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 16: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 17: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 18: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 19: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 20: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 21: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 22: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 23: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 24: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 25: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 26: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 27: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 28: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 29: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 30: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 39
+task 31: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 40
+task 32: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocking rule 41
+task 33: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocking rule 41

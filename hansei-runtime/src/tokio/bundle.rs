@@ -3915,8 +3915,16 @@ impl<'b, T: Target> Context<'b, T> {
         operation: IoOperationKind,
         read: &ReadContext<'_>,
     ) -> Result<IoObservation> {
-        let Some(writes) = operation.writes() else {
-            return self.observe_readiness(future, read);
+        // A handshake reads and writes as the protocol needs: which
+        // direction it waits in is the slot its waker sits in, which
+        // the assessor reads; the observation names both.
+        let interest = match operation.writes() {
+            Some(true) => Interest::WRITABLE,
+            Some(false) => Interest::READABLE,
+            None if operation == IoOperationKind::Handshake => {
+                Interest::READABLE.union(Interest::WRITABLE)
+            }
+            None => return self.observe_readiness(future, read),
         };
         let binding = self
             .type_semantics(future.ty.id())
@@ -3949,11 +3957,7 @@ impl<'b, T: Target> Context<'b, T> {
             future: ValueKey::of(future),
             operation,
             scheduled_io: ValueKey::of(scheduled_io),
-            interest: if writes {
-                Interest::WRITABLE
-            } else {
-                Interest::READABLE
-            },
+            interest,
             waiter_node: None,
             remaining,
             readiness_state: None,

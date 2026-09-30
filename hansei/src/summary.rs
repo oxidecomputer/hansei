@@ -782,7 +782,7 @@ impl Waits {
                 self.timer_past_due += usize::from(past_due.unwrap_or(false));
             }
             WaitKind::Task { .. } => self.task += 1,
-            WaitKind::Io => self.io += 1,
+            WaitKind::Io { .. } => self.io += 1,
             WaitKind::Semaphore { owner } => *self.semaphores.entry(owner).or_default() += 1,
             WaitKind::Channel { .. } => self.channel += 1,
             WaitKind::Notify { .. } => self.notify += 1,
@@ -2008,6 +2008,7 @@ mod tests {
                         addr: 0x7000,
                         fd: None,
                         interest: None,
+                        handshake: false,
                         tls: None,
                     },
                     None,
@@ -2354,7 +2355,7 @@ mod tests {
         const LONG: &str = "a::very::long::module::path::to::some::future_type";
         let list = empty();
         let held: Vec<HeldFuture> = (0..2)
-            .map(|_| held(LONG, Some(WaitKind::Io)))
+            .map(|_| held(LONG, Some(WaitKind::Io { handshake: false })))
             .chain([held(LONG, Some(WaitKind::Task { addr: 0x7100 }))])
             .collect();
         let mut facts = facts(&list, &[]);

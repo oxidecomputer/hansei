@@ -14,7 +14,7 @@
 //! version outside every reviewed range gets no rule at all, however
 //! familiar its layout looks.
 
-use crate::bundle::{LayoutSelection, ResourceKind, SemanticRuleKind};
+use crate::bundle::{IoOperationKind, LayoutSelection, ResourceKind, SemanticRuleKind};
 use crate::provenance::rustc_version;
 
 /// One reviewed rustc convention: its name, as the bundle's `Rustc`
@@ -2373,6 +2373,167 @@ pub const HYPER_RUSTLS_STREAM_V0_27_0: LibraryConvention = LibraryConvention {
     ],
 };
 
+/// tokio-rustls's handshake as 0.26.0 through 0.26.6 implement it.
+/// `MidHandshake<IS>` (`src/common/handshake.rs`) is the enum
+/// `Handshaking(IS) | End | SendAlert { io, alert, error } | Error { io,
+/// error }`, the same in every release, and its `poll` in `Handshaking`
+/// drives rustls's handshake over the stream it holds (`Stream::handshake`
+/// in `src/common/mod.rs`), which returns `Pending` only when writing,
+/// flushing or reading the stream would block and nothing moved that
+/// round — so the task's waker is in the socket's writer slot, its
+/// reader slot, or both, and nowhere else. In `SendAlert` it writes the
+/// alert to the bare `io`; `Error` returns at once, and `End` is never
+/// polled. The releases differ in a zero-length write's error (0.26.1)
+/// and in carrying the flush flag across polls (0.26.3), neither of
+/// which moves a wait. `Connect`, `Accept`, `FallibleConnect` and
+/// `FallibleAccept` (`src/lib.rs` through 0.26.2, `src/client.rs` and
+/// `src/server.rs` from 0.26.3) are newtypes over it whose `poll` polls
+/// it and nothing else. Each type's origin is its own `poll`.
+pub const TOKIO_RUSTLS_HANDSHAKE_V0_26_0: LibraryConvention = LibraryConvention {
+    package: "tokio-rustls",
+    family: "tokio-rustls-handshake-0.26.0",
+    floor: (0, 26, 0),
+    ceiling: (0, 26, 6),
+    checksums: &[
+        // src/common/handshake.rs, 0.26.0 through 0.26.2
+        (
+            "src/common/handshake.rs",
+            [
+                0xc6, 0xd3, 0x73, 0xfd, 0xd6, 0x46, 0x97, 0xcd, 0x12, 0x54, 0x5f, 0xe6, 0x2a, 0xf3,
+                0xee, 0x67,
+            ],
+        ),
+        // src/common/handshake.rs, 0.26.3 through 0.26.6
+        (
+            "src/common/handshake.rs",
+            [
+                0xea, 0x26, 0x32, 0x7f, 0xd2, 0xcb, 0x60, 0x73, 0x88, 0xf1, 0x74, 0x15, 0x23, 0xf5,
+                0x26, 0xb9,
+            ],
+        ),
+        // src/lib.rs, 0.26.0
+        (
+            "src/lib.rs",
+            [
+                0x28, 0x4f, 0xe9, 0x23, 0x8e, 0x09, 0x49, 0xaa, 0x78, 0xd2, 0xbc, 0x89, 0x23, 0x1a,
+                0xad, 0x8a,
+            ],
+        ),
+        // src/lib.rs, 0.26.1
+        (
+            "src/lib.rs",
+            [
+                0x5f, 0x3e, 0xef, 0x4c, 0x6e, 0x0f, 0x4a, 0xdb, 0xd5, 0x8e, 0xed, 0x3a, 0x09, 0xb2,
+                0x52, 0x88,
+            ],
+        ),
+        // src/lib.rs, 0.26.2
+        (
+            "src/lib.rs",
+            [
+                0x2d, 0xc3, 0x9f, 0x59, 0x36, 0x0f, 0x95, 0x73, 0x3f, 0x06, 0xcc, 0xce, 0xa7, 0xe5,
+                0xcd, 0xd3,
+            ],
+        ),
+        // src/lib.rs, 0.26.3 and 0.26.4
+        (
+            "src/lib.rs",
+            [
+                0x3b, 0x15, 0x4a, 0xa2, 0xc2, 0x57, 0x2e, 0x4e, 0x67, 0x95, 0x4b, 0x86, 0x55, 0x0c,
+                0x45, 0xbb,
+            ],
+        ),
+        // src/lib.rs, 0.26.5 and 0.26.6
+        (
+            "src/lib.rs",
+            [
+                0xac, 0x67, 0x80, 0x72, 0xfd, 0x54, 0x5b, 0x73, 0x65, 0xb8, 0xc2, 0x22, 0x07, 0x4f,
+                0x60, 0x09,
+            ],
+        ),
+        // src/client.rs, 0.26.0 and 0.26.1
+        (
+            "src/client.rs",
+            [
+                0xf5, 0xe1, 0xfe, 0x9c, 0x42, 0xe3, 0x98, 0x3e, 0xa4, 0x9a, 0x9c, 0x3a, 0x57, 0x1a,
+                0x01, 0xcc,
+            ],
+        ),
+        // src/client.rs, 0.26.2
+        (
+            "src/client.rs",
+            [
+                0x52, 0xbc, 0x7a, 0x1c, 0x88, 0x1d, 0x85, 0x85, 0xdf, 0x13, 0x1c, 0x77, 0x4e, 0x80,
+                0x09, 0xd5,
+            ],
+        ),
+        // src/client.rs, 0.26.3 and 0.26.4
+        (
+            "src/client.rs",
+            [
+                0x3e, 0x02, 0x87, 0xc9, 0x9f, 0xfc, 0x6e, 0x87, 0x95, 0xb5, 0x02, 0xea, 0xca, 0x12,
+                0x9d, 0xfa,
+            ],
+        ),
+        // src/client.rs, 0.26.5
+        (
+            "src/client.rs",
+            [
+                0xa0, 0xd6, 0xb0, 0x9f, 0x53, 0xe0, 0x3a, 0x0a, 0xb9, 0x52, 0xe4, 0x9a, 0x84, 0xa6,
+                0x66, 0x9d,
+            ],
+        ),
+        // src/client.rs, 0.26.6
+        (
+            "src/client.rs",
+            [
+                0x8c, 0x55, 0x3b, 0x19, 0x44, 0xb7, 0x03, 0x55, 0x7b, 0x87, 0x93, 0xed, 0x72, 0xf6,
+                0xc8, 0xcc,
+            ],
+        ),
+        // src/server.rs, 0.26.0 and 0.26.1
+        (
+            "src/server.rs",
+            [
+                0x97, 0x30, 0xa2, 0xe6, 0xae, 0x46, 0x55, 0x69, 0x92, 0xe8, 0xb6, 0x91, 0xc1, 0xcc,
+                0x36, 0x42,
+            ],
+        ),
+        // src/server.rs, 0.26.2
+        (
+            "src/server.rs",
+            [
+                0xe6, 0x40, 0x28, 0xc6, 0x7e, 0xf7, 0x6a, 0x00, 0x83, 0x14, 0xd6, 0x4a, 0x48, 0xc0,
+                0xf3, 0xe6,
+            ],
+        ),
+        // src/server.rs, 0.26.3 and 0.26.4
+        (
+            "src/server.rs",
+            [
+                0x02, 0xd5, 0x42, 0xdf, 0x55, 0x04, 0xf0, 0xe5, 0x84, 0x77, 0xf4, 0xea, 0x0b, 0x48,
+                0x29, 0x24,
+            ],
+        ),
+        // src/server.rs, 0.26.5
+        (
+            "src/server.rs",
+            [
+                0x82, 0xcd, 0xcf, 0x02, 0x15, 0x0f, 0x7d, 0x20, 0x2b, 0x2e, 0xa5, 0x23, 0x36, 0x44,
+                0x59, 0x59,
+            ],
+        ),
+        // src/server.rs, 0.26.6
+        (
+            "src/server.rs",
+            [
+                0x19, 0x48, 0x5c, 0x7c, 0x27, 0x10, 0xe1, 0xfd, 0xdd, 0x20, 0x85, 0x47, 0xad, 0xa7,
+                0x15, 0x63,
+            ],
+        ),
+    ],
+};
+
 /// One reviewed third-party implementation fetched from git, which has
 /// no release to select a range by: the crate, the repository cargo
 /// names its checkout after, the crate's directory inside it, the
@@ -2734,6 +2895,9 @@ pub fn tokio_state_protocol(
         ResourceKind::Sleep => &TOKIO_SLEEP_STATE_V1_47,
         ResourceKind::JoinHandle => &TOKIO_JOIN_HANDLE_STATE_V1_47,
         ResourceKind::SemaphoreAcquire => &TOKIO_ACQUIRE_STATE_V1_47,
+        // Not tokio's either: a handshake's protocol is the
+        // tokio-rustls convention its own rule binds under.
+        ResourceKind::IoOperation(IoOperationKind::Handshake) => return None,
         ResourceKind::IoOperation(_) => &TOKIO_IO_STATE_V1_47,
         ResourceKind::MpscRecv => &TOKIO_MPSC_RECV_STATE_V1_47,
         ResourceKind::Notified => &TOKIO_NOTIFIED_STATE_V1_47,
@@ -2951,6 +3115,12 @@ mod tests {
                 "0.27.11",
             ),
             (
+                &TOKIO_RUSTLS_HANDSHAKE_V0_26_0,
+                ["0.26.0", "0.26.3", "0.26.6"].as_slice(),
+                "0.25.0",
+                "0.26.7",
+            ),
+            (
                 &RUSTLS_SESSION_V0_23_23,
                 ["0.23.23", "0.23.41", "0.23.45"].as_slice(),
                 "0.23.22",
@@ -3046,7 +3216,6 @@ mod tests {
     /// its layouts bound.
     #[test]
     fn test_state_protocols_bind_only_inside_the_reviewed_tokio_range() {
-        use crate::bundle::IoOperationKind;
         let v = |s: &str| semver::Version::parse(s).unwrap();
         let kinds = [
             (ResourceKind::Sleep, SemanticRuleKind::TokioSleepState),
@@ -3093,6 +3262,14 @@ mod tests {
                 );
             }
             assert_eq!(tokio_state_protocol(kind, None), None, "{kind:?}");
+        }
+        // Neither a connection nor a handshake is tokio's: each is its
+        // own crate's rule, at every tokio version.
+        for kind in [
+            ResourceKind::HttpConn,
+            ResourceKind::IoOperation(IoOperationKind::Handshake),
+        ] {
+            assert_eq!(tokio_state_protocol(kind, Some(&v("1.47.5"))), None);
         }
     }
 

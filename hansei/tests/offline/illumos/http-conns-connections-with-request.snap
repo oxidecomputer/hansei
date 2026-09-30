@@ -5,5 +5,5 @@ description: "`connections --with request park` over illumos/http-conns"
 TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE  BUF      PEER             SERVER  METHOD  REQUEST
 8     —       http1  server  handling request   —         0/16339  —                —       GET     /park
 11    —       http1  server  handling request   —         0/16326  —                —       GET     /park
-12    10      http1  client  awaiting response  —         0/8192   127.0.0.1:57667  —       GET     http://127.0.0.1:57667/park
+12    10      http1  client  awaiting response  —         0/8192   127.0.0.1:60582  —       GET     http://127.0.0.1:60582/park
 [3 connections]

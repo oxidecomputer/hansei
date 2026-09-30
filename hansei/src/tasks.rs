@@ -4014,6 +4014,7 @@ mod table_tests {
                     addr: 0xbb00,
                     fd: None,
                     interest: None,
+                    handshake: false,
                     tls: None,
                 },
                 None,

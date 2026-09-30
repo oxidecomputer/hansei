@@ -10,7 +10,7 @@ task 3
     awaiting on: io fd 11 (readable)
         tls: client, TLSv1_3, established, 2 records read, 1 written
         waker: the read-waiter slot, awaiting readable, ready: writable
-    spawned at: src/bin/tls-conns.rs:386:9
+    spawned at: src/bin/tls-conns.rs:380:9
     type defined at: src/bin/tls-conns.rs:160
     held futures: 0
     join sets: 0

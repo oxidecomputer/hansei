@@ -4298,6 +4298,65 @@ fn dyn_route() -> Bundle {
     b
 }
 
+/// A handshake is an io operation only under tokio-rustls's handshake
+/// rule, which is its own protocol, and reaches its stream by selecting
+/// the variant of its state that holds one.
+#[test]
+fn test_a_handshake_selects_its_stream_under_its_own_protocol() {
+    let mut b = third_party_routes();
+    let [state, holder] = [2, 4];
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::TokioRustlsHandshake,
+        revision: 1,
+        origin: SemanticOriginId(1),
+    });
+    let rule = SemanticRuleId(4);
+    b.semantics.types.remove(holder);
+    let handshake = &mut b.semantics.types[state];
+    handshake.io_route = None;
+    handshake.resource = Some(ResourceBinding {
+        rule,
+        kind: ResourceKind::IoOperation(IoOperationKind::Handshake),
+        state_rule: Some(rule),
+        exclusive_pending: true,
+    });
+    handshake.io = Some(IoOperationBinding {
+        rule,
+        stream: path(vec![Step::Variant(VARIANT)], PARENT),
+        remaining: None,
+    });
+    b.validate().unwrap();
+
+    let mut tokio_protocol = b.clone();
+    tokio_protocol.semantics.types[state]
+        .resource
+        .as_mut()
+        .unwrap()
+        .state_rule = Some(SemanticRuleId(1));
+    bad(&tokio_protocol, "not the handshake's own rule");
+
+    let mut tokio_rule = b.clone();
+    let record = &mut tokio_rule.semantics.types[state];
+    record.resource.as_mut().unwrap().rule = SemanticRuleId(1);
+    record.resource.as_mut().unwrap().state_rule = None;
+    record.resource.as_mut().unwrap().exclusive_pending = false;
+    record.io.as_mut().unwrap().rule = SemanticRuleId(1);
+    bad(&tokio_rule, "incompatible capability");
+
+    let mut unselected = b.clone();
+    unselected.semantics.types[state]
+        .io
+        .as_mut()
+        .unwrap()
+        .stream = path(Vec::new(), STATE);
+    bad(&unselected, "not selected from its state");
+
+    let mut read = b.clone();
+    read.semantics.types[state].resource.as_mut().unwrap().kind =
+        ResourceKind::IoOperation(IoOperationKind::Read);
+    bad(&read, "incompatible capability");
+}
+
 /// A trait object's route: under reqwest's rule, its header under the
 /// compiler's, both words pointers, the read slot past the header's,
 /// and every case a distinct routed stream.

@@ -4411,7 +4411,7 @@ mod tests {
         for leftovers in [
             (|held: &mut HeldFuture| held.waiting_on = Some("a Notify".to_string()))
                 as fn(&mut HeldFuture),
-            |held| held.wait = Some(WaitKind::Io),
+            |held| held.wait = Some(WaitKind::Io { handshake: false }),
         ] {
             let mut census = blank();
             census.held.push({
