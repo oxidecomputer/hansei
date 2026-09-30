@@ -147,6 +147,21 @@ pub(super) fn hex_bytes_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Di
     })
 }
 
+/// `dice_mfg_msgs::PlatformId` is a newtype over `[u8; 32]` holding a part
+/// and serial number as text, NUL-padded to the width — the form its own
+/// `as_str` trims and prints (identical in every revision of dice-util
+/// omicron has pinned).
+pub(super) fn platform_id_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let bytes = || reach![Named("__0")];
+    if !is_byte_array(emitter, id, &bytes(), Some(32)) {
+        return None;
+    }
+    Some(DisplayNode::Bytes {
+        at: emitter.walk(id, &bytes())?.0,
+        notation: Notation::PaddedText,
+    })
+}
+
 /// A borrowed `&camino::Utf8Path` is a `{ data_ptr, length }` fat pointer over a
 /// guaranteed-UTF-8 byte buffer, laid out exactly like `&str` — only the data
 /// pointer is typed `*Utf8Path` rather than `*u8`. It renders through the same

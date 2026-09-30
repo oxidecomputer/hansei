@@ -6,10 +6,10 @@ TASK  CALLER  ROLE    PHASE              DEADLINE    BUF      PEER             S
 4     —       server  idle (7ms)         +TS  0/16302  —                —       —       —
 5     —       client  idle               —           0/8192   —                —       —       —
 8     —       server  handling request   —           0/16339  —                —       GET     /park
-9     7       client  awaiting response  —           0/8192   127.0.0.1:39362  —       GET     —
+9     7       client  awaiting response  —           0/8192   127.0.0.1:33889  —       GET     —
 11    —       server  handling request   —           0/16326  —                —       GET     /park
-12    10      client  awaiting response  —           0/8192   127.0.0.1:39362  —       GET     http://127.0.0.1:39362/park
+12    10      client  awaiting response  —           0/8192   127.0.0.1:33889  —       GET     http://127.0.0.1:33889/park
 13    —       server  negotiating        —           —        —                —       —       —
-15    —       server  idle (4ms)         +TS  0/16343  —                —       —       —
-16    —       client  idle               —           0/8192   127.0.0.1:39362  —       —       —
+15    —       server  idle (5ms)         +TS  0/16343  —                —       —       —
+16    —       client  idle               —           0/8192   127.0.0.1:33889  —       —       —
 [9 connections]

@@ -524,6 +524,18 @@ pub enum Notation {
     /// unprefixed — how a digest is written everywhere it is written: a Git
     /// object id, a TUF artifact hash, a build id.
     Hex,
+    /// Any number of unsigned bytes as UTF-8 text, the NUL bytes that pad
+    /// it to the array's fixed size dropped from its end — an identifier
+    /// stored inline at a fixed width, as `dice_mfg_msgs::PlatformId`
+    /// stores a part and serial number. See [`padded_text`].
+    PaddedText,
+}
+
+/// The text a [`Notation::PaddedText`] array holds: its bytes up to the
+/// trailing NULs, where they are UTF-8. `None` for bytes that are not.
+pub fn padded_text(bytes: &[u8]) -> Option<&str> {
+    let end = bytes.iter().rposition(|b| *b != 0).map_or(0, |i| i + 1);
+    std::str::from_utf8(&bytes[..end]).ok()
 }
 
 /// A composable display program for a known type: a recursive tree of nodes

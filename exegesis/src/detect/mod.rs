@@ -34,8 +34,8 @@ pub mod walk;
 
 use self::crates::{
     bytes_node, hash_table_node, hex_bytes_node, http_text_node, hyper_h1_conn_node,
-    hyper_h1_dispatcher_node, hyper_util_io_wrapper_node, raw_mutex_node, utf8_path_buf_node,
-    utf8_path_node, uuid_node,
+    hyper_h1_dispatcher_node, hyper_util_io_wrapper_node, platform_id_node, raw_mutex_node,
+    utf8_path_buf_node, utf8_path_node, uuid_node,
 };
 use self::std::{
     atomic_node, btree_map_node, cstr_node, cstring_node, dyn_pointer_node, function_pointer_node,
@@ -440,6 +440,7 @@ static BY_NAME: &[(&str, Row<Detector>)] = &[
         All(raw_waker_vtable_node),
     ),
     ("core::task::wake::Waker", All(waker_node)),
+    ("dice_mfg_msgs::PlatformId", All(platform_id_node)),
     ("hashbrown::map::HashMap", All(hash_table_node)),
     ("hashbrown::set::HashSet", All(hash_table_node)),
     ("http::byte_str::ByteStr", All(http_text_node)),
@@ -2367,6 +2368,57 @@ mod tests {
                 expected,
                 "a {count}-byte digest should{} render as hex, got {got:?}",
                 if expected { "" } else { " not" },
+            );
+        }
+    }
+
+    /// A platform id is exactly 32 bytes of padded text; any other width
+    /// is some other newtype and declines.
+    #[test]
+    fn test_a_platform_id_is_padded_text_at_its_one_width() {
+        for (count, expected) in [(32, true), (16, false), (33, false)] {
+            let mut reader = DwReader::default();
+            let m0 = reader.strings.intern("__0");
+            let byte_name = reader.strings.intern("u8");
+            let id_name = reader.strings.intern("PlatformId");
+            let (byte, array, id) = (type_id(1), type_id(2), type_id(3));
+            reader
+                .types
+                .insert(byte, base(byte_name, 1, Encoding::Unsigned));
+            reader.types.insert(
+                array,
+                crate::raw_types::RawArray {
+                    elem_type_id: byte,
+                    count,
+                }
+                .into(),
+            );
+            reader.types.insert(
+                id,
+                ns_struct(
+                    None,
+                    id_name,
+                    count,
+                    vec![RawMember {
+                        name: Some(m0),
+                        offset: 0,
+                        type_id: array,
+                        source_loc: None,
+                    }],
+                ),
+            );
+
+            let got = detect_by_name(&reader, id, "dice_mfg_msgs::PlatformId");
+            assert_eq!(
+                matches!(
+                    got,
+                    Some(DisplayNode::Bytes {
+                        notation: Notation::PaddedText,
+                        ..
+                    })
+                ),
+                expected,
+                "a {count}-byte platform id, got {got:?}"
             );
         }
     }

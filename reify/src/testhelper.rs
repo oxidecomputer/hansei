@@ -643,6 +643,8 @@ fixture_ids! {
     // A 32-byte digest: any length is hex, so it shares no length with the
     // notations that fix one.
     HASH_BYTES, HASH,
+    // A `PlatformId`: 32 bytes again, NUL-padded text this time.
+    PLATFORM_ID,
     // A `&[u8]`: the same shape as SLICE but one byte per element, which
     // is what the display cap is spent in. Its own type rather than a
     // wider SLICE, so neither test can change the other's stride.
@@ -799,6 +801,7 @@ pub fn test_bundle() -> Bundle {
         s("scope_id"),
     );
     let hashn = s("tufaceous_artifact::artifact::ArtifactHash");
+    let platform_idn = s("dice_mfg_msgs::PlatformId");
     let (tagn, offn, onn, tag_holdern, tag_boxedn) = (
         s("demo::Tag<demo::Arg>"),
         s("Off"),
@@ -1805,6 +1808,14 @@ pub fn test_bundle() -> Bundle {
             members: vec![m(uuid_bytesn, HASH_BYTES, 0)],
         },
     );
+    types.add(
+        PLATFORM_ID,
+        TypeDef::Struct {
+            name: platform_idn,
+            size: 32,
+            members: vec![m(uuid_bytesn, HASH_BYTES, 0)],
+        },
+    );
     // &[u8] — SLICE's shape at a one-byte stride, which is the unit the
     // display cap is spent in. Its own type rather than a narrowed
     // SLICE, so neither test can change the other's stride.
@@ -2600,6 +2611,13 @@ pub fn test_bundle() -> Bundle {
                     BundleNode::Bytes {
                         at: sel(&[0]),
                         notation: Notation::Hex,
+                    },
+                ),
+                (
+                    PLATFORM_ID,
+                    BundleNode::Bytes {
+                        at: sel(&[0]),
+                        notation: Notation::PaddedText,
                     },
                 ),
                 (

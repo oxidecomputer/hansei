@@ -259,6 +259,18 @@ pub(crate) fn eval_bytes(
             }
             Ok(())
         }
+        // Quoted the way a string renders; bytes that are not text say so
+        // and give themselves in hex, rather than guessing at an encoding.
+        Notation::PaddedText => match hansei_bundle::padded_text(bytes) {
+            Some(text) => write!(f, "{text:?}"),
+            None => {
+                f.write_str("<not UTF-8: ")?;
+                for byte in bytes {
+                    f.write_str(hex_pair(*byte))?;
+                }
+                f.write_str(">")
+            }
+        },
     }
 }
 
@@ -407,6 +419,33 @@ mod tests {
         assert_eq!(
             format!("{}", Value::new(v.ty(HASH).unwrap(), 0, &bytes).display()),
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1eff"
+        );
+    }
+
+    /// Padded text is its bytes up to the trailing NULs, quoted as a
+    /// string is; bytes that are not UTF-8 say so, in hex.
+    #[test]
+    fn test_padded_text_renders_without_its_padding() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let render = |bytes: &[u8]| {
+            let mut padded = [0u8; 32];
+            padded[..bytes.len()].copy_from_slice(bytes);
+            format!(
+                "{}",
+                Value::new(v.ty(PLATFORM_ID).unwrap(), 0, &padded).display()
+            )
+        };
+        assert_eq!(
+            render(b"PDV2:913-0000023:RRR:223KFDD0"),
+            "\"PDV2:913-0000023:RRR:223KFDD0\""
+        );
+        // A NUL inside the text is text; only the trailing run pads.
+        assert_eq!(render(b"a\0b"), "\"a\\0b\"");
+        assert_eq!(render(b""), "\"\"");
+        assert_eq!(
+            render(&[0xff, 0x01]),
+            format!("<not UTF-8: ff01{}>", "00".repeat(30))
         );
     }
 

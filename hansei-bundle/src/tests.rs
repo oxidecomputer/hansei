@@ -3317,6 +3317,10 @@ mod node_validation {
             &with_format(bytes(4, Notation::Hex)),
             "0 bytes is not a length the Hex notation spells",
         );
+        rejects(
+            &with_format(bytes(4, Notation::PaddedText)),
+            "0 bytes is not a length the PaddedText notation spells",
+        );
     }
 
     #[test]

@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 90;
+pub const FORMAT_VERSION: u32 = 91;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -693,6 +693,8 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                 Notation::Uuid => *count == 16,
                 // Hex spells any run of bytes; an empty one spells nothing.
                 Notation::Hex => *count > 0,
+                // Padded text of no bytes pads nothing.
+                Notation::PaddedText => *count > 0,
             };
             if !admitted {
                 return corrupt(format!(
