@@ -36,11 +36,11 @@ use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
     AccessKind, BundleMember, BundleType, BundleTypeId, BundleView, ContainerKind, Continuation,
-    FutureKind, HashTableBinding, IoOperationKind, IoRouteStep, IoSocket, MemberRef, PollAction,
-    PollProgram, ResourceKind, SchedulerClass, SelectBinding, StaticRole, Step, StoragePolicy,
-    StreamPeerBinding, SymbolLookup, TaskEntryId, TaskFutureEntry, TlsStreamBinding, TypeClass,
-    TypeDef, TypeSemantics, TypedPath, WalkOutcome, WalkRole, socket_roles, strip_build_prefix,
-    strip_llvm_suffix,
+    DynStreamCase, DynStreamLayout, FutureKind, HashTableBinding, IoOperationKind, IoRouteStep,
+    IoSocket, MemberRef, PollAction, PollProgram, ResourceKind, SchedulerClass, SelectBinding,
+    StaticRole, Step, StoragePolicy, StreamPeerBinding, SymbolLookup, TaskEntryId, TaskFutureEntry,
+    TlsStreamBinding, TypeClass, TypeDef, TypeSemantics, TypedPath, WalkOutcome, WalkRole,
+    socket_roles, strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -4027,6 +4027,17 @@ impl<'b, T: Target> Context<'b, T> {
                         anyhow!("{}'s live variant has no stream route", current.ty.name())
                     })?;
                 }
+                IoRouteStep::Dyn {
+                    pointer,
+                    layout,
+                    cases,
+                } => {
+                    current = self
+                        .dyn_stream(current, pointer, layout, cases, read)
+                        .with_context(|| {
+                            format!("the stream trait object in {}", current.ty.name())
+                        })?;
+                }
                 IoRouteStep::Socket(socket) => {
                     let [shared, fd] = socket_roles(*socket);
                     let scheduled_io = self.walk(shared).walk_at_with(read, current)?;
@@ -4043,6 +4054,103 @@ impl<'b, T: Target> Context<'b, T> {
             }
         }
         bail!("the stream route runs past {MAX_IO_ROUTE} streams")
+    }
+
+    /// The stream behind a trait object: the wide pointer's two words by
+    /// the recorded paths, then the case whose read symbol the vtable's
+    /// read slot holds — the same symbol, or, where the target was built
+    /// apart from the binary the bundle was read from, the same one
+    /// under its hash-free key, the pairing of the target's own crate
+    /// hashes choosing among releases — then the size and alignment the
+    /// vtable records held to that case's layout, and the stream read
+    /// whole under `read`. A symbol that names no case, or several the
+    /// pairing does not settle, is no route.
+    fn dyn_stream(
+        &self,
+        value: Value<'b>,
+        pointer: &TypedPath,
+        layout: &DynStreamLayout,
+        cases: &[DynStreamCase],
+        read: &ReadContext<'_>,
+    ) -> Result<Value<'b>> {
+        let wide = contract::execute_steps(self, read, value, &pointer.steps)?
+            .at("the stream's trait object")?;
+        ensure!(
+            wide.ty.id() == pointer.target,
+            "the trait object route landed on {} rather than its recorded type",
+            wide.ty.name()
+        );
+        let word = |path: &TypedPath, what: &str| -> Result<u64> {
+            let field = contract::execute_steps(self, read, wide, &path.steps)
+                .with_context(|| format!("the {what} word"))?
+                .at(what)?;
+            Ok(field.parse::<u64>(self.proc)?)
+        };
+        let data = word(&layout.data, "data")?;
+        let vtable = word(&layout.vtable, "vtable")?;
+        ensure!(
+            vtable != 0 && self.mappings.contains_addr(vtable),
+            "stream vtable pointer {vtable:#x} is unmapped"
+        );
+        ensure!(data != 0, "stream data pointer is null");
+        let slot = |slot: u32| -> Result<u64> {
+            let addr = vtable
+                .checked_add(u64::from(slot) * 8)
+                .ok_or_else(|| anyhow!("vtable slot {slot} of {vtable:#x} overflows"))?;
+            self.proc.read_u64(addr).map_err(|e| {
+                anyhow!(e).context(format!("failed to read slot {slot} of vtable {vtable:#x}"))
+            })
+        };
+        let read_fn = slot(layout.read_slot)?;
+        let symbol = self
+            .symbol_at(read_fn)
+            .ok_or_else(|| anyhow!("no symbol at the vtable's read method {read_fn:#x}"))?;
+        let exact = strip_llvm_suffix(&symbol);
+        let key = normalized_v0_key(exact);
+        let named = |matches: &dyn Fn(&str) -> bool| -> Vec<BundleTypeId> {
+            let mut targets: Vec<BundleTypeId> = cases
+                .iter()
+                .filter(|case| self.view.str(case.symbol).is_some_and(matches))
+                .map(|case| case.target)
+                .collect();
+            targets.sort();
+            targets.dedup();
+            targets
+        };
+        let mut targets = named(&|s| s == exact);
+        if targets.is_empty()
+            && let Some(key) = &key
+        {
+            targets = named(&|s| normalized_v0_key(s).as_ref() == Some(key));
+        }
+        let target = match targets.as_slice() {
+            [] => bail!("the read method {symbol} names no stream the tokio info routes"),
+            [one] => *one,
+            several => self.paired_candidate(&symbol, several).ok_or_else(|| {
+                anyhow!("the read method {symbol} names {} streams", several.len())
+            })?,
+        };
+        let ty = self
+            .view
+            .ty(target)
+            .ok_or_else(|| anyhow!("stream type {} is not in the tokio info", target.0))?;
+        let size = slot(layout.size_slot)?;
+        let align = slot(layout.align_slot)?;
+        ensure!(
+            size == ty.size(),
+            "vtable {vtable:#x} records a size of {size} for {}, whose layout is {} bytes",
+            ty.name(),
+            ty.size()
+        );
+        ensure!(
+            align != 0 && align.is_power_of_two() && data.is_multiple_of(align),
+            "stream data pointer {data:#x} is not aligned to the vtable's {align}"
+        );
+        if let Some(refusal) = read.refusal(data, size) {
+            return Err(anyhow::Error::new(refusal).context(format!("reading {}", ty.name())));
+        }
+        Value::read(self.proc, ty, data)
+            .with_context(|| format!("failed to read {} at {data:#x}", ty.name()))
     }
 
     /// A stream's peer: the text its name's bytes hold, up to the NULs

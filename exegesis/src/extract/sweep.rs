@@ -39,6 +39,11 @@ const FUTURE_POLL_SUFFIX: &str = " as core::future::future::Future>::poll";
 /// tokio-stream re-exports the trait, so its wrappers mangle the same.
 const STREAM_POLL_NEXT_SUFFIX: &str = " as futures_core::stream::Stream>::poll_next";
 
+/// Demangled suffix of `<T as hyper::rt::Read>::poll_read` impls: the
+/// read method a stream trait object's vtable names its concrete
+/// stream by.
+const HYPER_READ_SUFFIX: &str = " as hyper::rt::io::Read>::poll_read";
+
 /// Below this many subprograms, sweeping them by hand beats spawning threads.
 const SWEEP_PARALLEL_THRESHOLD: usize = 4096;
 
@@ -53,6 +58,9 @@ pub(super) struct Sweep {
     pub(super) fut_polls: BTreeMap<TypeId, BTreeSet<String>>,
     /// Exact Future-trait poll evidence, independent of resume-function shape.
     pub(super) explicit_polls: BTreeMap<TypeId, BTreeSet<String>>,
+    /// Linkage names of every `hyper::rt::Read::poll_read` impl, by the
+    /// self type: what a stream trait object's read slot names.
+    pub(super) stream_reads: BTreeMap<TypeId, BTreeSet<String>>,
     /// Where each explicit poll was declared: the implementing file, as
     /// the line table spells it, with its checksum when the table
     /// carries one. A third-party rule reads its origin — which crate,
@@ -175,6 +183,9 @@ impl Sweep {
         }
         for (t, syms) in other.fut_polls {
             self.fut_polls.entry(t).or_default().extend(syms);
+        }
+        for (t, syms) in other.stream_reads {
+            self.stream_reads.entry(t).or_default().extend(syms);
         }
         for (t, syms) in other.explicit_polls {
             self.explicit_polls.entry(t).or_default().extend(syms);
@@ -404,6 +415,17 @@ fn sweep_function(
                     .entry(t)
                     .or_default()
                     .push((PollTrait::Stream, owned_loc(&loc)));
+            }
+            return;
+        }
+        // A stream's read method, recorded by its linkage name and
+        // nothing else: the name a vtable's read slot is joined by.
+        if demangled.ends_with(HYPER_READ_SUFFIX) {
+            if let Ok(t) = future_poll_self_type(reader, func) {
+                out.stream_reads
+                    .entry(t)
+                    .or_default()
+                    .insert(strip(linkage).to_owned());
             }
             return;
         }

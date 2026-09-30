@@ -5,11 +5,11 @@ description: "`connections` over linux-floor/http-conns"
 TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE                                     BUF      PEER             SERVER  METHOD  REQUEST
 4     —       http1  server  idle               TS on the target's monotonic clock  0/16302  —                —       —       —
 5     —       http1  client  idle               —                                            0/8192   —                —       —       —
-7     6       http1  client  awaiting response  —                                            0/8192   127.0.0.1:39025  —       GET     —
 8     —       http1  server  handling request   —                                            0/16339  —                —       GET     /park
-10    —       http1  server  handling request   —                                            0/16326  —                —       GET     /park
-11    9       http1  client  awaiting response  —                                            0/8192   127.0.0.1:39025  —       GET     http://127.0.0.1:39025/park
-12    —       http1  server  negotiating        —                                            —        —                —       —       —
-14    —       http1  server  idle               TS on the target's monotonic clock  0/16343  —                —       —       —
-15    —       http1  client  idle               —                                            0/8192   127.0.0.1:39025  —       —       —
+9     7       http1  client  awaiting response  —                                            0/8192   127.0.0.1:33321  —       GET     —
+11    —       http1  server  handling request   —                                            0/16326  —                —       GET     /park
+12    10      http1  client  awaiting response  —                                            0/8192   127.0.0.1:33321  —       GET     http://127.0.0.1:33321/park
+13    —       http1  server  negotiating        —                                            —        —                —       —       —
+15    —       http1  server  idle               TS on the target's monotonic clock  0/16343  —                —       —       —
+16    —       http1  client  idle               —                                            0/8192   127.0.0.1:33321  —       —       —
 [9 connections]

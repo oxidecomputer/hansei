@@ -2200,6 +2200,179 @@ pub const RUSTLS_SESSION_V0_23_23: LibraryConvention = LibraryConvention {
     checksums: &[],
 };
 
+/// reqwest's connection types as 0.12.14 through 0.13.5 implement them,
+/// each the same text in every release (`src/connect.rs`, whose
+/// checksum moves with everything else in it). `Conn` (in `sealed`) is
+/// `{ inner: BoxConn, is_proxy, tls_info }`, `BoxConn` being
+/// `Box<dyn AsyncConnWithInfo>`, and its `Read`/`Write` methods call
+/// the same method on `inner` and nothing else. `AsyncConnWithInfo:
+/// AsyncConn + TlsInfoFactory` and `AsyncConn: Read + Write +
+/// Connection + Send + Sync + Unpin`, so the trait object's vtable
+/// holds, past rustc's three header words, `hyper::rt::Read::poll_read`
+/// first — the leftmost supertrait chain's methods lead — then
+/// `Write`'s five: slot 3 is the read method, which names the concrete
+/// stream. The boxes `Conn` holds are built by `Wrapper::wrap`, around
+/// the connector's stream or its TLS wrapper, and — with trace logging
+/// on — inside `Verbose<T> { id, inner }`, whose reads and writes are
+/// `inner`'s, logged after. `RustlsTlsConn<T>` is `{ inner:
+/// TokioIo<TlsStream<T>> }` and forwards every method to `inner`.
+pub const REQWEST_CONN_V0_12_14: LibraryConvention = LibraryConvention {
+    package: "reqwest",
+    family: "reqwest-conn-0.12.14",
+    floor: (0, 12, 14),
+    ceiling: (0, 13, 5),
+    checksums: &[
+        // src/connect.rs, 0.12.14 and 0.12.15
+        (
+            "src/connect.rs",
+            [
+                0xb6, 0xba, 0xdf, 0xfc, 0x6c, 0x57, 0xd9, 0x96, 0xf4, 0x00, 0x61, 0x68, 0xc3, 0x11,
+                0xba, 0xb9,
+            ],
+        ),
+        // src/connect.rs, 0.12.16 and 0.12.17
+        (
+            "src/connect.rs",
+            [
+                0xec, 0xa7, 0x8b, 0x95, 0x52, 0xff, 0x9a, 0x65, 0x83, 0xc9, 0xb3, 0xc0, 0x90, 0x4c,
+                0x8a, 0xc1,
+            ],
+        ),
+        // src/connect.rs, 0.12.18
+        (
+            "src/connect.rs",
+            [
+                0x09, 0xbb, 0x47, 0x0e, 0xbf, 0x38, 0x0e, 0xa5, 0x8d, 0xc4, 0xdf, 0x58, 0x0e, 0xea,
+                0xef, 0x01,
+            ],
+        ),
+        // src/connect.rs, 0.12.19
+        (
+            "src/connect.rs",
+            [
+                0xb6, 0x2c, 0x1d, 0xc1, 0x52, 0xc6, 0x3b, 0x82, 0xad, 0xcb, 0x06, 0x0c, 0x40, 0x52,
+                0x1e, 0x27,
+            ],
+        ),
+        // src/connect.rs, 0.12.20
+        (
+            "src/connect.rs",
+            [
+                0x16, 0x9d, 0xd8, 0x2d, 0x6e, 0x0c, 0x9c, 0x0d, 0xe5, 0x10, 0x6e, 0xd8, 0xb3, 0x31,
+                0x07, 0x40,
+            ],
+        ),
+        // src/connect.rs, 0.12.21
+        (
+            "src/connect.rs",
+            [
+                0x0e, 0xd0, 0xec, 0xe6, 0xaa, 0xde, 0xad, 0x82, 0x62, 0xc6, 0x99, 0x42, 0x9a, 0x7a,
+                0xf3, 0xf1,
+            ],
+        ),
+        // src/connect.rs, 0.12.22
+        (
+            "src/connect.rs",
+            [
+                0x9c, 0x49, 0xc8, 0xca, 0xa1, 0xbe, 0x8e, 0x8e, 0x50, 0x62, 0xac, 0xb4, 0x4b, 0x97,
+                0xdf, 0xc1,
+            ],
+        ),
+        // src/connect.rs, 0.12.23 through 0.12.26
+        (
+            "src/connect.rs",
+            [
+                0xc3, 0x38, 0x45, 0x3f, 0x51, 0xcb, 0x3a, 0x60, 0xba, 0x7b, 0x24, 0xca, 0xe2, 0xc4,
+                0xfe, 0xa8,
+            ],
+        ),
+        // src/connect.rs, 0.12.27
+        (
+            "src/connect.rs",
+            [
+                0xa2, 0xe8, 0xaf, 0x71, 0xa0, 0xc7, 0x59, 0x5a, 0x50, 0x4e, 0xa8, 0xfd, 0xe3, 0x89,
+                0x26, 0xee,
+            ],
+        ),
+        // src/connect.rs, 0.12.28
+        (
+            "src/connect.rs",
+            [
+                0x98, 0x8a, 0x74, 0x5f, 0x5a, 0xaf, 0x42, 0xd8, 0xc5, 0xd9, 0x6e, 0x43, 0xc9, 0x79,
+                0x73, 0x31,
+            ],
+        ),
+        // src/connect.rs, 0.13.0 through 0.13.2
+        (
+            "src/connect.rs",
+            [
+                0x2d, 0xf8, 0x1c, 0x42, 0xe5, 0xa8, 0xef, 0x7d, 0xbc, 0x48, 0xbc, 0x28, 0x13, 0xf8,
+                0x56, 0xb8,
+            ],
+        ),
+        // src/connect.rs, 0.13.3 and 0.13.4
+        (
+            "src/connect.rs",
+            [
+                0x9a, 0x6b, 0x40, 0xec, 0xfc, 0xe0, 0x9f, 0x7a, 0x91, 0xb4, 0x49, 0x90, 0x9c, 0x19,
+                0x46, 0x84,
+            ],
+        ),
+        // src/connect.rs, 0.13.5
+        (
+            "src/connect.rs",
+            [
+                0x8b, 0xea, 0x63, 0xcc, 0xaf, 0x0d, 0x36, 0x48, 0x9e, 0x44, 0x1e, 0x12, 0xa1, 0x90,
+                0x85, 0x7b,
+            ],
+        ),
+    ],
+};
+
+/// The slot `hyper::rt::Read::poll_read` holds in reqwest's
+/// `dyn AsyncConnWithInfo` vtable, under [`REQWEST_CONN_V0_12_14`].
+pub const REQWEST_CONN_READ_SLOT: u32 = 3;
+
+/// hyper-rustls's `MaybeHttpsStream<T>` as 0.27.0 through 0.27.10
+/// implement it (`src/stream.rs`): the enum `Http(T) | Https(TokioIo<
+/// TlsStream<TokioIo<T>>>)`, the same in every release, whose every
+/// `Read`/`Write` method matches on the variant and calls the same
+/// method on its payload and nothing else. The releases differ in the
+/// vectored write's forwards (added at 0.27.4) and in lifetime
+/// annotations (0.27.10).
+pub const HYPER_RUSTLS_STREAM_V0_27_0: LibraryConvention = LibraryConvention {
+    package: "hyper-rustls",
+    family: "hyper-rustls-stream-0.27.0",
+    floor: (0, 27, 0),
+    ceiling: (0, 27, 10),
+    checksums: &[
+        // src/stream.rs, 0.27.0 through 0.27.3
+        (
+            "src/stream.rs",
+            [
+                0x74, 0x34, 0x2a, 0x9f, 0x99, 0x71, 0xca, 0xc0, 0x73, 0xeb, 0x56, 0x06, 0xd8, 0xb1,
+                0x0c, 0x15,
+            ],
+        ),
+        // src/stream.rs, 0.27.4 through 0.27.9
+        (
+            "src/stream.rs",
+            [
+                0xfc, 0xe1, 0x93, 0x69, 0xbb, 0xf7, 0x4b, 0xe4, 0xa5, 0x82, 0xdd, 0x71, 0xcd, 0x47,
+                0xe3, 0xa2,
+            ],
+        ),
+        // src/stream.rs, 0.27.10
+        (
+            "src/stream.rs",
+            [
+                0xbd, 0x84, 0x3b, 0x84, 0xe2, 0x61, 0x58, 0x3a, 0xd6, 0x4a, 0x0c, 0xef, 0xe7, 0xaf,
+                0x64, 0x64,
+            ],
+        ),
+    ],
+};
+
 /// One reviewed third-party implementation fetched from git, which has
 /// no release to select a range by: the crate, the repository cargo
 /// names its checkout after, the crate's directory inside it, the
@@ -2764,6 +2937,18 @@ mod tests {
                 ["0.1.10", "0.1.15", "0.1.20"].as_slice(),
                 "0.1.9",
                 "0.1.21",
+            ),
+            (
+                &REQWEST_CONN_V0_12_14,
+                ["0.12.14", "0.12.28", "0.13.5"].as_slice(),
+                "0.12.13",
+                "0.13.6",
+            ),
+            (
+                &HYPER_RUSTLS_STREAM_V0_27_0,
+                ["0.27.0", "0.27.7", "0.27.10"].as_slice(),
+                "0.26.0",
+                "0.27.11",
             ),
             (
                 &RUSTLS_SESSION_V0_23_23,

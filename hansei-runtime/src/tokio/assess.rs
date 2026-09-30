@@ -931,6 +931,7 @@ impl<'b, T: Target> Context<'b, T> {
                 via,
                 caller,
                 tls: http.tls(),
+                fd: http.fd(),
             },
             primitive,
             queue_position: None,
@@ -1639,6 +1640,7 @@ impl<'b, T: Target> Context<'b, T> {
                         via,
                         caller: in_flight_caller(phase, client),
                         tls: http.tls(),
+                        fd: http.fd(),
                     })
                 }
                 HttpRole::Server => {
@@ -1655,6 +1657,7 @@ impl<'b, T: Target> Context<'b, T> {
                         via: None,
                         caller: None,
                         tls: http.tls(),
+                        fd: http.fd(),
                     })
                 }
             },
@@ -1669,6 +1672,7 @@ impl<'b, T: Target> Context<'b, T> {
                 via: None,
                 caller: None,
                 tls: None,
+                fd: None,
             }),
         }
     }
@@ -1878,6 +1882,7 @@ pub fn assess_http_server(http: &HttpConnObservation, primitive: ValueKey) -> As
             via: None,
             caller: None,
             tls: http.tls(),
+            fd: http.fd(),
         },
         primitive,
         queue_position: None,
@@ -1905,6 +1910,7 @@ pub fn assess_http_negotiating(
             via: None,
             caller: None,
             tls: None,
+            fd: None,
         },
         primitive,
         queue_position: None,

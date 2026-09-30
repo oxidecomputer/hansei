@@ -475,6 +475,11 @@ impl HttpConnObservation {
     pub fn tls(&self) -> Option<Result<TlsReading, String>> {
         self.stream.as_ref()?.as_ref().ok()?.tls.clone()
     }
+
+    /// The socket's descriptor, where its stream's route read one.
+    pub fn fd(&self) -> Option<i32> {
+        self.stream.as_ref()?.as_ref().ok()?.fd
+    }
 }
 
 /// The client dispatch as one read found it.

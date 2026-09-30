@@ -890,6 +890,32 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
             }
             Some(IoRouteBinding {
                 rule,
+                step:
+                    IoRouteStep::Dyn {
+                        pointer,
+                        layout,
+                        cases,
+                    },
+            }) => {
+                let mut targets: Vec<String> = cases
+                    .iter()
+                    .map(|case| fq_name(bundle, case.target))
+                    .collect();
+                targets.sort();
+                targets.dedup();
+                let _ = write!(
+                    line,
+                    " io-route rule {} dyn {} abi rule {} read slot {} ({} symbols) to {}",
+                    rule.0,
+                    path(record.ty, pointer),
+                    layout.abi.0,
+                    layout.read_slot,
+                    cases.len(),
+                    targets.join(" | ")
+                );
+            }
+            Some(IoRouteBinding {
+                rule,
                 step: IoRouteStep::Socket(socket),
             }) => {
                 let _ = write!(line, " io-route rule {} socket {socket:?}", rule.0);

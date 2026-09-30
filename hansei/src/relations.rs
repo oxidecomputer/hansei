@@ -451,6 +451,7 @@ mod relations_tests {
             via: None,
             caller,
             tls: None,
+            fd: None,
         };
         let caller = |id: u64| {
             HttpCaller::Task(TaskRef {

@@ -7,7 +7,7 @@ task 4
     thread: <none>
     type: async fn http_conns::serve
     awaiting at: src/bin/http-conns.rs:137
-    awaiting on: http1 server 0xADDR (idle, keep-alive, header-read timer armed)
+    awaiting on: http1 server 0xADDR fd 11 (idle, keep-alive, header-read timer armed)
         note: the wheel entry 0xADDR also holds this task's waker, outside the verified wait
         waker: the read-waiter slot, awaiting readable, ready: writable
         timer 0xADDR: hyper_util::rt::tokio::TokioSleep
@@ -25,7 +25,7 @@ task 8
     thread: <none>
     type: async fn http_conns::serve
     awaiting at: src/bin/http-conns.rs:137
-    awaiting on: http1 server 0xADDR (GET in flight, handler running)
+    awaiting on: http1 server 0xADDR fd 13 (GET in flight, handler running)
         note: notify rx 0xADDR also holds this task's waker, outside the verified wait
         request: GET /park
         waker: the read-waiter slot, awaiting readable, ready: writable
@@ -43,7 +43,7 @@ task 11
     thread: <none>
     type: async fn http_conns::serve
     awaiting at: src/bin/http-conns.rs:137
-    awaiting on: http1 server 0xADDR (GET in flight, handler running)
+    awaiting on: http1 server 0xADDR fd 15 (GET in flight, handler running)
         note: notify rx 0xADDR also holds this task's waker, outside the verified wait
         request: GET /park
         waker: the read-waiter slot, awaiting readable, ready: writable
@@ -73,7 +73,7 @@ task 15
     thread: <none>
     type: async fn http_conns::serve
     awaiting at: src/bin/http-conns.rs:137
-    awaiting on: http1 server 0xADDR (idle, keep-alive, header-read timer armed)
+    awaiting on: http1 server 0xADDR fd 19 (idle, keep-alive, header-read timer armed)
         note: the wheel entry 0xADDR also holds this task's waker, outside the verified wait
         waker: the read-waiter slot, awaiting readable, ready: writable
         timer 0xADDR: hyper_util::rt::tokio::TokioSleep

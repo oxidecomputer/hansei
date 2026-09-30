@@ -102,6 +102,11 @@ fn base() -> Bundle {
         "sprockets-tls-stream-d2b68e4",
         "git/checkouts/sprockets-882d17aeeb0cb343/a233079/tls/src/lib.rs",
         "68a4b3b",
+        "reqwest",
+        "0.13.2",
+        "reqwest-conn-0.12.14",
+        "registry/src/index.crates.io-1949cf8c6b5b557f/reqwest-0.13.2/src/connect.rs",
+        "_RNvXs_poll_read",
     ] {
         strings.intern(s);
     }
@@ -4228,4 +4233,117 @@ fn test_tls_words_bind_by_shape_under_their_rules() {
     *size = 56;
     peer(&mut wide).name = path(inner, BundleTypeId(21));
     bad(&wide, "stream peer name is not an array of bytes");
+}
+
+/// [`io_routes`] with a stream behind a trait object on top: a struct
+/// holding the base's `{ data, vtable }` wide pointer routes to the
+/// routed parent by the read symbol its vtable holds, under reqwest's
+/// rule, its header read under the compiler's.
+fn dyn_route() -> Bundle {
+    let mut b = io_routes();
+    let holder = BundleTypeId(12);
+    assert_eq!(b.types.types.len(), 12);
+    b.types.types.push(TypeDef::Struct {
+        name: FIELD,
+        size: 16,
+        members: vec![MemberDef {
+            name: FIELD,
+            ty: BundleTypeId(9),
+            offset: 0,
+        }],
+    });
+    b.semantics.origins.push(SemanticOrigin::Rustc {
+        producer: StrRef(6),
+        family: StrRef(7),
+    });
+    b.semantics.origins.push(SemanticOrigin::LibraryDelegation {
+        package: StrRef(47),
+        version: StrRef(48),
+        family: StrRef(49),
+        source: StrRef(50),
+        files: Vec::new(),
+    });
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::DynFutureAbi,
+        revision: 1,
+        origin: SemanticOriginId(1),
+    });
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::ReqwestConn,
+        revision: 1,
+        origin: SemanticOriginId(2),
+    });
+    let mut stream = record(holder);
+    stream.future = None;
+    stream.io_route = Some(IoRouteBinding {
+        rule: SemanticRuleId(3),
+        step: IoRouteStep::Dyn {
+            pointer: path(vec![named(FIELD)], BundleTypeId(9)),
+            layout: DynStreamLayout {
+                abi: SemanticRuleId(2),
+                data: path(vec![named(StrRef(14))], BundleTypeId(7)),
+                vtable: path(vec![named(StrRef(15))], BundleTypeId(8)),
+                size_slot: 1,
+                align_slot: 2,
+                read_slot: 3,
+            },
+            cases: vec![DynStreamCase {
+                symbol: StrRef(51),
+                target: PARENT,
+            }],
+        },
+    });
+    b.semantics.types.push(stream);
+    b.validate().unwrap();
+    b
+}
+
+/// A trait object's route: under reqwest's rule, its header under the
+/// compiler's, both words pointers, the read slot past the header's,
+/// and every case a distinct routed stream.
+#[test]
+fn test_a_stream_trait_object_routes_through_its_cases() {
+    let b = dyn_route();
+    fn step(b: &mut Bundle) -> (&mut DynStreamLayout, &mut Vec<DynStreamCase>) {
+        match &mut b.semantics.types[3].io_route.as_mut().unwrap().step {
+            IoRouteStep::Dyn { layout, cases, .. } => (layout, cases),
+            _ => unreachable!(),
+        }
+    }
+    let mut tokio_rule = b.clone();
+    tokio_rule.semantics.types[3]
+        .io_route
+        .as_mut()
+        .unwrap()
+        .rule = SemanticRuleId(0);
+    bad(&tokio_rule, "incompatible capability");
+
+    let mut abi = b.clone();
+    step(&mut abi).0.abi = SemanticRuleId(3);
+    bad(&abi, "incompatible capability");
+
+    let mut wide_word = b.clone();
+    step(&mut wide_word).0.data = path(Vec::new(), BundleTypeId(9));
+    bad(&wide_word, "data word is not a pointer");
+
+    let mut overlap = b.clone();
+    step(&mut overlap).0.read_slot = 2;
+    bad(&overlap, "vtable slots overlap");
+
+    let mut empty = b.clone();
+    step(&mut empty).1.clear();
+    bad(&empty, "a stream trait object has no case");
+
+    let mut twice = b.clone();
+    let case = step(&mut twice).1[0].clone();
+    step(&mut twice).1.push(case);
+    bad(&twice, "lists one case twice");
+
+    // Every case has to end at a socket.
+    let mut unrouted = b.clone();
+    step(&mut unrouted).1.push(DynStreamCase {
+        symbol: StrRef(50),
+        target: STATE,
+    });
+    bad(&unrouted, "forwards to an unrouted type");
 }

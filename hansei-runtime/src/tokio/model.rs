@@ -1119,6 +1119,9 @@ pub enum WaitTarget {
         /// The TLS connection the connection's stream crosses, where it
         /// crosses one: its words, or why they did not read.
         tls: Option<Result<TlsReading, String>>,
+        /// The socket's descriptor, where the connection's stream route
+        /// read one.
+        fd: Option<i32>,
     },
 }
 
@@ -1950,19 +1953,25 @@ impl fmt::Display for WaitTarget {
                 method,
                 keep_alive,
                 header_read_timer,
+                fd,
                 ..
-            } => write!(
-                f,
-                "{} {addr:#x} ({})",
-                http_kind_word(*role, *version),
-                http_words(
-                    *role,
-                    *phase,
-                    method.as_deref(),
-                    *keep_alive,
-                    *header_read_timer
+            } => {
+                write!(f, "{} {addr:#x}", http_kind_word(*role, *version))?;
+                if let Some(fd) = fd {
+                    write!(f, " fd {fd}")?;
+                }
+                write!(
+                    f,
+                    " ({})",
+                    http_words(
+                        *role,
+                        *phase,
+                        method.as_deref(),
+                        *keep_alive,
+                        *header_read_timer
+                    )
                 )
-            ),
+            }
             // Only a receiver's `changed` parks on a watch channel's
             // `Notify`, so the side is not in doubt; the version and
             // the handle counts are a line of their own, as a
@@ -2084,6 +2093,7 @@ mod tests {
                 via: via.map(Box::new),
                 caller: None,
                 tls: None,
+                fd: None,
             }
         };
         let rx = WaitTarget::Channel {
@@ -2100,6 +2110,19 @@ mod tests {
         assert_eq!(idle.words(), None);
         assert_eq!(idle.cell(), "http1 client");
         assert_eq!(idle.group_label(), "http1 client idle");
+        // The socket's descriptor follows the connection's address
+        // where its stream's route read one; the cell and the bucket
+        // stay the kind's.
+        let mut routed = idle.clone();
+        if let WaitTarget::HttpConn { fd, .. } = &mut routed {
+            *fd = Some(15);
+        }
+        assert_eq!(
+            routed.to_string(),
+            "http1 client 0xc72d000 fd 15 (idle, keep-alive)"
+        );
+        assert_eq!(routed.cell(), "http1 client");
+        assert_eq!(routed.group_label(), "http1 client idle");
         assert_eq!(
             idle.via().map(WaitTarget::line).as_deref(),
             Some("mpsc rx 0xfb0f700 (1 sender, 0 unread)")
@@ -2203,6 +2226,7 @@ mod tests {
             via: None,
             caller: None,
             tls: None,
+            fd: None,
         };
         assert_eq!(
             negotiating.to_string(),
@@ -2221,6 +2245,7 @@ mod tests {
             via: None,
             caller: None,
             tls: None,
+            fd: None,
         };
         assert_eq!(
             handling.to_string(),
@@ -2241,6 +2266,7 @@ mod tests {
             via: None,
             caller: None,
             tls: None,
+            fd: None,
         };
         let idle = armed(HttpPhase::Idle);
         assert_eq!(
@@ -2757,6 +2783,7 @@ mod caller_tests {
             via: None,
             caller: Some(task.clone()),
             tls: None,
+            fd: None,
         };
         assert_eq!(conn.caller(), Some(&task));
         assert_eq!(

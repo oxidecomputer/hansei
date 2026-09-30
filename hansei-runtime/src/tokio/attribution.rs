@@ -3984,6 +3984,7 @@ mod join_tests {
                     via: Some(Box::new(via)),
                     caller: None,
                     tls: None,
+                    fd: None,
                 },
                 None,
             )
@@ -4053,6 +4054,7 @@ mod join_tests {
                 via: None,
                 caller: None,
                 tls: None,
+                fd: None,
             },
             None,
         );

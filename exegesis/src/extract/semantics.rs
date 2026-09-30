@@ -27,18 +27,19 @@ use crate::bundle::names::coroutine_kind;
 use crate::bundle::origin::{git_origin, registry_origin};
 use crate::bundle::{
     AccessBinding, AccessKind, AcquiresForBinding, BundleTypeId, ContainerBinding, ContainerKind,
-    Continuation, CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence,
-    FutureFacts, FutureTarget, HashTableBinding, HttpClientBinding, HttpConnBinding,
-    HttpPoolBinding, HttpRequestBinding, HttpRequestTarget, HttpRole, HttpServerBinding,
-    HttpServiceBinding, IoOperationBinding, IoOperationKind, IoRouteBinding, IoRouteStep, IoSocket,
-    LayoutSelection, LockBinding, LockWord, MemberRef, PollAction, PollCase, PollProgram,
-    RefcountBinding, ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass,
-    SelectBinding, Selector, SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId,
-    SemanticRule, SemanticRuleId, SemanticRuleKind, SemanticTable, SourceFileEvidence, SourceLoc,
-    Step, StoragePolicy, StrRef, StreamPeerBinding, StringInterner, TaskEntryId, TaskFutureEntry,
-    TlsSessionBinding, TlsStreamBinding, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome,
-    WalkRole, WalksTable, container_roles, container_routes, required_resource_roles,
-    required_resource_routes, scheduler_role, semantic_path_target, socket_roles,
+    Continuation, CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, DynStreamCase,
+    DynStreamLayout, FutureEvidence, FutureFacts, FutureTarget, HashTableBinding,
+    HttpClientBinding, HttpConnBinding, HttpPoolBinding, HttpRequestBinding, HttpRequestTarget,
+    HttpRole, HttpServerBinding, HttpServiceBinding, IoOperationBinding, IoOperationKind,
+    IoRouteBinding, IoRouteStep, IoSocket, LayoutSelection, LockBinding, LockWord, MemberRef,
+    PollAction, PollCase, PollProgram, RefcountBinding, ResourceBinding, ResourceKind,
+    SchedulerBinding, SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind,
+    SemanticOrigin, SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind,
+    SemanticTable, SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StreamPeerBinding,
+    StringInterner, TaskEntryId, TaskFutureEntry, TlsSessionBinding, TlsStreamBinding, TypeDef,
+    TypeSemantics, TypeTable, TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles,
+    container_routes, required_resource_roles, required_resource_routes, scheduler_role,
+    semantic_path_target, socket_roles,
 };
 use crate::detect::Family;
 use crate::detect::adapters::{
@@ -49,9 +50,10 @@ use crate::detect::adapters::{
 use crate::detect::semantics::{
     DROPSHOT_HANDLER_V0_17_0, DROPSHOT_SERVER_V0_17_0, FUTURES_UTIL_ADAPTERS_V0_3_30,
     GitConvention, HASHBROWN_TABLE_V0_12_3, HTTP_REQUEST_V1_0_0, HYPER_H1_CONN_V1_6_0,
-    HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_IO_V0_1_10, HYPER_UTIL_POOL_V0_1_16,
-    HYPER_UTIL_RESPONSE_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
-    PARKING_LOT_RAW_MUTEX_V0_12_1, REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0,
+    HYPER_RUSTLS_STREAM_V0_27_0, HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_IO_V0_1_10,
+    HYPER_UTIL_POOL_V0_1_16, HYPER_UTIL_RESPONSE_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
+    LibraryConvention, PARKING_LOT_RAW_MUTEX_V0_12_1, REQWEST_CONN_READ_SLOT,
+    REQWEST_CONN_V0_12_14, REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0,
     RUSTLS_SESSION_V0_23_23, RustcConvention, SPROCKETS_TLS_STREAM_D2B68E4,
     TOKIO_INTERVAL_TICK_V1_47, TOKIO_RUSTLS_STREAM_V0_26_0, TOKIO_SELECT_V1_47,
     TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
@@ -657,6 +659,9 @@ pub(super) struct Seed {
     /// rustls's connection state, where the type is it: the type's own
     /// method declarations, which its release is read off.
     tls_session: Option<BTreeSet<PollSource>>,
+    /// The linkage names of the type's `hyper::rt::Read::poll_read`, by
+    /// which a stream trait object's vtable names it.
+    read_symbols: BTreeSet<String>,
     /// A refcounted allocation's header, where the type is one: the
     /// member its value sits in, and the verdict on its defining units.
     refcount: Option<(&'static str, CompilerVerdict)>,
@@ -752,13 +757,34 @@ enum DelegatedRoute {
     Forward(&'static [Hop<'static>]),
     /// The variants whose one payload is the stream, by name.
     Match(&'static [&'static str]),
+    /// The hops to a box of a stream trait object, and the vtable slot
+    /// the trait's read method sits in.
+    Dyn(&'static [Hop<'static>], u32),
+}
+
+/// A route as planned: a step the bundle records as it is, or a trait
+/// object's, whose ABI rule and case symbols are interned only when the
+/// record is emitted.
+#[derive(Clone, Debug)]
+enum PlannedStep {
+    Fixed(IoRouteStep),
+    Dyn {
+        pointer: TypedPath,
+        data: TypedPath,
+        vtable: TypedPath,
+        abi: RuleKey,
+        read_slot: u32,
+        /// Every routed stream a read symbol names, with the symbol.
+        cases: Vec<(String, BundleTypeId)>,
+    },
 }
 
 /// The third-party streams whose routes are reviewed (see each
 /// convention for the review): tokio-rustls's enum and its client and
 /// server streams, sprockets-tls's stream over the enum, hyper-util's
-/// io adapters, and dropshot's TLS connection.
-const IO_DELEGATIONS: [DelegatedStream; 7] = [
+/// io adapters, dropshot's TLS connection, reqwest's connection and its
+/// wrappers, and hyper-rustls's maybe-TLS stream.
+const IO_DELEGATIONS: [DelegatedStream; 11] = [
     DelegatedStream {
         key: "tokio_rustls::TlsStream<",
         kind: SemanticRuleKind::TokioRustlsStream,
@@ -806,6 +832,38 @@ const IO_DELEGATIONS: [DelegatedStream; 7] = [
         kind: SemanticRuleKind::HyperUtilStream,
         review: Review::Release(&HYPER_UTIL_IO_V0_1_10),
         route: DelegatedRoute::Forward(&[Hop::Member("inner")]),
+        tls: None,
+        peer: None,
+    },
+    DelegatedStream {
+        key: "reqwest::connect::sealed::Conn",
+        kind: SemanticRuleKind::ReqwestConn,
+        review: Review::Release(&REQWEST_CONN_V0_12_14),
+        route: DelegatedRoute::Dyn(&[Hop::Member("inner")], REQWEST_CONN_READ_SLOT),
+        tls: None,
+        peer: None,
+    },
+    DelegatedStream {
+        key: "reqwest::connect::rustls_tls_conn::RustlsTlsConn<",
+        kind: SemanticRuleKind::ReqwestConn,
+        review: Review::Release(&REQWEST_CONN_V0_12_14),
+        route: DelegatedRoute::Forward(&[Hop::Member("inner")]),
+        tls: None,
+        peer: None,
+    },
+    DelegatedStream {
+        key: "reqwest::connect::verbose::Verbose<",
+        kind: SemanticRuleKind::ReqwestConn,
+        review: Review::Release(&REQWEST_CONN_V0_12_14),
+        route: DelegatedRoute::Forward(&[Hop::Member("inner")]),
+        tls: None,
+        peer: None,
+    },
+    DelegatedStream {
+        key: "hyper_rustls::stream::MaybeHttpsStream<",
+        kind: SemanticRuleKind::HyperRustlsStream,
+        review: Review::Release(&HYPER_RUSTLS_STREAM_V0_27_0),
+        route: DelegatedRoute::Match(&["Http", "Https"]),
         tls: None,
         peer: None,
     },
@@ -1233,9 +1291,14 @@ fn request_seed(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one table per join the sweep feeds the seeds"
+)]
 pub(super) fn collect_semantic_seeds(
     em: &Emitter<'_>,
     polls: &BTreeMap<TypeId, BTreeSet<String>>,
+    stream_reads: &BTreeMap<TypeId, BTreeSet<String>>,
     poll_sources: &BTreeMap<TypeId, BTreeSet<PollSource>>,
     coroutines: &BTreeSet<TypeId>,
     mut verdict: impl FnMut(TypeId, Reviewed) -> CompilerVerdict,
@@ -1421,6 +1484,17 @@ pub(super) fn collect_semantic_seeds(
             // method declarations, gathered here where the DWARF is
             // still open and read when the container binds.
             seeds.entry(ty).or_default().type_sources = type_sources(raw);
+        }
+    }
+    // A stream's read symbols, for the trait objects that name it; only
+    // an emitted type can be a case.
+    for (raw, symbols) in stream_reads {
+        if let Some(ty) = bundle_id(*raw) {
+            seeds
+                .entry(ty)
+                .or_default()
+                .read_symbols
+                .extend(symbols.iter().cloned());
         }
     }
     for (raw, symbols) in polls {
@@ -2109,7 +2183,7 @@ struct Draft {
     pool: Option<PoolPlan>,
     /// The route a read or write through a value of the type takes,
     /// where it ends at a socket.
-    io_route: Option<(RuleKey, IoRouteStep)>,
+    io_route: Option<(RuleKey, PlannedStep)>,
     /// The stream an io operation polls, where it is one over a routed
     /// stream.
     io: Option<IoOpPlan>,
@@ -2835,7 +2909,34 @@ pub(super) fn bind_semantics(
             .filter(|_| readable)
             .map(|(rule, step)| IoRouteBinding {
                 rule: rules.rule(&rule, strings, library),
-                step,
+                step: match step {
+                    PlannedStep::Fixed(step) => step,
+                    PlannedStep::Dyn {
+                        pointer,
+                        data,
+                        vtable,
+                        abi,
+                        read_slot,
+                        cases,
+                    } => IoRouteStep::Dyn {
+                        pointer,
+                        layout: DynStreamLayout {
+                            abi: rules.rule(&abi, strings, library),
+                            data,
+                            vtable,
+                            size_slot: 1,
+                            align_slot: 2,
+                            read_slot,
+                        },
+                        cases: cases
+                            .into_iter()
+                            .map(|(symbol, target)| DynStreamCase {
+                                symbol: strings.intern(&symbol),
+                                target,
+                            })
+                            .collect(),
+                    },
+                },
             });
         let tls_session = draft
             .tls_session
@@ -3075,7 +3176,7 @@ fn dynamic_target(
     current: BundleTypeId,
     d: &DynSeed,
     types: &TypeTable,
-    strings: &mut StringInterner,
+    strings: &StringInterner,
 ) -> Result<Target, Decline> {
     let (abi_producer, abi) = supported(&d.abi)?;
     if current != d.wide {
@@ -4362,7 +4463,7 @@ fn hop_steps(
 struct IoPlans {
     /// Every route that ends at a socket, by the type it starts at, with
     /// the rule it binds under.
-    routes: BTreeMap<BundleTypeId, (RuleKey, IoRouteStep)>,
+    routes: BTreeMap<BundleTypeId, (RuleKey, PlannedStep)>,
     /// Every operation over such a stream.
     operations: BTreeMap<BundleTypeId, IoOpPlan>,
     /// Why a screened stream's route did not bind: an issue beside its
@@ -4632,15 +4733,16 @@ fn plan_io(
         }
     }
     let tokio = || RuleKey::Library(SemanticRuleKind::TokioIoRoute);
-    let mut planned: BTreeMap<BundleTypeId, (RuleKey, IoRouteStep)> = BTreeMap::new();
+    let mut planned: BTreeMap<BundleTypeId, (RuleKey, PlannedStep)> = BTreeMap::new();
     let mut route_declines = BTreeMap::new();
+    let fixed = |step| PlannedStep::Fixed(step);
     for (&ty, seed) in seeds {
         let step = match (&seed.io_route, &seed.adapter) {
             (Some(IoRouteSeed::Forward(hops)), _) => hop_landing(types, strings, ty, hops)
-                .map(|inner| (tokio(), IoRouteStep::Forward { inner })),
+                .map(|inner| (tokio(), fixed(IoRouteStep::Forward { inner }))),
             (Some(IoRouteSeed::Socket(socket)), _) => {
                 if bound_roots(walks, &socket_roles(*socket), &[]).contains(&ty) {
-                    Ok((tokio(), IoRouteStep::Socket(*socket)))
+                    Ok((tokio(), fixed(IoRouteStep::Socket(*socket))))
                 } else {
                     Err((
                         SemanticIssueKind::MissingLayout,
@@ -4649,7 +4751,7 @@ fn plan_io(
                 }
             }
             (Some(IoRouteSeed::Delegated { stream, sources }), _) => {
-                delegated_route(ty, stream, sources, types, strings)
+                delegated_route(ty, stream, sources, seeds, types, strings)
             }
             (
                 None,
@@ -4660,7 +4762,7 @@ fn plan_io(
                     ..
                 }),
             ) => hop_route(types, strings, ty, &[Hop::Deref], *pointee)
-                .map(|inner| (tokio(), IoRouteStep::Forward { inner })),
+                .map(|inner| (tokio(), fixed(IoRouteStep::Forward { inner }))),
             _ => continue,
         };
         match step {
@@ -4672,16 +4774,29 @@ fn plan_io(
             }
         }
     }
+    // The streams a trait object's read slot can name: every type with
+    // a read method's symbol.
+    let readers: Vec<BundleTypeId> = seeds
+        .iter()
+        .filter(|(_, seed)| !seed.read_symbols.is_empty())
+        .map(|(&ty, _)| ty)
+        .collect();
     let mut routed = BTreeSet::new();
     loop {
         let before = routed.len();
         for (&ty, (_, step)) in &planned {
             let ends = match step {
-                IoRouteStep::Socket(_) => true,
-                IoRouteStep::Forward { inner } => routed.contains(&inner.target),
-                IoRouteStep::Match { cases } => {
+                PlannedStep::Fixed(IoRouteStep::Socket(_)) => true,
+                PlannedStep::Fixed(IoRouteStep::Forward { inner }) => {
+                    routed.contains(&inner.target)
+                }
+                PlannedStep::Fixed(IoRouteStep::Match { cases }) => {
                     cases.iter().any(|case| routed.contains(&case.target))
                 }
+                PlannedStep::Fixed(IoRouteStep::Dyn { .. }) => {
+                    unreachable!("a trait object's step is planned as one")
+                }
+                PlannedStep::Dyn { .. } => readers.iter().any(|ty| routed.contains(ty)),
             };
             if ends {
                 routed.insert(ty);
@@ -4693,16 +4808,45 @@ fn plan_io(
     }
     // A match keeps the cases that end at a socket: a value in any
     // other variant has no route, which a reader finds by its variant.
+    // A trait object's cases are every routed stream a read symbol
+    // names: a stream in no case has no route, which a reader finds by
+    // the symbol its vtable holds.
     let routes = planned
         .iter()
         .filter(|(ty, _)| routed.contains(*ty))
         .map(|(&ty, (rule, step))| {
             let step = match step {
-                IoRouteStep::Match { cases } => IoRouteStep::Match {
-                    cases: cases
+                PlannedStep::Fixed(IoRouteStep::Match { cases }) => {
+                    PlannedStep::Fixed(IoRouteStep::Match {
+                        cases: cases
+                            .iter()
+                            .filter(|case| routed.contains(&case.target))
+                            .cloned()
+                            .collect(),
+                    })
+                }
+                PlannedStep::Dyn {
+                    pointer,
+                    data,
+                    vtable,
+                    abi,
+                    read_slot,
+                    ..
+                } => PlannedStep::Dyn {
+                    pointer: pointer.clone(),
+                    data: data.clone(),
+                    vtable: vtable.clone(),
+                    abi: abi.clone(),
+                    read_slot: *read_slot,
+                    cases: readers
                         .iter()
-                        .filter(|case| routed.contains(&case.target))
-                        .cloned()
+                        .filter(|reader| routed.contains(*reader) && **reader != ty)
+                        .flat_map(|&reader| {
+                            seeds[&reader]
+                                .read_symbols
+                                .iter()
+                                .map(move |symbol| (symbol.clone(), reader))
+                        })
                         .collect(),
                 },
                 step => step.clone(),
@@ -4716,14 +4860,20 @@ fn plan_io(
     for (&ty, (_, step)) in &planned {
         if !routed.contains(&ty) && seeds.get(&ty).is_some_and(|s| s.io_route.is_some()) {
             let detail = match step {
-                IoRouteStep::Forward { inner } => format!(
+                PlannedStep::Fixed(IoRouteStep::Forward { inner }) => format!(
                     "the stream it holds, {}, has no reviewed route to a socket",
                     type_label(names, inner.target)
                 ),
-                IoRouteStep::Match { .. } => {
+                PlannedStep::Fixed(IoRouteStep::Match { .. }) => {
                     "no variant's stream has a reviewed route to a socket".to_owned()
                 }
-                IoRouteStep::Socket(_) => unreachable!("every socket route is kept"),
+                PlannedStep::Dyn { .. } => {
+                    "no stream its trait object can hold has a reviewed route to a socket"
+                        .to_owned()
+                }
+                PlannedStep::Fixed(IoRouteStep::Socket(_) | IoRouteStep::Dyn { .. }) => {
+                    unreachable!("every socket route is kept, and no dyn step is fixed")
+                }
             };
             route_declines.insert(ty, (SemanticIssueKind::NoRule, detail));
         }
@@ -4820,9 +4970,10 @@ fn delegated_route(
     ty: BundleTypeId,
     stream: &DelegatedStream,
     sources: &BTreeSet<PollSource>,
+    seeds: &SemanticSeeds,
     types: &TypeTable,
     strings: &StringInterner,
-) -> Result<(RuleKey, IoRouteStep), Decline> {
+) -> Result<(RuleKey, PlannedStep), Decline> {
     let kind = stream.kind;
     let rule = match stream.review {
         Review::Release(convention) => {
@@ -4845,10 +4996,49 @@ fn delegated_route(
         }
     };
     let step = match stream.route {
-        DelegatedRoute::Forward(hops) => IoRouteStep::Forward {
+        DelegatedRoute::Forward(hops) => PlannedStep::Fixed(IoRouteStep::Forward {
             inner: hop_landing(types, strings, ty, hops)?,
-        },
-        DelegatedRoute::Match(variants) => IoRouteStep::Match {
+        }),
+        // A box of a trait object the std adapter screen saw, read
+        // under the compiler's rule for its header; its cases are the
+        // routed streams, known once every route is.
+        DelegatedRoute::Dyn(hops, read_slot) => {
+            let (steps, wide) = hop_steps(types, strings, ty, hops)?;
+            let Some(AdapterSeed {
+                kind: AdapterKind::Box,
+                pin: None,
+                pointee: PointeeSeed::Dyn(dyn_seed),
+                ..
+            }) = seeds.get(&wide).and_then(|seed| seed.adapter.as_ref())
+            else {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    format!(
+                        "its stream, type {}, is no boxed trait object the screen saw",
+                        wide.0
+                    ),
+                ));
+            };
+            let Target::Dynamic {
+                pointer,
+                data,
+                vtable,
+                abi,
+                ..
+            } = dynamic_target(ty, steps, wide, dyn_seed, types, strings)?
+            else {
+                unreachable!("a dynamic target is dynamic");
+            };
+            PlannedStep::Dyn {
+                pointer,
+                data,
+                vtable,
+                abi,
+                read_slot,
+                cases: Vec::new(),
+            }
+        }
+        DelegatedRoute::Match(variants) => PlannedStep::Fixed(IoRouteStep::Match {
             cases: variants
                 .iter()
                 .map(|variant| {
@@ -4860,7 +5050,7 @@ fn delegated_route(
                     )
                 })
                 .collect::<Result<_, _>>()?,
-        },
+        }),
     };
     Ok((rule, step))
 }
@@ -4870,7 +5060,7 @@ fn delegated_route(
 fn plan_io_operation(
     ty: BundleTypeId,
     op: IoOpSeed,
-    routes: &BTreeMap<BundleTypeId, (RuleKey, IoRouteStep)>,
+    routes: &BTreeMap<BundleTypeId, (RuleKey, PlannedStep)>,
     types: &TypeTable,
     names: &[Option<String>],
     strings: &StringInterner,
@@ -7705,6 +7895,7 @@ mod tests {
                 BundleTypeId(0),
                 stream,
                 &sources,
+                &SemanticSeeds::new(),
                 &TypeTable::default(),
                 &strings,
             )

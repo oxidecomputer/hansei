@@ -598,10 +598,43 @@ pub enum IoRouteStep {
     /// path's first step the variant it selects. A value whose live
     /// variant has no case has no route.
     Match { cases: Vec<TypedPath> },
+    /// The value holds its stream behind a trait object: `pointer`
+    /// reaches the wide pointer, the reviewed vtable layout reads it,
+    /// and the concrete stream is the case whose read method's symbol
+    /// the vtable's read slot holds. A stream in no case has no route.
+    Dyn {
+        pointer: TypedPath,
+        layout: DynStreamLayout,
+        cases: Vec<DynStreamCase>,
+    },
     /// The value is a socket registered with tokio's io driver: the
     /// walk contract's roles rooted at its type reach the registration
     /// and the descriptor.
     Socket(IoSocket),
+}
+
+/// A stream trait object's vtable, as a dynamic route reads it: the
+/// header's size and alignment under the compiler's rule, and the slot
+/// the trait's first read method sits in under the rule of the crate
+/// that declares the trait.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct DynStreamLayout {
+    /// The compiler rule the vtable header is read under.
+    pub abi: SemanticRuleId,
+    /// Paths relative to the wide pointer.
+    pub data: TypedPath,
+    pub vtable: TypedPath,
+    pub size_slot: u32,
+    pub align_slot: u32,
+    pub read_slot: u32,
+}
+
+/// One concrete stream a dynamic route may reach: the linkage symbol of
+/// its read method, which names it in the vtable, and its type.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct DynStreamCase {
+    pub symbol: StrRef,
+    pub target: BundleTypeId,
 }
 
 /// rustls's `ConnectionCommon<Data>`: every path starts at it and
@@ -942,6 +975,13 @@ pub enum SemanticRuleKind {
     /// dropshot's `TlsConn` under a reviewed range, whose reads and
     /// writes are the TLS stream it holds.
     DropshotTlsConn,
+    /// reqwest's connection types under a reviewed range: `Conn`,
+    /// whose stream is a trait object whose read slot the review
+    /// places, and the `RustlsTlsConn` and `Verbose` wrappers.
+    ReqwestConn,
+    /// hyper-rustls's `MaybeHttpsStream` under a reviewed range, whose
+    /// reads and writes are its live variant's.
+    HyperRustlsStream,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

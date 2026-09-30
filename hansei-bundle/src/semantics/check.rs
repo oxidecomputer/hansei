@@ -221,7 +221,9 @@ impl<'a> Check<'a> {
             | TokioStreamStreamMap
             | TokioRustlsStream
             | HyperUtilStream
-            | DropshotTlsConn => {
+            | DropshotTlsConn
+            | ReqwestConn
+            | HyperRustlsStream => {
                 let crate_name = match rule.kind {
                     TracingInstrumented => "tracing",
                     HyperUtilTokioSleep
@@ -231,7 +233,8 @@ impl<'a> Check<'a> {
                     | HyperUtilStream => "hyper-util",
                     HyperH1Conn => "hyper",
                     DropshotRequestHandler | DropshotRequestContext | DropshotTlsConn => "dropshot",
-                    ReqwestPendingRequest | ReqwestCookie => "reqwest",
+                    ReqwestPendingRequest | ReqwestCookie | ReqwestConn => "reqwest",
+                    HyperRustlsStream => "hyper-rustls",
                     TowerRetry => "tower",
                     HttpRequest => "http",
                     ParkingLotRawMutex => "parking_lot",
@@ -744,12 +747,13 @@ impl<'a> Check<'a> {
                         SprocketsTlsStream,
                         HyperUtilStream,
                         DropshotTlsConn,
+                        ReqwestConn,
                     ],
                 )?;
                 forward(inner)
             }
             IoRouteStep::Match { cases } => {
-                self.rule(binding.rule, &[TokioRustlsStream])?;
+                self.rule(binding.rule, &[TokioRustlsStream, HyperRustlsStream])?;
                 require(!cases.is_empty(), "a stream match has no case")?;
                 let mut variants = BTreeSet::new();
                 for case in cases {
@@ -763,6 +767,44 @@ impl<'a> Check<'a> {
                         "a stream match selects one variant twice",
                     )?;
                     forward(case)?;
+                }
+                Ok(())
+            }
+            IoRouteStep::Dyn {
+                pointer,
+                layout,
+                cases,
+            } => {
+                self.rule(binding.rule, &[ReqwestConn])?;
+                self.rule(layout.abi, &[DynFutureAbi])?;
+                forward(pointer)?;
+                for (word, what) in [(&layout.data, "data"), (&layout.vtable, "vtable")] {
+                    self.path(pointer.target, word)?;
+                    require(
+                        self.0.types.size_of(word.target) == Some(crate::POINTER_SIZE),
+                        &format!("a stream trait object's {what} word is not a pointer"),
+                    )?;
+                }
+                // The header's words first, then the trait's methods.
+                require(
+                    layout.size_slot != layout.align_slot
+                        && layout.read_slot > layout.size_slot
+                        && layout.read_slot > layout.align_slot,
+                    "a stream trait object's vtable slots overlap",
+                )?;
+                require(!cases.is_empty(), "a stream trait object has no case")?;
+                let mut seen = BTreeSet::new();
+                for case in cases {
+                    self.string(case.symbol)?;
+                    self.ty(case.target)?;
+                    require(
+                        case.target != record.ty,
+                        "a stream route forwards to itself",
+                    )?;
+                    require(
+                        seen.insert((case.symbol, case.target)),
+                        "a stream trait object lists one case twice",
+                    )?;
                 }
                 Ok(())
             }
@@ -2199,6 +2241,11 @@ fn io_routes_end_at_sockets(
             IoRouteStep::Socket(_) => {}
             IoRouteStep::Forward { inner } => ends(inner.target, hops + 1, limit, step, ending)?,
             IoRouteStep::Match { cases } => {
+                for case in cases {
+                    ends(case.target, hops + 1, limit, step, ending)?;
+                }
+            }
+            IoRouteStep::Dyn { cases, .. } => {
                 for case in cases {
                     ends(case.target, hops + 1, limit, step, ending)?;
                 }

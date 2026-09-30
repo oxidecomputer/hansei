@@ -5,5 +5,5 @@ description: "`connections --with request park` over linux/http-conns"
 TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE  BUF      PEER             SERVER  METHOD  REQUEST
 8     —       http1  server  handling request   —         0/16339  —                —       GET     /park
 11    —       http1  server  handling request   —         0/16326  —                —       GET     /park
-12    10      http1  client  awaiting response  —         0/8192   127.0.0.1:43541  —       GET     http://127.0.0.1:43541/park
+12    10      http1  client  awaiting response  —         0/8192   127.0.0.1:39163  —       GET     http://127.0.0.1:39163/park
 [3 connections]

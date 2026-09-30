@@ -960,6 +960,7 @@ fn extract_from_view(
         seeds,
         fut_polls,
         explicit_polls,
+        stream_reads,
         poll_sources,
         poll_decls,
         coroutine_candidates,
@@ -1564,6 +1565,7 @@ fn extract_from_view(
     let seeds = semantics::collect_semantic_seeds(
         &em,
         &explicit_polls,
+        &stream_reads,
         &poll_sources,
         &coroutine_candidates,
         compiler_verdict,

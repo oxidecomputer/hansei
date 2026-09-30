@@ -835,6 +835,10 @@ fn route_from(
             SemanticRuleKind::HyperUtilStream
         } else if stream.starts_with("dropshot::") {
             SemanticRuleKind::DropshotTlsConn
+        } else if stream.starts_with("reqwest::") {
+            SemanticRuleKind::ReqwestConn
+        } else if stream.starts_with("hyper_rustls::") {
+            SemanticRuleKind::HyperRustlsStream
         } else {
             SemanticRuleKind::TokioIoRoute
         };
@@ -854,6 +858,12 @@ fn route_from(
                     cases.iter().map(|case| route_text(bundle, case)).collect();
                 crossed.push(format!("match {}", texts.join(" | ")));
                 ty = cases[0].target;
+            }
+            // A trait object's concrete stream is the target's to say:
+            // the text stops at it, and its cases are asserted apart.
+            IoRouteStep::Dyn { pointer, .. } => {
+                crossed.push(format!("dyn {}", route_text(bundle, pointer)));
+                return crossed;
             }
             IoRouteStep::Socket(socket) => {
                 crossed.push(format!("socket {socket:?}"));
@@ -2509,7 +2519,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 // fixture links; and reqwest's cookie layer off its own.
                 "reqwest" | "http" => {
                     use exegesis::detect::semantics::{
-                        HTTP_REQUEST_V1_0_0, REQWEST_COOKIE_V0_12_24,
+                        HTTP_REQUEST_V1_0_0, REQWEST_CONN_V0_12_14, REQWEST_COOKIE_V0_12_24,
                         REQWEST_PENDING_REQUEST_V0_12_0,
                     };
                     let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
@@ -2518,6 +2528,9 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                     let convention = match s(*package) {
                         "reqwest" if s(*family) == REQWEST_COOKIE_V0_12_24.family => {
                             &REQWEST_COOKIE_V0_12_24
+                        }
+                        "reqwest" if s(*family) == REQWEST_CONN_V0_12_14.family => {
+                            &REQWEST_CONN_V0_12_14
                         }
                         "reqwest" => &REQWEST_PENDING_REQUEST_V0_12_0,
                         _ => &HTTP_REQUEST_V1_0_0,
@@ -4566,6 +4579,44 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     // io wrappers alias their `inner`. Pinning the resolved paths catches
     // a detector that fires on a moved member.
     if program == "http-conns" {
+        // Every dispatcher's buffered io holds a routed stream: the
+        // servers' rewound by the version-choosing server, the legacy
+        // client's bare, reqwest's behind the trait object its `Conn`
+        // boxes, whose cases include the plain socket's adapter it
+        // holds here.
+        assert_http_stream(
+            program,
+            bundle,
+            "hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<",
+            &["conn.io.io", "inner", "inner", "socket TcpStream"],
+        );
+        assert_http_stream(
+            program,
+            bundle,
+            "hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<\
+             reqwest::async_impl::body::Body>, reqwest::async_impl::body::Body, \
+             reqwest::connect::sealed::Conn, hyper::proto::h1::role::Client>",
+            &["conn.io.io", "dyn inner"],
+        );
+        let conn = types_named(bundle, "reqwest::connect::sealed::Conn")
+            .next()
+            .and_then(|(_, _, record)| record?.io_route.as_ref())
+            .expect("reqwest's `Conn` is routed");
+        let hansei_bundle::IoRouteStep::Dyn { layout, cases, .. } = &conn.step else {
+            panic!("{program}: reqwest's `Conn` routes through its trait object: {conn:?}");
+        };
+        assert_eq!(layout.read_slot, 3, "{program}");
+        let targets: Vec<String> = cases
+            .iter()
+            .map(|case| type_name_of(bundle, case.target))
+            .collect();
+        assert!(
+            targets
+                .iter()
+                .any(|name| name
+                    == "hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>"),
+            "{program}: {targets:?}"
+        );
         const SOCKET: &str = "hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>";
         const REWOUND: &str = "hyper_util::common::rewind::Rewind<\
             hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>";

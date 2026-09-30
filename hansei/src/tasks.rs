@@ -5101,6 +5101,7 @@ mod table_tests {
             })),
             caller: Some(caller),
             tls: None,
+            fd: None,
         };
         let slot = AttributedSlot {
             hit: 0,

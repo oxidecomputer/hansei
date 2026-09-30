@@ -6,10 +6,10 @@ TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE                        
 4     —       http1  client  idle               —                                            0/8192   —                —       —       —
 5     —       http1  server  idle               TS on the target's monotonic clock  0/16302  —                —       —       —
 8     —       http1  server  handling request   —                                            0/16339  —                —       GET     /park
-9     7       http1  client  awaiting response  —                                            0/8192   127.0.0.1:43541  —       GET     —
+9     7       http1  client  awaiting response  —                                            0/8192   127.0.0.1:39163  —       GET     —
 11    —       http1  server  handling request   —                                            0/16326  —                —       GET     /park
-12    10      http1  client  awaiting response  —                                            0/8192   127.0.0.1:43541  —       GET     http://127.0.0.1:43541/park
+12    10      http1  client  awaiting response  —                                            0/8192   127.0.0.1:39163  —       GET     http://127.0.0.1:39163/park
 13    —       http1  server  negotiating        —                                            —        —                —       —       —
 15    —       http1  server  idle               TS on the target's monotonic clock  0/16343  —                —       —       —
-16    —       http1  client  idle               —                                            0/8192   127.0.0.1:43541  —       —       —
+16    —       http1  client  idle               —                                            0/8192   127.0.0.1:39163  —       —       —
 [9 connections]

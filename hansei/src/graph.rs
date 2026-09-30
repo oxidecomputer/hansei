@@ -568,6 +568,7 @@ mod graph_tests {
                 task_id: Some(1),
             })),
             tls: None,
+            fd: None,
         };
         let out = graph(
             vec![task(1), task(2)],
