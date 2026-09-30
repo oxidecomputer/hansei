@@ -4,9 +4,9 @@ description: "`tasks --group waker` over linux-floor/http-conns"
 ---
 COUNT  WAITING ON                          TASKS
     2  http1 client awaiting response      9, 12
-    2  http1 client idle                   4, 16
+    2  http1 client idle                   5, 16
     2  http1 server handling request       8, 11
-    2  http1 server idle                   5, 15
+    2  http1 server idle                   4, 15
     2  oneshot rx                          7, 14
     1  futures_channel::lock::Lock, timer  17
     1  http server negotiating             13

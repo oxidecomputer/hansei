@@ -2,14 +2,14 @@
 source: hansei/src/offline.rs
 description: "`connections` over illumos/http-conns"
 ---
-TASK  CALLER  ROLE    PHASE              DEADLINE    BUF      PEER             SERVER  METHOD  REQUEST
-4     —       server  idle (7ms)         +TS  0/16302  —                —       —       —
-5     —       client  idle               —           0/8192   —                —       —       —
-8     —       server  handling request   —           0/16339  —                —       GET     /park
-9     7       client  awaiting response  —           0/8192   127.0.0.1:33889  —       GET     —
-11    —       server  handling request   —           0/16326  —                —       GET     /park
-12    10      client  awaiting response  —           0/8192   127.0.0.1:33889  —       GET     http://127.0.0.1:33889/park
-13    —       server  negotiating        —           —        —                —       —       —
-15    —       server  idle (5ms)         +TS  0/16343  —                —       —       —
-16    —       client  idle               —           0/8192   127.0.0.1:33889  —       —       —
+TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE    BUF      PEER             SERVER  METHOD  REQUEST
+4     —       http1  server  idle (8ms)         +TS  0/16302  —                —       —       —
+5     —       http1  client  idle               —           0/8192   —                —       —       —
+8     —       http1  server  handling request   —           0/16339  —                —       GET     /park
+9     7       http1  client  awaiting response  —           0/8192   127.0.0.1:44307  —       GET     —
+11    —       http1  server  handling request   —           0/16326  —                —       GET     /park
+12    10      http1  client  awaiting response  —           0/8192   127.0.0.1:44307  —       GET     http://127.0.0.1:44307/park
+13    —       http1  server  negotiating        —           —        —                —       —       —
+15    —       http1  server  idle (6ms)         +TS  0/16343  —                —       —       —
+16    —       http1  client  idle               —           0/8192   127.0.0.1:44307  —       —       —
 [9 connections]

@@ -2529,6 +2529,7 @@ mod view_tests {
             io: None,
             tls_session: None,
             tls_stream: None,
+            stream_peer: None,
             refcount: None,
             lock: None,
             acquires_for: None,

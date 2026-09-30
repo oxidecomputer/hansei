@@ -35,9 +35,9 @@ use crate::bundle::{
     RefcountBinding, ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass,
     SelectBinding, Selector, SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId,
     SemanticRule, SemanticRuleId, SemanticRuleKind, SemanticTable, SourceFileEvidence, SourceLoc,
-    Step, StoragePolicy, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TlsSessionBinding,
-    TlsStreamBinding, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome, WalkRole,
-    WalksTable, container_roles, container_routes, required_resource_roles,
+    Step, StoragePolicy, StrRef, StreamPeerBinding, StringInterner, TaskEntryId, TaskFutureEntry,
+    TlsSessionBinding, TlsStreamBinding, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome,
+    WalkRole, WalksTable, container_roles, container_routes, required_resource_roles,
     required_resource_routes, scheduler_role, semantic_path_target, socket_roles,
 };
 use crate::detect::Family;
@@ -718,6 +718,9 @@ struct DelegatedStream {
     /// Where the stream holds a rustls connection: the hops to it and
     /// to the stream's own state.
     tls: Option<TlsHops>,
+    /// Where the stream names its peer: the hops to the NUL-padded
+    /// bytes of its name.
+    peer: Option<&'static [Hop<'static>]>,
 }
 
 #[derive(Debug)]
@@ -761,6 +764,7 @@ const IO_DELEGATIONS: [DelegatedStream; 4] = [
         review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_26_0),
         route: DelegatedRoute::Match(&["Client", "Server"]),
         tls: None,
+        peer: None,
     },
     DelegatedStream {
         key: "tokio_rustls::client::TlsStream<",
@@ -768,6 +772,7 @@ const IO_DELEGATIONS: [DelegatedStream; 4] = [
         review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_26_0),
         route: DelegatedRoute::Forward(&[Hop::Member("io")]),
         tls: Some(TOKIO_RUSTLS_SESSION),
+        peer: None,
     },
     DelegatedStream {
         key: "tokio_rustls::server::TlsStream<",
@@ -775,6 +780,7 @@ const IO_DELEGATIONS: [DelegatedStream; 4] = [
         review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_26_0),
         route: DelegatedRoute::Forward(&[Hop::Member("io")]),
         tls: Some(TOKIO_RUSTLS_SESSION),
+        peer: None,
     },
     DelegatedStream {
         key: "sprockets_tls::Stream<",
@@ -782,6 +788,9 @@ const IO_DELEGATIONS: [DelegatedStream; 4] = [
         review: Review::Git(&SPROCKETS_TLS_STREAM_D2B68E4),
         route: DelegatedRoute::Forward(&[Hop::Member("inner")]),
         tls: None,
+        // The platform id the attestation verified, a
+        // `dice_mfg_msgs::PlatformId` newtype over its bytes.
+        peer: Some(&[Hop::Member("platform_id"), Hop::Member("__0")]),
     },
 ];
 
@@ -2083,6 +2092,8 @@ struct Draft {
     tls_session: Option<TlsSessionPlan>,
     /// A routed TLS stream's connection and state, where they bind.
     tls_stream: Option<(TypedPath, TypedPath)>,
+    /// A routed stream's peer name, where it binds.
+    stream_peer: Option<TypedPath>,
     /// The header's value member, with the rule it binds under.
     refcount: Option<(RuleKey, MemberRef)>,
     /// The lock's word, with the rule it binds under.
@@ -2205,6 +2216,7 @@ pub(super) fn bind_semantics(
             draft.io = io.operations.get(&ty).cloned();
             draft.tls_session = io.sessions.get(&ty).cloned();
             draft.tls_stream = io.tls_streams.get(&ty).cloned();
+            draft.stream_peer = io.peers.get(&ty).cloned();
             if let Some(decline) = io.tls_declines.get(&ty) {
                 draft.issues.push(decline.clone());
             }
@@ -2757,6 +2769,14 @@ pub(super) fn bind_semantics(
                 session,
                 state,
             });
+        let stream_peer = draft
+            .stream_peer
+            .zip(draft.io_route.as_ref())
+            .filter(|_| readable)
+            .map(|(name, (rule, _))| StreamPeerBinding {
+                rule: rules.rule(rule, strings, library),
+                name,
+            });
         let io_route = draft
             .io_route
             .filter(|_| readable)
@@ -2781,6 +2801,8 @@ pub(super) fn bind_semantics(
                 sent_fatal_alert: plan.sent_fatal_alert,
                 read_seq: plan.read_seq,
                 write_seq: plan.write_seq,
+                deframer_used: plan.deframer_used,
+                deframer_len: plan.deframer_len,
             });
         records.push(TypeSemantics {
             ty,
@@ -2802,6 +2824,7 @@ pub(super) fn bind_semantics(
             io,
             tls_session,
             tls_stream,
+            stream_peer,
             refcount: draft.refcount.map(|(rule, value)| RefcountBinding {
                 rule: rules.rule(&rule, strings, library),
                 value,
@@ -4295,8 +4318,10 @@ struct IoPlans {
     /// Every routed TLS stream whose connection is such a one: the
     /// paths to the connection and to the stream's state.
     tls_streams: BTreeMap<BundleTypeId, (TypedPath, TypedPath)>,
+    /// Every routed stream that names its peer: the path to the name.
+    peers: BTreeMap<BundleTypeId, TypedPath>,
     /// Why a screened connection's words, or a routed stream's TLS
-    /// layer, did not bind: an issue beside its record.
+    /// layer or peer, did not bind: an issue beside its record.
     tls_declines: BTreeMap<BundleTypeId, Decline>,
 }
 
@@ -4317,6 +4342,8 @@ struct TlsSessionPlan {
     sent_fatal_alert: TypedPath,
     read_seq: TypedPath,
     write_seq: TypedPath,
+    deframer_used: TypedPath,
+    deframer_len: TypedPath,
 }
 
 /// Plan a rustls connection's words: the release first, read off the
@@ -4373,18 +4400,8 @@ fn plan_tls_session(
         let ok = types.size_of(path.target) == Some(1);
         shape(path, ok, name)
     };
-    let seq = |name: &str| {
-        let path = hop_landing(
-            types,
-            strings,
-            ty,
-            &[
-                Member("core"),
-                Member("common_state"),
-                Member("record_layer"),
-                Member(name),
-            ],
-        )?;
+    let count = |hops: &[Hop<'_>], name: &str| {
+        let path = hop_landing(types, strings, ty, hops)?;
         let ok = matches!(
             types.get(path.target),
             Some(TypeDef::Base {
@@ -4394,6 +4411,17 @@ fn plan_tls_session(
             })
         );
         shape(path, ok, name)
+    };
+    let seq = |name: &str| {
+        count(
+            &[
+                Member("core"),
+                Member("common_state"),
+                Member("record_layer"),
+                Member(name),
+            ],
+            name,
+        )
     };
     let state = hop_landing(types, strings, ty, &[Member("core"), Member("state")])?;
     let ok = variants(state.target) == BTreeSet::from(["Ok", "Err"]);
@@ -4432,7 +4460,47 @@ fn plan_tls_session(
         sent_fatal_alert: flag("sent_fatal_alert")?,
         read_seq: seq("read_seq")?,
         write_seq: seq("write_seq")?,
+        deframer_used: count(
+            &[Member("deframer_buffer"), Member("used")],
+            "deframer's fill",
+        )?,
+        deframer_len: count(
+            &[Member("deframer_buffer"), Member("buf"), Member("len")],
+            "deframer's size",
+        )?,
     })
+}
+
+/// A routed stream's peer: the path to its name, an array of bytes.
+fn plan_stream_peer(
+    ty: BundleTypeId,
+    hops: &[Hop<'_>],
+    types: &TypeTable,
+    strings: &StringInterner,
+) -> Result<TypedPath, Decline> {
+    let name = hop_landing(types, strings, ty, hops)?;
+    let bytes = match types.get(name.target) {
+        Some(&TypeDef::Array { elem, count }) => {
+            count > 0
+                && matches!(
+                    types.get(elem),
+                    Some(TypeDef::Base {
+                        encoding: crate::bundle::Encoding::Unsigned,
+                        size: 1,
+                        ..
+                    })
+                )
+        }
+        _ => false,
+    };
+    if bytes {
+        Ok(name)
+    } else {
+        Err((
+            SemanticIssueKind::MissingLayout,
+            "its peer's name is not an array of bytes in the final table".to_owned(),
+        ))
+    }
 }
 
 /// A routed stream's TLS layer: the paths to the connection it holds,
@@ -4621,23 +4689,34 @@ fn plan_io(
     }
     // A routed stream that holds a rustls connection: its TLS layer,
     // where the connection's words bind.
+    // And one that names its peer: the name, where it is bytes.
     let mut tls_streams = BTreeMap::new();
+    let mut peers = BTreeMap::new();
     for (&ty, seed) in seeds {
         let Some(IoRouteSeed::Delegated { stream, .. }) = &seed.io_route else {
-            continue;
-        };
-        let Some(hops) = &stream.tls else {
             continue;
         };
         if !routes.contains_key(&ty) {
             continue;
         }
-        match plan_tls_stream(ty, hops, &sessions, types, names, strings) {
-            Ok(paths) => {
-                tls_streams.insert(ty, paths);
+        if let Some(hops) = &stream.tls {
+            match plan_tls_stream(ty, hops, &sessions, types, names, strings) {
+                Ok(paths) => {
+                    tls_streams.insert(ty, paths);
+                }
+                Err(decline) => {
+                    tls_declines.insert(ty, decline);
+                }
             }
-            Err(decline) => {
-                tls_declines.insert(ty, decline);
+        }
+        if let Some(hops) = stream.peer {
+            match plan_stream_peer(ty, hops, types, strings) {
+                Ok(name) => {
+                    peers.insert(ty, name);
+                }
+                Err(decline) => {
+                    tls_declines.insert(ty, decline);
+                }
             }
         }
     }
@@ -4648,6 +4727,7 @@ fn plan_io(
         operation_declines,
         sessions,
         tls_streams,
+        peers,
         tls_declines,
     }
 }

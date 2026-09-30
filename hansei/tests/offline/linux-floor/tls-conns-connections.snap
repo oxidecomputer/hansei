@@ -2,4 +2,12 @@
 source: hansei/src/offline.rs
 description: "`connections` over linux-floor/tls-conns"
 ---
-[0 connections]
+TASK  CALLER  PROTO  ROLE    PHASE        DEADLINE  BUF     PEER  SERVER  METHOD  REQUEST
+3     —       tls    client  established  —         0/4096  —     —       —       —
+4     —       tls    server  established  —         0/4096  —     —       —       —
+5     —       tls    client  established  —         0/4096  —     —       —       —
+6     —       tls    server  established  —         0/4096  —     —       —       —
+7     —       tcp    —       open         —         —       —     —       —       —
+8     —       tcp    —       open         —         —       —     —       —       —
+9     —       tls    client  closing      —         0/4096  —     —       —       —
+[7 connections]

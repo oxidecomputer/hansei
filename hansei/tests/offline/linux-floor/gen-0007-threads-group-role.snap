@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux-floor/gen-0007"
 ---
 COUNT  ROLE             LWPS
-    2  worker           110113, 110114
-    1  entered runtime  110111
+    2  worker           125752, 125753
+    1  entered runtime  125750
 [2 groups]

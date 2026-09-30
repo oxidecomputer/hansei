@@ -3001,6 +3001,7 @@ fn refcount_semantics(
             io: None,
             tls_session: None,
             tls_stream: None,
+            stream_peer: None,
             refcount: Some(RefcountBinding {
                 rule: SemanticRuleId(0),
                 value: MemberRef::Named(value),

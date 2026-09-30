@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`connections --with request park` over linux/http-conns"
 ---
-TASK  CALLER  ROLE    PHASE              DEADLINE  BUF      PEER             SERVER  METHOD  REQUEST
-7     —       server  handling request   —         0/16339  —                —       GET     /park
-10    —       server  handling request   —         0/16326  —                —       GET     /park
-11    9       client  awaiting response  —         0/8192   127.0.0.1:44453  —       GET     http://127.0.0.1:44453/park
+TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE  BUF      PEER             SERVER  METHOD  REQUEST
+9     —       http1  server  handling request   —         0/16339  —                —       GET     /park
+12    —       http1  server  handling request   —         0/16326  —                —       GET     /park
+13    11      http1  client  awaiting response  —         0/8192   127.0.0.1:40155  —       GET     http://127.0.0.1:40155/park
 [3 connections]

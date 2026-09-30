@@ -821,7 +821,12 @@ impl<'a> Check<'a> {
                 "TLS session flag is not one byte",
             )?;
         }
-        for seq in [&binding.read_seq, &binding.write_seq] {
+        for seq in [
+            &binding.read_seq,
+            &binding.write_seq,
+            &binding.deframer_used,
+            &binding.deframer_len,
+        ] {
             self.path(record.ty, seq)?;
             require(
                 matches!(
@@ -832,7 +837,7 @@ impl<'a> Check<'a> {
                         ..
                     }
                 ),
-                "TLS session sequence is not an unsigned word",
+                "TLS session count is not an unsigned word",
             )?;
         }
         Ok(())
@@ -866,6 +871,37 @@ impl<'a> Check<'a> {
                 TypeDef::Enum { .. } | TypeDef::CEnum { .. }
             ),
             "TLS stream state is not an enum",
+        )
+    }
+
+    /// A stream's peer, under its route's rule: a path to an array of
+    /// unsigned bytes.
+    fn stream_peer(&self, record: &TypeSemantics, binding: &StreamPeerBinding) -> Result<()> {
+        self.rule(binding.rule, &[SemanticRuleKind::SprocketsTlsStream])?;
+        require(
+            record
+                .io_route
+                .as_ref()
+                .is_some_and(|route| route.rule == binding.rule),
+            "stream peer binding is not its route's",
+        )?;
+        self.path(record.ty, &binding.name)?;
+        let TypeDef::Array { elem, count } = self.ty(binding.name.target)? else {
+            return Err(Error::Corrupt(
+                "semantics: stream peer name is not an array".into(),
+            ));
+        };
+        require(
+            *count > 0
+                && matches!(
+                    self.ty(*elem)?,
+                    TypeDef::Base {
+                        encoding: crate::Encoding::Unsigned,
+                        size: 1,
+                        ..
+                    }
+                ),
+            "stream peer name is not an array of bytes",
         )
     }
 
@@ -1805,6 +1841,7 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                         && record.io.is_none()
                         && record.tls_session.is_none()
                         && record.tls_stream.is_none()
+                        && record.stream_peer.is_none()
                         && record.refcount.is_none()
                         && record.lock.is_none(),
                     "unavailable storage carries a readable capability",
@@ -1916,6 +1953,13 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                     .is_some_and(|&i| table.types[i].tls_session.is_some())
             };
             check.tls_stream(record, stream, &session)?;
+        }
+        if let Some(peer) = &record.stream_peer {
+            require(
+                matches!(record.storage, StoragePolicy::DeclaredMembers),
+                "stream peer binding needs declared-member storage",
+            )?;
+            check.stream_peer(record, peer)?;
         }
         if let Some(refcount) = &record.refcount {
             check.rule(refcount.rule, &[SemanticRuleKind::StdRefcountHeader])?;

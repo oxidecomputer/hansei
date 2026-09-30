@@ -2,4 +2,8 @@
 source: hansei/src/offline.rs
 description: "`connections` over linux/local-set-io"
 ---
-[0 connections]
+TASK  CALLER  PROTO  ROLE  PHASE  DEADLINE  BUF  PEER  SERVER  METHOD  REQUEST
+1     —       unix   —     open   —         —    —     —       —       —
+3     —       unix   —     open   —         —    —     —       —       —
+5     —       unix   —     open   —         —    —     —       —       —
+[3 connections]

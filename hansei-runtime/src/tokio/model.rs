@@ -1603,6 +1603,9 @@ pub struct TlsReading {
     pub sent_fatal_alert: bool,
     pub read_seq: u64,
     pub write_seq: u64,
+    /// The bytes read off the socket and not yet deframed, and the
+    /// size of the buffer they are read into.
+    pub deframer: (u64, u64),
     /// The stream's own state variant: `Stream` while both directions
     /// are open, `ReadShutdown`, `WriteShutdown`, `FullyShutdown`, or
     /// `EarlyData` before a client's handshake finishes.
@@ -1629,15 +1632,22 @@ pub enum TlsVerdict {
     Failed,
 }
 
-impl fmt::Display for TlsVerdict {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl TlsVerdict {
+    /// The verdict's word, as a line and a listing's cell give it.
+    pub fn word(self) -> &'static str {
+        match self {
             Self::Handshaking => "handshaking",
             Self::Established => "established",
             Self::Closing => "closing",
             Self::Closed => "closed",
             Self::Failed => "failed",
-        })
+        }
+    }
+}
+
+impl fmt::Display for TlsVerdict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.word())
     }
 }
 
@@ -2609,6 +2619,7 @@ mod tests {
             sent_fatal_alert: false,
             read_seq: 9239,
             write_seq: 9239,
+            deframer: (0, 4096),
             stream_state: "Stream".to_owned(),
         };
         assert_eq!(

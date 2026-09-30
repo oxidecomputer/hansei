@@ -887,6 +887,8 @@ fn assert_tls_stream(program: &str, bundle: &Bundle, key: &str) {
                 &session.write_seq,
                 format!("{common}.record_layer.write_seq"),
             ),
+            (&session.deframer_used, "deframer_buffer.used".to_owned()),
+            (&session.deframer_len, "deframer_buffer.buf.len".to_owned()),
         ] {
             assert_eq!(route_text(bundle, word), expected, "{program}: {name}");
         }

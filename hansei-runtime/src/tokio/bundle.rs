@@ -35,10 +35,11 @@ use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
     AccessKind, BundleMember, BundleType, BundleTypeId, BundleView, ContainerKind, Continuation,
-    FutureKind, HashTableBinding, IoOperationKind, IoRouteStep, MemberRef, PollAction, PollProgram,
-    ResourceKind, SchedulerClass, SelectBinding, StaticRole, Step, StoragePolicy, SymbolLookup,
-    TaskEntryId, TaskFutureEntry, TlsStreamBinding, TypeClass, TypeDef, TypeSemantics, TypedPath,
-    WalkOutcome, WalkRole, socket_roles, strip_build_prefix, strip_llvm_suffix,
+    FutureKind, HashTableBinding, IoOperationKind, IoRouteStep, IoSocket, MemberRef, PollAction,
+    PollProgram, ResourceKind, SchedulerClass, SelectBinding, StaticRole, Step, StoragePolicy,
+    StreamPeerBinding, SymbolLookup, TaskEntryId, TaskFutureEntry, TlsStreamBinding, TypeClass,
+    TypeDef, TypeSemantics, TypedPath, WalkOutcome, WalkRole, socket_roles, strip_build_prefix,
+    strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -65,6 +66,8 @@ pub(crate) struct FollowedRoute<'b> {
     pub(crate) scheduled_io: Value<'b>,
     pub(crate) fd: Option<i32>,
     pub(crate) tls: Option<Result<TlsReading, String>>,
+    pub(crate) socket: IoSocket,
+    pub(crate) peer: Option<Result<String, String>>,
 }
 
 /// Whether `addr` lies in `value`'s storage.
@@ -3904,6 +3907,8 @@ impl<'b, T: Target> Context<'b, T> {
             scheduled_io,
             fd,
             tls,
+            socket,
+            peer,
         } = self.follow_io_route(stream, read)?;
         let remaining = binding
             .remaining
@@ -3931,6 +3936,8 @@ impl<'b, T: Target> Context<'b, T> {
             route,
             fd,
             tls,
+            socket: Some(socket),
+            peer,
         })
     }
 
@@ -3949,6 +3956,7 @@ impl<'b, T: Target> Context<'b, T> {
         let mut current = stream;
         let mut route = Vec::new();
         let mut tls = None;
+        let mut peer = None;
         while route.len() < MAX_IO_ROUTE {
             route.push(ValueKey::of(current));
             let record = self.type_semantics(current.ty.id());
@@ -3961,6 +3969,12 @@ impl<'b, T: Target> Context<'b, T> {
                     self.observe_tls(current, binding, read)
                         .map_err(|e| format!("{e:#}")),
                 );
+            }
+            // A stream that names its peer: the name's text.
+            if peer.is_none()
+                && let Some(binding) = record.and_then(|record| record.stream_peer.as_ref())
+            {
+                peer = Some(self.observe_peer(current, binding, read));
             }
             let step = record
                 .and_then(|record| record.io_route.as_ref())
@@ -3997,11 +4011,29 @@ impl<'b, T: Target> Context<'b, T> {
                         scheduled_io,
                         fd,
                         tls,
+                        socket: *socket,
+                        peer,
                     });
                 }
             }
         }
         bail!("the stream route runs past {MAX_IO_ROUTE} streams")
+    }
+
+    /// A stream's peer: the text its name's bytes hold, up to the NULs
+    /// that pad them.
+    fn observe_peer(
+        &self,
+        stream: Value<'b>,
+        binding: &StreamPeerBinding,
+        read: &ReadContext<'_>,
+    ) -> Result<String, String> {
+        let name = contract::execute_steps(self, read, stream, &binding.name.steps)
+            .and_then(|walked| walked.at("the peer's name"))
+            .map_err(|e| format!("{e:#}"))?;
+        hansei_bundle::padded_text(name.bytes)
+            .map(str::to_owned)
+            .ok_or_else(|| "the peer's name is not UTF-8".to_owned())
     }
 
     /// A TLS stream's connection, read through the paths its binding
@@ -4077,6 +4109,10 @@ impl<'b, T: Target> Context<'b, T> {
             sent_fatal_alert: flag(&words.sent_fatal_alert, "fatal alert flag")?,
             read_seq: seq(&words.read_seq, "read sequence")?,
             write_seq: seq(&words.write_seq, "write sequence")?,
+            deframer: (
+                seq(&words.deframer_used, "deframer's fill")?,
+                seq(&words.deframer_len, "deframer's size")?,
+            ),
             stream_state: stream_state.to_owned(),
         })
     }
@@ -4132,6 +4168,8 @@ impl<'b, T: Target> Context<'b, T> {
             route: Vec::new(),
             fd: None,
             tls: None,
+            socket: None,
+            peer: None,
         })
     }
 

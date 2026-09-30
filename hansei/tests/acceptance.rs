@@ -4066,15 +4066,15 @@ fn test_http_conns_connections_acceptance() {
         assert_eq!(
             rows,
             [
-                "CALLER client awaiting response — 0/8192 127.0.0.1:PORT — GET http://127.0.0.1:PORT/park",
-                "CALLER client awaiting response — 0/8192 127.0.0.1:PORT — GET —",
-                "— client idle — 0/8192 127.0.0.1:PORT — — —",
-                "— client idle — 0/8192 — — — —",
-                "— server handling request — 0/16326 — — GET /park",
-                "— server handling request — 0/16339 — — GET /park",
-                "— server idle DEADLINE 0/16302 — — — —",
-                "— server idle DEADLINE 0/16343 — — — —",
-                "— server negotiating — — — — — —",
+                "CALLER http1 client awaiting response — 0/8192 127.0.0.1:PORT — GET http://127.0.0.1:PORT/park",
+                "CALLER http1 client awaiting response — 0/8192 127.0.0.1:PORT — GET —",
+                "— http1 client idle — 0/8192 127.0.0.1:PORT — — —",
+                "— http1 client idle — 0/8192 — — — —",
+                "— http1 server handling request — 0/16326 — — GET /park",
+                "— http1 server handling request — 0/16339 — — GET /park",
+                "— http1 server idle DEADLINE 0/16302 — — — —",
+                "— http1 server idle DEADLINE 0/16343 — — — —",
+                "— http1 server negotiating — — — — — —",
             ],
             "{out}"
         );
@@ -4093,6 +4093,60 @@ fn test_http_conns_connections_acceptance() {
         // The request reaches a filter, on either side of the exchange.
         let parked = hansei_ok(&bundle, core, "connections --with request park");
         assert!(parked.ends_with("[3 connections]\n"), "{parked}");
+    });
+}
+
+/// The connection listing over the fixture that holds TLS and TCP
+/// connections: every socket a task parks reading or writing is a row,
+/// once however many of its reads and writes are pending. The TLS
+/// clients reading directly and through a split's halves, the servers
+/// reading directly and through a boxed `BufStream`, all established;
+/// the client that sent its close_notify, closing; and the TCP client
+/// reading and writing through owned halves and the server reading its
+/// bare stream, open. Each TLS row's buffer is the deframer's, empty,
+/// out of the 4 KiB rustls starts it at; no row names a peer — the
+/// fixture has no sprockets stream, the one this listing reads a peer
+/// from. The handshakes in progress and the tasks parked on anything
+/// but a socket are no rows. Grouping by protocol files the seven
+/// under two buckets, and a filter on it keeps the TCP pair.
+#[test]
+fn test_tls_conns_connections_acceptance() {
+    let bundle = fixtures().bundle("tls-conns");
+    with_core("tls-conns", |core| {
+        let out = hansei_ok(&bundle, core, "connections");
+        assert!(out.ends_with("[7 connections]\n"), "{out}");
+        let mut rows: Vec<String> = out
+            .lines()
+            .skip(1)
+            .take(7)
+            .map(|line| {
+                line.split_whitespace()
+                    .skip(1)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            [
+                "— tcp — open — — — — — —",
+                "— tcp — open — — — — — —",
+                "— tls client closing — 0/4096 — — — —",
+                "— tls client established — 0/4096 — — — —",
+                "— tls client established — 0/4096 — — — —",
+                "— tls server established — 0/4096 — — — —",
+                "— tls server established — 0/4096 — — — —",
+            ],
+            "{out}"
+        );
+        let grouped = hansei_ok(&bundle, core, "connections --group proto");
+        for bucket in ["5  tls", "2  tcp"] {
+            assert!(grouped.contains(bucket), "{grouped}");
+        }
+        let tcp = hansei_ok(&bundle, core, "connections --with proto tcp");
+        assert!(tcp.ends_with("[2 connections]\n"), "{tcp}");
+        assert!(!tcp.contains(" tls "), "{tcp}");
     });
 }
 

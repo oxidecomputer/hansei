@@ -77,6 +77,9 @@ pub struct TypeSemantics {
     /// Where the type is a routed TLS stream that holds a rustls
     /// connection: the connection, and the stream's own shutdown state.
     pub tls_stream: Option<TlsStreamBinding>,
+    /// Where the type is a routed stream that names its peer: the
+    /// peer's name, as NUL-padded text.
+    pub stream_peer: Option<StreamPeerBinding>,
     /// Where the type is a refcounted allocation's header — an `Arc`'s
     /// `ArcInner<T>`, an `Rc`'s `RcInner<T>` — the member holding the
     /// value its counts guard: what a path through the pointer names.
@@ -624,6 +627,11 @@ pub struct TlsSessionBinding {
     /// each direction has carried, as unsigned words.
     pub read_seq: TypedPath,
     pub write_seq: TypedPath,
+    /// `deframer_buffer.used` and `deframer_buffer.buf.len`: how much of
+    /// the buffer the socket's bytes are read into holds bytes not yet
+    /// deframed, and the buffer's size.
+    pub deframer_used: TypedPath,
+    pub deframer_len: TypedPath,
 }
 
 /// A TLS stream's words: the rustls connection it holds, and its own
@@ -638,6 +646,15 @@ pub struct TlsStreamBinding {
     /// The stream's state enum, whose variant says which directions it
     /// has shut down.
     pub state: TypedPath,
+}
+
+/// The peer a stream names: a path to a byte array holding its name as
+/// text, NUL-padded to the array's width.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct StreamPeerBinding {
+    /// The stream's route rule: the same review names both.
+    pub rule: SemanticRuleId,
+    pub name: TypedPath,
 }
 
 /// The sockets a route ends at, by the walk roles rooted at each.

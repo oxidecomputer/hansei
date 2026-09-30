@@ -2,22 +2,24 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! The `connections` listing: every HTTP connection the target holds,
-//! a row apiece, read from the connection resources the wait analysis
-//! and the census observed — the verdict's words and the facts beside
-//! them (the peer, the accepting server, the task that sent a client's
-//! request, the read buffer, an armed timer's deadline and how long an
-//! idle server has waited), which the task block does not have room to
-//! say.
+//! The `connections` listing: every connection the target holds, a row
+//! apiece, read from what the wait analysis and the census observed —
+//! an HTTP connection's resource, with the verdict's words and the facts
+//! beside them (the peer, the accepting server, the task that sent a
+//! client's request, the read buffer, an armed timer's deadline and how
+//! long an idle server has waited), and every other socket a pending
+//! read or write reaches through its stream's route, with the TLS
+//! connection the route crossed where it crossed one — which the task
+//! block does not have room to say.
 
 use crate::runtimes::RowOwner;
 use crate::tasks::{Cmp, EMPTY_BUCKET, alternatives, distinct_values, listing_footer, task_id};
 use crate::{Session, output, print_warnings};
 
 use anyhow::{Context as _, Result, anyhow};
-use hansei_bundle::HttpRole;
+use hansei_bundle::{HttpRole, IoSocket};
 use hansei_runtime::tokio::assess::{client_phase, http_caller, server_phase};
-use hansei_runtime::tokio::bundle::{HttpCaller, HttpPhase, TaskList, deadline_text};
+use hansei_runtime::tokio::bundle::{HttpCaller, HttpPhase, TaskList, TlsVerdict, deadline_text};
 use hansei_runtime::tokio::observe::{HttpRequestObservation, PoolPeers, ResourceObservation};
 use hansei_runtime::tokio::wakers::Owner;
 use hansei_runtime::tokio::{RawInstant, attribution, census};
@@ -31,19 +33,23 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 pub(crate) struct ConnRow {
     /// The `Conn`'s address — the wrapper's own for a connection still
-    /// choosing its version — which tells one connection from another
-    /// and orders a task's rows; nothing else prints it, so no cell
-    /// does.
+    /// choosing its version — or, for a socket read through a stream,
+    /// its registration's, which tells one connection from another and
+    /// orders a task's rows; nothing else prints it, so no cell does.
     pub(crate) addr: u64,
     /// The task driving the connection, as an index and as `tasks`
     /// names it.
     pub(crate) owner: usize,
     pub(crate) task: String,
     pub(crate) rt: RowOwner,
-    pub(crate) role: HttpRole,
+    /// What the connection speaks on top of its socket.
+    pub(crate) proto: Proto,
+    /// Which end the target is: the HTTP role, or the TLS side. `None`
+    /// for a bare socket, which says neither.
+    pub(crate) role: Option<HttpRole>,
     /// The phase the verdict decided, or `None` where the words did
     /// not decide one.
-    pub(crate) phase: Option<HttpPhase>,
+    pub(crate) phase: Option<RowPhase>,
     /// The method of the message in flight, `None` between exchanges.
     pub(crate) method: Option<String>,
     /// The peer's address, where the service the server drives keeps
@@ -55,7 +61,10 @@ pub(crate) struct ConnRow {
     /// How long an idle server connection has waited for the next
     /// request head, where its header-read timer says.
     pub(crate) idle_for: Option<Duration>,
-    /// The read buffer's fill and capacity.
+    /// The read buffer's fill and capacity: hyper's, or the TLS
+    /// connection's deframer — bytes read off the socket and not yet
+    /// parsed either way. A buffered stream on the way keeps its own,
+    /// which this is not.
     pub(crate) read_buf: Option<(u64, u64)>,
     /// The header-read timer's deadline, where the server has armed
     /// one and the task holds it.
@@ -100,12 +109,54 @@ impl std::fmt::Display for RequestLine {
     }
 }
 
+/// What a connection speaks on top of its socket: HTTP/1 through
+/// hyper, TLS through rustls, or nothing a reviewed rule reads — the
+/// socket's own kind.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum Proto {
+    Http1,
+    Tls,
+    Tcp,
+    Unix,
+}
+
+impl Proto {
+    fn word(self) -> &'static str {
+        match self {
+            Proto::Http1 => "http1",
+            Proto::Tls => "tls",
+            Proto::Tcp => "tcp",
+            Proto::Unix => "unix",
+        }
+    }
+}
+
+/// Where a connection stands: an HTTP connection's phase, a TLS
+/// connection's verdict, or — for a bare socket, which keeps no words
+/// of its own — `open`, since a task reads or writes it.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum RowPhase {
+    Http(HttpPhase),
+    Tls(TlsVerdict),
+    Open,
+}
+
+impl RowPhase {
+    fn word(self) -> &'static str {
+        match self {
+            RowPhase::Http(phase) => phase.word(),
+            RowPhase::Tls(verdict) => verdict.word(),
+            RowPhase::Open => "open",
+        }
+    }
+}
+
 impl ConnRow {
-    fn role_word(&self) -> &'static str {
-        match self.role {
+    fn role_word(&self) -> Option<&'static str> {
+        self.role.map(|role| match role {
             HttpRole::Client => "client",
             HttpRole::Server => "server",
-        }
+        })
     }
 
     /// The `METHOD` cell: the message in flight's, or — where the
@@ -125,7 +176,7 @@ impl ConnRow {
     }
 
     fn phase_word(&self) -> Option<&'static str> {
-        self.phase.map(|phase| phase.word())
+        self.phase.map(RowPhase::word)
     }
 
     /// The `PHASE` cell: the phase's word, with how long an idle server
@@ -133,7 +184,9 @@ impl ConnRow {
     fn phase_cell(&self) -> Option<String> {
         let word = self.phase_word()?;
         Some(match (self.phase, self.idle_for) {
-            (Some(HttpPhase::Idle), Some(idle)) => format!("{word} ({})", duration_text(idle)),
+            (Some(RowPhase::Http(HttpPhase::Idle)), Some(idle)) => {
+                format!("{word} ({})", duration_text(idle))
+            }
             _ => word.to_string(),
         })
     }
@@ -156,17 +209,20 @@ impl ConnRow {
         )
     }
 
-    /// How the row names itself in a bucket's sample: the role and the
-    /// task driving it — `client task 7`.
+    /// How the row names itself in a bucket's sample: the role — the
+    /// protocol where it has none — and the task driving it: `client
+    /// task 7`, `tcp task 9`.
     fn label(&self) -> String {
-        format!("{} task {}", self.role_word(), self.task)
+        let what = self.role_word().unwrap_or(self.proto.word());
+        format!("{what} task {}", self.task)
     }
 }
 
 /// The rows over a session: every connection resource the tasks' own
 /// chains end in, then every one the census found held in a frame —
-/// a connection behind a wrapper no rule delegates through — in task
-/// order, each connection once.
+/// a connection behind a wrapper no rule delegates through — and every
+/// socket a pending read or write on either reaches, in task order,
+/// each connection once: a socket's reads and writes are one row.
 pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [ConnRow] {
     session.conn_rows.get_or_init(|| build_rows(session))
 }
@@ -222,7 +278,8 @@ fn row_of<T: proc::Target>(
         owner,
         task: task_id(list, owner),
         rt: RowOwner::of(&list.tasks[owner], &session.owners),
-        role: HttpRole::Server,
+        proto: Proto::Http1,
+        role: None,
         phase: None,
         method: None,
         peer: None,
@@ -446,8 +503,9 @@ fn conn_row(
         // words and no service to hold a peer: the phase is all.
         ResourceObservation::HttpNegotiating(negotiating) => Some(ConnRow {
             addr: negotiating.wrapper.addr,
-            role: HttpRole::Server,
-            phase: Some(HttpPhase::Negotiating),
+            proto: Proto::Http1,
+            role: Some(HttpRole::Server),
+            phase: Some(RowPhase::Http(HttpPhase::Negotiating)),
             method: None,
             peer: None,
             server: None,
@@ -516,8 +574,9 @@ fn conn_row(
             };
             Some(ConnRow {
                 addr: http.conn,
-                role: http.role,
-                phase,
+                proto: Proto::Http1,
+                role: Some(http.role),
+                phase: phase.map(RowPhase::Http),
                 method: http.method.clone(),
                 peer,
                 server: server.and_then(|server| server.context.clone()),
@@ -526,6 +585,40 @@ fn conn_row(
                 deadline,
                 request,
                 caller: caller.as_ref().and_then(caller_of),
+                ..base
+            })
+        }
+        // A read or write whose route ended at a socket: the socket's
+        // row, keyed by its registration, with the TLS connection the
+        // route crossed where it crossed one. A readiness await names
+        // no stream — a listener's accept, a bare readiness — and is
+        // no connection.
+        ResourceObservation::Io(io) => {
+            let socket = io.socket?;
+            let tls = io.tls.as_ref().map(|tls| tls.as_ref().ok());
+            let proto = match (tls.is_some(), socket) {
+                (true, _) => Proto::Tls,
+                (false, IoSocket::TcpStream) => Proto::Tcp,
+                (false, IoSocket::UnixStream) => Proto::Unix,
+            };
+            let reading = tls.flatten();
+            Some(ConnRow {
+                addr: io.scheduled_io.addr,
+                proto,
+                role: reading.and_then(|reading| match reading.side.as_str() {
+                    "Client" => Some(HttpRole::Client),
+                    "Server" => Some(HttpRole::Server),
+                    _ => None,
+                }),
+                // A TLS connection whose words did not read has no
+                // verdict; a bare socket is open for as long as a task
+                // reads or writes it.
+                phase: match tls {
+                    Some(reading) => reading.map(|reading| RowPhase::Tls(reading.verdict())),
+                    None => Some(RowPhase::Open),
+                },
+                peer: io.peer.as_ref().and_then(|peer| peer.clone().ok()),
+                read_buf: reading.map(|reading| reading.deframer),
                 ..base
             })
         }
@@ -580,7 +673,8 @@ fn row_cells(row: &ConnRow) -> Vec<String> {
     vec![
         row.task.clone(),
         row.caller.clone().unwrap_or_else(dash),
-        row.role_word().to_string(),
+        row.proto.word().to_string(),
+        row.role_word().map_or_else(dash, str::to_string),
         row.phase_cell().unwrap_or_else(dash),
         row.deadline_cell().unwrap_or_else(dash),
         row.buffer_cell().unwrap_or_else(dash),
@@ -608,7 +702,8 @@ fn print_table(
 ) -> Result<()> {
     let shown = limit.unwrap_or(rows.len()).min(rows.len());
     let header = [
-        "TASK", "CALLER", "ROLE", "PHASE", "DEADLINE", "BUF", "PEER", "SERVER", "METHOD", "REQUEST",
+        "TASK", "CALLER", "PROTO", "ROLE", "PHASE", "DEADLINE", "BUF", "PEER", "SERVER", "METHOD",
+        "REQUEST",
     ];
     let columns = header.len();
     let mut table = output::Table::new(columns)
@@ -642,6 +737,8 @@ pub(crate) enum Field {
     Task,
     /// The owner's group index `runtimes` prints — exact.
     Rt,
+    /// `http1`, `tls`, `tcp` or `unix`.
+    Proto,
     /// `client` or `server`.
     Role,
     /// The phase as the bucket names it.
@@ -661,9 +758,10 @@ pub(crate) enum Field {
 }
 
 impl Field {
-    const NAMES: [(&'static str, Field); 10] = [
+    const NAMES: [(&'static str, Field); 11] = [
         ("task", Field::Task),
         ("rt", Field::Rt),
+        ("proto", Field::Proto),
         ("role", Field::Role),
         ("phase", Field::Phase),
         ("method", Field::Method),
@@ -703,7 +801,8 @@ impl Field {
     fn is_pattern(self) -> bool {
         matches!(
             self,
-            Field::Role
+            Field::Proto
+                | Field::Role
                 | Field::Phase
                 | Field::Method
                 | Field::Peer
@@ -718,7 +817,8 @@ impl Field {
         match self {
             Field::Task => Some(row.task.clone()),
             Field::Rt => Some(row.rt.cell()),
-            Field::Role => Some(row.role_word().to_string()),
+            Field::Proto => Some(row.proto.word().to_string()),
+            Field::Role => row.role_word().map(str::to_string),
             Field::Phase => row.phase_word().map(str::to_string),
             Field::Method => row.method_word().map(str::to_string),
             Field::Peer => row.peer.clone(),
@@ -926,8 +1026,9 @@ mod tests {
             owner: 0,
             task: "7".to_string(),
             rt: RowOwner::Group(0),
-            role,
-            phase,
+            proto: Proto::Http1,
+            role: Some(role),
+            phase: phase.map(RowPhase::Http),
             method: Some("GET".to_string()),
             peer: Some("[fd00::25]:57400".to_string()),
             server: None,
@@ -1044,6 +1145,7 @@ mod tests {
             [
                 "7",
                 "621",
+                "http1",
                 "client",
                 "awaiting response",
                 "—",
@@ -1067,7 +1169,7 @@ mod tests {
                 request: Some(request),
                 ..full.clone()
             };
-            assert_eq!(row_cells(&at)[8..], cells);
+            assert_eq!(row_cells(&at)[9..], cells);
         }
         let bare = ConnRow {
             method: None,
@@ -1082,6 +1184,7 @@ mod tests {
             [
                 "7",
                 "—",
+                "http1",
                 "server",
                 "—",
                 "+29.981s",
@@ -1106,7 +1209,7 @@ mod tests {
                 deadline: Some(text.to_string()),
                 ..bare.clone()
             };
-            assert_eq!(row_cells(&at)[4], cell);
+            assert_eq!(row_cells(&at)[5], cell);
         }
         assert_eq!(full.label(), "client task 7");
         assert_eq!(bare.label(), "server task 7");
@@ -1125,7 +1228,7 @@ mod tests {
             (HttpPhase::Idle, 4250, "idle (4.250s)"),
             (HttpPhase::HandlingRequest, 19, "handling request"),
         ] {
-            assert_eq!(row_cells(&waited(phase, ms))[3], cell);
+            assert_eq!(row_cells(&waited(phase, ms))[4], cell);
         }
     }
 
@@ -1202,7 +1305,7 @@ mod tests {
         // fills, so a cell the arm left to the base is told from one
         // it set.
         let base = ConnRow {
-            phase: Some(HttpPhase::Closing),
+            phase: Some(RowPhase::Http(HttpPhase::Closing)),
             method: Some("SENTINEL".to_string()),
             peer: Some("SENTINEL".to_string()),
             server: Some("SENTINEL".to_string()),
@@ -1244,8 +1347,8 @@ mod tests {
         };
         let armed = fill(server_observation(true), held, stopped);
         assert_eq!(armed.addr, 0x7b78948);
-        assert_eq!(armed.role, HttpRole::Server);
-        assert_eq!(armed.phase, Some(HttpPhase::Idle));
+        assert_eq!(armed.role, Some(HttpRole::Server));
+        assert_eq!(armed.phase, Some(RowPhase::Http(HttpPhase::Idle)));
         assert_eq!(armed.method, None);
         assert_eq!(armed.peer.as_deref(), Some("[fd00::25]:57400"));
         assert_eq!(armed.server.as_deref(), Some("app::Context"));
@@ -1276,7 +1379,10 @@ mod tests {
         let mut handling = server_observation(true);
         handling.server.as_mut().unwrap().in_flight = true;
         let handling = fill(handling, held, stopped);
-        assert_eq!(handling.phase, Some(HttpPhase::HandlingRequest));
+        assert_eq!(
+            handling.phase,
+            Some(RowPhase::Http(HttpPhase::HandlingRequest))
+        );
         assert_eq!(handling.idle_for, None);
         // A client's peer is the authority of the pool key its sender
         // is kept under, found by the want pointer its receiver shares;
@@ -1302,7 +1408,7 @@ mod tests {
         // with a request in flight has the caller its callback names,
         // and what that caller sent.
         let idle = fill(client(Some(0xabc0)), held, stopped);
-        assert_eq!(idle.phase, Some(HttpPhase::Idle));
+        assert_eq!(idle.phase, Some(RowPhase::Http(HttpPhase::Idle)));
         assert_eq!((idle.caller, idle.request), (None, None));
         let mut in_flight = client(Some(0xabc0));
         in_flight.client.as_mut().unwrap().callback = Some(OneshotObservation {
@@ -1319,7 +1425,10 @@ mod tests {
             tx_task_at: Some(0x510),
         });
         let in_flight = fill(in_flight, held, stopped);
-        assert_eq!(in_flight.phase, Some(HttpPhase::AwaitingResponse));
+        assert_eq!(
+            in_flight.phase,
+            Some(RowPhase::Http(HttpPhase::AwaitingResponse))
+        );
         assert_eq!(in_flight.caller.as_deref(), Some("621"));
         assert_eq!(in_flight.request, Some(line(Some("GET"), Some("/park"))));
         let negotiating = conn_row(
@@ -1335,8 +1444,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(negotiating.addr, 0x12345);
-        assert_eq!(negotiating.role, HttpRole::Server);
-        assert_eq!(negotiating.phase, Some(HttpPhase::Negotiating));
+        assert_eq!(negotiating.role, Some(HttpRole::Server));
+        assert_eq!(
+            negotiating.phase,
+            Some(RowPhase::Http(HttpPhase::Negotiating))
+        );
         assert_eq!(negotiating.method, None);
         assert_eq!(negotiating.peer, None);
         assert_eq!(negotiating.server, None);
@@ -1362,6 +1474,111 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    /// A read or write whose route ended at a socket is that socket's
+    /// row, keyed by its registration: a TLS connection's side, verdict,
+    /// deframer and peer where the route crossed one, a bare socket
+    /// open and saying nothing else; a readiness await is no row.
+    #[test]
+    fn test_a_socket_read_through_its_stream_is_a_row() {
+        use hansei_runtime::tokio::bundle::{Interest, TlsReading};
+        use hansei_runtime::tokio::observe::IoObservation;
+        let base = row(0, HttpRole::Client, None);
+        let tls = TlsReading {
+            side: "Server".to_string(),
+            version: Some("TLSv1_3".to_string()),
+            failed: false,
+            may_send_application_data: true,
+            may_receive_application_data: true,
+            has_sent_close_notify: false,
+            has_received_close_notify: false,
+            has_seen_eof: false,
+            sent_fatal_alert: false,
+            read_seq: 4,
+            write_seq: 3,
+            deframer: (5, 4096),
+            stream_state: "Stream".to_string(),
+        };
+        let io = |socket, tls, peer| {
+            ResourceObservation::Io(IoObservation {
+                future: key(0x1),
+                operation: hansei_bundle::IoOperationKind::ReadExact,
+                scheduled_io: key(0x6500),
+                interest: Interest::READABLE,
+                waiter_node: None,
+                remaining: None,
+                readiness_state: None,
+                waiter_ready: None,
+                route: vec![key(0x2)],
+                fd: Some(80),
+                tls,
+                socket,
+                peer,
+            })
+        };
+        let fill = |observation: ResourceObservation| {
+            conn_row(
+                base.clone(),
+                &observation,
+                None,
+                None,
+                &|_| None,
+                &|_| None,
+                &PoolPeers::default(),
+            )
+        };
+        let sprockets = fill(io(
+            Some(IoSocket::TcpStream),
+            Some(Ok(tls.clone())),
+            Some(Ok("PDV2:913-0000023".to_string())),
+        ))
+        .unwrap();
+        assert_eq!(sprockets.addr, 0x6500);
+        assert_eq!(sprockets.proto, Proto::Tls);
+        assert_eq!(sprockets.role, Some(HttpRole::Server));
+        assert_eq!(
+            sprockets.phase,
+            Some(RowPhase::Tls(TlsVerdict::Established))
+        );
+        assert_eq!(sprockets.read_buf, Some((5, 4096)));
+        assert_eq!(sprockets.peer.as_deref(), Some("PDV2:913-0000023"));
+        assert_eq!(sprockets.method, Some("GET".to_string()), "the base's");
+        assert_eq!(sprockets.label(), "server task 7");
+        assert_eq!(
+            row_cells(&sprockets)[2..7],
+            ["tls", "server", "established", "—", "5/4096"]
+        );
+        // Words that did not read: still TLS, with nothing to say.
+        let unread = fill(io(
+            Some(IoSocket::TcpStream),
+            Some(Err("unreadable".to_string())),
+            Some(Err("unreadable".to_string())),
+        ))
+        .unwrap();
+        assert_eq!(
+            (unread.proto, unread.role, unread.phase, unread.read_buf),
+            (Proto::Tls, None, None, None)
+        );
+        assert_eq!(unread.peer, None);
+        // A bare socket: its kind, open, and nothing else of its own.
+        let tcp = fill(io(Some(IoSocket::TcpStream), None, None)).unwrap();
+        assert_eq!(
+            (
+                tcp.proto,
+                tcp.role,
+                tcp.phase,
+                tcp.read_buf,
+                tcp.peer.clone()
+            ),
+            (Proto::Tcp, None, Some(RowPhase::Open), None, None)
+        );
+        assert_eq!(tcp.label(), "tcp task 7");
+        assert_eq!(row_cells(&tcp)[2..4], ["tcp", "—"]);
+        let unix = fill(io(Some(IoSocket::UnixStream), None, None)).unwrap();
+        assert_eq!(unix.proto, Proto::Unix);
+        // A readiness await names no stream.
+        assert!(fill(io(None, None, None)).is_none());
     }
 
     /// A caller that is no task is placed by the waker sweep's slot at
@@ -1776,6 +1993,7 @@ mod tests {
             row(0x10, HttpRole::Client, Some(HttpPhase::Idle)),
             row(0x20, HttpRole::Server, Some(HttpPhase::Idle)),
         ];
+        assert_eq!(Field::Proto.values(&rows).unwrap(), ["http1"]);
         assert_eq!(Field::Role.values(&rows).unwrap(), ["client", "server"]);
         assert_eq!(Field::Phase.values(&rows).unwrap(), ["idle"]);
         assert_eq!(Field::Buffered.values(&rows), None);
@@ -1783,7 +2001,7 @@ mod tests {
         assert!(!Field::Task.is_pattern());
         assert!(!Field::Caller.is_pattern());
         let names: Vec<&str> = Field::names().collect();
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 11);
         for name in names {
             assert_eq!(Field::parse(name).unwrap().name(), name);
         }

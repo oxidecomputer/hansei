@@ -30,7 +30,7 @@ use super::bundle::{
 };
 use super::{RawInstant, TaskAddr};
 
-use hansei_bundle::{BundleTypeId, IoOperationKind, Step};
+use hansei_bundle::{BundleTypeId, IoOperationKind, IoSocket, Step};
 
 /// A value's identity for observation caches and diagnostics: where it
 /// is and which nominal type it was read as. The type is part of the
@@ -259,6 +259,12 @@ pub struct IoObservation {
     /// words, or why they did not read. The first one crossed, where a
     /// route crosses several, is the one the task speaks.
     pub tls: Option<Result<TlsReading, String>>,
+    /// The socket the route ended at; `None` for a readiness await,
+    /// which names its registration outright.
+    pub socket: Option<IoSocket>,
+    /// The peer a stream on the route names, where one does: its name,
+    /// or why it did not read.
+    pub peer: Option<Result<String, String>>,
 }
 
 /// A readiness await's `State`, as its own enumeration spells it.

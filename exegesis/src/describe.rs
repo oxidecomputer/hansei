@@ -991,6 +991,8 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 ("fatal", &session.sent_fatal_alert),
                 ("read-seq", &session.read_seq),
                 ("write-seq", &session.write_seq),
+                ("deframer-used", &session.deframer_used),
+                ("deframer-len", &session.deframer_len),
             ]
             .map(|(what, word)| format!("{what} {}", path(record.ty, word)));
             let _ = write!(
@@ -1007,6 +1009,14 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 stream.rule.0,
                 path(record.ty, &stream.session),
                 path(record.ty, &stream.state)
+            );
+        }
+        if let Some(peer) = &record.stream_peer {
+            let _ = write!(
+                line,
+                " stream-peer rule {} name {}",
+                peer.rule.0,
+                path(record.ty, &peer.name)
             );
         }
         if let Some(refcount) = &record.refcount {

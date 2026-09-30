@@ -42,6 +42,7 @@ fn record(ty: BundleTypeId) -> TypeSemantics {
         io: None,
         tls_session: None,
         tls_stream: None,
+        stream_peer: None,
         refcount: None,
         lock: None,
         acquires_for: None,
@@ -3947,7 +3948,8 @@ fn tls_session() -> Bundle {
         "Option",
     ]
     .map(&mut name);
-    let [connection_name, stream_name] = ["ConnectionCommon", "TlsStream"].map(&mut name);
+    let [connection_name, stream_name, platform_id] =
+        ["ConnectionCommon", "TlsStream", "platform_id"].map(&mut name);
     b.strings = strings.finish();
     let member = |name, ty, offset| MemberDef { name, ty, offset };
     let variant = |name, discr: Option<u128>, payload| VariantDef {
@@ -3957,6 +3959,7 @@ fn tls_session() -> Bundle {
         decl: None,
         await_site: None,
     };
+    let peer_t = BundleTypeId(20);
     let (u8_t, result_t, side_t, version_t, option_t, session_t, stream_t) = (
         BundleTypeId(13),
         BundleTypeId(14),
@@ -4040,7 +4043,17 @@ fn tls_session() -> Bundle {
                 member(state, side_t, 48),
             ],
         },
+        TypeDef::Array {
+            elem: u8_t,
+            count: 4,
+        },
     ]);
+    // The sprockets stream names its peer beside the stream it holds.
+    let TypeDef::Struct { members, size, .. } = &mut b.types.types[12] else {
+        unreachable!()
+    };
+    members.push(member(platform_id, peer_t, 24));
+    *size = 28;
     b.semantics.origins.push(SemanticOrigin::LibraryLayout {
         package: rustls,
         version: Some(release),
@@ -4070,6 +4083,8 @@ fn tls_session() -> Bundle {
         sent_fatal_alert: flag(fatal),
         read_seq: word(read_seq),
         write_seq: word(write_seq),
+        deframer_used: word(read_seq),
+        deframer_len: word(write_seq),
     });
     let mut stream = record(stream_t);
     stream.future = None;
@@ -4085,6 +4100,10 @@ fn tls_session() -> Bundle {
         state: path(vec![named(state)], side_t),
     });
     b.semantics.types.extend([connection, stream]);
+    b.semantics.types[4].stream_peer = Some(StreamPeerBinding {
+        rule: SemanticRuleId(3),
+        name: path(vec![named(platform_id)], peer_t),
+    });
     b.validate().unwrap();
     b
 }
@@ -4127,7 +4146,7 @@ fn test_tls_words_bind_by_shape_under_their_rules() {
 
     let mut narrow_seq = b.clone();
     session(&mut narrow_seq).write_seq = words.sent_fatal_alert.clone();
-    bad(&narrow_seq, "TLS session sequence is not an unsigned word");
+    bad(&narrow_seq, "TLS session count is not an unsigned word");
 
     let mut wrong_rule = b.clone();
     session(&mut wrong_rule).rule = SemanticRuleId(2);
@@ -4167,4 +4186,34 @@ fn test_tls_words_bind_by_shape_under_their_rules() {
         BundleTypeId(0),
     );
     bad(&stateless, "TLS stream state is not an enum");
+
+    // A stream's peer: under its route's rule, a path to bytes.
+    fn peer(b: &mut Bundle) -> &mut StreamPeerBinding {
+        b.semantics.types[4].stream_peer.as_mut().unwrap()
+    }
+    let mut rustls_peer = b.clone();
+    peer(&mut rustls_peer).rule = SemanticRuleId(2);
+    bad(&rustls_peer, "incompatible capability");
+
+    let mut peer_unrouted = b.clone();
+    peer_unrouted.semantics.types[4].io_route = None;
+    bad(&peer_unrouted, "stream peer binding is not its route's");
+
+    let mut not_an_array = b.clone();
+    let inner = peer(&mut not_an_array).name.steps.clone();
+    peer(&mut not_an_array).name = path(vec![named(FIELD)], STATE);
+    bad(&not_an_array, "stream peer name is not an array");
+
+    let mut wide = b.clone();
+    wide.types.types.push(TypeDef::Array {
+        elem: BundleTypeId(0),
+        count: 4,
+    });
+    let TypeDef::Struct { members, size, .. } = &mut wide.types.types[12] else {
+        unreachable!()
+    };
+    members.last_mut().unwrap().ty = BundleTypeId(21);
+    *size = 56;
+    peer(&mut wide).name = path(inner, BundleTypeId(21));
+    bad(&wide, "stream peer name is not an array of bytes");
 }

@@ -729,8 +729,8 @@ pub enum Command {
     ///
     /// Filters are the selection: repeatable `--with FIELD ARG` /
     /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
-    /// tallies the survivors. The string fields — role, phase, method,
-    /// peer, server, request — are case-insensitive regexes over the
+    /// tallies the survivors. The string fields — proto, role, phase,
+    /// method, peer, server, request — are case-insensitive regexes over the
     /// printed value; task, caller and rt are exact; buffered compares
     /// the bytes read and not yet parsed, written '>N', '<N' or '=N'
     /// (quote them from a shell).
@@ -743,7 +743,7 @@ pub enum Command {
         limit: Option<usize>,
 
         /// Keep only the connections whose FIELD matches ARG; repeat
-        /// for more clauses, which AND. Fields: role, phase, method,
+        /// for more clauses, which AND. Fields: proto, role, phase, method,
         /// peer, server, request (case-insensitive regexes); task,
         /// caller, rt (exact); buffered ('>N', '<N', '=N'). ARG may list
         /// alternatives, `idle,closing`, of which any matches; a
