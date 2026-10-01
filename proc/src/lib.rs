@@ -236,6 +236,18 @@ pub trait Target: Sync {
         None
     }
 
+    /// The lwp `/proc` made to act inside the target, where it made
+    /// one: illumos's agent lwp, which `gcore` creates to stop the
+    /// process and which the core then records beside the program's
+    /// own. It starts on a copy of the representative lwp's
+    /// registers, thread pointer included, so whatever is read through
+    /// it is that other lwp's state read a second time — it is the
+    /// capture's thread, not the program's. `None` for a target with
+    /// no agent: a Linux core, or an illumos one the kernel dumped.
+    fn agent_lwp(&self) -> Option<u32> {
+        None
+    }
+
     /// The process-identity facts the target records — pid, ids, the
     /// command line, and whatever else its system wrote down. `None`
     /// for a target that carries none (a snapshot).

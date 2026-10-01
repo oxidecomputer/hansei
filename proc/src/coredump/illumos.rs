@@ -140,6 +140,9 @@ fn signal_name(signo: i32) -> Option<&'static str> {
 /// anonymous mapping is something else wearing the same lack of a
 /// name, so this is what lets the two be told apart.
 const PSTATUS_PR_BRKBASE: usize = 48;
+/// `pr_agentid`: the lwp `/proc` created to act inside the process —
+/// the one `gcore` stops it through — or 0 when there is none.
+const PSTATUS_PR_AGENTID: usize = 28;
 const PSTATUS_PR_BRKSIZE: usize = 56;
 
 /// `psinfo_t`: the command line is what names the executable, since an
@@ -356,6 +359,9 @@ pub struct Core {
     /// region `pmap` calls `[ heap ]`. `None` for a core whose pstatus
     /// is absent or predates the field, which falls back to a guess.
     brk: Option<Range<u64>>,
+    /// The `/proc` agent lwp the `pstatus_t` names
+    /// ([`Target::agent_lwp`]).
+    agent: Option<u32>,
     /// The process identity out of the `psinfo_t`, argv and environment
     /// included; `None` for a core carrying no psinfo note.
     facts: Option<ProcessFacts>,
@@ -406,6 +412,7 @@ impl Core {
         let mut psinfo: Option<Vec<u8>> = None;
         let mut fatal = None;
         let mut brk: Option<Range<u64>> = None;
+        let mut agent = None;
         for note in elf.iter_note_headers(&core).into_iter().flatten() {
             let note = note.map_err(|_| Error::bad_core("malformed note"))?;
             let desc = note.desc;
@@ -442,6 +449,9 @@ impl Core {
                             brk = Some(base..end);
                         }
                     }
+                    let at = PSTATUS_PR_AGENTID;
+                    agent = Some(u32::from_le_bytes(desc[at..at + 4].try_into().unwrap()))
+                        .filter(|&tid| tid != 0);
                 }
                 NT_LWPNAME if desc.len() >= LWPNAME_LEN => {
                     let (tid, name) = parse_lwpname(desc);
@@ -475,6 +485,9 @@ impl Core {
         let mut paired: Vec<(LwpInfo, u64)> = lwps.into_iter().zip(ustacks).collect();
         paired.sort_by_key(|(l, _)| l.tid);
         let (lwps, ustacks): (Vec<_>, Vec<_>) = paired.into_iter().unzip();
+        // An id naming no lwp the core recorded names nothing to set
+        // apart.
+        let agent = agent.filter(|&tid| lwps.iter().any(|l| l.tid == tid));
 
         let symbols = parse_symbols(&elf, &core);
 
@@ -491,6 +504,7 @@ impl Core {
             exec_base: None,
             exec_bias: None,
             brk,
+            agent,
             facts: None,
         };
         core_file.fill_stack_ranges();
@@ -1313,6 +1327,10 @@ impl Target for Core {
         self.fatal.clone()
     }
 
+    fn agent_lwp(&self) -> Option<u32> {
+        self.agent
+    }
+
     fn process_facts(&self) -> Option<ProcessFacts> {
         self.facts.clone()
     }
@@ -1442,6 +1460,14 @@ mod tests {
             let mut desc = vec![0u8; PSTATUS_TEST_LEN];
             desc[PSTATUS_PR_BRKBASE..PSTATUS_PR_BRKBASE + 8].copy_from_slice(&base.to_le_bytes());
             desc[PSTATUS_PR_BRKSIZE..PSTATUS_PR_BRKSIZE + 8].copy_from_slice(&size.to_le_bytes());
+            self.note(NT_PSTATUS, desc)
+        }
+
+        /// An `NT_PSTATUS` naming `tid` as the `/proc` agent lwp — what
+        /// a `gcore` capture records.
+        fn agent(self, tid: u32) -> Self {
+            let mut desc = vec![0u8; PSTATUS_TEST_LEN];
+            desc[PSTATUS_PR_AGENTID..PSTATUS_PR_AGENTID + 4].copy_from_slice(&tid.to_le_bytes());
             self.note(NT_PSTATUS, desc)
         }
 
@@ -2960,6 +2986,26 @@ mod tests {
         // And the recorded break is what `Status` reports, rather than
         // the guess a core without the field falls back to.
         assert_eq!(p.status().brk_range, BRK_BASE..BRK_BASE + BRK_SIZE);
+    }
+
+    /// `pr_agentid` names the `/proc` agent lwp — but only an lwp the
+    /// core recorded, and 0 names none.
+    #[test]
+    fn test_the_agent_lwp_is_the_one_pstatus_names() {
+        let core = |agent: u32| {
+            CoreBuilder::default()
+                .thread(1, regs_at(0x40_0100, 0x9000))
+                .thread(7, regs_at(0x40_0100, 0x9000))
+                .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+                .agent(agent)
+                .proc()
+        };
+        let (_dir, p) = core(7);
+        assert_eq!(p.agent_lwp(), Some(7));
+        let (_dir, p) = core(0);
+        assert_eq!(p.agent_lwp(), None);
+        let (_dir, p) = core(9);
+        assert_eq!(p.agent_lwp(), None);
     }
 
     /// A PIE's program headers hold link-time offsets; the bias worked

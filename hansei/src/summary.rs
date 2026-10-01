@@ -87,6 +87,9 @@ pub struct Runtime {
 pub struct Facts<'a> {
     /// Every lwp the target has, whatever it is doing.
     pub lwps: Vec<u32>,
+    /// The one of them the capture made rather than the program
+    /// ([`proc::Target::agent_lwp`]), which gets a row of its own.
+    pub agent: Option<u32>,
     /// Those of them holding a tokio `Context`.
     pub runtime: Vec<Thread>,
     /// The runtimes those threads are inside, in the order `runtimes`
@@ -313,6 +316,7 @@ struct ThreadKey {
 const ORDER_POOL: u8 = 10;
 const ORDER_ENTERED: u8 = 11;
 const ORDER_NO_RUNTIME: u8 = 20;
+const ORDER_AGENT: u8 = 21;
 
 /// One row of the thread table.
 struct ThreadRow {
@@ -400,14 +404,27 @@ fn threads(facts: &Facts<'_>, theme: Theme, out: &mut dyn io::Write) -> Result<(
         }
     }
 
-    // The lwps holding no runtime context at all.
+    // The lwps holding no runtime context at all, and the one the
+    // capture made, which holds nothing of the program's.
     let in_runtime: BTreeSet<u32> = facts.runtime.iter().map(|t| t.tid).collect();
     let outside: Vec<String> = facts
         .lwps
         .iter()
-        .filter(|tid| !in_runtime.contains(tid))
+        .filter(|&&tid| !in_runtime.contains(&tid) && Some(tid) != facts.agent)
         .map(|tid| tid.to_string())
         .collect();
+    if let Some(agent) = facts.agent {
+        rows.push(ThreadRow {
+            key: ThreadKey {
+                rt: usize::MAX,
+                order: ORDER_AGENT,
+                role: "agent (/proc)",
+                state: "—".to_string(),
+            },
+            count: 1,
+            lwps: Some(vec![agent.to_string()]),
+        });
+    }
     if !outside.is_empty() {
         rows.push(ThreadRow {
             key: ThreadKey {
@@ -1398,6 +1415,7 @@ mod tests {
     fn facts<'a>(tasks: &'a TaskList, waits: &'a [TaskWait]) -> Facts<'a> {
         Facts {
             lwps: Vec::new(),
+            agent: None,
             runtime: Vec::new(),
             runtimes: vec![runtime(None, None)],
             local_sets: 0,
@@ -1506,6 +1524,35 @@ mod tests {
              \x20   1  0   blocking pool  1 idle, 0 busy, 1 queued  14\n\
              \x20   2  —   no runtime     —                         15, 16\n\
              [6 lwps]\n"
+        );
+    }
+
+    /// The `/proc` agent lwp is the capture's, not the program's: a row
+    /// of its own after the threads outside every runtime.
+    #[test]
+    fn test_the_agent_lwp_has_a_row_of_its_own() {
+        let list = empty();
+        let mut facts = facts(&list, &[]);
+        facts.lwps = vec![1, 11, 13];
+        facts.agent = Some(13);
+        facts.runtime = vec![worker(11, 0)];
+        facts.runtimes = vec![runtime(
+            Some(ParkStates {
+                workers: vec![ParkState::Condvar],
+                driver_held: false,
+            }),
+            None,
+        )];
+
+        assert_eq!(
+            thread_section(&facts),
+            "Threads: 3 lwps, 1 in runtime 0 @ 0x1000\n\
+             \n\
+             COUNT  RT  ROLE           STATE   LWPS\n\
+             \x20   1  0   worker         parked  11\n\
+             \x20   1  —   no runtime     —       1\n\
+             \x20   1  —   agent (/proc)  —       13\n\
+             [3 lwps]\n"
         );
     }
 

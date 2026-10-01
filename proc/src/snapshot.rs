@@ -56,7 +56,7 @@ pub const MAGIC: [u8; 8] = *b"prosnap\0";
 
 /// Bumped freely on schema change; there is no cross-version
 /// compatibility requirement (same-tool-reads-it rule).
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -225,6 +225,11 @@ pub struct Snapshot {
     /// Whether the capture's reads were gated by an allocator index it
     /// built, and so carry what rebuilding one needs.
     heap_evidence: RecordedHeapEvidence,
+    /// Which of `lwps` is the `/proc` agent ([`Target::agent_lwp`]).
+    /// Recorded, unlike the lwp names, because it changes what the
+    /// analysis counts: a replay that forgot it would count the agent
+    /// as one of the program's threads.
+    agent_lwp: Option<u32>,
 }
 
 impl Snapshot {
@@ -431,6 +436,10 @@ impl Target for Snapshot {
         Ok(self.lwps.clone())
     }
 
+    fn agent_lwp(&self) -> Option<u32> {
+        self.agent_lwp
+    }
+
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> TargetResult<Option<u64>> {
         // There is no fallback: the capturing platform's TLS model is
         // exactly what a snapshot does not carry, so an unrecorded pair
@@ -610,6 +619,7 @@ impl<'a, T: Target> Recorder<'a, T> {
             tls: self.tls.lock().unwrap().clone(),
             mappings: self.target.mappings()?,
             lwps: self.target.lwps()?,
+            agent_lwp: self.target.agent_lwp(),
             exec_bias: self.target.exec_bias(),
             heap_evidence,
         })
@@ -731,6 +741,10 @@ impl<T: Target> Target for Recorder<'_, T> {
         // Forwarded, not recorded: a snapshot does not carry lwp
         // names, so replay answers `None` and goldens the absence.
         self.target.lwp_name(tid)
+    }
+
+    fn agent_lwp(&self) -> Option<u32> {
+        self.target.agent_lwp()
     }
 
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> TargetResult<Option<u64>> {
@@ -1692,6 +1706,7 @@ mod tests {
             tls: BTreeMap::new(),
             mappings: Mappings { inner: vec![] },
             lwps: vec![],
+            agent_lwp: None,
             exec_bias: None,
             heap_evidence: RecordedHeapEvidence::Unavailable,
         }

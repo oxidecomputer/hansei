@@ -28,8 +28,8 @@ pub(crate) struct ThreadRow {
     /// The place the thread holds in a runtime, spelled by
     /// [`park_word`] and its callers: `worker N, <state>`, `block_on
     /// caller`, `blocking, running` / `blocking, idle` (the pool's
-    /// threads, by its own handles to them), `entered runtime`, or
-    /// `no runtime`.
+    /// threads, by its own handles to them), `entered runtime`, `no
+    /// runtime`, or `agent (/proc)` for the lwp the capture made.
     pub(crate) role: String,
     /// The kind of that role — what `--group role` buckets by: every
     /// worker one `worker` whatever its index and park state, the
@@ -109,6 +109,12 @@ fn role_of<T: proc::Target>(
     parks: &mut HashMap<usize, Option<bundle::ParkStates>>,
 ) -> Role {
     let tid = lwp.tid;
+    // The thread the capture made, not the program: it runs on another
+    // lwp's copied registers, so whatever role those read as is that
+    // lwp's, already listed under its own id.
+    if session.proc.agent_lwp() == Some(tid) {
+        return Role::plain("agent (/proc)");
+    }
     // No tokio context at all: nothing of the runtime's to say.
     let Some(worker) = worker else {
         return Role::plain("no runtime");
@@ -703,10 +709,15 @@ pub(crate) fn print_thread<T: proc::Target>(
     let fatal = session.proc.fatal_signal();
 
     // A thread holding no tokio context has only its heading to show;
-    // everything below the heading is the runtime's.
+    // everything below the heading is the runtime's. The `/proc`
+    // agent holds none of its own: it is the capture's.
     let Some(worker) = session.workers.iter().find(|w| w.tid == tid) else {
         let took = fatal_tag(fatal.as_ref(), tid);
-        writeln!(out, "lwp {tid}  no runtime{took}")?;
+        let role = match session.proc.agent_lwp() == Some(tid) {
+            true => "agent (/proc)",
+            false => "no runtime",
+        };
+        writeln!(out, "lwp {tid}  {role}{took}")?;
         if took_fatal(fatal.as_ref(), tid) {
             crate::registers::print_lwp_registers(session, tid, "    ", out)?;
         }

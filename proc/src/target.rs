@@ -165,6 +165,10 @@ impl Target for Proc {
         }
     }
 
+    fn agent_lwp(&self) -> Option<u32> {
+        dispatch!(self, agent_lwp())
+    }
+
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
         dispatch!(self, tls_var_addr(regs, sym))
     }

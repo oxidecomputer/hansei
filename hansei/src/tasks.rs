@@ -3130,6 +3130,7 @@ pub(crate) fn exec_census<T: proc::Target>(
 
     let facts = summary::Facts {
         lwps: session.lwps.iter().map(|lwp| lwp.tid).collect(),
+        agent: session.proc.agent_lwp(),
         runtime,
         runtimes,
         local_sets: session.local_sets.len(),

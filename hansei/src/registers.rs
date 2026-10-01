@@ -80,9 +80,14 @@ pub(crate) fn print_lwp_registers<T: proc::Target>(
         writeln!(out, "{indent}registers: none recorded for lwp {lwp}")?;
         return Ok(());
     };
+    // The `/proc` agent stands on a copy of another lwp's stack
+    // pointer, so the stack it seems to own is that lwp's; left out,
+    // its addresses are claimed by the lwp whose stack they are.
+    let agent = session.proc.agent_lwp();
     let stacks: Vec<LwpStack> = session
         .lwps
         .iter()
+        .filter(|l| Some(l.tid) != agent)
         .map(|l| LwpStack {
             tid: l.tid,
             rsp: l.regs.rsp,

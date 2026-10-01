@@ -673,11 +673,16 @@ impl<'b, T: Target> Context<'b, T> {
     /// Probe every LWP for a live `Context` (all LWPs, never thread
     /// names). LWPs holding none are skipped; an LWP whose `Context` fails
     /// to parse is an error, not a skip — the target told us it has one.
+    ///
+    /// The `/proc` agent lwp is skipped unprobed: it starts on a copy of
+    /// another lwp's thread pointer, so the `Context` it would answer
+    /// with is that lwp's, counted a second time.
     pub fn find_workers(&self, lwps: &[LwpInfo]) -> Result<Vec<Worker>> {
         let sym = self.tls_context_symbol()?;
+        let agent = self.proc.agent_lwp();
         let mut workers = Vec::new();
         let mut failure = None;
-        for lwp in lwps {
+        for lwp in lwps.iter().filter(|lwp| Some(lwp.tid) != agent) {
             let addr = match self.proc.tls_var_addr(&lwp.regs, &sym) {
                 Ok(Some(addr)) => addr,
                 Ok(None) => continue,

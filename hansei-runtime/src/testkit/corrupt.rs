@@ -193,6 +193,10 @@ impl Target for Corrupt<'_> {
         self.inner.lwps()
     }
 
+    fn agent_lwp(&self) -> Option<u32> {
+        self.inner.agent_lwp()
+    }
+
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> proc::Result<Option<u64>> {
         self.inner.tls_var_addr(regs, sym)
     }
