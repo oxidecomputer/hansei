@@ -254,6 +254,12 @@ exclude_re = [
     # tool does not currently apply name filters to delete-field mutants,
     # so this entry documents the triage more than it trims the run.
     "delete field visited from struct RenderCtx expression in eval_node",
+    # Equivalent, and deliberately left without an entry: deleting
+    # `unsent: None` from the negotiating arm of hansei's `conn_row`
+    # leaves the `..base` row's own `None`. An entry would name the HTTP
+    # arm's `unsent` too — the same mutant name, and a real one, pinned
+    # by the HTTP-over-TLS row test — should the tool ever filter
+    # delete-field mutants by name.
     # Equivalent mutant: a member's target address is threaded into every
     # child for the node vocabulary's benefit, but no node consumes a
     # child's own address terminally today — every target read goes

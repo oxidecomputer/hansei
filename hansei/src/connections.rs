@@ -13,7 +13,7 @@
 //! block does not have room to say.
 
 use crate::runtimes::RowOwner;
-use crate::tasks::{EMPTY_BUCKET, alternatives, distinct_values, listing_footer, task_id};
+use crate::tasks::{Cmp, EMPTY_BUCKET, alternatives, distinct_values, listing_footer, task_id};
 use crate::{Session, output, print_warnings};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -72,6 +72,11 @@ pub(crate) struct ConnRow {
     /// How long an idle server connection has waited for the next
     /// request head, where its header-read timer says.
     pub(crate) idle_for: Option<Duration>,
+    /// The bytes of records the TLS connection holds written and not
+    /// yet sent to its socket, where the row crossed a connection whose
+    /// words read: what a flush would send, and a peer waiting on them
+    /// never sees. A filter field, not a column: `connection` prints it.
+    pub(crate) unsent: Option<u64>,
     /// The header-read timer's deadline, where the server has armed
     /// one and the task holds it.
     pub(crate) deadline: Option<String>,
@@ -364,6 +369,7 @@ fn row_of<T: proc::Target>(
         peer: None,
         server: None,
         idle_for: None,
+        unsent: None,
         deadline: None,
         request: None,
         caller: None,
@@ -589,6 +595,7 @@ fn conn_row(
             peer: None,
             server: None,
             idle_for: None,
+            unsent: None,
             deadline: None,
             request: None,
             caller: None,
@@ -667,6 +674,7 @@ fn conn_row(
                 peer,
                 server: server.and_then(|server| server.context.clone()),
                 idle_for,
+                unsent: http.tls().and_then(|tls| tls.ok()).map(|tls| tls.unsent.1),
                 deadline,
                 request,
                 caller: caller.as_ref().and_then(caller_of),
@@ -710,6 +718,7 @@ fn conn_row(
                     None => Some(RowPhase::Open),
                 },
                 peer: io.peer.as_ref().and_then(|peer| peer.clone().ok()),
+                unsent: reading.map(|reading| reading.unsent.1),
                 ..base
             })
         }
@@ -845,10 +854,13 @@ pub(crate) enum Field {
     Caller,
     /// The request behind the connection, as printed.
     Request,
+    /// The bytes a TLS connection holds written and not yet sent —
+    /// compared. No column prints it; `connection` does.
+    Unsent,
 }
 
 impl Field {
-    const NAMES: [(&'static str, Field); 10] = [
+    const NAMES: [(&'static str, Field); 11] = [
         ("task", Field::Task),
         ("rt", Field::Rt),
         ("proto", Field::Proto),
@@ -859,6 +871,7 @@ impl Field {
         ("server", Field::Server),
         ("caller", Field::Caller),
         ("request", Field::Request),
+        ("unsent", Field::Unsent),
     ];
 
     /// Every field name, in the order the errors list them.
@@ -914,12 +927,17 @@ impl Field {
             Field::Server => row.server.clone(),
             Field::Caller => row.caller.clone(),
             Field::Request => row.request_text().map(str::to_string),
+            Field::Unsent => row.unsent.map(|bytes| bytes.to_string()),
         }
     }
 
-    /// The distinct values the rows hold for the field.
-    fn values(self, rows: &[ConnRow]) -> Vec<String> {
-        distinct_values(rows.iter().map(|row| self.text(row)))
+    /// The distinct values the rows hold for the field, or `None` for
+    /// the count the argument compares against.
+    fn values(self, rows: &[ConnRow]) -> Option<Vec<String>> {
+        match self {
+            Field::Unsent => None,
+            _ => Some(distinct_values(rows.iter().map(|row| self.text(row)))),
+        }
     }
 }
 
@@ -930,7 +948,7 @@ pub(crate) fn field_values<T: proc::Target>(
     field: &str,
 ) -> Option<(Vec<String>, bool)> {
     let field = Field::parse(field).ok()?;
-    Some((field.values(rows(session)), field.is_pattern()))
+    Some((field.values(rows(session))?, field.is_pattern()))
 }
 
 /// How one clause matches its field's value.
@@ -939,6 +957,8 @@ enum Matcher {
     Pattern(crate::pattern::Pattern),
     /// Exact text: a task id, the owner cell.
     Exact(String),
+    /// `'>N'` / `'<N'` / `'=N'`: what a TLS connection holds unsent.
+    Cmp(Cmp),
 }
 
 #[derive(Debug)]
@@ -978,6 +998,7 @@ fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
     Ok(match field {
         Field::Task | Field::Caller => Matcher::Exact(arg.to_string()),
         Field::Rt => Matcher::Exact(crate::tasks::resolve_rt(arg, handles)?.cell()),
+        Field::Unsent => Matcher::Cmp(Cmp::parse(arg)?),
         _ => Matcher::Pattern(crate::pattern::Pattern::new(arg)?),
     })
 }
@@ -987,6 +1008,8 @@ fn survives(clause: &Clause, row: &ConnRow) -> bool {
     let hit = clause.matchers.iter().any(|matcher| match matcher {
         Matcher::Pattern(p) => text.as_deref().is_some_and(|t| p.is_match(t)),
         Matcher::Exact(value) => text.as_deref() == Some(value.as_str()),
+        // A row that crossed no TLS connection has nothing to compare.
+        Matcher::Cmp(cmp) => row.unsent.is_some_and(|bytes| cmp.matches(bytes as usize)),
     });
     hit != clause.negate
 }
@@ -1113,6 +1136,7 @@ mod tests {
             peer: Some("[fd00::25]:57400".to_string()),
             server: None,
             idle_for: None,
+            unsent: None,
             deadline: None,
             request: None,
             caller: None,
@@ -1120,12 +1144,14 @@ mod tests {
     }
 
     /// Every field selects: the patterns over their spelled values, the
-    /// exact ones held to the listing's own spelling.
+    /// exact ones held to the listing's own spelling, the count compared.
     #[test]
     fn test_clauses_select_by_every_field() {
         let rows = [
+            // A client whose TLS connection holds records unsent.
             ConnRow {
                 caller: Some("17".to_string()),
+                unsent: Some(80),
                 ..row(0x10, HttpRole::Client, Some(HttpPhase::AwaitingResponse))
             },
             // An idle server with its wait in the cell: the phase field
@@ -1133,6 +1159,7 @@ mod tests {
             ConnRow {
                 server: Some("app::Context".to_string()),
                 idle_for: Some(Duration::from_millis(19)),
+                unsent: Some(0),
                 ..row(0x20, HttpRole::Server, Some(HttpPhase::Idle))
             },
             ConnRow {
@@ -1171,6 +1198,11 @@ mod tests {
         assert_eq!(select(&["caller", "7"]), []);
         assert_eq!(select(&["rt", "0"]), [0x10, 0x20, 0x30]);
         assert_eq!(select(&["rt", "10"]), [0x40]);
+        // What a TLS connection holds unsent is compared; a row that
+        // crossed none has nothing to compare.
+        assert_eq!(select(&["unsent", ">0"]), [0x10]);
+        assert_eq!(select(&["unsent", "=0"]), [0x20]);
+        assert_eq!(select(&["unsent", "<81"]), [0x10, 0x20]);
         // A row with nothing in the column never matches a pattern.
         assert_eq!(select(&["method", "."]), [0x10, 0x20, 0x40]);
         // `--without` keeps the misses.
@@ -1191,12 +1223,13 @@ mod tests {
             format!("{:#}", parse_clauses(&with, &[], &[]).unwrap_err())
         };
         assert!(refused(&["nope", "x"]).contains("no field \"nope\""));
-        // The address, the version and what a TLS connection holds
-        // unsent are no fields: an address names one row, and
-        // `connection` prints the rest.
+        // The address and the version are no fields: an address names
+        // one row, and `connection` prints the version. What a TLS
+        // connection holds unsent is a field by its own name.
         assert!(refused(&["addr", "0x20"]).contains("no field \"addr\""));
         assert!(refused(&["version", "http1"]).contains("no field \"version\""));
         assert!(refused(&["sendq", ">0"]).contains("no field \"sendq\""));
+        assert!(refused(&["unsent", "many"]).contains("'>N', '<N' or '=N'"));
     }
 
     fn line(method: Option<&str>, text: Option<&str>) -> RequestLine {
@@ -1501,7 +1534,7 @@ mod tests {
                 sent_fatal_alert: false,
                 read_seq: 1,
                 write_seq: 1,
-                unsent: (0, 0),
+                unsent: (2, 80),
                 stream_state: "Stream".to_string(),
                 received: None,
                 handshake_kind: None,
@@ -1548,8 +1581,13 @@ mod tests {
                 (0x6500, 0x7b78948, Proto::Http1Tls)
             );
             assert_eq!(secure.label(), "client task 7");
+            // What the TLS connection holds unsent is the row's, where
+            // its words read.
+            assert_eq!(secure.unsent, Some(80));
+            assert_eq!(plain.unsent, None);
             let unread = fill(over(socket(Some(Err("x".into())))), held, stopped);
             assert_eq!(unread.proto, Proto::Http1Tls);
+            assert_eq!(unread.unsent, None);
             let unrouted = fill(over(Some(Err("x".into()))), held, stopped);
             assert_eq!(
                 (unrouted.key, unrouted.at, unrouted.proto),
@@ -2147,6 +2185,7 @@ mod tests {
             field_values(&session, "method"),
             Some((vec!["GET".to_string()], true))
         );
+        assert_eq!(field_values(&session, "unsent"), None);
         assert_eq!(field_values(&session, "colour"), None);
     }
 
@@ -2156,14 +2195,16 @@ mod tests {
             row(0x10, HttpRole::Client, Some(HttpPhase::Idle)),
             row(0x20, HttpRole::Server, Some(HttpPhase::Idle)),
         ];
-        assert_eq!(Field::Proto.values(&rows), ["http1"]);
-        assert_eq!(Field::Role.values(&rows), ["client", "server"]);
-        assert_eq!(Field::Phase.values(&rows), ["idle"]);
+        assert_eq!(Field::Proto.values(&rows).unwrap(), ["http1"]);
+        assert_eq!(Field::Role.values(&rows).unwrap(), ["client", "server"]);
+        assert_eq!(Field::Phase.values(&rows).unwrap(), ["idle"]);
+        assert_eq!(Field::Unsent.values(&rows), None);
         assert!(Field::Peer.is_pattern());
         assert!(!Field::Task.is_pattern());
         assert!(!Field::Caller.is_pattern());
+        assert!(!Field::Unsent.is_pattern());
         let names: Vec<&str> = Field::names().collect();
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 11);
         for name in names {
             assert_eq!(Field::parse(name).unwrap().name(), name);
         }

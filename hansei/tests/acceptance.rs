@@ -4130,9 +4130,10 @@ fn test_http_conns_connections_acceptance() {
 /// as a read — both for the peer's first flight. Every connection
 /// through TLS has nothing queued to send, but the client whose writes
 /// filled its socket: the records its connection kept, unwritten, are
-/// the one nonzero `unsent:` among the connections' own blocks, and the
-/// words its read's wait carries. The HTTP/1 client over an in-memory duplex is a
-/// row with no socket under it: plain HTTP/1, keyed by its connection.
+/// the one nonzero `unsent:` among the connections' own blocks, the one
+/// row the `unsent` field keeps, and the words its read's wait carries.
+/// The HTTP/1 client over an in-memory duplex is a row with no socket
+/// under it: plain HTTP/1, keyed by its connection.
 /// The tasks parked on anything but a connection are no rows. Grouping
 /// by protocol files the thirteen under four buckets, and a filter on
 /// it keeps the TCP pair.
@@ -4191,6 +4192,17 @@ fn test_tls_conns_connections_acceptance() {
             .map(|cells| cells[1])
             .collect();
         assert_eq!(holding, [unflushed.id.as_str()], "{out}");
+        // The field finds the same one row, which no column prints.
+        let filtered = hansei_ok(&bundle, core, "connections --with unsent >0");
+        assert!(filtered.ends_with("[1 connection]\n"), "{filtered}");
+        assert_eq!(
+            filtered
+                .lines()
+                .nth(1)
+                .and_then(|row| row.split_whitespace().nth(1)),
+            Some(unflushed.id.as_str()),
+            "{filtered}"
+        );
         let block = hansei_ok(&bundle, core, &format!("task {}", unflushed.id));
         let unsent = regex::Regex::new(r"(?m)^        tls: client, TLSv1_3, established, .* written, [1-9][0-9]* unsent \([0-9]+ bytes\)$")
             .unwrap();

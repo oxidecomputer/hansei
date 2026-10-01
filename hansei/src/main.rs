@@ -775,8 +775,10 @@ pub enum Command {
     /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
     /// tallies the survivors. The string fields — proto, role, phase,
     /// method, peer, server, request — are case-insensitive regexes over the
-    /// printed value; task, caller and rt are exact. What a TLS
-    /// connection holds unsent or unread is `connection`'s to print.
+    /// printed value; task, caller and rt are exact; unsent compares
+    /// the bytes a TLS connection holds written and not yet sent,
+    /// written '>N', '<N' or '=N' (quote them from a shell) — a field
+    /// no column prints: `connection` prints it, beside what is unread.
     // `conns` is a unique prefix already; the alias keeps it one
     // whatever command is added later, and shows it in `help`.
     #[command(visible_alias = "conns")]
@@ -791,7 +793,7 @@ pub enum Command {
         /// Keep only the connections whose FIELD matches ARG; repeat
         /// for more clauses, which AND. Fields: proto, role, phase, method,
         /// peer, server, request (case-insensitive regexes); task,
-        /// caller, rt (exact). ARG may list
+        /// caller, rt (exact); unsent ('>N', '<N', '=N'). ARG may list
         /// alternatives, `idle,closing`, of which any matches; a
         /// literal comma is `\,`.
         #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]
