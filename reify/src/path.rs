@@ -1131,6 +1131,42 @@ mod tests {
         );
     }
 
+    /// A ring is indexed in ring order: `[0]` is the element in its head
+    /// slot, and an index past the end of the buffer wraps to its start,
+    /// landing at that slot's address.
+    #[test]
+    fn test_a_ring_indexes_from_its_head() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new().at(0x5000, u32s(&[10, 0, 30, 40]));
+        // `{ ptr, len, capacity, head }`: three elements from slot 2.
+        let bytes = u64s(&[0x5000, 3, 4, 2]);
+        let ring = Value::new(v.ty(RING).unwrap(), 0x100, &bytes);
+        let run = |path: &str| resolve(&mem, ring, &parse(path).unwrap());
+
+        let at: Vec<(String, u64, String)> = run("[..]")
+            .unwrap()
+            .into_iter()
+            .map(|r| {
+                let Node::Value(v) = r.node else {
+                    panic!("value")
+                };
+                (r.label, v.addr, format!("{}", v.display()))
+            })
+            .collect();
+        assert_eq!(
+            at,
+            [
+                ("[0]".to_string(), 0x5008, "30".to_string()),
+                ("[1]".to_string(), 0x500c, "40".to_string()),
+                ("[2]".to_string(), 0x5000, "10".to_string()),
+            ]
+        );
+        assert_eq!(shown(run("[2]").unwrap()), "10");
+        let err = run("[3]").expect_err("past the end").to_string();
+        assert!(err.contains("index 3"), "{err}");
+    }
+
     /// The heap-header hop knows Rc's spelling, and the wrapper
     /// descent lands at the member's real offset past a zero-sized
     /// leading field.

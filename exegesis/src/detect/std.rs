@@ -8,16 +8,17 @@
 //! std release is what moves it, so a red toolchain matrix cell starts
 //! here.
 
-use super::ReachStep::{Deref, Named, PeelToParam, Resolved};
+use super::ReachStep::{Deref, Named, PeelTo, PeelToParam, Resolved};
 use super::crates::allocator_api2_vec_shape;
 use super::{
-    Reach, ReachStep, Through, Want, find_unique, is_byte_array, is_unsigned_integer, raw_variant,
-    reach, sole_param_target, struct_of, transparent, unique_member, zero_offset_member,
+    Reach, ReachStep, Through, WORD, Want, find_unique, is_byte_array, is_unsigned_integer,
+    raw_variant, reach, sole_param_target, struct_of, transparent, unique_member,
+    zero_offset_member,
 };
 use crate::bundle::names::is_trait_object;
 use crate::bundle::{DisplayNode, Field, MapEntries, Notation, Selector, Step};
 use crate::extract::{Emitter, fq_name, ns_path};
-use crate::raw_types::RawType;
+use crate::raw_types::{RawGenericParameter, RawMember, RawType};
 use crate::{DwReader, Encoding, TypeId};
 
 /// A tuple newtype wrapping a single scalar (`Version(usize)`, `Epoch(u64)`,
@@ -55,7 +56,30 @@ pub(super) fn vec_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
         pointer: shape.pointer,
         length: shape.length,
         capacity: Some(shape.capacity),
+        head: None,
         element: emitter.reserve(shape.element),
+    })
+}
+
+/// A `VecDeque<T, A>` is a `Vec`'s buffer used as a ring: the `RawVec` under
+/// `buf`, the element count under `len`, and under `head` the slot the first
+/// element sits in — a bare `usize` in some std releases and a
+/// `WrappedIndex` around one in others, which the peel to a word covers
+/// both of. It renders through the `Slice` node with that head.
+pub(super) fn vec_deque_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    // The dispatch table screens by name; this validates only the structure.
+    let deque = struct_of(reader, id)?;
+    let (element, alloc) = element_and_alloc(reader, &deque.template_params)?;
+    unique_member(reader, &deque.members, "len")?;
+    unique_member(reader, &deque.members, "head")?;
+    let (pointer, capacity) = raw_vec_paths(emitter, id, &deque.members, element, alloc)?;
+    Some(DisplayNode::Slice {
+        pointer,
+        length: emitter.walk(id, &reach![Named("len")])?.0,
+        capacity: Some(capacity),
+        head: Some(emitter.walk(id, &reach![Named("head"), PeelTo(WORD)])?.0),
+        element: emitter.reserve(element),
     })
 }
 
@@ -65,7 +89,24 @@ pub(super) fn vec_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<VecShap
     if fq_name(reader, id)?.split('<').next()? != "alloc::vec::Vec" {
         return None;
     }
-    let [element_param, alloc_param] = vec.template_params.as_ref() else {
+    let (element, alloc) = element_and_alloc(reader, &vec.template_params)?;
+    unique_member(reader, &vec.members, "len")?;
+    let (pointer, capacity) = raw_vec_paths(emitter, id, &vec.members, element, alloc)?;
+    Some(VecShape {
+        pointer,
+        length: emitter.walk(id, &reach![Named("len")])?.0,
+        capacity,
+        element,
+    })
+}
+
+/// The element and allocator types a std collection declares as its
+/// `<T, A>`, by those names.
+fn element_and_alloc(
+    reader: &DwReader<'_>,
+    params: &[RawGenericParameter<crate::StrId>],
+) -> Option<(TypeId, TypeId)> {
+    let [element_param, alloc_param] = params else {
         return None;
     };
     if element_param.name.map(|name| reader.strings.get(name)) != Some("T")
@@ -73,11 +114,24 @@ pub(super) fn vec_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<VecShap
     {
         return None;
     }
-    let element = reader.canonicalize(element_param.type_id);
-    let alloc = reader.canonicalize(alloc_param.type_id);
+    Some((
+        reader.canonicalize(element_param.type_id),
+        reader.canonicalize(alloc_param.type_id),
+    ))
+}
 
-    let (_, buf_member) = unique_member(reader, &vec.members, "buf")?;
-    unique_member(reader, &vec.members, "len")?;
+/// The data-pointer and capacity paths of the `RawVec<T, A>` a std
+/// collection rooted at `id` keeps under `buf` — a `Vec`'s or a
+/// `VecDeque`'s — held to the `element` and `alloc` the collection declares.
+fn raw_vec_paths(
+    emitter: &mut Emitter<'_>,
+    id: TypeId,
+    members: &[RawMember<crate::StrId>],
+    element: TypeId,
+    alloc: TypeId,
+) -> Option<(Selector, Selector)> {
+    let reader = emitter.reader;
+    let (_, buf_member) = unique_member(reader, members, "buf")?;
 
     let raw_vec = struct_of(reader, buf_member.type_id)?;
     if fq_name(reader, buf_member.type_id)?.split('<').next()? != "alloc::raw_vec::RawVec" {
@@ -123,12 +177,10 @@ pub(super) fn vec_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<VecShap
     let mut capacity = buf();
     capacity.push(Named("cap"));
     capacity.push(Resolved(Selector::member(cap_value)));
-    Some(VecShape {
-        pointer: emitter.walk(id, &pointer)?.0,
-        length: emitter.walk(id, &reach![Named("len")])?.0,
-        capacity: emitter.walk(id, &capacity)?.0,
-        element,
-    })
+    Some((
+        emitter.walk(id, &pointer)?.0,
+        emitter.walk(id, &capacity)?.0,
+    ))
 }
 
 /// Recognize the private node layout of `BTreeMap<K, V, A>` and render it as a
@@ -545,6 +597,7 @@ pub(super) fn slice_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Displa
         pointer,
         length: emitter.walk(id, &reach![Named("length")])?.0,
         capacity: None,
+        head: None,
         element: emitter.behind(ptr_ty)?,
     })
 }

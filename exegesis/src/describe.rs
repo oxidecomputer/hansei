@@ -353,17 +353,23 @@ pub fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) ->
             pointer,
             length,
             capacity,
+            head,
             element,
         } => {
             let capacity = match capacity {
                 Some(capacity) => format!(", capacity={}", field(bundle, root, capacity)),
                 None => String::new(),
             };
+            let head = match head {
+                Some(head) => format!(", head={}", field(bundle, root, head)),
+                None => String::new(),
+            };
             format!(
-                "Slice {{ pointer={}, length={}{}, element={} }}",
+                "Slice {{ pointer={}, length={}{}{}, element={} }}",
                 field(bundle, root, pointer),
                 field(bundle, root, length),
                 capacity,
+                head,
                 fq_name(bundle, *element),
             )
         }

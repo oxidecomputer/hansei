@@ -1410,4 +1410,104 @@ mod tests {
             "[\n    7,\n    8,\n    9,\n    <997 more unreadable>\n]"
         );
     }
+
+    /// A ring's elements run from its head slot to the end of the buffer
+    /// and go on from its start, so a wrapped one renders in ring order
+    /// rather than slot order; one that does not wrap is the run from its
+    /// head.
+    #[test]
+    fn test_a_ring_renders_from_its_head_and_wraps() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // Four slots, holding 30 and 40 at the end and 10 at the start.
+        let mem = FakeMem::new().at(0x2000, u32s(&[10, 0, 30, 40]));
+        let show = |words: &[u64]| {
+            let header = u64s(words);
+            format!(
+                "{}",
+                Value::new(v.ty(RING).unwrap(), 0x1000, &header).display_from_target(&mem, 8)
+            )
+        };
+
+        // `{ ptr, len, capacity, head }`.
+        assert_eq!(show(&[0x2000, 3, 4, 2]), "[30, 40, 10]");
+        assert_eq!(show(&[0x2000, 2, 4, 2]), "[30, 40]");
+        assert_eq!(show(&[0x2000, 1, 4, 3]), "[40]");
+        assert_eq!(show(&[0x2000, 4, 4, 0]), "[10, 0, 30, 40]");
+        assert_eq!(show(&[0x2000, 0, 4, 3]), "[]");
+        // An empty ring with no buffer at all.
+        assert_eq!(show(&[0, 0, 0, 0]), "[]");
+        assert_eq!(
+            show(&[0x2000, 1, 4, 4]),
+            "<invalid slice: the ring head lies past the capacity>"
+        );
+        assert_eq!(
+            show(&[0x2000, 5, 4, 0]),
+            "<invalid slice: the length exceeds the capacity>"
+        );
+        assert_eq!(
+            show(&[0, 1, 4, 2]),
+            "<invalid slice: the data pointer is null>"
+        );
+    }
+
+    /// The element budget is spent across both runs of a wrapped ring,
+    /// and a shortfall in either is reported against the whole length.
+    #[test]
+    fn test_a_ring_shortfall_counts_across_the_wrap() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let header = u64s(&[0x2000, 3, 4, 2]);
+        let show = |mem: &FakeMem, cap| {
+            format!(
+                "{}",
+                Value::new(v.ty(RING).unwrap(), 0x1000, &header)
+                    .display_from_target(mem, 8)
+                    .max_array_len(cap)
+            )
+        };
+
+        let whole = FakeMem::new().at(0x2000, u32s(&[10, 0, 30, 40]));
+        assert_eq!(show(&whole, Some(1)), "[30, <2 more not shown>]");
+        assert_eq!(show(&whole, Some(2)), "[30, 40, <1 more not shown>]");
+        assert_eq!(show(&whole, Some(3)), "[30, 40, 10]");
+
+        // Only the back half of the buffer is mapped: the wrapped
+        // element is unreadable, the ones before it are not.
+        let back = FakeMem::new().at(0x2008, u32s(&[30, 40]));
+        assert_eq!(show(&back, None), "[30, 40, <1 more unreadable>]");
+        // Only the front: nothing from the head on can be read.
+        let front = FakeMem::new().at(0x2000, u32s(&[10, 0]));
+        assert_eq!(show(&front, None), "<unreadable slice buffer>");
+    }
+
+    /// The front run of a ring starts mid-allocation whenever its head is
+    /// past slot zero, which is no sign of a stray pointer; the buffer's
+    /// own pointer is still held to the allocation's base.
+    #[test]
+    fn test_a_ring_head_is_no_base_mismatch() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new().at(0x2000, u32s(&[10, 0, 30, 40]));
+        let show = |words: &[u64], heap: &FakeHeap| {
+            let header = u64s(words);
+            format!(
+                "{}",
+                Value::new(v.ty(RING).unwrap(), 0x1000, &header)
+                    .display_from_target(&mem, 8)
+                    .heap(heap)
+            )
+        };
+
+        let heap = FakeHeap::new().live(0x2000, 16);
+        assert_eq!(show(&[0x2000, 2, 4, 2], &heap), "[30, 40]");
+        assert_eq!(show(&[0x2000, 3, 4, 2], &heap), "[30, 40, 10]");
+        assert_eq!(heap.counts(), (0, 0, 0));
+
+        // A buffer pointer that owns nothing is still caught, at the
+        // run that starts where it points.
+        let heap = FakeHeap::new().live_at(0x1ff0, 32, 0x1ff8);
+        assert_eq!(show(&[0x2000, 3, 4, 2], &heap), "[30, 40, 10]");
+        assert_eq!(heap.counts(), (0, 0, 1));
+    }
 }

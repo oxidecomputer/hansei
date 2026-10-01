@@ -106,6 +106,18 @@ pub struct Elements<'a> {
     /// [`Elements::shortfall`].
     shortfall: Shortfall,
     bytes: &'a [u8],
+    /// Where a ring's elements continue once they wrap: `None` for a
+    /// sequence that is one run, which a ring that does not wrap is too.
+    wrapped: Option<Wrapped<'a>>,
+}
+
+/// The second run of a ring whose elements wrap past the end of its
+/// buffer: element `split` onward, read from the buffer's start.
+#[derive(Clone, Debug)]
+struct Wrapped<'a> {
+    split: u64,
+    base: u64,
+    bytes: &'a [u8],
 }
 
 impl<'a> Elements<'a> {
@@ -146,14 +158,17 @@ impl<'a> Elements<'a> {
     /// root. A caller that wants the peeled view calls [`Value::peel`]
     /// itself.
     pub fn get(&self, index: u64) -> Value<'a> {
+        let (base, bytes, index) = match &self.wrapped {
+            Some(run) if index >= run.split => (run.base, run.bytes, index - run.split),
+            _ => (self.base, self.bytes, index),
+        };
         // A zero-sized element has no bytes of its own; every one of
         // them sits at the base address with an empty buffer.
         let offset = index * self.stride;
-        let slot = self
-            .bytes
+        let slot = bytes
             .get(offset as usize..(offset + self.stride) as usize)
             .unwrap_or(&[]);
-        Value::new(self.element, self.base + offset, slot)
+        Value::new(self.element, base + offset, slot)
     }
 
     /// The elements, in order; see [`Elements::get`] for what each is.
@@ -201,6 +216,7 @@ impl<'a> Elements<'a> {
                 claimed: None,
                 shortfall: Shortfall::default(),
                 bytes: info.bytes,
+                wrapped: None,
             });
         }
 
@@ -231,12 +247,81 @@ impl<'a> Elements<'a> {
         gate: HeapGate<'_>,
         cap: Option<u64>,
     ) -> std::result::Result<Elements<'a>, SeqError> {
-        let (base, count) = decode_header(bytes, header, stride)?;
+        let (base, count, ring) = decode_header(bytes, header, stride)?;
         // `cap` is already the right budget for this stride: only the
         // caller knows whether a one-byte element makes this a string
         // in all but type.
-        let buffer = read_buffer(proc, base, stride, count, gate, cap)?;
-        Ok(Self::over(buffer, element, base, stride))
+        match ring {
+            // A zero-sized element sits at the base whichever slot it is
+            // in, so a ring of them is no different from a slice.
+            Some(ring) if stride != 0 && count != 0 => {
+                Self::read_ring(ring, element, base, stride, count, proc, gate, cap)
+            }
+            _ => {
+                let buffer = read_buffer(proc, base, stride, count, gate, cap)?;
+                Ok(Self::over(buffer, element, base, stride))
+            }
+        }
+    }
+
+    /// Read a ring's `count` elements as the two runs they occupy: from the
+    /// head slot to the end of the buffer, then on from its start. The
+    /// second run is read only once the first is whole, so a shortfall
+    /// anywhere is a shortfall of the sequence from that element on, and
+    /// the display budget is spent across both.
+    #[allow(clippy::too_many_arguments)]
+    fn read_ring<T: Target>(
+        ring: Ring,
+        element: BundleType<'a>,
+        base: u64,
+        stride: u64,
+        count: u64,
+        proc: Option<&'a T>,
+        gate: HeapGate<'_>,
+        cap: Option<u64>,
+    ) -> std::result::Result<Elements<'a>, SeqError> {
+        if base == 0 {
+            return Err(SeqError::Invalid("the data pointer is null"));
+        }
+        let start = ring
+            .head
+            .checked_mul(stride)
+            .and_then(|offset| base.checked_add(offset))
+            .ok_or(SeqError::Invalid("the ring head wraps the address space"))?;
+        let split = count.min(ring.slots - ring.head);
+        // The front run starts mid-allocation unless the head is slot
+        // zero, so only then is it a pointer an allocation's base is
+        // expected at; the back run always starts there.
+        let front_gate = HeapGate {
+            owning: gate.owning && ring.head == 0,
+            ..gate
+        };
+        let front = read_buffer(proc, start, stride, split, front_gate, cap)?;
+        let mut elements = Self::over(front, element, start, stride);
+        if elements.count < split {
+            elements.claimed = Some(count);
+            return Ok(elements);
+        }
+        if split == count {
+            return Ok(elements);
+        }
+        let back = read_buffer(
+            proc,
+            base,
+            stride,
+            count - split,
+            gate,
+            cap.map(|cap| cap.saturating_sub(split)),
+        )?;
+        elements.count = split + back.count;
+        elements.claimed = back.claimed.map(|_| count);
+        elements.shortfall = back.shortfall;
+        elements.wrapped = Some(Wrapped {
+            split,
+            base,
+            bytes: back.bytes,
+        });
+        Ok(elements)
     }
 
     /// The elements a read buffer holds.
@@ -255,6 +340,7 @@ impl<'a> Elements<'a> {
             claimed,
             shortfall,
             bytes,
+            wrapped: None,
         }
     }
 }
@@ -288,23 +374,45 @@ impl SeqError {
     }
 }
 
-/// Decode and validate the `(pointer, length[, capacity])` words of `header`
-/// against the value's own bytes, to the address of element zero and the
-/// count the value claims. `stride` is the element width; a zero-sized
+/// A ring's place in its buffer: the slot element zero sits in, and how
+/// many slots there are before the elements wrap to the first.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Ring {
+    pub(crate) head: u64,
+    pub(crate) slots: u64,
+}
+
+/// Decode and validate the `(pointer, length[, capacity[, head]])` words of
+/// `header` against the value's own bytes, to the address of the buffer's
+/// first slot, the count the value claims, and — for a ring — where in the
+/// buffer its elements start. `stride` is the element width; a zero-sized
 /// element allocates nothing, so its capacity bounds nothing (`Vec<()>`
 /// reports `usize::MAX`).
 pub(crate) fn decode_header(
     bytes: &[u8],
     header: &FatHeader,
     stride: u64,
-) -> std::result::Result<(u64, u64), SeqError> {
+) -> std::result::Result<(u64, u64, Option<Ring>), SeqError> {
     let count = read_unsigned_at(bytes, header.length_offset, u64::from(header.length_size))
         .ok_or(SeqError::Invalid("the length does not fit the value"))?;
+    let mut ring = None;
     if let Some((offset, size)) = header.capacity {
         let capacity = read_unsigned_at(bytes, offset, u64::from(size))
             .ok_or(SeqError::Invalid("the capacity does not fit the value"))?;
         if stride != 0 && count > capacity {
             return Err(SeqError::Invalid("the length exceeds the capacity"));
+        }
+        if let Some((offset, size)) = header.head {
+            let head = read_unsigned_at(bytes, offset, u64::from(size))
+                .ok_or(SeqError::Invalid("the ring head does not fit the value"))?;
+            // An empty ring with no buffer keeps its head at zero.
+            if head != 0 && head >= capacity {
+                return Err(SeqError::Invalid("the ring head lies past the capacity"));
+            }
+            ring = Some(Ring {
+                head,
+                slots: capacity,
+            });
         }
     }
     let base = read_u64_at(bytes, header.pointer_offset)
@@ -319,7 +427,7 @@ pub(crate) fn decode_header(
             .checked_add(header.data_offset)
             .ok_or(SeqError::Invalid("the data offset overflows the pointer"))?,
     };
-    Ok((base, count))
+    Ok((base, count, ring))
 }
 
 /// One buffer read out of the target: the bytes served, how many whole units
@@ -399,7 +507,7 @@ pub(crate) fn utf8_buffer<'a, T: Target>(
     gate: HeapGate<'_>,
     cap: Option<u64>,
 ) -> std::result::Result<Buffer<'a>, SeqError> {
-    let (base, length) = decode_header(bytes, header, 1)?;
+    let (base, length, _) = decode_header(bytes, header, 1)?;
     let length = match (nul_terminated, length.checked_sub(1)) {
         (false, _) => length,
         (true, Some(content)) => content,
@@ -583,6 +691,50 @@ mod tests {
             ]
         );
         assert_eq!(vec.parse::<Vec<u32>>(&mem).unwrap(), [7, 8, 9]);
+    }
+
+    /// A ring collects in ring order like any sequence, and names the one
+    /// run its contents occupy only when they do not wrap.
+    #[test]
+    fn test_a_ring_collects_in_order_and_has_a_buffer_only_unwrapped() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new().at(0x2000, u32s(&[10, 0, 30, 40]));
+        let ring = |words: &[u64]| u64s(words);
+
+        // `{ ptr, len, capacity, head }`.
+        let wrapped = ring(&[0x2000, 3, 4, 2]);
+        let value = Value::new(v.ty(RING).unwrap(), 0x1000, &wrapped);
+        assert_eq!(value.parse::<Vec<u32>>(&mem).unwrap(), [30, 40, 10]);
+        let err = value.buffer().unwrap().expect_err("a wrapped ring");
+        assert!(err.to_string().contains("wrap"), "{err}");
+
+        let straight = ring(&[0x2000, 2, 4, 2]);
+        let value = Value::new(v.ty(RING).unwrap(), 0x1000, &straight);
+        assert_eq!(value.parse::<Vec<u32>>(&mem).unwrap(), [30, 40]);
+        assert_eq!(value.buffer().unwrap().unwrap(), (0x2008, 8));
+
+        let empty = ring(&[0x2000, 0, 4, 3]);
+        let value = Value::new(v.ty(RING).unwrap(), 0x1000, &empty);
+        assert_eq!(value.buffer().unwrap().unwrap(), (0x2000, 0));
+    }
+
+    /// A ring's slots are counted by its capacity, so a bundle that names
+    /// a head without one is refused rather than read.
+    #[test]
+    fn test_a_ring_head_without_a_capacity_is_refused() {
+        let mut b = test_bundle();
+        let Some(hansei_bundle::DisplayNode::Slice { capacity, .. }) =
+            b.types.debug_formats.get_mut(&RING)
+        else {
+            panic!("the ring fixture carries a slice format");
+        };
+        *capacity = None;
+        let err = b.validate().expect_err("a head with no capacity");
+        assert!(
+            err.to_string().contains("a ring head but no capacity"),
+            "{err}"
+        );
     }
 
     /// A zero-sized element leaves nothing for a read to corroborate, so the

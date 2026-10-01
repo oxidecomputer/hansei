@@ -96,8 +96,10 @@ pub enum DisplayNode<'a> {
         nul_terminated: bool,
     },
     /// Follow the `(data, len)` fat pointer `header` to a contiguous buffer
-    /// and render its first `length` `element`s as `[e, e, …]`. `element_size`
-    /// is the stride between successive elements.
+    /// and render its first `length` `element`s as `[e, e, …]` — or, for a
+    /// ring header, the `length` elements from its head slot on, wrapping at
+    /// the capacity. `element_size` is the stride between successive
+    /// elements.
     Slice {
         header: FatHeader,
         element: BundleType<'a>,
@@ -199,13 +201,16 @@ pub enum DisplayNode<'a> {
 /// word the length is validated against. `data_offset` is how far past the
 /// address the pointer holds the buffer begins: zero for a pointer to the
 /// bytes themselves, the refcount header's size for the unsized tail of an
-/// `ArcInner<str>`.
+/// `ArcInner<str>`. `head`, only ever present beside a capacity, is a
+/// ring's head word: the slot element zero sits in, the elements wrapping
+/// to the buffer's start at the capacity.
 #[derive(Clone, Copy, Debug)]
 pub struct FatHeader {
     pub pointer_offset: u64,
     pub length_offset: u64,
     pub length_size: u32,
     pub capacity: Option<(u64, u32)>,
+    pub head: Option<(u64, u32)>,
     pub data_offset: u64,
 }
 
@@ -699,31 +704,33 @@ impl<'a> DisplayNode<'a> {
             })
         }
 
-        /// Resolve the `(pointer, length[, capacity])` header a `Str` and a
-        /// `Slice` node share: the pointer must be one, and each word's width
-        /// comes from the type its selector lands on.
+        /// Resolve the `(pointer, length[, capacity[, head]])` header a `Str`
+        /// and a `Slice` node share: the pointer must be one, and each word's
+        /// width comes from the type its selector lands on.
         fn resolve_fat_header(
             scope: BundleType<'_>,
             pointer: &Selector,
             length: &Selector,
             capacity: &Option<Selector>,
+            head: &Option<Selector>,
             data_offset: u64,
         ) -> Option<FatHeader> {
             let (pointer_ty, pointer_offset) = resolve_selector(scope, pointer)?;
             pointer_ty.pointer_target()?;
             let (length_ty, length_offset) = resolve_selector(scope, length)?;
-            let capacity = match capacity {
-                Some(capacity) => {
-                    let (capacity_ty, capacity_offset) = resolve_selector(scope, capacity)?;
-                    Some((capacity_offset, capacity_ty.size() as u32))
+            let word = |sel: &Option<Selector>| match sel {
+                Some(sel) => {
+                    let (ty, offset) = resolve_selector(scope, sel)?;
+                    Some(Some((offset, ty.size() as u32)))
                 }
-                None => None,
+                None => Some(None),
             };
             Some(FatHeader {
                 pointer_offset,
                 length_offset,
                 length_size: length_ty.size() as u32,
-                capacity,
+                capacity: word(capacity)?,
+                head: word(head)?,
                 data_offset,
             })
         }
@@ -815,18 +822,19 @@ impl<'a> DisplayNode<'a> {
                     nul_terminated,
                     offset,
                 } => Some(DisplayNode::Str {
-                    header: resolve_fat_header(scope, pointer, length, capacity, *offset)?,
+                    header: resolve_fat_header(scope, pointer, length, capacity, &None, *offset)?,
                     nul_terminated: *nul_terminated,
                 }),
                 BundleNode::Slice {
                     pointer,
                     length,
                     capacity,
+                    head,
                     element,
                 } => {
                     let element = scope.related_type(*element);
                     Some(DisplayNode::Slice {
-                        header: resolve_fat_header(scope, pointer, length, capacity, 0)?,
+                        header: resolve_fat_header(scope, pointer, length, capacity, head, 0)?,
                         element,
                         element_size: element.size() as u32,
                     })

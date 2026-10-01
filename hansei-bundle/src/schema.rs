@@ -648,10 +648,17 @@ pub enum DisplayNode {
     /// carries only a pointer and length. Unlike the intrusive `List` node the
     /// elements are packed in one allocation rather than chained by successor
     /// pointers.
+    ///
+    /// `head`, when present, makes the buffer a ring — a `VecDeque<T>`: it
+    /// reaches the slot index of element zero, and element `i` sits in slot
+    /// `(head + i) % capacity`, so the elements run from `head` to the end of
+    /// the buffer and continue at its start. A ring's slots are counted by
+    /// its capacity, so validation refuses a `head` without one.
     Slice {
         pointer: Selector,
         length: Selector,
         capacity: Option<Selector>,
+        head: Option<Selector>,
         element: BundleTypeId,
     },
     /// Render an inline byte array in the standard textual notation for

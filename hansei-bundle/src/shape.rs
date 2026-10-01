@@ -141,14 +141,21 @@ impl DisplayNode {
                 pointer,
                 length,
                 capacity,
+                head,
                 ..
-            } => buffer(
-                ["a slice pointer", "a slice length", "a slice capacity"],
-                pointer,
-                length,
-                capacity.as_ref(),
-                word,
-            ),
+            } => {
+                let mut addressed = buffer(
+                    ["a slice pointer", "a slice length", "a slice capacity"],
+                    pointer,
+                    length,
+                    capacity.as_ref(),
+                    word,
+                );
+                if let Some(head) = head {
+                    addressed.push(Addressed::new("a ring head", head, Shape::Uint(word)));
+                }
+                addressed
+            }
             DisplayNode::Bytes { at, .. } => {
                 vec![Addressed::new("an inline byte array", at, Shape::Array)]
             }

@@ -3852,6 +3852,18 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "blocking_pool::main::{async_block#0}::{closure_env#0}",
             39,
         );
+        // The pool's queue is a `VecDeque`: a `Vec`'s buffer read as a
+        // ring, from the head slot.
+        assert_format(
+            program,
+            bundle,
+            "alloc::collections::vec_deque::VecDeque<tokio::runtime::blocking::pool::Task, \
+             alloc::alloc::Global>",
+            "alloc::collections::vec_deque::VecDeque<tokio::runtime::blocking::pool::Task, \
+             alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer@+8, \
+             length=len@+24, capacity=buf.inner.cap.__0@+0, head=head.__0@+16, \
+             element=tokio::runtime::blocking::pool::Task }",
+        );
     }
     if program == "futurelock" {
         // Blocks declare at their own line the same way: the background

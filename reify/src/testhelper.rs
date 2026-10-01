@@ -726,6 +726,9 @@ fixture_ids! {
     // element pointing at an address the outer array may itself occupy —
     // two types at one address, which only their ids tell apart.
     ARR_PTR, PTR_ARR, PTR_ARR_PTR,
+    // A `VecDeque<u32>` flattened to VEC's words plus the ring's head
+    // slot: `{ ptr @0, len @8, capacity @16, head @24 }`.
+    RING,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -828,6 +831,7 @@ pub fn test_bundle() -> Bundle {
         (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
     let slicen = s("&[u32]");
     let byte_slicen = s("&[u8]");
+    let ringn = s("alloc::collections::vec_deque::VecDeque<u32>");
     let c_stringn = s("alloc::ffi::c_str::CString");
     let (strn, stringn, data_ptrn, length2n) = (
         s("&str"),
@@ -2341,6 +2345,19 @@ pub fn test_bundle() -> Bundle {
             target: PTR_ARR,
         },
     );
+    types.add(
+        RING,
+        TypeDef::Struct {
+            name: ringn,
+            size: 32,
+            members: vec![
+                m(ptrn, U8_PTR, 0),
+                m(vec_lenn, U64, 8),
+                m(capacityn, U64, 16),
+                m(headn, U64, 24),
+            ],
+        },
+    );
 
     let types = types.finish();
 
@@ -2626,6 +2643,17 @@ pub fn test_bundle() -> Bundle {
                         pointer: sel(&[0]),
                         length: sel(&[1]),
                         capacity: Some(sel(&[2])),
+                        head: None,
+                        element: U32,
+                    },
+                ),
+                (
+                    RING,
+                    BundleNode::Slice {
+                        pointer: sel(&[0]),
+                        length: sel(&[1]),
+                        capacity: Some(sel(&[2])),
+                        head: Some(sel(&[3])),
                         element: U32,
                     },
                 ),
@@ -2635,6 +2663,7 @@ pub fn test_bundle() -> Bundle {
                         pointer: sel(&[0]),
                         length: sel(&[1]),
                         capacity: None,
+                        head: None,
                         element: U32,
                     },
                 ),
@@ -2644,6 +2673,7 @@ pub fn test_bundle() -> Bundle {
                         pointer: sel(&[0]),
                         length: sel(&[1]),
                         capacity: None,
+                        head: None,
                         element: U8,
                     },
                 ),

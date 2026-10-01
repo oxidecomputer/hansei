@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 102;
+pub const FORMAT_VERSION: u32 = 103;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -660,7 +660,15 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             check_node(bundle, *node_ty, node, what)?;
         }
         DisplayNode::Str { .. } => {}
-        DisplayNode::Slice { element, .. } => {
+        DisplayNode::Slice {
+            element,
+            capacity,
+            head,
+            ..
+        } => {
+            if head.is_some() && capacity.is_none() {
+                return corrupt("slice node has a ring head but no capacity".to_owned());
+            }
             if bundle.types.get(*element).is_none() {
                 return corrupt(format!(
                     "slice node element type id {} out of range",

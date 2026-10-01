@@ -42,7 +42,7 @@ use self::std::{
     instant_alias_node, ip_address_node, non_null_node, nonzero_inner_node, nonzero_node,
     raw_waker_node, raw_waker_vtable_node, refcounted_str_node, scalar_newtype_node, slice_node,
     socket_addr_node, str_node, string_node, unique_node, unsafe_cell_node, usize_no_high_bit_node,
-    vec_node, waker_node,
+    vec_deque_node, vec_node, waker_node,
 };
 use self::tokio::{
     batch_semaphore_node, bounded_semaphore_node, cache_padded_node, loom_atomic_node,
@@ -408,6 +408,10 @@ static BY_NAME: &[(&str, Row<Detector>)] = &[
     (
         "alloc::collections::btree::map::BTreeMap",
         All(btree_map_node),
+    ),
+    (
+        "alloc::collections::vec_deque::VecDeque",
+        All(vec_deque_node),
     ),
     ("alloc::ffi::c_str::CString", All(cstring_node)),
     ("alloc::string::String", All(string_node)),

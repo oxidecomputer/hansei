@@ -207,8 +207,11 @@ impl<'a> Value<'a> {
     /// address of the first byte and how many bytes the value's length
     /// says the contents take. `None` for a value whose contents are
     /// its own bytes, which is every other one, an inline array
-    /// included. Only the header is decoded and nothing is read, so
-    /// whether the target holds the buffer is the caller's question.
+    /// included. A ring's contents are the run from its head slot, and
+    /// one whose elements wrap past the end of its buffer keeps them in
+    /// no single run, which is an error. Only the header is decoded and
+    /// nothing is read, so whether the target holds the buffer is the
+    /// caller's question.
     pub fn buffer(&self) -> Option<Result<(u64, u64)>> {
         let (header, stride) = match DisplayNode::resolve(self.ty)? {
             DisplayNode::Slice {
@@ -222,11 +225,26 @@ impl<'a> Value<'a> {
         let name = self.ty.name();
         let extent = decode_header(self.bytes, &header, stride)
             .map_err(|e| e.into_error(name))
-            .and_then(|(base, count)| {
-                count
+            .and_then(|(base, count, ring)| {
+                let len = count
                     .checked_mul(stride)
-                    .map(|len| (base, len))
-                    .ok_or_else(|| Error::invalid_sequence(name, "the length overflows a u64"))
+                    .ok_or_else(|| Error::invalid_sequence(name, "the length overflows a u64"))?;
+                let Some(ring) = ring.filter(|_| stride != 0 && count != 0) else {
+                    return Ok((base, len));
+                };
+                if count > ring.slots - ring.head {
+                    return Err(Error::invalid_sequence(
+                        name,
+                        "its elements wrap past the end of its buffer",
+                    ));
+                }
+                ring.head
+                    .checked_mul(stride)
+                    .and_then(|offset| base.checked_add(offset))
+                    .map(|start| (start, len))
+                    .ok_or_else(|| {
+                        Error::invalid_sequence(name, "the ring head wraps the address space")
+                    })
             });
         Some(extent)
     }

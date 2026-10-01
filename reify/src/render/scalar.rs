@@ -191,7 +191,7 @@ pub(crate) fn write_utf8_string<T: Target>(
         // not NUL says this is not the C string its type claims — stale
         // memory, or a length out of dead bytes. The header decoded once
         // already to produce `text`, so it cannot fail here.
-        if let (Some(proc), Ok((base, _))) = (proc, decode_header(bytes, header, 1)) {
+        if let (Some(proc), Ok((base, _, _))) = (proc, decode_header(bytes, header, 1)) {
             let terminator = base
                 .checked_add(text.count)
                 .and_then(|at| crate::target::read_bytes(proc, at, 1).ok());

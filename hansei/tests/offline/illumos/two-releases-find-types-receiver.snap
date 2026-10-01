@@ -2,11 +2,11 @@
 source: hansei/src/offline.rs
 description: "`find-types async_channel::Receiver<u32>` over illumos/two-releases"
 ---
-&async_channel::Receiver<u32>  (2 definitions: type 37; type 757)
-alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>  (2 definitions: type 809; type 810)
-async_channel::Receiver<u32>  (2 definitions: type 7, async-channel 2.5.0; type 745, async-channel 1.9.0)
-core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>  (2 definitions: type 811; type 812)
-core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>::None  (2 definitions: type 814; type 816)
-core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>::Some  (2 definitions: type 815; type 817)
+&async_channel::Receiver<u32>  (2 definitions: type 37; type 761)
+alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>  (2 definitions: type 813; type 814)
+async_channel::Receiver<u32>  (2 definitions: type 7, async-channel 2.5.0; type 749, async-channel 1.9.0)
+core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>  (2 definitions: type 815; type 816)
+core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>::None  (2 definitions: type 818; type 820)
+core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>::Some  (2 definitions: type 819; type 821)
 
 [6 types]

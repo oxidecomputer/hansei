@@ -20,13 +20,7 @@ lwp 1  polling no task  runtime 0 @ 0xADDR
       }
     core:
       tokio::runtime::scheduler::current_thread::Core {
-          tasks: alloc::collections::vec_deque::VecDeque<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, alloc::alloc::Global> {
-              head: 1,
-              len: 0,
-              buf: alloc::raw_vec::RawVec<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, alloc::alloc::Global> {
-                  inner: alloc::raw_vec::RawVecInner<alloc::alloc::Global> { .. } @ 0xADDR,
-              },
-          },
+          tasks: [],
           tick: 3,
           driver: core::option::Option<tokio::runtime::driver::Driver> = None,
           metrics: tokio::runtime::metrics::batch::MetricsBatch {
