@@ -9,17 +9,19 @@
 
 use crate::Session;
 use crate::connections::{self, ConnRow};
-use crate::tasks::{task_id, task_label};
+use crate::tasks::{owner_label, task_id, task_label};
 use crate::typenames::TypeNames;
 use crate::whatis::separate;
 
 use anyhow::{Result, anyhow};
 use hansei_bundle::{BundleView, HttpRole, IoSocket};
 use hansei_runtime::tokio::bundle::{IoResourceInfo, IoSlot, TaskList, TlsReading};
+use hansei_runtime::tokio::census::FutureCensus;
 use hansei_runtime::tokio::observe::{
     HttpConnObservation, HttpReading, HttpWriting, KeepAlive, PoolInfo, ResourceObservation,
     ValueKey,
 };
+use hansei_runtime::tokio::wakers::Owner;
 
 use std::io;
 
@@ -539,7 +541,7 @@ fn print_socket<T: proc::Target>(
         .iter()
         .find(|resource| resource.addr == registration.addr);
     match resource {
-        Some(resource) => print_registration(&session.tasks, resource, out)?,
+        Some(resource) => print_registration(session, resource, out)?,
         None => writeln!(
             out,
             "        ready: not in the io driver's registration list"
@@ -550,11 +552,12 @@ fn print_socket<T: proc::Target>(
 
 /// What the registration's words say: the readiness delivered, whether
 /// the driver has shut it down, and each waker parked on it.
-fn print_registration(
-    list: &TaskList,
+fn print_registration<T: proc::Target>(
+    session: &Session<'_, T>,
     resource: &IoResourceInfo,
     out: &mut dyn io::Write,
 ) -> Result<()> {
+    let list = &session.tasks;
     match resource.ready() {
         Some(ready) => writeln!(out, "        ready: {ready}")?,
         None => writeln!(out, "        ready: unread")?,
@@ -571,16 +574,33 @@ fn print_registration(
             } => format!("the readiness list ({interest})"),
             IoSlot::Listed { interest: None } => "the readiness list".to_string(),
         };
-        let task = waiter
-            .task
-            .and_then(|header| list.tasks.iter().position(|t| t.addr.0 == header))
-            .map(|index| task_label(list, index));
-        match task {
-            Some(task) => writeln!(out, "        waker: {slot}, {task}")?,
+        let attributed = waiter
+            .waker_at
+            .and_then(|at| session.attribution().at(at))
+            .map(|slot| slot.owner);
+        match waker_owner(list, Some(session.census()), attributed, waiter.task) {
+            Some(owner) => writeln!(out, "        waker: {slot}, {owner}")?,
             None => writeln!(out, "        waker: {slot}")?,
         }
     }
     Ok(())
+}
+
+/// Whose waker it is: the owner the sweep's attribution names for the
+/// slot — a set's child, whose waker names no task — as `whatis` names
+/// it, else the task whose header the waker names.
+fn waker_owner(
+    list: &TaskList,
+    census: Option<&FutureCensus>,
+    attributed: Option<Owner>,
+    task: Option<u64>,
+) -> Option<String> {
+    attributed
+        .and_then(|owner| owner_label(list, census, owner))
+        .or_else(|| {
+            task.and_then(|header| list.tasks.iter().position(|t| t.addr.0 == header))
+                .map(|index| task_label(list, index))
+        })
 }
 
 /// The registration's shutdown flag, above the sixteen readiness bits
@@ -892,5 +912,32 @@ mod tests {
             "body (close-delimited)"
         );
         assert_eq!(writing_word(&HttpWriting::Body(None)), "body");
+    }
+
+    /// A waker's owner is the one the attribution names; where it names
+    /// none, the listed task whose header the waker carries, and no one
+    /// where no listed task has that header.
+    #[test]
+    fn test_a_wakers_owner_falls_back_to_the_task_it_names() {
+        let (bundle, snapshot) = testkit::load("illumos", "tls-conns");
+        let args = session_args("illumos", "tls-conns");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let list = &session.tasks;
+        assert!(list.tasks.len() > 2);
+        let header = |index: usize| list.tasks[index].addr.0;
+        assert_eq!(
+            waker_owner(list, None, None, Some(header(2))),
+            Some(task_label(list, 2))
+        );
+        let attributed = Owner::Task {
+            header: header(1),
+            index: 1,
+        };
+        assert_eq!(
+            waker_owner(list, None, Some(attributed), Some(header(2))),
+            Some(task_label(list, 1))
+        );
+        assert_eq!(waker_owner(list, None, None, Some(1)), None);
+        assert_eq!(waker_owner(list, None, None, None), None);
     }
 }
