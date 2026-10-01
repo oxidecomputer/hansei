@@ -13,7 +13,7 @@
 //! block does not have room to say.
 
 use crate::runtimes::RowOwner;
-use crate::tasks::{Cmp, EMPTY_BUCKET, alternatives, distinct_values, listing_footer, task_id};
+use crate::tasks::{EMPTY_BUCKET, alternatives, distinct_values, listing_footer, task_id};
 use crate::{Session, output, print_warnings};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -72,11 +72,6 @@ pub(crate) struct ConnRow {
     /// How long an idle server connection has waited for the next
     /// request head, where its header-read timer says.
     pub(crate) idle_for: Option<Duration>,
-    /// The bytes of records the TLS connection holds written and not
-    /// yet sent to its socket, where the row crossed a connection whose
-    /// words read: what a flush would send, and a peer waiting on them
-    /// never sees.
-    pub(crate) unsent: Option<u64>,
     /// The header-read timer's deadline, where the server has armed
     /// one and the task holds it.
     pub(crate) deadline: Option<String>,
@@ -247,12 +242,6 @@ impl ConnRow {
         })
     }
 
-    /// The `SENDQ` cell: the TLS connection's bytes written and not yet
-    /// sent, as netstat's `Send-Q` counts a socket's.
-    fn sendq_cell(&self) -> Option<String> {
-        self.unsent.map(|bytes| bytes.to_string())
-    }
-
     /// The `DEADLINE` cell: the timer's deadline as the task block
     /// prints it, less the word the column's header already says —
     /// `+29.981s`.
@@ -375,7 +364,6 @@ fn row_of<T: proc::Target>(
         peer: None,
         server: None,
         idle_for: None,
-        unsent: None,
         deadline: None,
         request: None,
         caller: None,
@@ -601,7 +589,6 @@ fn conn_row(
             peer: None,
             server: None,
             idle_for: None,
-            unsent: None,
             deadline: None,
             request: None,
             caller: None,
@@ -680,7 +667,6 @@ fn conn_row(
                 peer,
                 server: server.and_then(|server| server.context.clone()),
                 idle_for,
-                unsent: http.tls().and_then(|tls| tls.ok()).map(|tls| tls.unsent.1),
                 deadline,
                 request,
                 caller: caller.as_ref().and_then(caller_of),
@@ -724,7 +710,6 @@ fn conn_row(
                     None => Some(RowPhase::Open),
                 },
                 peer: io.peer.as_ref().and_then(|peer| peer.clone().ok()),
-                unsent: reading.map(|reading| reading.unsent.1),
                 ..base
             })
         }
@@ -784,7 +769,6 @@ fn row_cells(row: &ConnRow) -> Vec<String> {
         row.role_word().map_or_else(dash, str::to_string),
         row.phase_cell().unwrap_or_else(dash),
         row.deadline_cell().unwrap_or_else(dash),
-        row.sendq_cell().unwrap_or_else(dash),
         row.peer.clone().unwrap_or_else(dash),
         row.server.clone().unwrap_or_else(dash),
         row.method_word().map_or_else(dash, str::to_string),
@@ -797,10 +781,10 @@ fn row_cells(row: &ConnRow) -> Vec<String> {
 /// task driving it so the two read as who asked and who carries it,
 /// the request last since a URL is the one cell that runs wide, its
 /// method just before it so the two read as the request line, and the
-/// count under it. The deadline follows the phase it times, and what
-/// is queued to send the deadline. The
+/// count under it. The deadline follows the phase it times. The
 /// runtime is the task's to say, under `tasks`: a target seldom holds
-/// more than one, so the column would repeat one value down the page.
+/// more than one, so the column would repeat one value down the page;
+/// what a TLS connection holds unsent, or unread, is `connection`'s.
 fn print_table(
     rows: &[&ConnRow],
     limit: Option<usize>,
@@ -810,8 +794,8 @@ fn print_table(
 ) -> Result<()> {
     let shown = limit.unwrap_or(rows.len()).min(rows.len());
     let header = [
-        "ADDR", "TASK", "CALLER", "PROTO", "ROLE", "PHASE", "DEADLINE", "SENDQ", "PEER", "SERVER",
-        "METHOD", "REQUEST",
+        "ADDR", "TASK", "CALLER", "PROTO", "ROLE", "PHASE", "DEADLINE", "PEER", "SERVER", "METHOD",
+        "REQUEST",
     ];
     let columns = header.len();
     let mut table = output::Table::new(columns)
@@ -861,12 +845,10 @@ pub(crate) enum Field {
     Caller,
     /// The request behind the connection, as printed.
     Request,
-    /// The TLS connection's bytes written and not yet sent — compared.
-    Sendq,
 }
 
 impl Field {
-    const NAMES: [(&'static str, Field); 11] = [
+    const NAMES: [(&'static str, Field); 10] = [
         ("task", Field::Task),
         ("rt", Field::Rt),
         ("proto", Field::Proto),
@@ -877,7 +859,6 @@ impl Field {
         ("server", Field::Server),
         ("caller", Field::Caller),
         ("request", Field::Request),
-        ("sendq", Field::Sendq),
     ];
 
     /// Every field name, in the order the errors list them.
@@ -933,25 +914,12 @@ impl Field {
             Field::Server => row.server.clone(),
             Field::Caller => row.caller.clone(),
             Field::Request => row.request_text().map(str::to_string),
-            Field::Sendq => self.count(row).map(|n| n.to_string()),
         }
     }
 
-    /// The count a compared field holds for a row.
-    fn count(self, row: &ConnRow) -> Option<u64> {
-        match self {
-            Field::Sendq => row.unsent,
-            _ => None,
-        }
-    }
-
-    /// The distinct values the rows hold for the field, or `None` for
-    /// the count the argument compares against.
-    fn values(self, rows: &[ConnRow]) -> Option<Vec<String>> {
-        match self {
-            Field::Sendq => None,
-            _ => Some(distinct_values(rows.iter().map(|row| self.text(row)))),
-        }
+    /// The distinct values the rows hold for the field.
+    fn values(self, rows: &[ConnRow]) -> Vec<String> {
+        distinct_values(rows.iter().map(|row| self.text(row)))
     }
 }
 
@@ -962,7 +930,7 @@ pub(crate) fn field_values<T: proc::Target>(
     field: &str,
 ) -> Option<(Vec<String>, bool)> {
     let field = Field::parse(field).ok()?;
-    Some((field.values(rows(session))?, field.is_pattern()))
+    Some((field.values(rows(session)), field.is_pattern()))
 }
 
 /// How one clause matches its field's value.
@@ -971,8 +939,6 @@ enum Matcher {
     Pattern(crate::pattern::Pattern),
     /// Exact text: a task id, the owner cell.
     Exact(String),
-    /// `'>N'` / `'<N'` / `'=N'`: a compared field's count.
-    Cmp(Cmp),
 }
 
 #[derive(Debug)]
@@ -1012,7 +978,6 @@ fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
     Ok(match field {
         Field::Task | Field::Caller => Matcher::Exact(arg.to_string()),
         Field::Rt => Matcher::Exact(crate::tasks::resolve_rt(arg, handles)?.cell()),
-        Field::Sendq => Matcher::Cmp(Cmp::parse(arg)?),
         _ => Matcher::Pattern(crate::pattern::Pattern::new(arg)?),
     })
 }
@@ -1022,10 +987,6 @@ fn survives(clause: &Clause, row: &ConnRow) -> bool {
     let hit = clause.matchers.iter().any(|matcher| match matcher {
         Matcher::Pattern(p) => text.as_deref().is_some_and(|t| p.is_match(t)),
         Matcher::Exact(value) => text.as_deref() == Some(value.as_str()),
-        Matcher::Cmp(cmp) => clause
-            .field
-            .count(row)
-            .is_some_and(|n| cmp.matches(n as usize)),
     });
     hit != clause.negate
 }
@@ -1152,7 +1113,6 @@ mod tests {
             peer: Some("[fd00::25]:57400".to_string()),
             server: None,
             idle_for: None,
-            unsent: None,
             deadline: None,
             request: None,
             caller: None,
@@ -1160,14 +1120,12 @@ mod tests {
     }
 
     /// Every field selects: the patterns over their spelled values, the
-    /// exact ones held to the listing's own spelling, the count compared.
+    /// exact ones held to the listing's own spelling.
     #[test]
     fn test_clauses_select_by_every_field() {
         let rows = [
-            // A client whose TLS connection holds records unsent.
             ConnRow {
                 caller: Some("17".to_string()),
-                unsent: Some(80),
                 ..row(0x10, HttpRole::Client, Some(HttpPhase::AwaitingResponse))
             },
             // An idle server with its wait in the cell: the phase field
@@ -1175,7 +1133,6 @@ mod tests {
             ConnRow {
                 server: Some("app::Context".to_string()),
                 idle_for: Some(Duration::from_millis(19)),
-                unsent: Some(0),
                 ..row(0x20, HttpRole::Server, Some(HttpPhase::Idle))
             },
             ConnRow {
@@ -1214,11 +1171,6 @@ mod tests {
         assert_eq!(select(&["caller", "7"]), []);
         assert_eq!(select(&["rt", "0"]), [0x10, 0x20, 0x30]);
         assert_eq!(select(&["rt", "10"]), [0x40]);
-        // What a TLS connection holds unsent is compared; a row that
-        // crossed none has nothing to compare.
-        assert_eq!(select(&["sendq", ">0"]), [0x10]);
-        assert_eq!(select(&["sendq", "=0"]), [0x20]);
-        assert_eq!(select(&["sendq", "<81"]), [0x10, 0x20]);
         // A row with nothing in the column never matches a pattern.
         assert_eq!(select(&["method", "."]), [0x10, 0x20, 0x40]);
         // `--without` keeps the misses.
@@ -1239,12 +1191,12 @@ mod tests {
             format!("{:#}", parse_clauses(&with, &[], &[]).unwrap_err())
         };
         assert!(refused(&["nope", "x"]).contains("no field \"nope\""));
-        // The address and the version are no fields: an address names
-        // one row, which `connection` prints, and no cell prints the
-        // version.
+        // The address, the version and what a TLS connection holds
+        // unsent are no fields: an address names one row, and
+        // `connection` prints the rest.
         assert!(refused(&["addr", "0x20"]).contains("no field \"addr\""));
         assert!(refused(&["version", "http1"]).contains("no field \"version\""));
-        assert!(refused(&["sendq", "many"]).contains("'>N', '<N' or '=N'"));
+        assert!(refused(&["sendq", ">0"]).contains("no field \"sendq\""));
     }
 
     fn line(method: Option<&str>, text: Option<&str>) -> RequestLine {
@@ -1255,17 +1207,15 @@ mod tests {
     }
 
     /// The cells print the row: the printed address and not the key, a
-    /// dash where a column is empty, the
-    /// deadline without the word its header says, the bytes queued to
-    /// send beside it, the method beside the request's text and not in
-    /// it; no owner or version.
+    /// dash where a column is empty, the deadline without the word its
+    /// header says, the method beside the request's text and not in it;
+    /// no owner or version.
     #[test]
     fn test_cells_print_the_row() {
         let full = ConnRow {
             at: 0x6533090,
             request: Some(line(Some("GET"), Some("http://one/park"))),
             caller: Some("621".to_string()),
-            unsent: Some(80),
             ..row(0x10, HttpRole::Client, Some(HttpPhase::AwaitingResponse))
         };
         assert_eq!(
@@ -1278,7 +1228,6 @@ mod tests {
                 "client",
                 "awaiting response",
                 "—",
-                "80",
                 "[fd00::25]:57400",
                 "—",
                 "GET",
@@ -1298,7 +1247,7 @@ mod tests {
                 request: Some(request),
                 ..full.clone()
             };
-            assert_eq!(row_cells(&at)[10..], cells);
+            assert_eq!(row_cells(&at)[9..], cells);
         }
         let bare = ConnRow {
             method: None,
@@ -1317,7 +1266,6 @@ mod tests {
                 "server",
                 "—",
                 "+29.981s",
-                "—",
                 "—",
                 "app::Context",
                 "—",
@@ -1639,11 +1587,10 @@ mod tests {
         assert_eq!(in_flight.caller.as_deref(), Some("621"));
         assert_eq!(in_flight.request, Some(line(Some("GET"), Some("/park"))));
         // Whatever the base row carried, a wrapper still choosing its
-        // version speaks plain HTTP/1 and has nothing queued to send.
+        // version speaks plain HTTP/1.
         let negotiating = conn_row(
             ConnRow {
                 proto: Proto::Tls,
-                unsent: Some(80),
                 ..base.clone()
             },
             &ResourceObservation::HttpNegotiating(HttpNegotiatingObservation {
@@ -1658,7 +1605,6 @@ mod tests {
         .unwrap();
         assert_eq!((negotiating.key, negotiating.at), (0x12345, 0x12345));
         assert_eq!(negotiating.proto, Proto::Http1);
-        assert_eq!(negotiating.unsent, None);
         assert_eq!(negotiating.role, Some(HttpRole::Server));
         assert_eq!(
             negotiating.phase,
@@ -1765,20 +1711,12 @@ mod tests {
             sprockets.phase,
             Some(RowPhase::Tls(TlsVerdict::Established))
         );
-        assert_eq!(sprockets.unsent, Some(160));
         assert_eq!(sprockets.peer.as_deref(), Some("PDV2:913-0000023"));
         assert_eq!(sprockets.method, Some("GET".to_string()), "the base's");
         assert_eq!(sprockets.label(), "server task 7");
         assert_eq!(
-            row_cells(&sprockets)[3..9],
-            [
-                "tls",
-                "server",
-                "established",
-                "—",
-                "160",
-                "PDV2:913-0000023"
-            ]
+            row_cells(&sprockets)[3..8],
+            ["tls", "server", "established", "—", "PDV2:913-0000023"]
         );
         // Words that did not read: still TLS, with nothing to say.
         let unread = fill(io(
@@ -1788,15 +1726,15 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(
-            (unread.proto, unread.role, unread.phase, unread.unsent),
-            (Proto::Tls, None, None, None)
+            (unread.proto, unread.role, unread.phase),
+            (Proto::Tls, None, None)
         );
         assert_eq!(unread.peer, None);
         // A bare socket: its kind, open, and nothing else of its own.
         let tcp = fill(io(Some(IoSocket::TcpStream), None, None)).unwrap();
         assert_eq!(
-            (tcp.proto, tcp.role, tcp.phase, tcp.unsent, tcp.peer.clone()),
-            (Proto::Tcp, None, Some(RowPhase::Open), None, None)
+            (tcp.proto, tcp.role, tcp.phase, tcp.peer.clone()),
+            (Proto::Tcp, None, Some(RowPhase::Open), None)
         );
         assert_eq!((tcp.key, tcp.at), (0x6500, 0x3));
         assert_eq!(tcp.label(), "tcp task 7");
@@ -2209,7 +2147,6 @@ mod tests {
             field_values(&session, "method"),
             Some((vec!["GET".to_string()], true))
         );
-        assert_eq!(field_values(&session, "sendq"), None);
         assert_eq!(field_values(&session, "colour"), None);
     }
 
@@ -2219,15 +2156,14 @@ mod tests {
             row(0x10, HttpRole::Client, Some(HttpPhase::Idle)),
             row(0x20, HttpRole::Server, Some(HttpPhase::Idle)),
         ];
-        assert_eq!(Field::Proto.values(&rows).unwrap(), ["http1"]);
-        assert_eq!(Field::Role.values(&rows).unwrap(), ["client", "server"]);
-        assert_eq!(Field::Phase.values(&rows).unwrap(), ["idle"]);
-        assert_eq!(Field::Sendq.values(&rows), None);
+        assert_eq!(Field::Proto.values(&rows), ["http1"]);
+        assert_eq!(Field::Role.values(&rows), ["client", "server"]);
+        assert_eq!(Field::Phase.values(&rows), ["idle"]);
         assert!(Field::Peer.is_pattern());
         assert!(!Field::Task.is_pattern());
         assert!(!Field::Caller.is_pattern());
         let names: Vec<&str> = Field::names().collect();
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 10);
         for name in names {
             assert_eq!(Field::parse(name).unwrap().name(), name);
         }

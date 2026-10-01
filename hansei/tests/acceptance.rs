@@ -4083,15 +4083,15 @@ fn test_http_conns_connections_acceptance() {
         assert_eq!(
             rows,
             [
-                "CALLER http1 client awaiting response — — 127.0.0.1:PORT — GET http://127.0.0.1:PORT/park",
-                "CALLER http1 client awaiting response — — 127.0.0.1:PORT — GET —",
-                "— http1 client idle — — 127.0.0.1:PORT — — —",
-                "— http1 client idle — — — — — —",
-                "— http1 server handling request — — — — GET /park",
-                "— http1 server handling request — — — — GET /park",
-                "— http1 server idle DEADLINE — — — — —",
-                "— http1 server idle DEADLINE — — — — —",
-                "— http1 server negotiating — — — — — —",
+                "CALLER http1 client awaiting response — 127.0.0.1:PORT — GET http://127.0.0.1:PORT/park",
+                "CALLER http1 client awaiting response — 127.0.0.1:PORT — GET —",
+                "— http1 client idle — 127.0.0.1:PORT — — —",
+                "— http1 client idle — — — — —",
+                "— http1 server handling request — — — GET /park",
+                "— http1 server handling request — — — GET /park",
+                "— http1 server idle DEADLINE — — — —",
+                "— http1 server idle DEADLINE — — — —",
+                "— http1 server negotiating — — — — —",
             ],
             "{out}"
         );
@@ -4130,8 +4130,8 @@ fn test_http_conns_connections_acceptance() {
 /// as a read — both for the peer's first flight. Every connection
 /// through TLS has nothing queued to send, but the client whose writes
 /// filled its socket: the records its connection kept, unwritten, are
-/// its `SENDQ`, the one row a filter on it keeps, and the words its
-/// read's wait carries. The HTTP/1 client over an in-memory duplex is a
+/// the one nonzero `unsent:` among the connections' own blocks, and the
+/// words its read's wait carries. The HTTP/1 client over an in-memory duplex is a
 /// row with no socket under it: plain HTTP/1, keyed by its connection.
 /// The tasks parked on anything but a connection are no rows. Grouping
 /// by protocol files the thirteen under four buckets, and a filter on
@@ -4143,37 +4143,30 @@ fn test_tls_conns_connections_acceptance() {
         let out = hansei_ok(&bundle, core, "connections");
         assert!(out.ends_with("[13 connections]\n"), "{out}");
         assert_connections_print(&bundle, core, &out, 13);
-        // How much the socket took before it refused is the kernel's
-        // to say: a nonzero `SENDQ` reads as `N`.
-        let mut rows: Vec<String> = out
+        let lines: Vec<Vec<&str>> = out
             .lines()
             .skip(1)
             .take(13)
-            .map(|line| {
-                let mut cells: Vec<&str> = line.split_whitespace().skip(2).collect();
-                if cells[5].parse::<u64>().is_ok_and(|queued| queued > 0) {
-                    cells[5] = "N";
-                }
-                cells.join(" ")
-            })
+            .map(|line| line.split_whitespace().collect())
             .collect();
+        let mut rows: Vec<String> = lines.iter().map(|cells| cells[2..].join(" ")).collect();
         rows.sort();
         assert_eq!(
             rows,
             [
-                "— http1 client idle — — — — — —",
-                "— http1/tls client idle — 0 — — — —",
-                "— http1/tls server idle — 0 — — — —",
-                "— tcp — open — — — — — —",
-                "— tcp — open — — — — — —",
-                "— tls client closing — 0 — — — —",
-                "— tls client established — 0 — — — —",
-                "— tls client established — 0 — — — —",
-                "— tls client established — N — — — —",
-                "— tls client handshaking — 0 — — — —",
-                "— tls server established — 0 — — — —",
-                "— tls server established — 0 — — — —",
-                "— tls server handshaking — 0 — — — —",
+                "— http1 client idle — — — — —",
+                "— http1/tls client idle — — — — —",
+                "— http1/tls server idle — — — — —",
+                "— tcp — open — — — — —",
+                "— tcp — open — — — — —",
+                "— tls client closing — — — — —",
+                "— tls client established — — — — —",
+                "— tls client established — — — — —",
+                "— tls client established — — — — —",
+                "— tls client handshaking — — — — —",
+                "— tls server established — — — — —",
+                "— tls server established — — — — —",
+                "— tls server handshaking — — — — —",
             ],
             "{out}"
         );
@@ -4181,10 +4174,23 @@ fn test_tls_conns_connections_acceptance() {
         for bucket in ["8  tls", "2  tcp", "2  http1/tls", "1  http1"] {
             assert!(grouped.contains(bucket), "{grouped}");
         }
-        let queued = hansei_ok(&bundle, core, "connections --with sendq >0");
-        assert!(queued.ends_with("[1 connection]\n"), "{queued}");
+        // The one connection holding records unsent, as the blocks say:
+        // how much the socket took before it refused is the kernel's to
+        // say, so the count is only nonzero.
         let tasks = list_tasks(&bundle, core);
         let unflushed = task_with_future(&tasks, "async fn tls_conns::unflushed_client");
+        let queued =
+            regex::Regex::new(r"^        unsent: [1-9][0-9]* records, [0-9]+ bytes$").unwrap();
+        let holding: Vec<&str> = lines
+            .iter()
+            .filter(|cells| {
+                hansei_ok(&bundle, core, &format!("connection {}", cells[0]))
+                    .lines()
+                    .any(|line| queued.is_match(line))
+            })
+            .map(|cells| cells[1])
+            .collect();
+        assert_eq!(holding, [unflushed.id.as_str()], "{out}");
         let block = hansei_ok(&bundle, core, &format!("task {}", unflushed.id));
         let unsent = regex::Regex::new(r"(?m)^        tls: client, TLSv1_3, established, .* written, [1-9][0-9]* unsent \([0-9]+ bytes\)$")
             .unwrap();

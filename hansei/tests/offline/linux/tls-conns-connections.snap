@@ -2,18 +2,18 @@
 source: hansei/src/offline.rs
 description: "`connections` over linux/tls-conns"
 ---
-ADDR            TASK  CALLER  PROTO      ROLE    PHASE        DEADLINE  SENDQ  PEER  SERVER  METHOD  REQUEST
-0xADDR  3     —       tls        client  established  —         0      —     —       —       —
-0xADDR  4     —       tls        server  established  —         0      —     —       —       —
-0xADDR  5     —       tls        client  established  —         0      —     —       —       —
-0xADDR  6     —       tls        server  established  —         0      —     —       —       —
-0xADDR  7     —       tcp        —       open         —         —      —     —       —       —
-0xADDR  8     —       tcp        —       open         —         —      —     —       —       —
-0xADDR  9     —       tls        client  closing      —         0      —     —       —       —
-0xADDR  12    —       tls        client  handshaking  —         0      —     —       —       —
-0xADDR  14    —       tls        server  handshaking  —         0      —     —       —       —
-0xADDR  16    —       tls        client  established  —         3432   —     —       —       —
-0xADDR  17    —       http1      client  idle         —         —      —     —       —       —
-0xADDR  18    —       http1/tls  server  idle         —         0      —     —       —       —
-0xADDR  19    —       http1/tls  client  idle         —         0      —     —       —       —
+ADDR            TASK  CALLER  PROTO      ROLE    PHASE        DEADLINE  PEER  SERVER  METHOD  REQUEST
+0xADDR  3     —       tls        client  established  —         —     —       —       —
+0xADDR  4     —       tls        server  established  —         —     —       —       —
+0xADDR  5     —       tls        client  established  —         —     —       —       —
+0xADDR  6     —       tls        server  established  —         —     —       —       —
+0xADDR  7     —       tcp        —       open         —         —     —       —       —
+0xADDR  8     —       tcp        —       open         —         —     —       —       —
+0xADDR  9     —       tls        client  closing      —         —     —       —       —
+0xADDR  12    —       tls        client  handshaking  —         —     —       —       —
+0xADDR  14    —       tls        server  handshaking  —         —     —       —       —
+0xADDR  16    —       tls        client  established  —         —     —       —       —
+0xADDR  17    —       http1      client  idle         —         —     —       —       —
+0xADDR  18    —       http1/tls  server  idle         —         —     —       —       —
+0xADDR  19    —       http1/tls  client  idle         —         —     —       —       —
 [13 connections]

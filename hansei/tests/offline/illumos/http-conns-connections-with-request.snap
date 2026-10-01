@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`connections --with request park` over illumos/http-conns"
 ---
-ADDR       TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE  SENDQ  PEER             SERVER  METHOD  REQUEST
-0xADDR  9     —       http1  server  handling request   —         —      —                —       GET     /park
-0xADDR  11    —       http1  server  handling request   —         —      —                —       GET     /park
-0xADDR  12    10      http1  client  awaiting response  —         —      127.0.0.1:54341  —       GET     http://127.0.0.1:54341/park
+ADDR       TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE  PEER             SERVER  METHOD  REQUEST
+0xADDR  9     —       http1  server  handling request   —         —                —       GET     /park
+0xADDR  11    —       http1  server  handling request   —         —                —       GET     /park
+0xADDR  12    10      http1  client  awaiting response  —         127.0.0.1:54341  —       GET     http://127.0.0.1:54341/park
 [3 connections]
