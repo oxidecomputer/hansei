@@ -727,16 +727,17 @@ pub enum Command {
     /// pool recorded one. The HTTP role and the TLS side are each
     /// their own layer's.
     ///
-    /// Every peer known is listed with where it came from: the
-    /// accepted socket's address a server's service keeps, the
-    /// authority of the pool key a client connection was made for,
-    /// the socket's address the pool's connector recorded, or the
-    /// accepted socket's address a sprockets server's handshake keeps
-    /// beside the TLS stream it sets up. Apart from them come the
-    /// platform ids that name the far end, each with where it came
-    /// from: a sprockets stream's, or the one a sprockets handshake
-    /// read off the certificates. Last comes the route: every stream
-    /// from the connection's own down to the socket's.
+    /// Every peer known is listed, each address once however many
+    /// sources agree on it: the accepted socket's address a server's
+    /// service keeps, the authority of the pool key a client
+    /// connection was made for, the socket's address the pool's
+    /// connector recorded, or the accepted socket's address a
+    /// sprockets server's handshake keeps beside the TLS stream it
+    /// sets up. Apart from them come the platform ids that name the
+    /// far end, likewise once each: a sprockets stream's, or the one a
+    /// sprockets handshake read off the certificates. Last comes the
+    /// route: every stream from the connection's own down to the
+    /// socket's.
     ///
     /// Any address inside one of the connection's objects selects it —
     /// the `ADDR` `connections` prints, the HTTP dispatcher, a stream

@@ -222,12 +222,13 @@ fn print_connection<T: proc::Target>(
     let Some(observation) = primary(session, row) else {
         return Ok(());
     };
-    // The peers, every source labelled by what it is: the accepted
-    // socket's address a server's service keeps, the authority of the
-    // pool key a client was made for, the address a handshake's frame
-    // keeps. Apart from them, the platform ids that name the far end:
-    // the one a stream on the route keeps, the one a handshake's frame
-    // read off the certificates.
+    // The peers, from every source: the accepted socket's address a
+    // server's service keeps, the authority of the pool key a client
+    // was made for, the socket's address the pool's connector recorded,
+    // the address a handshake's frame keeps. Apart from them, the
+    // platform ids that name the far end: the one a stream on the route
+    // keeps, the one a handshake's frame read off the certificates.
+    // Sources that agree print once.
     let mut peers: Vec<String> = Vec::new();
     let mut platform_ids: Vec<String> = Vec::new();
     match observation {
@@ -250,9 +251,7 @@ fn print_connection<T: proc::Target>(
                 .and_then(|want| session.census().pool_infos.info(want));
             print_http(row, http, &names, pooled, &mut peers, out)?;
             if let Some(remote) = pooled.and_then(|info| info.remote.as_ref()) {
-                peers.push(format!(
-                    "{remote} (the socket's, as the pool's connector recorded it)"
-                ));
+                peers.push(remote.to_string());
             }
             let local = pooled.and_then(|info| info.local.as_deref());
             match &http.stream {
@@ -260,13 +259,12 @@ fn print_connection<T: proc::Target>(
                     if let Some(tls) = &socket.tls {
                         print_tls(tls, socket.tls_stream, &names, out)?;
                     }
-                    if let (Some(Ok(peer)), Some(stream)) = (&socket.peer, socket.peer_stream) {
-                        platform_ids.push(format!("{peer} (kept by {})", names.folded(stream.ty)));
+                    if let Some(Ok(peer)) = &socket.peer {
+                        platform_ids.push(peer.clone());
                     }
                     far_end_sources(
                         &session.census().far_ends,
                         socket.tls_stream,
-                        &names,
                         &mut peers,
                         &mut platform_ids,
                     );
@@ -279,10 +277,7 @@ fn print_connection<T: proc::Target>(
                         out,
                     )?;
                     if let Some(local) = local {
-                        writeln!(
-                            out,
-                            "        local address: {local} (as the pool's connector recorded it)"
-                        )?;
+                        writeln!(out, "        local address: {local}")?;
                     }
                     print_peers(&peers, &platform_ids, out)?;
                     print_route(&socket.streams, &names, out)?;
@@ -304,13 +299,12 @@ fn print_connection<T: proc::Target>(
             if let Some(tls) = &io.tls {
                 print_tls(tls, io.tls_stream, &names, out)?;
             }
-            if let (Some(Ok(peer)), Some(stream)) = (&io.peer, io.peer_stream) {
-                platform_ids.push(format!("{peer} (kept by {})", names.folded(stream.ty)));
+            if let Some(Ok(peer)) = &io.peer {
+                platform_ids.push(peer.clone());
             }
             far_end_sources(
                 &session.census().far_ends,
                 io.tls_stream,
-                &names,
                 &mut peers,
                 &mut platform_ids,
             );
@@ -409,9 +403,7 @@ fn print_http(
             (None, None) => {}
         }
         if let Some(peer) = &server.peer {
-            peers.push(format!(
-                "{peer} (the accepted socket's, kept by the server's service)"
-            ));
+            peers.push(peer.clone());
         }
     }
     // What the client's pool keeps of how the connection was made.
@@ -434,9 +426,7 @@ fn print_http(
     if http.role == HttpRole::Client
         && let Some(peer) = &row.peer
     {
-        peers.push(format!(
-            "{peer} (the authority of the pool key it was made for)"
-        ));
+        peers.push(peer.clone());
     }
     Ok(())
 }
@@ -630,12 +620,15 @@ fn shut_down(readiness: u64) -> bool {
     readiness & SHUTDOWN != 0
 }
 
+/// The peers, then the platform ids, each value once however many
+/// sources name it, in the order the first source named it.
 fn print_peers(peers: &[String], platform_ids: &[String], out: &mut dyn io::Write) -> Result<()> {
-    for peer in peers {
-        writeln!(out, "    peer: {peer}")?;
-    }
-    for id in platform_ids {
-        writeln!(out, "    platform id: {id}")?;
+    for (label, values) in [("peer", peers), ("platform id", platform_ids)] {
+        for (i, value) in values.iter().enumerate() {
+            if !values[..i].contains(value) {
+                writeln!(out, "    {label}: {value}")?;
+            }
+        }
     }
     Ok(())
 }
@@ -647,34 +640,21 @@ fn print_peers(peers: &[String], platform_ids: &[String], out: &mut dyn io::Writ
 fn far_end_sources(
     far_ends: &FarEnds,
     tls_stream: Option<ValueKey>,
-    names: &TypeNames<'_>,
     peers: &mut Vec<String>,
     platform_ids: &mut Vec<String>,
 ) {
     let Some(far_end) = tls_stream.and_then(|stream| far_ends.of(stream.addr)) else {
         return;
     };
-    let (peer, platform_id) = far_end_lines(far_end, &names.folded(far_end.frame));
+    let (peer, platform_id) = far_end_facts(far_end);
     peers.extend(peer);
     platform_ids.extend(platform_id);
 }
 
-/// A far end's address and platform id as their lines say them, each
-/// labelled by the async fn whose frame keeps it — the coroutine's name
-/// short of its environment.
-fn far_end_lines(far_end: &FarEnd, coroutine: &str) -> (Option<String>, Option<String>) {
-    let frame = coroutine
-        .strip_suffix("::{async_fn_env#0}")
-        .unwrap_or(coroutine);
-    let peer = match &far_end.addr {
-        Some(Ok(addr)) => Some(format!("{addr} (the socket's, as {frame} keeps it)")),
-        _ => None,
-    };
-    let platform_id = match &far_end.name {
-        Some(Ok(name)) => Some(format!("{name} (as {frame} keeps it)")),
-        _ => None,
-    };
-    (peer, platform_id)
+/// A far end's address and platform id, where each was kept and read.
+fn far_end_facts(far_end: &FarEnd) -> (Option<String>, Option<String>) {
+    let read = |fact: &Option<Result<String, String>>| fact.as_ref()?.as_ref().ok().cloned();
+    (read(&far_end.addr), read(&far_end.name))
 }
 
 /// The `route:` section: every stream from the connection's own down to
@@ -784,13 +764,11 @@ mod tests {
         }
     }
 
-    /// A handshake frame's facts print under the async fn that keeps
-    /// them, the address among the peers and the platform id apart; a
-    /// fact the frame does not keep, or that did not read, prints
-    /// nothing. The peers come first, then the platform ids.
+    /// A handshake frame's facts are the address among the peers and
+    /// the platform id apart; a fact the frame does not keep, or that
+    /// did not read, is none.
     #[test]
-    fn test_a_far_end_prints_under_the_fn_that_keeps_it() {
-        let coroutine = "sprockets_tls::server::SprocketsAcceptor::handshake::{async_fn_env#0}";
+    fn test_a_far_end_names_what_its_frame_kept() {
         let far_end = |addr: Option<Result<String, String>>, name| FarEnd {
             frame: BundleTypeId(9),
             addr,
@@ -800,74 +778,55 @@ mod tests {
             Some(Ok("[fd00::1]:55852".to_string())),
             Some(Ok("PDV2:913-0000023:RRR:2N4EX7V7".to_string())),
         );
-        let (peer, platform_id) = far_end_lines(&both, coroutine);
         assert_eq!(
-            peer.as_deref(),
-            Some(
-                "[fd00::1]:55852 (the socket's, as \
-                 sprockets_tls::server::SprocketsAcceptor::handshake keeps it)"
-            )
-        );
-        assert_eq!(
-            platform_id.as_deref(),
-            Some(
-                "PDV2:913-0000023:RRR:2N4EX7V7 (as \
-                 sprockets_tls::server::SprocketsAcceptor::handshake keeps it)"
+            far_end_facts(&both),
+            (
+                Some("[fd00::1]:55852".to_string()),
+                Some("PDV2:913-0000023:RRR:2N4EX7V7".to_string())
             )
         );
         let unread = far_end(Some(Err("unread".to_string())), None);
-        assert_eq!(far_end_lines(&unread, coroutine), (None, None));
+        assert_eq!(far_end_facts(&unread), (None, None));
         let unkept = far_end(None, Some(Err("unread".to_string())));
-        assert_eq!(far_end_lines(&unkept, coroutine), (None, None));
+        assert_eq!(far_end_facts(&unkept), (None, None));
 
         // Found by the TLS stream it holds, the facts join the sources
-        // beside what is already there, under the fn whose frame keeps
-        // them; another stream, or none, adds nothing.
-        let bundle = testkit::named_types(&[coroutine]);
-        let impls = Default::default();
-        let names = TypeNames::over(hansei_bundle::BundleView::new(&bundle), &impls);
-        let kept = FarEnd {
-            frame: BundleTypeId(0),
-            ..both.clone()
-        };
-        let far_ends = FarEnds(std::collections::HashMap::from([(0x20, kept)]));
-        let (peer_line, id_line) = far_end_lines(&both, coroutine);
+        // beside what is already there; another stream, or none, adds
+        // nothing.
+        let far_ends = FarEnds(std::collections::HashMap::from([(0x20, both)]));
         let mut peers = vec!["[::1]:8000".to_string()];
         let mut platform_ids = Vec::new();
-        far_end_sources(
-            &far_ends,
-            Some(key(0x20)),
-            &names,
-            &mut peers,
-            &mut platform_ids,
-        );
-        assert_eq!(peers, ["[::1]:8000".to_string(), peer_line.unwrap()]);
-        assert_eq!(platform_ids, [id_line.unwrap()]);
+        far_end_sources(&far_ends, Some(key(0x20)), &mut peers, &mut platform_ids);
+        assert_eq!(peers, ["[::1]:8000", "[fd00::1]:55852"]);
+        assert_eq!(platform_ids, ["PDV2:913-0000023:RRR:2N4EX7V7"]);
         for stream in [Some(key(0x30)), None] {
             let (mut peers, mut platform_ids) = (Vec::new(), Vec::new());
-            far_end_sources(&far_ends, stream, &names, &mut peers, &mut platform_ids);
+            far_end_sources(&far_ends, stream, &mut peers, &mut platform_ids);
             assert!(peers.is_empty() && platform_ids.is_empty(), "{stream:?}");
         }
+    }
 
+    /// The peers print first, then the platform ids, each bare; a value
+    /// two sources agree on prints once, where the first named it, and
+    /// values that differ each print.
+    #[test]
+    fn test_peers_print_each_value_once() {
+        let strings = |values: &[&str]| -> Vec<String> {
+            values.iter().map(|value| value.to_string()).collect()
+        };
         let mut out = Vec::new();
         print_peers(
-            &[peer.unwrap()],
-            &["PDV2:a (kept by Stream)".to_string(), platform_id.unwrap()],
+            &strings(&["[::1]:8000", "[fd00::1]:55852", "[::1]:8000"]),
+            &strings(&["PDV2:a", "PDV2:a", "PDV2:b"]),
             &mut out,
         )
         .unwrap();
-        let out = String::from_utf8(out).unwrap();
-        let lines: Vec<&str> = out
-            .lines()
-            .map(|line| line.split(" (").next().unwrap())
-            .collect();
         assert_eq!(
-            lines,
-            [
-                "    peer: [fd00::1]:55852",
-                "    platform id: PDV2:a",
-                "    platform id: PDV2:913-0000023:RRR:2N4EX7V7",
-            ]
+            String::from_utf8(out).unwrap(),
+            "    peer: [::1]:8000\n    \
+             peer: [fd00::1]:55852\n    \
+             platform id: PDV2:a\n    \
+             platform id: PDV2:b\n"
         );
     }
 
