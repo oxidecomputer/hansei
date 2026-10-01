@@ -51,6 +51,10 @@ pub struct Thread {
     /// no other, since a worker index means nothing outside the
     /// scheduler it belongs to.
     pub runtime: Option<usize>,
+    /// Whether its context holds a runtime handle at all. A thread
+    /// whose context holds none entered no runtime: it only touched
+    /// tokio's thread-local, and is counted in none.
+    pub has_handle: bool,
     /// The place the thread holds in a scheduler's run loop; `None` for
     /// a thread that has merely entered the runtime (a plain `block_on`
     /// caller on a multi_thread target, a blocking-pool thread).
@@ -315,6 +319,7 @@ struct ThreadKey {
 
 const ORDER_POOL: u8 = 10;
 const ORDER_ENTERED: u8 = 11;
+const ORDER_CONTEXT_ONLY: u8 = 19;
 const ORDER_NO_RUNTIME: u8 = 20;
 const ORDER_AGENT: u8 = 21;
 
@@ -340,7 +345,7 @@ fn threads(facts: &Facts<'_>, theme: Theme, out: &mut dyn io::Write) -> Result<(
         &format!(
             "{}, {} in {inside}",
             counted(facts.lwps.len(), "lwp"),
-            facts.runtime.len()
+            facts.runtime.iter().filter(|t| t.runtime.is_some()).count()
         ),
         out,
     )?;
@@ -384,7 +389,7 @@ fn threads(facts: &Facts<'_>, theme: Theme, out: &mut dyn io::Write) -> Result<(
         let entered: Vec<String> = facts
             .runtime
             .iter()
-            .filter(|t| t.runtime == index && t.role.is_none())
+            .filter(|t| t.runtime == index && t.role.is_none() && t.has_handle)
             .map(|t| t.tid.to_string())
             .collect();
         let rt = index.unwrap_or(usize::MAX);
@@ -402,6 +407,27 @@ fn threads(facts: &Facts<'_>, theme: Theme, out: &mut dyn io::Write) -> Result<(
                 lwps: Some(entered),
             }),
         }
+    }
+
+    // The threads holding tokio's context with no runtime handle in it,
+    // which entered none.
+    let handleless: Vec<String> = facts
+        .runtime
+        .iter()
+        .filter(|t| !t.has_handle)
+        .map(|t| t.tid.to_string())
+        .collect();
+    if !handleless.is_empty() {
+        rows.push(ThreadRow {
+            key: ThreadKey {
+                rt: usize::MAX,
+                order: ORDER_CONTEXT_ONLY,
+                role: crate::threads::NO_RUNTIME_CONTEXT,
+                state: "—".to_string(),
+            },
+            count: handleless.len(),
+            lwps: Some(handleless),
+        });
     }
 
     // The lwps holding no runtime context at all, and the one the
@@ -1351,6 +1377,7 @@ mod tests {
         Thread {
             tid,
             runtime: Some(0),
+            has_handle: true,
             role: Some(ThreadRole::Worker(index)),
             polling: None,
         }
@@ -1361,6 +1388,7 @@ mod tests {
         Thread {
             tid,
             runtime: Some(0),
+            has_handle: true,
             role: None,
             polling: None,
         }
@@ -1371,6 +1399,7 @@ mod tests {
         Thread {
             tid,
             runtime: Some(0),
+            has_handle: true,
             role: Some(ThreadRole::BlockOn(state)),
             polling,
         }
@@ -1553,6 +1582,36 @@ mod tests {
              \x20   1  —   no runtime     —       1\n\
              \x20   1  —   agent (/proc)  —       13\n\
              [3 lwps]\n"
+        );
+    }
+
+    /// A thread whose context holds no runtime handle entered none: it
+    /// is not counted in the heading's runtime, and its row says why.
+    #[test]
+    fn test_a_handleless_context_is_in_no_runtime() {
+        let list = empty();
+        let mut facts = facts(&list, &[]);
+        facts.lwps = vec![11, 12];
+        let mut handleless = entered(12);
+        handleless.runtime = None;
+        handleless.has_handle = false;
+        facts.runtime = vec![worker(11, 0), handleless];
+        facts.runtimes = vec![runtime(
+            Some(ParkStates {
+                workers: vec![ParkState::Condvar],
+                driver_held: false,
+            }),
+            None,
+        )];
+
+        assert_eq!(
+            thread_section(&facts),
+            "Threads: 2 lwps, 1 in runtime 0 @ 0x1000\n\
+             \n\
+             COUNT  RT  ROLE                       STATE   LWPS\n\
+             \x20   1  0   worker                     parked  11\n\
+             \x20   1  —   tokio context, no runtime  —       12\n\
+             [2 lwps]\n"
         );
     }
 

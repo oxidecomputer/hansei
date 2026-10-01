@@ -28,8 +28,9 @@ pub(crate) struct ThreadRow {
     /// The place the thread holds in a runtime, spelled by
     /// [`park_word`] and its callers: `worker N, <state>`, `block_on
     /// caller`, `blocking, running` / `blocking, idle` (the pool's
-    /// threads, by its own handles to them), `entered runtime`, `no
-    /// runtime`, or `agent (/proc)` for the lwp the capture made.
+    /// threads, by its own handles to them), `entered runtime`, `tokio
+    /// context, no runtime`, `no runtime`, or `agent (/proc)` for the
+    /// lwp the capture made.
     pub(crate) role: String,
     /// The kind of that role — what `--group role` buckets by: every
     /// worker one `worker` whatever its index and park state, the
@@ -77,6 +78,10 @@ fn build_rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<ThreadRow> {
     rows.sort_by_key(|row| row.lwp);
     rows
 }
+
+/// The role of a thread holding a tokio `Context` that reaches no
+/// runtime handle — one `threads` and the census share.
+pub(crate) const NO_RUNTIME_CONTEXT: &str = "tokio context, no runtime";
 
 /// A thread's place in a runtime: the `ROLE` cell as spelled, and the
 /// kind it is one of.
@@ -151,21 +156,27 @@ fn role_of<T: proc::Target>(
         Ok(SchedulerState::BlockOn(_)) => Role::plain("block_on caller"),
         // A thread inside the runtime without a scheduler context: the
         // blocking pool's, if the pool holds a handle to it, else a
-        // thread that merely entered.
-        Ok(SchedulerState::None) => {
-            let pools = pools.get_or_init(|| {
-                session.read_with(|read| {
-                    session
-                        .runtimes
-                        .iter()
-                        .map(|rt| session.ctx.pool_thread_ids(rt, read).ok())
-                        .collect()
-                })
-            });
-            let polling =
-                crate::tasks::polled_task(worker.current_task_id, &session.tasks).is_some();
-            pool_role(session.ctx.std_thread_id(lwp).ok(), pools, polling)
-        }
+        // thread that merely entered. A thread whose context reaches
+        // no runtime handle entered none, and is no pool's: it only
+        // touched tokio's thread-local from outside.
+        Ok(SchedulerState::None) => match session.ctx.has_runtime_handle(worker) {
+            Ok(false) => Role::plain(NO_RUNTIME_CONTEXT),
+            Err(_) => Role::plain("context unreadable"),
+            Ok(true) => {
+                let pools = pools.get_or_init(|| {
+                    session.read_with(|read| {
+                        session
+                            .runtimes
+                            .iter()
+                            .map(|rt| session.ctx.pool_thread_ids(rt, read).ok())
+                            .collect()
+                    })
+                });
+                let polling =
+                    crate::tasks::polled_task(worker.current_task_id, &session.tasks).is_some();
+                pool_role(session.ctx.std_thread_id(lwp).ok(), pools, polling)
+            }
+        },
         // A context that could not be read is not a thread that
         // merely entered; say what happened instead of guessing.
         Err(_) => Role::plain("context unreadable"),
@@ -709,8 +720,8 @@ pub(crate) fn print_thread<T: proc::Target>(
     let fatal = session.proc.fatal_signal();
 
     // A thread holding no tokio context has only its heading to show;
-    // everything below the heading is the runtime's. The `/proc`
-    // agent holds none of its own: it is the capture's.
+    // everything below the heading is the runtime's.
+    // The `/proc` agent holds none of its own: it is the capture's.
     let Some(worker) = session.workers.iter().find(|w| w.tid == tid) else {
         let took = fatal_tag(fatal.as_ref(), tid);
         let role = match session.proc.agent_lwp() == Some(tid) {
@@ -750,8 +761,15 @@ pub(crate) fn print_thread<T: proc::Target>(
         }
         // A thread inside the runtime without a scheduler context is
         // ordinary: `block_on` enters the runtime from a thread that
-        // never runs the worker loop.
-        Ok(SchedulerState::None) => writeln!(out, "    not in the scheduler's run loop")?,
+        // never runs the worker loop. One whose context holds no
+        // handle entered no runtime at all.
+        Ok(SchedulerState::None) => match session.ctx.has_runtime_handle(worker) {
+            Ok(false) => writeln!(
+                out,
+                "    in no runtime: its context holds no runtime handle"
+            )?,
+            _ => writeln!(out, "    not in the scheduler's run loop")?,
+        },
         Err(e) => writeln!(out, "    scheduler context unreadable: {e:#}")?,
     }
 

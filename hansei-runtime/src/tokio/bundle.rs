@@ -787,6 +787,16 @@ impl<'b, T: Target> Context<'b, T> {
         Ok(runtimes)
     }
 
+    /// Whether a thread's `Context` holds a runtime handle at all — the
+    /// test [`Context::find_runtimes`] files a thread into a runtime by.
+    /// A thread can hold a `Context` without one: touching tokio's
+    /// thread-local from outside any runtime (a coop budget,
+    /// `Handle::try_current`, a `blocking_recv`) is enough to create it.
+    pub fn has_runtime_handle(&self, worker: &Worker) -> Result<bool> {
+        let info = self.context_info(worker.context_addr)?;
+        Ok(self.flavor_handle(info)?.is_some())
+    }
+
     /// The flavor handle one thread's `Context` points at, if any. Each
     /// flavor's discovery row is consulted through `try_walk`: a flavor
     /// the target never compiled in is recorded absent, which here means

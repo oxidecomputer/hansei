@@ -3193,9 +3193,17 @@ fn census_runtimes<T: proc::Target>(
 fn runtime_threads<T: proc::Target>(session: &Session<'_, T>) -> Result<Vec<summary::Thread>> {
     let mut runtime = Vec::new();
     for worker in &session.workers {
+        let index = session.runtime_of(worker.tid).map(|(index, _)| index);
+        // Only a thread no runtime claimed can lack a handle, so only
+        // those are read for one.
+        let has_handle = match index {
+            Some(_) => true,
+            None => session.ctx.has_runtime_handle(worker)?,
+        };
         runtime.push(summary::Thread {
             tid: worker.tid,
-            runtime: session.runtime_of(worker.tid).map(|(index, _)| index),
+            runtime: index,
+            has_handle,
             role: thread_role(session, worker)?,
             polling: polled_task(worker.current_task_id, &session.tasks),
         });
