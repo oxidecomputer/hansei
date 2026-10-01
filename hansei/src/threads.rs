@@ -13,7 +13,8 @@ use anyhow::{Context as _, Result};
 use hansei_runtime::tokio::bundle::{self, CtActivity, ParkState};
 use reify::Value;
 
-use std::collections::{BTreeMap, HashMap};
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 
 /// One row of the `threads` table: the compact per-lwp answer, built
@@ -26,9 +27,9 @@ pub(crate) struct ThreadRow {
     pub(crate) name: Option<String>,
     /// The place the thread holds in a runtime, spelled by
     /// [`park_word`] and its callers: `worker N, <state>`, `block_on
-    /// caller`, `blocking, running` / `blocking, idle` (read from the
-    /// stack — the runtime side cannot tell a blocking thread apart),
-    /// `entered runtime`, or `no runtime`.
+    /// caller`, `blocking, running` / `blocking, idle` (the pool's
+    /// threads, by its own handles to them), `entered runtime`, or
+    /// `no runtime`.
     pub(crate) role: String,
     /// The kind of that role — what `--group role` buckets by: every
     /// worker one `worker` whatever its index and park state, the
@@ -52,6 +53,8 @@ fn build_rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<ThreadRow> {
     let stacks = session.stacks();
     // One parker-array read per runtime, shared by its workers' rows.
     let mut parks: HashMap<usize, Option<bundle::ParkStates>> = HashMap::new();
+    // One read of each pool's thread map, the first time a row needs it.
+    let pools = OnceCell::new();
     let mut rows: Vec<ThreadRow> = session
         .lwps
         .iter()
@@ -59,7 +62,7 @@ fn build_rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<ThreadRow> {
             let worker = session.workers.iter().find(|w| w.tid == lwp.tid);
             let stack = stacks.get(&lwp.tid);
             let names = stack_names(stack);
-            let role = role_of(session, lwp.tid, worker, &names, &mut parks);
+            let role = role_of(session, lwp, worker, &pools, &mut parks);
             ThreadRow {
                 lwp: lwp.tid,
                 name: session.proc.lwp_name(lwp.tid),
@@ -92,15 +95,20 @@ impl Role {
     }
 }
 
-/// The `ROLE` cell for one lwp, and its kind. `frames` is the unwound
-/// stack's symbols, the only witness to a blocking-pool thread.
+/// Each runtime's blocking-pool threads by std thread id, `None` for a
+/// pool whose map could not be read.
+type Pools = Vec<Option<BTreeSet<u64>>>;
+
+/// The `ROLE` cell for one lwp, and its kind. `pools` is read on the
+/// first row that needs it.
 fn role_of<T: proc::Target>(
     session: &Session<'_, T>,
-    tid: u32,
+    lwp: &proc::LwpInfo,
     worker: Option<&bundle::Worker>,
-    frames: &[String],
+    pools: &OnceCell<Pools>,
     parks: &mut HashMap<usize, Option<bundle::ParkStates>>,
 ) -> Role {
+    let tid = lwp.tid;
     // No tokio context at all: nothing of the runtime's to say.
     let Some(worker) = worker else {
         return Role::plain("no runtime");
@@ -135,17 +143,23 @@ fn role_of<T: proc::Target>(
             }
         }
         Ok(SchedulerState::BlockOn(_)) => Role::plain("block_on caller"),
-        // A thread inside the runtime without a scheduler context:
-        // the blocking pool's, if its stack says so — the runtime
-        // keeps only counters about the pool, so the stack is the
-        // only witness — else a thread that merely entered.
-        Ok(SchedulerState::None) => match blocking_role(frames) {
-            Some(spelled) => Role {
-                spelled: spelled.to_string(),
-                kind: "blocking",
-            },
-            None => Role::plain("entered runtime"),
-        },
+        // A thread inside the runtime without a scheduler context: the
+        // blocking pool's, if the pool holds a handle to it, else a
+        // thread that merely entered.
+        Ok(SchedulerState::None) => {
+            let pools = pools.get_or_init(|| {
+                session.read_with(|read| {
+                    session
+                        .runtimes
+                        .iter()
+                        .map(|rt| session.ctx.pool_thread_ids(rt, read).ok())
+                        .collect()
+                })
+            });
+            let polling =
+                crate::tasks::polled_task(worker.current_task_id, &session.tasks).is_some();
+            pool_role(session.ctx.std_thread_id(lwp).ok(), pools, polling)
+        }
         // A context that could not be read is not a thread that
         // merely entered; say what happened instead of guessing.
         Err(_) => Role::plain("context unreadable"),
@@ -182,36 +196,49 @@ fn park_word(park: Option<ParkState>, polling: bool) -> &'static str {
     }
 }
 
-/// The blocking-pool roles, classified from the unwound stack: a
-/// thread inside `blocking::pool::Inner::run` is the pool's, running
-/// someone's closure when tokio's task machinery sits above that frame
-/// and idle otherwise. A closure is reached only through its task's
-/// vtable poll, which no inlining folds into `run`, so those frames are
-/// there whatever the closure is doing — and a closure blocked on a
-/// lock or a condvar parks through the very primitives an idle pool
-/// thread does, so the park frames cannot tell the two apart. `None`
-/// for every other stack — including an absent one, which cannot
-/// testify either way. The loop is named
-/// `<tokio::runtime::blocking::pool::Inner>::run` under v0 mangling and
-/// without the brackets under legacy mangling; either is the frame.
-fn blocking_role(frames: &[String]) -> Option<&'static str> {
-    let run = frames.iter().position(|name| {
-        name.contains("blocking::pool::Inner>::run") || name.contains("blocking::pool::Inner::run")
-    })?;
-    let running = frames[..run].iter().any(|name| {
-        name.strip_prefix('<')
-            .unwrap_or(name)
-            .starts_with("tokio::runtime::task::")
-    });
-    Some(match running {
-        true => "blocking, running",
-        false => "blocking, idle",
-    })
+/// The role of a thread inside a runtime with no scheduler context,
+/// from its std thread id (`None` where it could not be read) and the
+/// pools' (`None` for a pool whose map could not be read): the pool's,
+/// when a pool holds a handle to that id — running a closure while the
+/// thread's context names the task it is polling, idle otherwise —
+/// else a thread that merely entered. Nothing about a stack enters
+/// into it: what the compiler kept a frame of is not the pool's to say.
+///
+/// A thread with no id is no thread std spawned, so no pool's, whatever
+/// the pools say. Short of that, a thread the pools could not be held
+/// against says so rather than reading as one that merely entered.
+fn pool_role(id: Option<Option<u64>>, pools: &[Option<BTreeSet<u64>>], polling: bool) -> Role {
+    let entered = Role::plain("entered runtime");
+    let Some(id) = id else {
+        return Role {
+            spelled: "entered runtime, pool unread".to_string(),
+            kind: "entered runtime",
+        };
+    };
+    let Some(id) = id else {
+        return entered;
+    };
+    if pools.iter().flatten().any(|pool| pool.contains(&id)) {
+        return Role {
+            spelled: match polling {
+                true => "blocking, running",
+                false => "blocking, idle",
+            }
+            .to_string(),
+            kind: "blocking",
+        };
+    }
+    match pools.iter().all(Option::is_some) {
+        true => entered,
+        false => Role {
+            spelled: "entered runtime, pool unread".to_string(),
+            kind: "entered runtime",
+        },
+    }
 }
 
 /// Every frame's name — the symbol demangled without the hash, or a
-/// signal trampoline's marker — the spelling the role classifier
-/// matches on and the `FRAME 0` cell prints.
+/// signal trampoline's marker — the name the `FRAME 0` cell prints.
 fn stack_names(stack: Option<&unwind::Backtrace>) -> Vec<String> {
     stack
         .map(|bt| {
@@ -965,10 +992,12 @@ pub(crate) fn render<'r, 'b, T: proc::Target>(
 #[cfg(test)]
 mod tests {
     use super::{
-        Clause, CtActivity, Field, ParkState, ThreadRow, block_on_line, blocking_role,
-        exec_heading, fatal_tag, group_value, matcher, member_sample, no_such_thread, park_word,
-        parse_clauses, polling_line, survives,
+        Clause, CtActivity, Field, ParkState, ThreadRow, block_on_line, exec_heading, fatal_tag,
+        group_value, matcher, member_sample, no_such_thread, park_word, parse_clauses,
+        polling_line, pool_role, survives,
     };
+
+    use std::collections::BTreeSet;
 
     /// The three spellings of the heading's claim: believed, stale,
     /// and absent — the stale word is reported, but not as a poll in
@@ -1082,60 +1111,45 @@ mod tests {
         assert_eq!(scoped_worker(None, true, Some(1)), "rt 1 worker ?");
     }
 
-    /// A blocking-pool thread is known by its stack — `Inner::run`
-    /// below, the task machinery above when it runs a closure — and no
-    /// other stack, absent ones included, testifies at all.
+    /// A thread is the pool's exactly when some pool holds a handle to
+    /// its std id — running while its context names a task it polls,
+    /// idle otherwise — whichever runtime's pool that is.
     #[test]
-    fn test_the_blocking_role_is_read_from_the_stack() {
-        let names = |list: &[&str]| -> Vec<String> { list.iter().map(|s| s.to_string()).collect() };
-        let idle = names(&[
-            "__lwp_park",
-            "cond_wait_queue",
-            "std::sync::poison::condvar::Condvar::wait_timeout",
-            "tokio::runtime::blocking::pool::Inner::run",
-            "std::sys::pal::unix::thread::Thread::new::thread_start",
-        ]);
-        assert_eq!(blocking_role(&idle), Some("blocking, idle"));
+    fn test_a_pool_thread_is_known_by_the_pools_handle() {
+        let spelled = |id, pools: &[Option<BTreeSet<u64>>], polling| {
+            let role = pool_role(id, pools, polling);
+            (role.spelled, role.kind)
+        };
+        let pools = [Some(BTreeSet::from([1, 2])), Some(BTreeSet::from([9]))];
+        assert_eq!(
+            spelled(Some(Some(2)), &pools, true),
+            ("blocking, running".to_string(), "blocking")
+        );
+        assert_eq!(
+            spelled(Some(Some(9)), &pools, false),
+            ("blocking, idle".to_string(), "blocking")
+        );
+        assert_eq!(
+            spelled(Some(Some(5)), &pools, true),
+            ("entered runtime".to_string(), "entered runtime")
+        );
+    }
 
-        let running = names(&[
-            "memcpy",
-            "app::compress",
-            "<tokio::runtime::blocking::task::BlockingTask<F> as core::future::future::Future>::poll",
-            "tokio::runtime::task::raw::poll",
-            "tokio::runtime::blocking::pool::Inner::run",
-        ]);
-        assert_eq!(blocking_role(&running), Some("blocking, running"));
-
-        // The same loop under v0 mangling, as a current rustc names it.
-        let v0 = names(&[
-            "app::compress",
-            "<tokio::runtime::task::harness::Harness<app::Task, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll",
-            "<tokio::runtime::blocking::pool::Inner>::run",
-            "<std::sys::thread::unix::Thread>::new::thread_start",
-        ]);
-        assert_eq!(blocking_role(&v0), Some("blocking, running"));
-
-        // A closure blocked on a lock parks through the same primitives
-        // an idle thread does; the task machinery under it is what says
-        // it is running.
-        for park in ["futex_wait", "__lwp_park", "std::thread::park"] {
-            let blocked = names(&[
-                park,
-                "std::sys::sync::mutex::futex::Mutex::lock_contended",
-                "app::compress",
-                "tokio::runtime::task::harness::Harness<T,S>::poll",
-                "tokio::runtime::task::raw::poll",
-                "tokio::runtime::blocking::pool::Inner::run",
-            ]);
-            assert_eq!(blocking_role(&blocked), Some("blocking, running"), "{park}");
-        }
-
-        // A worker parks through the same condvars without ever being
-        // the pool's; nothing below says Inner::run, so nothing is
-        // claimed.
-        let worker = names(&["__lwp_park", "cond_wait_queue", "worker::run"]);
-        assert_eq!(blocking_role(&worker), None);
-        assert_eq!(blocking_role(&[]), None);
+    /// What could not be read is said, never read as "not the pool's":
+    /// an unread id, or an id no readable pool holds while another pool
+    /// went unread. An id a readable pool does hold is the pool's
+    /// whatever the others did, and a thread with no id is no thread
+    /// std spawned, so no pool's either way.
+    #[test]
+    fn test_an_unread_pool_or_id_is_said() {
+        let spelled = |id, pools: &[Option<BTreeSet<u64>>]| pool_role(id, pools, false).spelled;
+        let unread = "entered runtime, pool unread";
+        let pools = [Some(BTreeSet::from([1])), None];
+        assert_eq!(spelled(None, &pools), unread);
+        assert_eq!(spelled(Some(Some(5)), &pools), unread);
+        assert_eq!(spelled(Some(Some(1)), &pools), "blocking, idle");
+        assert_eq!(spelled(Some(None), &pools), "entered runtime");
+        assert_eq!(spelled(Some(Some(5)), &[]), "entered runtime");
     }
 
     /// A row as the table would build it, with the fields the filters

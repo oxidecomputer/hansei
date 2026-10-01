@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`connection 0x7f6dd4004910` over linux-floor/http-conns"
+description: "`connection 0x7f893c004e10` over linux-floor/http-conns"
 ---
 connection 0xADDR
     proto: http1
@@ -20,9 +20,9 @@ connection 0xADDR
         registration: 0xADDR
         ready: writable
         waker: the reader slot, task 9
-        local address: 127.0.0.1:60062 (as the pool's connector recorded it)
-    peer: 127.0.0.1:43899 (the authority of the pool key it was made for)
-    peer: 127.0.0.1:43899 (the socket's, as the pool's connector recorded it)
+        local address: 127.0.0.1:52770 (as the pool's connector recorded it)
+    peer: 127.0.0.1:33051 (the authority of the pool key it was made for)
+    peer: 127.0.0.1:33051 (the socket's, as the pool's connector recorded it)
     route:
         0xADDR hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>
         0xADDR tokio::net::tcp::stream::TcpStream

@@ -316,6 +316,30 @@ pub trait Target: Sync {
     /// the only part both models agree on.
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>>;
 
+    /// The word a pointer-sized thread-local named by `sym` holds in the
+    /// thread whose registers are `regs`, or `None` if that thread holds
+    /// none.
+    ///
+    /// For a thread-local with no destructor — std's thread id, a
+    /// `local_pointer!` — the two models of [`Target::tls_var_addr`]
+    /// park the word in different places. Native TLS (an `STT_TLS`
+    /// symbol) stores it inline at the variable's address; the `os`
+    /// model stores the word itself in the key's slot, with nothing
+    /// behind it, so the slot's value [`Target::tls_var_addr`] hands
+    /// back *is* the word. The symbol's own type says which. A zero
+    /// word reads as `None` under both, since the key model cannot tell
+    /// it from a slot never set.
+    fn tls_word(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
+        let Some(at) = self.tls_var_addr(regs, sym)? else {
+            return Ok(None);
+        };
+        let word = match sym.st_info & 0xf == goblin::elf::sym::STT_TLS {
+            true => self.read_u64(at)?,
+            false => at,
+        };
+        Ok((word != 0).then_some(word))
+    }
+
     /// How far the executable landed from where it was linked: what a
     /// static address out of its debug info must be moved by to be read
     /// in this target. Zero for a position-dependent executable, its

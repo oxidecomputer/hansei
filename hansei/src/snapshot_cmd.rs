@@ -82,7 +82,8 @@ fn warm_render<T: proc::Target>(
 /// Drive every read the `threads` listings make, discarding the
 /// output, so the offline table and blocks replay: every lwp's stack
 /// memory, each context's own rendered state, the worker cores, the
-/// parker arrays, and the blocking pool's counters.
+/// parker arrays, the blocking pool's counters, and which threads are
+/// the pool's: every lwp's std thread id and each pool's handles.
 ///
 /// Deliberately *not* the unwinder's own reads: CFI walking reads
 /// each mapped object's whole image, which is megabytes per fixture
@@ -107,12 +108,14 @@ fn warm_threads<T: proc::Target>(
         for (addr, run) in runs {
             let _ = ctx.proc.read_bytes(addr, run);
         }
+        let _ = ctx.std_thread_id(lwp);
     }
     for rt in runtimes {
         if let bundle::RuntimeFlavor::MultiThread = rt.flavor {
             let _ = ctx.park_states(rt.handle);
         }
         let _ = ctx.blocking_pool(rt.handle);
+        let _ = ctx.pool_thread_ids(rt, &ReadContext { heap });
     }
     for worker in workers {
         let Ok(info) = ctx.context_info(worker.context_addr) else {

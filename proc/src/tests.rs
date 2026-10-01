@@ -383,7 +383,12 @@ impl Target for MemTarget {
         Ok(Vec::new())
     }
 
+    /// The key model for an ordinary symbol; for an `STT_TLS` one, a
+    /// toy native model whose TLS block starts at `%fsbase`.
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
+        if sym.st_info & 0xf == goblin::elf::sym::STT_TLS {
+            return Ok(Some(regs.fsbase + sym.st_value));
+        }
         tls_addr_from_pthread_key(&|addr| self.read_u64(addr), regs, sym)
     }
 }
@@ -514,6 +519,47 @@ fn test_pthread_key_indexes_the_tsd_slot() {
 fn test_unset_key_holds_nothing() {
     let (target, regs, sym) = keyed_target(4);
     assert_eq!(target.tls_var_addr(&regs, &sym).unwrap(), None);
+}
+
+/// Under a key, a word-sized thread-local's slot holds the word
+/// itself: nothing is read behind it, and an unset slot is no word.
+#[test]
+fn test_keyed_tls_word_is_the_slot() {
+    let (target, regs, sym) = keyed_target(3);
+    assert_eq!(target.tls_word(&regs, &sym).unwrap(), Some(0xf03));
+    let (target, regs, sym) = keyed_target(4);
+    assert_eq!(target.tls_word(&regs, &sym).unwrap(), None);
+}
+
+/// Under native TLS the word sits inline at the variable's address,
+/// so it is read from there; a zero word is no word, as under a key.
+#[test]
+fn test_native_tls_word_is_read_inline() {
+    const FSBASE: u64 = 0x7000;
+    let mut bytes = vec![0xaa; 0x10];
+    bytes.extend(0x2au64.to_le_bytes());
+    bytes.extend(0u64.to_le_bytes());
+    let target = MemTarget::new(FSBASE, bytes);
+    let regs = Regs {
+        fsbase: FSBASE,
+        ..Regs::default()
+    };
+    let tls = |st_value| SymbolBuf {
+        name: "ID".to_string(),
+        st_name: 0,
+        st_info: goblin::elf::sym::STT_TLS,
+        st_other: 0,
+        st_shndx: 1,
+        st_value,
+        st_size: 8,
+    };
+    assert_eq!(target.tls_word(&regs, &tls(0x10)).unwrap(), Some(0x2a));
+    assert_eq!(
+        *target.last_read.lock().unwrap(),
+        Some((FSBASE + 0x10, 8)),
+        "the word was not read at the variable"
+    );
+    assert_eq!(target.tls_word(&regs, &tls(0x18)).unwrap(), None);
 }
 
 /// A key past the ninth slot lives in the slow TSD array, which is not

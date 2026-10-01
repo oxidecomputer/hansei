@@ -1435,6 +1435,12 @@ pub enum StaticRole {
     /// binaries that link `tokio::task::local`, so absence is the expected
     /// shape of most targets, not a breakage.
     TlsLocalSetKey,
+    /// The thread-local holding each thread's std `ThreadId` (std's
+    /// `thread::current::id::ID`), set as the thread starts: the name a
+    /// `JoinHandle` held elsewhere knows that thread by. One word — the
+    /// `Cell<Option<ThreadId>>` itself under native TLS, the id as the
+    /// slot's value under a pthread key.
+    TlsThreadId,
 }
 
 /// A static's symbol names: the mangled name is the join key, the demangled
@@ -1595,6 +1601,8 @@ walk_roles! {
     BlockingQueueBuf = "blocking::queue.buf",
     BlockingQueueCap = "blocking::queue.cap",
     BlockingTaskHeader = "blocking::Task.header",
+    BlockingWorkerThreads = "blocking::Shared.worker_threads",
+    PoolThreadId = "blocking::worker_threads.thread.id",
     TrailerWaker = "Trailer.waker",
     ReadinessScheduledIo = "Readiness.scheduled_io",
     ReadinessState = "Readiness.state",

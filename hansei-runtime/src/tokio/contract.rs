@@ -190,6 +190,10 @@ pub fn classify(role: WalkRole) -> Class {
         // still lists every scheduler-owned task.
         BlockingQueue | BlockingQueueHead | BlockingQueueLen | BlockingQueueBuf
         | BlockingQueueCap | BlockingTaskHeader => Class::Optional,
+        // The pool's threads, by the std id of each: what names an lwp
+        // the pool's in `threads`. Without them those rows say only
+        // that the thread entered the runtime.
+        BlockingWorkerThreads | PoolThreadId => Class::Optional,
         // The join waker a task's Trailer parks for whoever awaits its
         // `JoinHandle` — the waker-slot index's join edge. Enrichment
         // only: a bundle without it still lists and traces.
@@ -662,6 +666,10 @@ pub fn verify_walk_contract(view: &BundleView<'_>) -> ContractReport {
             StaticRole::TlsLocalSetKey,
             Optional,
         ),
+        // Every std thread sets it, so an absence is std having moved
+        // it — but all that rests on it is naming the blocking pool's
+        // threads.
+        ("statics.tls_thread_id", StaticRole::TlsThreadId, Optional),
     ] {
         let outcome = if view.bundle().statics.entries.contains_key(&role) {
             WalkOutcome::Bound {

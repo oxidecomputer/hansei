@@ -635,6 +635,7 @@ fn dump(path: &Path) -> Result<()> {
             StaticRole::TlsContextKey => "tls-context-key",
             StaticRole::TaskWakerVtable => "task-waker-vtable",
             StaticRole::TlsLocalSetKey => "tls-local-set-key",
+            StaticRole::TlsThreadId => "tls-thread-id",
         };
         println!("{role}: {} ({})", def.symbol, def.display);
     }

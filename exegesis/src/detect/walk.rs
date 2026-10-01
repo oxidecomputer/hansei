@@ -1425,43 +1425,13 @@ fn decls() -> Vec<WalkDecl> {
             Word,
             fd_of_resource,
         ),
-        // The pool's queue itself — the spawn_blocking cells no task
-        // list carries — behind the loom mutex, whose spelling varies
-        // with the parking_lot feature within one release: exactly the
-        // divergence ordered alternatives exist for.
+        // The pool's queue itself: the spawn_blocking cells no task
+        // list carries.
         decl(
             WalkRole::BlockingQueue,
             WalkRoot::AnyHandle,
             Aggregate,
-            || {
-                let prefix = reach![
-                    Named("blocking_spawner"),
-                    Named("inner"),
-                    Named("ptr"),
-                    Named("pointer"),
-                    Deref,
-                    Named("data"),
-                    Named("shared"),
-                ];
-                [
-                    // The parking_lot shim: a tuple whose `__1` is the
-                    // real lock_api mutex, its payload an UnsafeCell
-                    // under `data`.
-                    reach![Named("__1"), Named("data"), Named("value"), Named("queue")],
-                    // The std shim: a tuple over std's Mutex, whose
-                    // payload sits in `data`'s UnsafeCell.
-                    reach![Named("__0"), Named("data"), Named("value"), Named("queue")],
-                    // A bare std Mutex, should the shim fold away.
-                    reach![Named("data"), Named("value"), Named("queue")],
-                ]
-                .into_iter()
-                .map(|tail| {
-                    let mut steps = prefix.clone();
-                    steps.extend(tail);
-                    steps
-                })
-                .collect()
-            },
+            || pool_shared("queue"),
         ),
         // The VecDeque's ring: head index, length, buffer pointer and
         // capacity. The buffer pointer is named the whole way — the
@@ -1519,6 +1489,42 @@ fn decls() -> Vec<WalkDecl> {
                     Named("raw"),
                     Named("ptr"),
                     Named("pointer"),
+                ]]
+            },
+        ),
+        // The pool's own threads: the `JoinHandle` it keeps for each
+        // one it spawned and has not seen exit, keyed by the pool's
+        // counter. Which lwps are the pool's is recorded here and
+        // nowhere else — the runtime's counters say how many, and a
+        // thread's stack says it only while its compiler kept the
+        // pool's loop a frame of its own.
+        decl(
+            WalkRole::BlockingWorkerThreads,
+            WalkRoot::AnyHandle,
+            Aggregate,
+            || pool_shared("worker_threads"),
+        ),
+        // Each handle's std `ThreadId`, from the map's bucket: the
+        // handle's `JoinInner`, its `Thread`, and the id inside the
+        // pinned `Arc` — what the thread's own `ID` thread-local
+        // holds.
+        decl(
+            WalkRole::PoolThreadId,
+            WalkRoot::Type("(usize, std::thread::join_handle::JoinHandle<()>)"),
+            Word,
+            || {
+                vec![reach![
+                    Named("__1"),
+                    Named("__0"),
+                    Named("thread"),
+                    Named("inner"),
+                    Named("pointer"),
+                    Named("ptr"),
+                    Named("pointer"),
+                    Deref,
+                    Named("data"),
+                    Named("id"),
+                    PeelTo(WORD),
                 ]]
             },
         ),
@@ -2122,6 +2128,39 @@ fn oneshot_task(member: &'static str) -> Vec<Reach<'static>> {
             Named("waker"),
         ],
     ]
+}
+
+/// A member of the blocking pool's `Shared`, from a scheduler `Handle`:
+/// the spawner's `Arc<Inner>`, then the loom mutex around `Shared`,
+/// whose member names vary with the parking_lot feature within one
+/// release — exactly the divergence ordered alternatives exist for.
+fn pool_shared(member: &'static str) -> Vec<Reach<'static>> {
+    let prefix = reach![
+        Named("blocking_spawner"),
+        Named("inner"),
+        Named("ptr"),
+        Named("pointer"),
+        Deref,
+        Named("data"),
+        Named("shared"),
+    ];
+    [
+        // The parking_lot shim: a tuple whose `__1` is the real
+        // lock_api mutex, its payload an UnsafeCell under `data`.
+        reach![Named("__1"), Named("data"), Named("value"), Named(member)],
+        // The std shim: a tuple over std's Mutex, whose payload sits in
+        // `data`'s UnsafeCell.
+        reach![Named("__0"), Named("data"), Named("value"), Named(member)],
+        // A bare std Mutex, should the shim fold away.
+        reach![Named("data"), Named("value"), Named(member)],
+    ]
+    .into_iter()
+    .map(|tail| {
+        let mut steps = prefix.clone();
+        steps.extend(tail);
+        steps
+    })
+    .collect()
 }
 
 /// An `Arc<T>`'s route to its `T`: the `ArcInner` pointer, then the

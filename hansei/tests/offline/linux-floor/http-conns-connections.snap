@@ -6,10 +6,10 @@ ADDR            TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE        
 0xADDR  4     —       http1  server  idle               TS on the target's monotonic clock  —                —       —       —
 0xADDR  5     —       http1  client  idle               —                                            —                —       —       —
 0xADDR  8     —       http1  server  handling request   —                                            —                —       GET     /park
-0xADDR  9     7       http1  client  awaiting response  —                                            127.0.0.1:43899  —       GET     —
+0xADDR  9     7       http1  client  awaiting response  —                                            127.0.0.1:33051  —       GET     —
 0xADDR  11    —       http1  server  handling request   —                                            —                —       GET     /park
-0xADDR  12    10      http1  client  awaiting response  —                                            127.0.0.1:43899  —       GET     http://127.0.0.1:43899/park
+0xADDR  12    10      http1  client  awaiting response  —                                            127.0.0.1:33051  —       GET     http://127.0.0.1:33051/park
 0xADDR  13    —       http1  server  negotiating        —                                            —                —       —       —
 0xADDR  15    —       http1  server  idle               TS on the target's monotonic clock  —                —       —       —
-0xADDR  16    —       http1  client  idle               —                                            127.0.0.1:43899  —       —       —
+0xADDR  16    —       http1  client  idle               —                                            127.0.0.1:33051  —       —       —
 [9 connections]

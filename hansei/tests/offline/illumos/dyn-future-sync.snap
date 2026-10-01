@@ -9,10 +9,10 @@ a tokio::task::join_set::JoinSet<u32> (set 0xADDR): 1 member, driven by task 3 (
     Members (idle): task 5
 
 oneshot 0xADDR: nothing sent, sender alive
-    rx: task 4
+    rx: task 5
 
 oneshot 0xADDR: nothing sent, sender alive
-    rx: task 5
+    rx: task 4
 
 oneshot 0xADDR: nothing sent, sender alive
     rx: task 3

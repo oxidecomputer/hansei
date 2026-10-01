@@ -13,6 +13,7 @@
 
 pub use super::model::*;
 
+use super::census::{NodeStop, walk_table_buckets};
 use super::contract::{self, ContractReport, WalkPolicy, Walked};
 use super::discovery::{
     DiscoveryIssue, Observation, OwnerClaim, OwnerEvidence, TaskRecordId, TaskSource, list_claim,
@@ -49,7 +50,7 @@ use reify::Value;
 use foldhash::{HashMap, HashSet};
 use std::cell::RefCell;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Hard bound on await-chain depth: anything deeper indicates corrupt
 /// memory (or a pathological program), and the walk must report it
@@ -2803,6 +2804,67 @@ impl<'b, T: Target> Context<'b, T> {
             }
         }
         Ok(())
+    }
+
+    /// The std `ThreadId` of every thread `runtime`'s blocking pool
+    /// spawned and has not seen exit: the pool's `worker_threads` map,
+    /// a `JoinHandle` per thread, read bucket by bucket through the
+    /// map's table binding. This, and not any thread's stack, is what
+    /// says an lwp is the pool's — match it against
+    /// [`Context::std_thread_id`].
+    pub fn pool_thread_ids(
+        &self,
+        runtime: &RuntimeRef<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<BTreeSet<u64>> {
+        // Far past any pool a target configures; a count beyond it is a
+        // table the words did not describe.
+        const MAX_POOL_THREADS: usize = 1 << 16;
+        let map = self
+            .walk(WalkRole::BlockingWorkerThreads)
+            .walk_at_with(read, runtime.handle)?;
+        let table = self
+            .type_semantics(map.ty.id())
+            .and_then(|record| record.table.as_ref())
+            .ok_or_else(|| {
+                anyhow!(
+                    "the pool's thread map {} binds no table",
+                    self.type_name(map.ty.id())
+                )
+            })?;
+        let mut ids = BTreeSet::new();
+        let mut visit = |_: usize, bucket: Value<'b>| -> std::result::Result<(), NodeStop> {
+            let id: u64 = self
+                .walk(WalkRole::PoolThreadId)
+                .read_with(read, bucket)
+                .map_err(NodeStop::Failed)?;
+            ids.insert(id);
+            Ok(())
+        };
+        walk_table_buckets(self, read, map, table, MAX_POOL_THREADS, &mut visit)
+            .map_err(|stop| anyhow::Error::from(stop).context("the pool's thread map"))?;
+        Ok(ids)
+    }
+
+    /// The std `ThreadId` `lwp` was started with, from std's thread-id
+    /// thread-local; `None` where the thread holds none, which no
+    /// thread std spawned is.
+    pub fn std_thread_id(&self, lwp: &LwpInfo) -> Result<Option<u64>> {
+        let def = self
+            .view
+            .bundle()
+            .statics
+            .entries
+            .get(&StaticRole::TlsThreadId)
+            .ok_or_else(|| anyhow!("the tokio info records no std thread-id static"))?;
+        let sym = self.object_symbol(&def.symbol)?.ok_or_else(|| {
+            anyhow!(
+                "std thread-id static {} ({}) not found in the target's symtab",
+                def.display,
+                def.symbol
+            )
+        })?;
+        Ok(self.proc.tls_word(&lwp.regs, &sym)?)
     }
 
     /// Take one candidate into the store.

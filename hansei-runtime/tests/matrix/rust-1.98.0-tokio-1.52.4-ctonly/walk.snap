@@ -2,10 +2,11 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 0 broken, 67 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 170 entries, 0 broken, 67 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
+  ok      statics.tls_thread_id
   ok      Context.current_task_id
   ok      Context.thread_id
   absent  Context.handle — the target has no multi_thread scheduler compiled in
@@ -116,6 +117,8 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 167 entries, 
   ok      blocking::queue.buf (no multi_thread Handle)
   ok      blocking::queue.cap (no multi_thread Handle)
   ok      blocking::Task.header
+  ok      blocking::Shared.worker_threads (spelling 2 of 3; no multi_thread Handle)
+  ok      blocking::worker_threads.thread.id
   ok      Trailer.waker
   absent  Readiness.scheduled_io — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)
   absent  Readiness.state — no tokio::runtime::io::scheduled_io::Readiness type in the tokio info (the target does not reach one)

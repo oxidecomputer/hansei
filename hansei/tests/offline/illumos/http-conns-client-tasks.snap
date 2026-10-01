@@ -16,14 +16,14 @@ task 5
     held futures: 0
     join sets: 0
 
-task 10
+task 9
     state: idle
     thread: <none>
     type: async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
     awaiting at: src/bin/http-conns.rs:76
     awaiting on: http1 client 0xADDR fd 12 (GET sent, awaiting response headers)
         via: oneshot tx 0xADDR (nothing sent, receiver alive)
-        caller: task 8
+        caller: task 7
         io 0xADDR read
             waker: the read-waiter slot, awaiting readable, ready: writable
     spawned at: src/bin/http-conns.rs:75:9

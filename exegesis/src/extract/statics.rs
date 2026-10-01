@@ -2,9 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Named-statics recovery: locate the tokio statics hansei resolves by
-//! symbol name — the TLS context key and the task waker vtable — by their
-//! v0-mangled shape in the symbol table.
+//! Named-statics recovery: locate the statics hansei resolves by symbol
+//! name — tokio's TLS context key and task waker vtable, std's thread
+//! id — by their v0-mangled shape in the symbol table.
 //!
 //! A DWARF variable sweep used to run first, with this as the fallback,
 //! but its answer was only ever trusted when the symbol existed in the
@@ -53,7 +53,9 @@ pub(super) fn find_statics(
     }
     // TlsLocalSetKey is deliberately not checked: the `task::local::CURRENT`
     // thread-local exists only in binaries that link tokio's local module,
-    // so its absence is the expected shape of most targets.
+    // so its absence is the expected shape of most targets. Nor is
+    // TlsThreadId: without it only the blocking pool's thread roles go
+    // unread, which the walk contract reports.
     out
 }
 
@@ -78,6 +80,13 @@ fn match_static_symbol(sym: &str) -> Option<StaticRole> {
     }
     if sym.contains("5tokio4task5local7CURRENT") && sym.ends_with("__RUST_STD_INTERNAL_VAL") {
         return Some(StaticRole::TlsLocalSetKey);
+    }
+    // std's thread id is a plain static, not a `thread_local!`: a
+    // `#[thread_local]` where the target has native TLS, a
+    // `local_pointer!` key where it does not. Either way the path ends
+    // the symbol, where the `get` and `set` beside it extend it.
+    if sym.ends_with("3std6thread7current2id2ID") {
+        return Some(StaticRole::TlsThreadId);
     }
     None
 }
@@ -116,6 +125,19 @@ mod tests {
         let parking_lot = "_RNvNCNvNvNtCs6eIw0jaMQft_16parking_lot_core11parking_lot16with_thread_data11THREAD_DATA023___RUST_STD_INTERNAL_VAL";
         assert_eq!(match_static_symbol(mpmc_context), None);
         assert_eq!(match_static_symbol(parking_lot), None);
+    }
+
+    // Observed in a Linux blocking-pool build (an `STT_TLS` symbol) and
+    // an illumos one (an object holding a pthread key): one name for
+    // both. The accessors beside it are not the static.
+    #[test]
+    fn test_match_thread_id_symbol() {
+        let sym = "_RNvNtNtNtCs6ZjlLoI6YmX_3std6thread7current2id2ID";
+        assert_eq!(match_static_symbol(sym), Some(StaticRole::TlsThreadId));
+        let get = "_RNvNtNtNtCs63vKfNedJX0_3std6thread7current2id3get";
+        let init = "_RNCNvNtNtNtCs63vKfNedJX0_3std6thread7current2id11get_or_init0B9_";
+        assert_eq!(match_static_symbol(get), None);
+        assert_eq!(match_static_symbol(init), None);
     }
 
     #[test]
