@@ -4271,8 +4271,7 @@ impl<'b, T: Target> Context<'b, T> {
         let stride = record.size();
         let mut bytes = 0u64;
         for i in 0..len {
-            let slot = (head + i) % cap;
-            let addr = buf + slot * stride;
+            let addr = ring_slot(buf, head, i, cap, stride);
             let value = Value::read(self.proc, record, addr)
                 .with_context(|| format!("outgoing record {i} at {addr:#x}"))?;
             let len = contract::execute_steps(self, read, value, &ring.record_len.steps)
@@ -5236,8 +5235,28 @@ struct HeaderIdentity {
     vtable: TaskVtable,
 }
 
+/// Where a `VecDeque` ring's `i`th element sits: `head` is the first
+/// one's slot, the slots wrap at `cap`, and each is `stride` bytes from
+/// the storage at `buf`.
+fn ring_slot(buf: u64, head: u64, i: u64, cap: u64, stride: u64) -> u64 {
+    buf + (head + i) % cap * stride
+}
+
 #[cfg(test)]
 mod tests {
+    /// A ring's elements run from its head slot, a stride apart, and
+    /// wrap to the storage's start past its last slot — the order
+    /// rustls's outgoing records sit in, as the r23 client's two did,
+    /// in slots 3 and 0 of four.
+    #[test]
+    fn test_a_ring_element_sits_at_its_wrapped_slot() {
+        use super::ring_slot;
+        assert_eq!(ring_slot(0x5dca5c0, 3, 0, 4, 24), 0x5dca608);
+        assert_eq!(ring_slot(0x5dca5c0, 3, 1, 4, 24), 0x5dca5c0);
+        assert_eq!(ring_slot(0x1000, 0, 2, 4, 24), 0x1030);
+        assert_eq!(ring_slot(0x1000, 1, 2, 4, 24), 0x1048);
+    }
+
     /// A primitive's name is kept once: the same name is the same
     /// string whichever bundle it came from, and another name another.
     #[test]

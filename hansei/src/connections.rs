@@ -1466,6 +1466,18 @@ mod tests {
             };
             let plain = fill(over(socket(None)), held, stopped);
             assert_eq!((plain.addr, plain.proto), (0x6500, Proto::Http1));
+            // A find awaiting the connection reads its TLS words the
+            // same way, for the line under its wait.
+            let observed = |stream| {
+                crate::futures::observed_tls(Some(&ResourceObservation::HttpConn(Box::new(over(
+                    stream,
+                )))))
+            };
+            assert_eq!(
+                observed(socket(Some(Ok(tls.clone())))),
+                Some(Ok(tls.clone()))
+            );
+            assert_eq!(observed(socket(None)), None);
             let secure = fill(over(socket(Some(Ok(tls)))), held, stopped);
             assert_eq!((secure.addr, secure.proto), (0x6500, Proto::Http1Tls));
             assert_eq!(secure.label(), "client task 7");
@@ -1504,8 +1516,14 @@ mod tests {
         );
         assert_eq!(in_flight.caller.as_deref(), Some("621"));
         assert_eq!(in_flight.request, Some(line(Some("GET"), Some("/park"))));
+        // Whatever the base row carried, a wrapper still choosing its
+        // version speaks plain HTTP/1 and has nothing queued to send.
         let negotiating = conn_row(
-            base.clone(),
+            ConnRow {
+                proto: Proto::Tls,
+                unsent: Some(80),
+                ..base.clone()
+            },
             &ResourceObservation::HttpNegotiating(HttpNegotiatingObservation {
                 wrapper: key(0x12345),
             }),
@@ -1517,6 +1535,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(negotiating.addr, 0x12345);
+        assert_eq!(negotiating.proto, Proto::Http1);
+        assert_eq!(negotiating.unsent, None);
         assert_eq!(negotiating.role, Some(HttpRole::Server));
         assert_eq!(
             negotiating.phase,

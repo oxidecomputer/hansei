@@ -8046,6 +8046,15 @@ mod tests {
             declined(&[source(&at("a233079"), None), source(&at("68a4b3b"), None)])
                 .contains("declared in both")
         );
+        // Two declarations in the one file, one of them checksummed,
+        // are one origin, and the checksum still holds it.
+        let twice = origin(&[
+            source(&at("a233079"), None),
+            source(&at("a233079"), Some(reviewed)),
+        ])
+        .unwrap();
+        assert_eq!(twice.revision, "a233079");
+        assert_eq!(twice.files.len(), 1);
         assert!(
             declined(&[source(&at("a233079"), Some(convention.revisions[0].1))])
                 .contains("not revision a233079's")
@@ -10072,6 +10081,57 @@ mod tests {
         assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
     }
 
+    /// A stream's peer binds only where its name is an array of bytes
+    /// with room for one: an empty array, an array of wider or signed
+    /// elements, or no array at all binds nothing.
+    #[test]
+    fn test_a_peer_name_is_a_nonempty_byte_array() {
+        use crate::bundle::Encoding::{self, Signed, Unsigned};
+        let plan = |count: u64, size: u64, encoding: Encoding, array: bool| {
+            let (mut types, mut strings) = (TypeTable::default(), StringInterner::new());
+            let elem = BundleTypeId(types.types.len() as u32);
+            types.types.push(TypeDef::Base {
+                name: strings.intern("elem"),
+                size,
+                encoding,
+            });
+            let name = BundleTypeId(types.types.len() as u32);
+            types.types.push(if array {
+                TypeDef::Array { elem, count }
+            } else {
+                TypeDef::Base {
+                    name: strings.intern("u64"),
+                    size: 8,
+                    encoding: Unsigned,
+                }
+            });
+            types.types.push(TypeDef::Struct {
+                name: strings.intern("sprockets_tls::Stream"),
+                size: 64,
+                members: vec![MemberDef {
+                    name: strings.intern("platform_id"),
+                    ty: name,
+                    offset: 0,
+                }],
+            });
+            let stream = BundleTypeId(types.types.len() as u32 - 1);
+            plan_stream_peer(stream, &[Hop::Member("platform_id")], &types, &strings)
+                .map(|path| path.target == name)
+        };
+        assert_eq!(plan(32, 1, Unsigned, true), Ok(true));
+        assert_eq!(plan(1, 1, Unsigned, true), Ok(true));
+        for (count, size, encoding, array) in [
+            (0, 1, Unsigned, true),
+            (32, 2, Unsigned, true),
+            (32, 1, Signed, true),
+            (32, 1, Unsigned, false),
+        ] {
+            let (kind, _) = plan(count, size, encoding, array)
+                .expect_err(&format!("{count} {size} {encoding:?} {array}"));
+            assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        }
+    }
+
     /// A lock binds the one word it is — a whole integer at its start,
     /// and nothing beside it — held when any of std's futex bits is set;
     /// a word elsewhere, a word with company, or a word of no integer's
@@ -10110,6 +10170,28 @@ mod tests {
             assert_eq!(kind, SemanticIssueKind::MissingLayout, "{members:?}");
             assert_eq!(detail, "futex is not the lock's one word", "{members:?}");
         }
+    }
+
+    /// An io operation's seed, or a handshake's, puts its record in
+    /// the table by itself — a build that inlined the operation's
+    /// `poll` leaves no declaration to do it.
+    #[test]
+    fn test_an_io_operation_or_a_handshake_alone_is_its_own_record() {
+        assert!(!Seed::default().is_own_record());
+        let operation = Seed {
+            io_op: Some(IoOpSeed {
+                kind: IoOperationKind::Read,
+                pointer: "reader",
+                sliced: true,
+            }),
+            ..Seed::default()
+        };
+        assert!(operation.is_own_record());
+        let handshake = Seed {
+            handshake: true,
+            ..Seed::default()
+        };
+        assert!(handshake.is_own_record());
     }
 
     /// Each kind of coroutine environment binds under its own rule, the

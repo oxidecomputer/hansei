@@ -478,4 +478,28 @@ exclude_re = [
     # glue whose type is an evidence entry — which a skipped symbol has
     # neither of. The filter is a cost, not an answer.
     "replace \\|\\| with && in Evidence<'a>::glue",
+    # Equivalent mutant: the sole-release fallback's filter. With `||`
+    # a type its own declarations already labeled takes the fallback
+    # too, but a crate root has a sole release only where the binary
+    # links one release of one package naming it — the label those
+    # declarations gave — and a declined type's root names two
+    # packages, so has none.
+    "replace && with \\|\\| in declared_releases",
+    # Equivalent mutant: the stream-route walk's cycle bound. A route
+    # that ends at a socket enters each record at most once, so its
+    # hops never reach the record count, and a cycle that `<` stops
+    # at the count `<=` stops one hop later, with the same error.
+    "replace < with <= in io_routes_end_at_sockets::ends",
+    # Equivalent mutant: the runtime's own route bound. Validation has
+    # proved every route ends at a socket well inside it, so a route
+    # read from a validated bundle never comes near the bound; it only
+    # stops a table that was never validated.
+    "replace < with <= in Context<'b, T>::follow_io_route",
+    # No fixture can reach it: a peer is bound only on sprockets' TLS
+    # stream, a git-only crate no test program links, and nothing else
+    # names its peer as bytes in the stream. The reading is pinned by
+    # the r23 sled-agent cores, whose trust-quorum rows print each
+    # peer's platform id; the binding's planning and validation have
+    # unit tests of their own.
+    "replace Context<'b, T>::observe_peer -> Result<String, String> with Ok",
 ]

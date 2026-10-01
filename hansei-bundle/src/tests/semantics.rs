@@ -107,6 +107,10 @@ fn base() -> Bundle {
         "reqwest-conn-0.12.14",
         "registry/src/index.crates.io-1949cf8c6b5b557f/reqwest-0.13.2/src/connect.rs",
         "_RNvXs_poll_read",
+        "hyper-rustls",
+        "0.27.7",
+        "hyper-rustls-stream-0.27.0",
+        "registry/src/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.27.7/src/stream.rs",
     ] {
         strings.intern(s);
     }
@@ -3684,6 +3688,53 @@ fn test_io_routes_end_at_sockets_and_operations_reach_them() {
     });
     bad(&cycle, "forwards to an unrouted type");
 
+    // Two routed streams, each holding a pointer to the other: every
+    // hop lands on a routed type, and none ever reaches a socket.
+    let mut ring = b.clone();
+    let at = ring.types.types.len() as u32;
+    let (x, y, to_x, to_y) = (
+        BundleTypeId(at),
+        BundleTypeId(at + 1),
+        BundleTypeId(at + 2),
+        BundleTypeId(at + 3),
+    );
+    let holding = |pointer| TypeDef::Struct {
+        name: FIELD,
+        size: 8,
+        members: vec![MemberDef {
+            name: FIELD,
+            ty: pointer,
+            offset: 0,
+        }],
+    };
+    ring.types.types.extend([
+        holding(to_y),
+        holding(to_x),
+        TypeDef::Pointer {
+            name: None,
+            target: x,
+        },
+        TypeDef::Pointer {
+            name: None,
+            target: y,
+        },
+    ]);
+    for (from, to) in [(x, y), (y, x)] {
+        let mut stream = record(from);
+        stream.future = None;
+        stream.io_route = Some(IoRouteBinding {
+            rule: SemanticRuleId(0),
+            step: IoRouteStep::Forward {
+                inner: TypedPath {
+                    steps: vec![named(FIELD), Step::Deref],
+                    target: to,
+                },
+            },
+        });
+        ring.semantics.types.push(stream);
+    }
+    bad(&ring, "a stream route runs in a cycle");
+
     let mut to_itself = b.clone();
     to_itself.semantics.types[parent].io_route = Some(IoRouteBinding {
         rule: SemanticRuleId(0),
@@ -3793,6 +3844,31 @@ fn third_party_routes() -> Bundle {
     b.semantics.types.extend([tls, op, stream]);
     b.validate().unwrap();
     b
+}
+
+/// hyper-rustls's stream matches its variants the way tokio-rustls's
+/// state does, under hyper-rustls's own rule, whose origin is
+/// hyper-rustls's declarations and no other crate's.
+#[test]
+fn test_a_hyper_rustls_match_stands_on_hyper_rustls() {
+    let mut b = third_party_routes();
+    b.semantics.origins.push(SemanticOrigin::LibraryDelegation {
+        package: StrRef(52),
+        version: StrRef(53),
+        family: StrRef(54),
+        source: StrRef(55),
+        files: Vec::new(),
+    });
+    let origin = SemanticOriginId(b.semantics.origins.len() as u32 - 1);
+    b.semantics.rules[2] = SemanticRule {
+        kind: SemanticRuleKind::HyperRustlsStream,
+        revision: 1,
+        origin,
+    };
+    b.validate().unwrap();
+    // tokio-rustls's origin is somebody else's review.
+    b.semantics.rules[2].origin = SemanticOriginId(1);
+    bad(&b, "third-party delegation needs source evidence");
 }
 
 /// A match's every case selects its own variant first and ends at a
@@ -4167,6 +4243,33 @@ fn test_tls_words_bind_by_shape_under_their_rules() {
     let mut unselected = b.clone();
     session(&mut unselected).version = words.state.clone();
     bad(&unselected, "not selected from its option");
+    // A `Some` selected from an option, but another one than the
+    // negotiated version's.
+    let mut elsewhere = b.clone();
+    // A name the connection does not use: the stream's for it.
+    let Step::Member(MemberRef::Named(words_name)) = tls(&mut b.clone()).session.steps[0] else {
+        unreachable!()
+    };
+    let connection_ty = b.semantics.types[connection].ty.0 as usize;
+    let TypeDef::Struct { members, size, .. } = &mut elsewhere.types.types[connection_ty] else {
+        unreachable!()
+    };
+    let negotiated = members
+        .iter()
+        .find(|m| m.ty == words.negotiated_version.target)
+        .cloned()
+        .unwrap();
+    members.push(MemberDef {
+        name: words_name,
+        offset: *size,
+        ..negotiated
+    });
+    *size += 8;
+    session(&mut elsewhere).version = path(
+        vec![named(words_name), words.version.steps[1]],
+        words.version.target,
+    );
+    bad(&elsewhere, "not selected from its option");
 
     let mut wide_flag = b.clone();
     session(&mut wide_flag).has_seen_eof = words.read_seq.clone();
@@ -4187,6 +4290,16 @@ fn test_tls_words_bind_by_shape_under_their_rules() {
     let mut unsized_record = b.clone();
     session(&mut unsized_record).sendable.record = BundleTypeId(13);
     bad(&unsized_record, "TLS session record is not a sized struct");
+    // A struct, but one of no size: nothing to stride the ring by.
+    let mut empty_record = b.clone();
+    let empty = BundleTypeId(empty_record.types.types.len() as u32);
+    empty_record.types.types.push(TypeDef::Struct {
+        name: StrRef(0),
+        size: 0,
+        members: Vec::new(),
+    });
+    session(&mut empty_record).sendable.record = empty;
+    bad(&empty_record, "TLS session record is not a sized struct");
 
     let mut record_word = b.clone();
     session(&mut record_word).sendable.record_len = path(Vec::new(), BundleTypeId(22));
@@ -4259,8 +4372,91 @@ fn test_tls_words_bind_by_shape_under_their_rules() {
     };
     members.last_mut().unwrap().ty = words;
     *size = 56;
-    peer(&mut wide).name = path(inner, words);
+    peer(&mut wide).name = path(inner.clone(), words);
     bad(&wide, "stream peer name is not an array of bytes");
+
+    // Bytes, but none of them.
+    let mut empty = b.clone();
+    let none = BundleTypeId(empty.types.types.len() as u32);
+    empty.types.types.push(TypeDef::Array {
+        elem: BundleTypeId(13),
+        count: 0,
+    });
+    let TypeDef::Struct { members, .. } = &mut empty.types.types[12] else {
+        unreachable!()
+    };
+    members.last_mut().unwrap().ty = none;
+    peer(&mut empty).name = path(inner, none);
+    bad(&empty, "stream peer name is not an array of bytes");
+}
+
+/// A route that runs back on itself through matches alone, or through
+/// trait objects alone, is refused as surely as one through forwards:
+/// every kind of step counts its hop toward the bound.
+#[test]
+fn test_a_cycle_of_matches_or_of_trait_objects_is_refused() {
+    // Two enums whose one variant each holds the other.
+    let mut matched = third_party_routes();
+    let at = matched.types.types.len() as u32;
+    let (one, two) = (BundleTypeId(at), BundleTypeId(at + 1));
+    for other in [two, one] {
+        matched.types.types.push(TypeDef::Enum {
+            name: FIELD,
+            size: 16,
+            shape: VariantShape {
+                discr: None,
+                variants: vec![VariantDef {
+                    name: VARIANT,
+                    discr_values: None,
+                    payload: MemberDef {
+                        name: VARIANT,
+                        ty: other,
+                        offset: 0,
+                    },
+                    decl: None,
+                    await_site: None,
+                }],
+            },
+        });
+    }
+    for (from, to) in [(one, two), (two, one)] {
+        let mut stream = record(from);
+        stream.future = None;
+        stream.io_route = Some(IoRouteBinding {
+            rule: SemanticRuleId(2),
+            step: IoRouteStep::Match {
+                cases: vec![path(vec![Step::Variant(VARIANT)], to)],
+            },
+        });
+        matched.semantics.types.push(stream);
+    }
+    bad(&matched, "a stream route runs in a cycle");
+
+    // Two trait-object holders, each the other's one case.
+    let mut dynamic = dyn_route();
+    let holder = BundleTypeId(12);
+    let other = BundleTypeId(dynamic.types.types.len() as u32);
+    dynamic.types.types.push(dynamic.types.types[12].clone());
+    let mut twin = dynamic
+        .semantics
+        .types
+        .iter()
+        .find(|record| record.ty == holder)
+        .unwrap()
+        .clone();
+    twin.ty = other;
+    for record in dynamic.semantics.types.iter_mut().chain([&mut twin]) {
+        let to = if record.ty == holder { other } else { holder };
+        if let Some(IoRouteBinding {
+            step: IoRouteStep::Dyn { cases, .. },
+            ..
+        }) = &mut record.io_route
+        {
+            cases[0].target = to;
+        }
+    }
+    dynamic.semantics.types.push(twin);
+    bad(&dynamic, "a stream route runs in a cycle");
 }
 
 /// [`io_routes`] with a stream behind a trait object on top: a struct
@@ -4416,6 +4612,11 @@ fn test_a_stream_trait_object_routes_through_its_cases() {
     let mut overlap = b.clone();
     step(&mut overlap).0.read_slot = 2;
     bad(&overlap, "vtable slots overlap");
+    // The read slot on the size slot overlaps as surely as on the
+    // align slot.
+    let mut on_size = b.clone();
+    step(&mut on_size).0.size_slot = 3;
+    bad(&on_size, "vtable slots overlap");
 
     let mut empty = b.clone();
     step(&mut empty).1.clear();
