@@ -728,6 +728,29 @@ pub struct TlsSessionBinding {
     /// `prefix_used` bytes already sent. What the next flush or write
     /// would send, and nothing else will.
     pub sendable: SendableBinding,
+    /// `core.common_state.received_plaintext`, a buffer of the same
+    /// shape: the records decrypted and not yet read by the
+    /// application. `None` where its layout did not bind, as for every
+    /// word below; the connection's verdict stands without them.
+    pub received: Option<SendableBinding>,
+    /// `core.common_state.handshake_kind.Some.__0`: the C-like
+    /// `HandshakeKind`, whose enumerator says how the handshake went
+    /// (`Full`, `FullWithHelloRetryRequest`, `Resumed`); inactive until
+    /// it settles.
+    pub handshake_kind: Option<TypedPath>,
+    /// The cipher suite the handshake chose, one path per variant of
+    /// `SupportedCipherSuite` the build has
+    /// (`core.common_state.suite.Some.__0.Tls13.__0.*.common.suite`):
+    /// through the variant's `&'static` suite to the IANA `CipherSuite`
+    /// enum, whose variant names it. The one whose variant is live reads.
+    pub suites: Vec<TypedPath>,
+    /// `core.common_state.alpn_protocol.Some.__0.__0`'s byte pointer and
+    /// length: the protocol ALPN chose, as text.
+    pub alpn_ptr: Option<TypedPath>,
+    pub alpn_len: Option<TypedPath>,
+    /// `core.common_state.peer_certificates.Some.__0.__0.len`: how many
+    /// certificates the peer presented; inactive where it presented none.
+    pub peer_certificates: Option<TypedPath>,
 }
 
 /// rustls's `ChunkVecBuffer` of outgoing records, reached from the

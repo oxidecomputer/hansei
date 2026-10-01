@@ -716,8 +716,11 @@ pub enum Command {
     /// and whether it serves TLS (a dropshot server's state says), and
     /// the ALPN and proxy flag a client's pool recorded for a
     /// connection it keeps idle. A TLS connection's has its side, version
-    /// and verdict, the records each direction carried, what is
-    /// written and unsent, and how far each direction has closed. The
+    /// and verdict, the cipher suite, the protocol ALPN chose, how the
+    /// handshake went and how many certificates the peer presented, the
+    /// records each direction carried, what is written and unsent, what
+    /// is decrypted and not yet read, and how far each direction has
+    /// closed. The
     /// socket's has its descriptor, its stream, its registration
     /// with the io driver — the readiness last delivered and every
     /// waker parked there — and its local address where a client's

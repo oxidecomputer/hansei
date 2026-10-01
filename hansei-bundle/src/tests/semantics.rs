@@ -4255,6 +4255,12 @@ fn tls_session() -> Bundle {
             record: record_t,
             record_len: path(vec![named(len)], BundleTypeId(0)),
         },
+        received: None,
+        handshake_kind: None,
+        suites: Vec::new(),
+        alpn_ptr: None,
+        alpn_len: None,
+        peer_certificates: Some(word(write_seq)),
     });
     let mut stream = record(stream_t);
     stream.future = None;
@@ -4370,6 +4376,37 @@ fn test_tls_words_bind_by_shape_under_their_rules() {
     let mut record_word = b.clone();
     session(&mut record_word).sendable.record_len = path(Vec::new(), BundleTypeId(22));
     bad(&record_word, "record length is not an unsigned word");
+
+    // The received buffer is held to the sent one's shape.
+    let mut received = b.clone();
+    let mut buffer = words.sendable.clone();
+    buffer.buf = words.read_seq.clone();
+    session(&mut received).received = Some(buffer);
+    bad(&received, "record ring is not behind a pointer");
+    let mut received = b.clone();
+    session(&mut received).received = Some(words.sendable.clone());
+    received.validate().unwrap();
+
+    // How the handshake went is a C-like enum out of an option: the
+    // side, a C-like enum reached by no variant, is not it.
+    let mut kind = b.clone();
+    session(&mut kind).handshake_kind = Some(words.side.clone());
+    bad(&kind, "handshake kind is not a C-like enum in an option");
+
+    // A suite is an enum behind its pointer: the version, an enum
+    // reached through no pointer, is not one.
+    let mut suite = b.clone();
+    session(&mut suite).suites = vec![words.version.clone()];
+    bad(&suite, "suite is not an enum behind its pointer");
+
+    // ALPN's text comes as a pointer and a length.
+    let mut alpn = b.clone();
+    session(&mut alpn).alpn_len = Some(words.read_seq.clone());
+    bad(&alpn, "ALPN is not a pointer and a length");
+
+    let mut certificates = b.clone();
+    session(&mut certificates).peer_certificates = Some(words.sent_fatal_alert.clone());
+    bad(&certificates, "certificate count is not an unsigned word");
 
     let mut wrong_rule = b.clone();
     session(&mut wrong_rule).rule = SemanticRuleId(2);

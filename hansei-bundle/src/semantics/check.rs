@@ -983,10 +983,59 @@ impl<'a> Check<'a> {
                 "TLS session flag is not one byte",
             )?;
         }
-        let sendable = &binding.sendable;
+        for seq in [&binding.read_seq, &binding.write_seq] {
+            self.path(record.ty, seq)?;
+            self.unsigned_word(seq, "TLS session count is not an unsigned word")?;
+        }
+        self.chunks(record, &binding.sendable)?;
+        if let Some(received) = &binding.received {
+            self.chunks(record, received)?;
+        }
+        // How the handshake went: a C-like enum selected out of its
+        // option. The suite: an enum behind the `&'static` each variant
+        // of the chosen suite holds. ALPN's text, and the count of the
+        // peer's certificates, words like any other.
+        if let Some(kind) = &binding.handshake_kind {
+            self.path(record.ty, kind)?;
+            require(
+                matches!(self.ty(kind.target)?, TypeDef::CEnum { .. })
+                    && kind
+                        .steps
+                        .iter()
+                        .any(|step| matches!(step, Step::Variant(_))),
+                "TLS session handshake kind is not a C-like enum in an option",
+            )?;
+        }
+        for suite in &binding.suites {
+            self.path(record.ty, suite)?;
+            require(
+                matches!(
+                    self.ty(suite.target)?,
+                    TypeDef::Enum { .. } | TypeDef::CEnum { .. }
+                ) && suite.steps.contains(&Step::Deref),
+                "TLS session suite is not an enum behind its pointer",
+            )?;
+        }
+        match (&binding.alpn_ptr, &binding.alpn_len) {
+            (Some(ptr), Some(len)) => self.text(record.ty, ptr, len, "TLS session ALPN")?,
+            (None, None) => {}
+            _ => return require(false, "TLS session ALPN is not a pointer and a length"),
+        }
+        if let Some(count) = &binding.peer_certificates {
+            self.path(record.ty, count)?;
+            self.unsigned_word(
+                count,
+                "TLS session certificate count is not an unsigned word",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// One of rustls's record buffers: a ring of `Vec<u8>` records, its
+    /// words unsigned, its storage a pointer the records stride from,
+    /// each one a sized record whose length is a word.
+    fn chunks(&self, record: &TypeSemantics, sendable: &SendableBinding) -> Result<()> {
         for seq in [
-            &binding.read_seq,
-            &binding.write_seq,
             &sendable.prefix_used,
             &sendable.head,
             &sendable.len,
@@ -995,8 +1044,6 @@ impl<'a> Check<'a> {
             self.path(record.ty, seq)?;
             self.unsigned_word(seq, "TLS session count is not an unsigned word")?;
         }
-        // The ring's storage is a pointer its records stride from, each
-        // one a sized record whose length is a word.
         self.path(record.ty, &sendable.buf)?;
         require(
             matches!(self.ty(sendable.buf.target)?, TypeDef::Pointer { .. }),

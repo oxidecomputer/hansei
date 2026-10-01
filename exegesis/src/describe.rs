@@ -1069,6 +1069,32 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 fq_name(bundle, session.sendable.record),
                 path(session.sendable.record, &session.sendable.record_len)
             );
+            // The words beside the verdict that bound, each by name.
+            if let Some(received) = &session.received {
+                let _ = write!(
+                    line,
+                    " received-len {} received-buf {}",
+                    path(record.ty, &received.len),
+                    path(record.ty, &received.buf)
+                );
+            }
+            if let Some(kind) = &session.handshake_kind {
+                let _ = write!(line, " handshake {}", path(record.ty, kind));
+            }
+            for suite in &session.suites {
+                let _ = write!(line, " suite {}", path(record.ty, suite));
+            }
+            if let (Some(ptr), Some(len)) = (&session.alpn_ptr, &session.alpn_len) {
+                let _ = write!(
+                    line,
+                    " alpn {} len {}",
+                    path(record.ty, ptr),
+                    path(record.ty, len)
+                );
+            }
+            if let Some(count) = &session.peer_certificates {
+                let _ = write!(line, " certificates {}", path(record.ty, count));
+            }
         }
         if let Some(stream) = &record.tls_stream {
             let _ = write!(

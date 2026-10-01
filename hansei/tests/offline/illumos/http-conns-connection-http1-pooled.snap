@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`connection 0x1179390` over illumos/http-conns"
+description: "`connection 0x1762390` over illumos/http-conns"
 ---
 connection 0xADDR
     proto: http1
@@ -18,9 +18,9 @@ connection 0xADDR
         registration: 0xADDR
         ready: writable
         waker: the reader slot, task 16
-        local address: 127.0.0.1:42032 (as the pool's connector recorded it)
-    peer: 127.0.0.1:64197 (the authority of the pool key it was made for)
-    peer: 127.0.0.1:64197 (the socket's, as the pool's connector recorded it)
+        local address: 127.0.0.1:41435 (as the pool's connector recorded it)
+    peer: 127.0.0.1:54341 (the authority of the pool key it was made for)
+    peer: 127.0.0.1:54341 (the socket's, as the pool's connector recorded it)
     route:
         0xADDR hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>
         0xADDR tokio::net::tcp::stream::TcpStream

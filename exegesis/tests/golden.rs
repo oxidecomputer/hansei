@@ -1033,6 +1033,67 @@ fn assert_tls_stream(program: &str, bundle: &Bundle, key: &str) {
             "len",
             "{program}: {name}"
         );
+        // The words beside the verdict: the received buffer of the sent
+        // one's shape, how the handshake went, the suite behind each
+        // variant's pointer, ALPN's text and the peer's certificates.
+        let received = session
+            .received
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} binds no received buffer"));
+        assert_eq!(
+            [&received.len, &received.buf].map(|word| route_text(bundle, word)),
+            [
+                format!("{common}.received_plaintext.chunks.len"),
+                format!("{common}.received_plaintext.chunks.buf.inner.ptr.pointer.pointer"),
+            ],
+            "{program}: {name}"
+        );
+        assert_eq!(
+            session
+                .handshake_kind
+                .as_ref()
+                .map(|path| route_text(bundle, path)),
+            Some(format!("{common}.handshake_kind.Some.__0")),
+            "{program}: {name}"
+        );
+        let suites: Vec<String> = session
+            .suites
+            .iter()
+            .map(|path| {
+                format!(
+                    "{} -> {}",
+                    route_text(bundle, path),
+                    type_name_of(bundle, path.target)
+                )
+            })
+            .collect();
+        assert!(
+            !suites.is_empty()
+                && suites
+                    .iter()
+                    .all(|suite| suite
+                        .ends_with(".__0.*.common.suite -> rustls::enums::CipherSuite")),
+            "{program}: {name}: {suites:?}"
+        );
+        assert_eq!(
+            [&session.alpn_ptr, &session.alpn_len]
+                .map(|word| word.as_ref().map(|path| route_text(bundle, path))),
+            [
+                Some(format!(
+                    "{common}.alpn_protocol.Some.__0.__0.__0.buf.inner.ptr.pointer.pointer"
+                )),
+                Some(format!("{common}.alpn_protocol.Some.__0.__0.__0.len")),
+            ],
+            "{program}: {name}"
+        );
+        assert_eq!(
+            session
+                .peer_certificates
+                .as_ref()
+                .map(|path| route_text(bundle, path)),
+            Some(format!("{common}.peer_certificates.Some.__0.__0.len")),
+            "{program}: {name}"
+        );
         seen += 1;
     }
     assert!(seen > 0, "{program}: no type named {key}");

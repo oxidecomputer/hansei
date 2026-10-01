@@ -4244,6 +4244,13 @@ impl<'b, T: Target> Context<'b, T> {
         let seq = |path: &TypedPath, what: &str| -> Result<u64> {
             Ok(at(session, path, what)?.parse::<u64>(self.proc)?)
         };
+        // A word behind an option or a variant: the value where it is
+        // live, `None` where it is not or did not read.
+        let live = |path: &TypedPath| -> Option<Value<'b>> {
+            contract::execute_steps(self, read, session, &path.steps)
+                .ok()?
+                .optional()
+        };
         let failed = name(at(session, &words.state, "state")?, "state")? == "Err";
         let side = name(at(session, &words.side, "side")?, "side")?.to_owned();
         let version = match name(
@@ -4273,6 +4280,39 @@ impl<'b, T: Target> Context<'b, T> {
             write_seq: seq(&words.write_seq, "write sequence")?,
             unsent: self.unsent_records(&words.sendable, &seq, read)?,
             stream_state: stream_state.to_owned(),
+            // The words beside the verdict: each stands on its own, so
+            // one that does not read leaves only itself out.
+            received: words
+                .received
+                .as_ref()
+                .and_then(|ring| self.unsent_records(ring, &seq, read).ok()),
+            handshake_kind: words
+                .handshake_kind
+                .as_ref()
+                .and_then(&live)
+                .and_then(|kind| name(kind, "handshake kind").ok())
+                .map(str::to_owned),
+            suite: words
+                .suites
+                .iter()
+                .find_map(&live)
+                .and_then(|suite| name(suite, "cipher suite").ok())
+                .map(str::to_owned),
+            alpn: words
+                .alpn_ptr
+                .as_ref()
+                .zip(words.alpn_len.as_ref())
+                .and_then(|(ptr, len)| {
+                    let word = |path| live(path)?.parse::<u64>(self.proc).ok();
+                    read_request_text(self.proc, word(ptr)?, word(len)?)
+                }),
+            peer_certificates: words.peer_certificates.as_ref().and_then(|path| {
+                match contract::execute_steps(self, read, session, &path.steps).ok()? {
+                    Walked::At(count) => count.parse::<u64>(self.proc).ok(),
+                    Walked::Inactive(_) => Some(0),
+                    Walked::Null => None,
+                }
+            }),
         })
     }
 

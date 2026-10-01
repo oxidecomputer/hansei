@@ -1555,6 +1555,11 @@ mod tests {
                 write_seq: 1,
                 unsent: (0, 0),
                 stream_state: "Stream".to_string(),
+                received: None,
+                handshake_kind: None,
+                suite: None,
+                alpn: None,
+                peer_certificates: None,
             };
             let over = |stream| HttpConnObservation {
                 stream,
@@ -1708,6 +1713,11 @@ mod tests {
             write_seq: 3,
             unsent: (2, 160),
             stream_state: "Stream".to_string(),
+            received: None,
+            handshake_kind: None,
+            suite: None,
+            alpn: None,
+            peer_certificates: None,
         };
         let io = |socket, tls, peer| {
             ResourceObservation::Io(IoObservation {

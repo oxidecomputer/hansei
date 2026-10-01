@@ -6,7 +6,7 @@ oneshot 0xADDR: nothing sent, sender alive
     rx: task 14
 
 oneshot 0xADDR: nothing sent, sender alive
-    tx: task 9
+    tx: task 8
 
 oneshot 0xADDR: nothing sent, sender alive
     tx: task 12
@@ -18,4 +18,4 @@ mpsc 0xADDR: 1 sender, 0 unread
     rx: task 16
 
 notify 0xADDR: waiting
-    rx: task 8, task 11
+    rx: task 9, task 11

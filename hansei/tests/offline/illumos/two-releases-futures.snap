@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`futures` over illumos/two-releases"
 ---
-ADDR      TASK  HELD IN                                        STATE  WAITING ON                   ARMED  TYPE
-0xADDR  4     frame 0, `listener`                            —      event_listener::Entry        yes    future event_listener::EventListener
-0xADDR  5     frame 0, `_inner`                              —      event_listener::State::Task  yes    future event_listener_strategy::FutureWrapper<async_channel::RecvInner<u32>>
+ADDR       TASK  HELD IN                                         STATE  WAITING ON                   ARMED  TYPE
+0xADDR  4     frame 0, `listener`                             —      event_listener::Entry        yes    future event_listener::EventListener
+0xADDR  5     frame 0, `_inner`                               —      event_listener::State::Task  yes    future event_listener_strategy::FutureWrapper<async_channel::RecvInner<u32>>
 0xADDR  5     frame 0, `inner`, via held future at 0xADDR  —      event_listener::State::Task  yes    future event_listener::EventListener<()>
 [3 futures]

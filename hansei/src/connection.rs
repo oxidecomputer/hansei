@@ -458,6 +458,20 @@ fn print_tls(
             names.folded(stream.ty)
         )?;
     }
+    // What the handshake settled: the suite, the protocol ALPN chose,
+    // how it went, and what the peer presented.
+    if let Some(suite) = &reading.suite {
+        writeln!(out, "        suite: {suite}")?;
+    }
+    if let Some(alpn) = &reading.alpn {
+        writeln!(out, "        alpn: {alpn}")?;
+    }
+    if let Some(kind) = &reading.handshake_kind {
+        writeln!(out, "        handshake: {}", camel_words(kind))?;
+    }
+    if let Some(count) = reading.peer_certificates {
+        writeln!(out, "        peer certificates: {count}")?;
+    }
     writeln!(
         out,
         "        records: {} read, {} written",
@@ -465,6 +479,11 @@ fn print_tls(
     )?;
     let (records, bytes) = reading.unsent;
     writeln!(out, "        unsent: {records} records, {bytes} bytes")?;
+    // The other direction: decrypted, and not yet read by the
+    // application.
+    if let Some((records, bytes)) = reading.received {
+        writeln!(out, "        unread: {records} records, {bytes} bytes")?;
+    }
     writeln!(out, "        stream state: {}", reading.stream_state)?;
     let mut closed = Vec::new();
     for (set, word) in [
@@ -599,6 +618,19 @@ fn print_route(streams: &[ValueKey], names: &TypeNames<'_>, out: &mut dyn io::Wr
     Ok(())
 }
 
+/// An enumerator's name as the words the block prints in:
+/// `FullWithHelloRetryRequest` is `full with hello retry request`.
+fn camel_words(name: &str) -> String {
+    let mut words = String::new();
+    for c in name.chars() {
+        if c.is_uppercase() && !words.is_empty() {
+            words.push(' ');
+        }
+        words.extend(c.to_lowercase());
+    }
+    words
+}
+
 fn keep_alive_word(keep_alive: &KeepAlive) -> String {
     match keep_alive {
         KeepAlive::Idle => "idle".to_string(),
@@ -673,6 +705,18 @@ mod tests {
             peer: None,
             peer_stream: None,
         }
+    }
+
+    /// An enumerator reads as lowercase words, split at each capital.
+    #[test]
+    fn test_an_enumerator_reads_as_words() {
+        assert_eq!(camel_words("Full"), "full");
+        assert_eq!(camel_words("Resumed"), "resumed");
+        assert_eq!(
+            camel_words("FullWithHelloRetryRequest"),
+            "full with hello retry request"
+        );
+        assert_eq!(camel_words(""), "");
     }
 
     /// A connection's objects run from the protocol on top down to the

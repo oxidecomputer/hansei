@@ -3108,6 +3108,12 @@ pub(super) fn bind_semantics(
                 read_seq: plan.read_seq,
                 write_seq: plan.write_seq,
                 sendable: plan.sendable,
+                received: plan.received,
+                handshake_kind: plan.handshake_kind,
+                suites: plan.suites,
+                alpn_ptr: plan.alpn.as_ref().map(|(ptr, _)| ptr.clone()),
+                alpn_len: plan.alpn.map(|(_, len)| len),
+                peer_certificates: plan.peer_certificates,
             });
         records.push(TypeSemantics {
             ty,
@@ -4687,6 +4693,11 @@ struct TlsSessionPlan {
     read_seq: TypedPath,
     write_seq: TypedPath,
     sendable: SendableBinding,
+    received: Option<SendableBinding>,
+    handshake_kind: Option<TypedPath>,
+    suites: Vec<TypedPath>,
+    alpn: Option<(TypedPath, TypedPath)>,
+    peer_certificates: Option<TypedPath>,
 }
 
 /// The ring rustls keeps its outgoing records in, as std names it, and
@@ -4737,6 +4748,16 @@ fn plan_tls_session(
                 .collect(),
             _ => BTreeSet::new(),
         }
+    };
+    let is_word = |target: BundleTypeId| {
+        matches!(
+            types.get(target),
+            Some(TypeDef::Base {
+                encoding: crate::bundle::Encoding::Unsigned,
+                size: 8,
+                ..
+            })
+        )
     };
     let common = |name: &str| {
         hop_landing(
@@ -4797,6 +4818,66 @@ fn plan_tls_session(
     )?;
     let ok = !variants(version.target).is_empty();
     let version = shape(version, ok, "version")?;
+    // The words beside the verdict, each standing on its own: one whose
+    // layout does not hold is left out, and the rest bind without it.
+    let state_word = |tail: &[Hop<'_>]| {
+        let mut hops = vec![Member("core"), Member("common_state")];
+        hops.extend_from_slice(tail);
+        hop_landing(types, strings, ty, &hops).ok()
+    };
+    let handshake_kind = state_word(&[Member("handshake_kind"), Variant("Some"), Member("__0")])
+        .filter(|path| matches!(types.get(path.target), Some(TypeDef::CEnum { .. })));
+    let suites = ["Tls12", "Tls13"]
+        .into_iter()
+        .filter_map(|variant| {
+            state_word(&[
+                Member("suite"),
+                Variant("Some"),
+                Member("__0"),
+                Variant(variant),
+                Member("__0"),
+                Hop::Deref,
+                Member("common"),
+                Member("suite"),
+            ])
+        })
+        .filter(|path| {
+            matches!(
+                types.get(path.target),
+                Some(TypeDef::Enum { .. } | TypeDef::CEnum { .. })
+            )
+        })
+        .collect();
+    // `ProtocolName` over `PayloadU8` over the `Vec<u8>` of its text.
+    let alpn_vec = [
+        Member("alpn_protocol"),
+        Variant("Some"),
+        Member("__0"),
+        Member("__0"),
+        Member("__0"),
+    ];
+    let vec_word = |tail: &[Hop<'static>]| {
+        let mut hops = alpn_vec.to_vec();
+        hops.extend_from_slice(tail);
+        state_word(&hops)
+    };
+    let alpn = vec_word(&[
+        Member("buf"),
+        Member("inner"),
+        Member("ptr"),
+        Member("pointer"),
+        Member("pointer"),
+    ])
+    .filter(|ptr| matches!(types.get(ptr.target), Some(TypeDef::Pointer { .. })))
+    .zip(vec_word(&[Member("len")]).filter(|len| is_word(len.target)));
+    let peer_certificates = state_word(&[
+        Member("peer_certificates"),
+        Variant("Some"),
+        Member("__0"),
+        Member("__0"),
+        Member("len"),
+    ])
+    .filter(|len| is_word(len.target));
     Ok(TlsSessionPlan {
         rule,
         state,
@@ -4811,7 +4892,12 @@ fn plan_tls_session(
         sent_fatal_alert: flag("sent_fatal_alert")?,
         read_seq: seq("read_seq")?,
         write_seq: seq("write_seq")?,
-        sendable: plan_sendable(ty, &count, types, names, strings)?,
+        sendable: plan_sendable(ty, "sendable_tls", &count, types, names, strings)?,
+        received: plan_sendable(ty, "received_plaintext", &count, types, names, strings).ok(),
+        handshake_kind,
+        suites,
+        alpn,
+        peer_certificates,
     })
 }
 
@@ -4819,14 +4905,17 @@ fn plan_tls_session(
 /// word, and what the decline calls it.
 type WordPlan<'a> = dyn Fn(&[Hop<'_>], &str) -> Result<TypedPath, Decline> + 'a;
 
-/// rustls's outgoing records: `core.common_state.sendable_tls`, a
-/// `ChunkVecBuffer` over a `VecDeque<Vec<u8>>`. The ring's head and
+/// One of rustls's record buffers, `core.common_state.<field>`: the
+/// outgoing records `sendable_tls`, or the decrypted ones not yet read,
+/// `received_plaintext` — each a `ChunkVecBuffer` over a
+/// `VecDeque<Vec<u8>>`. The ring's head and
 /// capacity are words the standard library wraps in a newtype
 /// (`WrappedIndex`, `UsizeNoHighBit`) in some releases and not in
 /// others, which the toolchain decides, not rustls: each is the word
 /// itself or its newtype's `__0`.
 fn plan_sendable(
     ty: BundleTypeId,
+    field: &'static str,
     count: &WordPlan<'_>,
     types: &TypeTable,
     names: &[Option<String>],
@@ -4834,11 +4923,7 @@ fn plan_sendable(
 ) -> Result<SendableBinding, Decline> {
     use Hop::Member;
     let at = |tail: &[Hop<'static>]| -> Vec<Hop<'static>> {
-        let mut hops = vec![
-            Member("core"),
-            Member("common_state"),
-            Member("sendable_tls"),
-        ];
+        let mut hops = vec![Member("core"), Member("common_state"), Member(field)];
         hops.extend_from_slice(tail);
         hops
     };

@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`connection 0x55eb4bd74260` over linux/tls-conns"
+description: "`connection 0x55b58b96b260` over linux/tls-conns"
 ---
 connection 0xADDR
     proto: http1/tls
@@ -15,8 +15,12 @@ connection 0xADDR
         header-read timer: not armed
     tls: server, TLSv1_3, established
         stream: 0xADDR tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>
+        suite: TLS13_AES_256_GCM_SHA384
+        handshake: resumed
+        peer certificates: 0
         records: 1 read, 2 written
         unsent: 0 records, 0 bytes
+        unread: 0 records, 0 bytes
         stream state: Stream
         closure: none
     tcp: fd 26

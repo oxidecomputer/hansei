@@ -1,14 +1,18 @@
 ---
 source: hansei/src/offline.rs
-description: "`connection 0x564af9963f10` over linux/tls-conns"
+description: "`connection 0x55b58b94ca90` over linux/tls-conns"
 ---
 connection 0xADDR
     proto: tls
     driven by: task 3
     tls: client, TLSv1_3, established
         stream: 0xADDR tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>
+        suite: TLS13_AES_256_GCM_SHA384
+        handshake: full
+        peer certificates: 1
         records: 2 read, 1 written
         unsent: 0 records, 0 bytes
+        unread: 0 records, 0 bytes
         stream state: Stream
         closure: none
     tcp: fd 11

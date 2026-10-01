@@ -1634,6 +1634,21 @@ pub struct TlsReading {
     /// are open, `ReadShutdown`, `WriteShutdown`, `FullyShutdown`, or
     /// `EarlyData` before a client's handshake finishes.
     pub stream_state: String,
+    /// The words beside the verdict, each `None` where its layout did
+    /// not bind or it did not read. The records decrypted and not yet
+    /// read by the application, and their bytes: what a read returns
+    /// without touching the socket.
+    pub received: Option<(u64, u64)>,
+    /// How the handshake went (`Full`, `FullWithHelloRetryRequest`,
+    /// `Resumed`), once it settled.
+    pub handshake_kind: Option<String>,
+    /// The cipher suite the handshake chose, by its IANA name.
+    pub suite: Option<String>,
+    /// The protocol ALPN chose, as text.
+    pub alpn: Option<String>,
+    /// How many certificates the peer presented: zero where it
+    /// presented none.
+    pub peer_certificates: Option<u64>,
 }
 
 /// Where a TLS connection stands, in one word.
@@ -2696,6 +2711,11 @@ mod tests {
             write_seq: 9239,
             unsent: (0, 0),
             stream_state: "Stream".to_owned(),
+            received: None,
+            handshake_kind: None,
+            suite: None,
+            alpn: None,
+            peer_certificates: None,
         };
         assert_eq!(
             established.to_string(),
