@@ -28,17 +28,17 @@ use crate::bundle::origin::{git_origin, registry_origin};
 use crate::bundle::{
     AccessBinding, AccessKind, AcquiresForBinding, BundleTypeId, ConnectedBinding,
     ContainerBinding, ContainerKind, Continuation, CoroutineLayout, CoroutinePhase, CoroutineState,
-    DynFutureLayout, DynStreamCase, DynStreamLayout, ExtraCase, FutureEvidence, FutureFacts,
-    FutureTarget, HashTableBinding, HttpClientBinding, HttpConnBinding, HttpPoolBinding,
-    HttpRequestBinding, HttpRequestTarget, HttpRole, HttpServerBinding, HttpServiceBinding,
-    IoOperationBinding, IoOperationKind, IoRouteBinding, IoRouteStep, IoSocket, LayoutSelection,
-    LockBinding, LockWord, MemberRef, PollAction, PollCase, PollProgram, RefcountBinding,
-    ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass, SelectBinding, Selector,
-    SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId, SemanticRule,
-    SemanticRuleId, SemanticRuleKind, SemanticTable, SendableBinding, SourceFileEvidence,
-    SourceLoc, Step, StoragePolicy, StrRef, StreamPeerBinding, StringInterner, TaskEntryId,
-    TaskFutureEntry, TlsSessionBinding, TlsStreamBinding, TypeDef, TypeSemantics, TypeTable,
-    TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles, container_routes,
+    DynFutureLayout, DynStreamCase, DynStreamLayout, ExtraCase, FarEndBinding, FarEndState,
+    FutureEvidence, FutureFacts, FutureTarget, HashTableBinding, HttpClientBinding,
+    HttpConnBinding, HttpPoolBinding, HttpRequestBinding, HttpRequestTarget, HttpRole,
+    HttpServerBinding, HttpServiceBinding, IoOperationBinding, IoOperationKind, IoRouteBinding,
+    IoRouteStep, IoSocket, LayoutSelection, LockBinding, LockWord, MemberRef, PollAction, PollCase,
+    PollProgram, RefcountBinding, ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass,
+    SelectBinding, Selector, SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId,
+    SemanticRule, SemanticRuleId, SemanticRuleKind, SemanticTable, SendableBinding,
+    SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StreamPeerBinding, StringInterner,
+    TaskEntryId, TaskFutureEntry, TlsSessionBinding, TlsStreamBinding, TypeDef, TypeSemantics,
+    TypeTable, TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles, container_routes,
     required_resource_roles, required_resource_routes, scheduler_role, semantic_path_target,
     socket_roles,
 };
@@ -56,13 +56,14 @@ use crate::detect::semantics::{
     HYPER_UTIL_RESPONSE_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
     PARKING_LOT_RAW_MUTEX_V0_12_1, REQWEST_CONN_READ_SLOT, REQWEST_CONN_V0_12_14,
     REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0, RUSTLS_SESSION_V0_23_23,
-    RustcConvention, SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_INTERVAL_TICK_V1_47,
-    TOKIO_RUSTLS_HANDSHAKE_V0_26_0, TOKIO_RUSTLS_STREAM_V0_26_0, TOKIO_SELECT_V1_47,
-    TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
-    TOWER_RETRY_V0_5_2, TRACING_INSTRUMENTED_V0_1_40, library_convention,
-    rustc_core_pending_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
-    rustc_std_adapter_convention, rustc_std_futex_mutex_convention, rustc_std_refcount_convention,
-    tokio_acquire_owner, tokio_state_protocol,
+    RustcConvention, SPROCKETS_TLS_CLIENT_D2B68E4, SPROCKETS_TLS_SERVER_D2B68E4,
+    SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_INTERVAL_TICK_V1_47, TOKIO_RUSTLS_HANDSHAKE_V0_26_0,
+    TOKIO_RUSTLS_STREAM_V0_26_0, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
+    TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2,
+    TRACING_INSTRUMENTED_V0_1_40, library_convention, rustc_core_pending_convention,
+    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
+    rustc_std_futex_mutex_convention, rustc_std_refcount_convention, tokio_acquire_owner,
+    tokio_state_protocol,
 };
 
 use std::borrow::Cow;
@@ -680,6 +681,10 @@ pub(super) struct Seed {
     extra_symbols: BTreeSet<String>,
     /// hyper-util's `Connected`, where the type is it.
     connected: Option<ConnectedSeed>,
+    /// A reviewed handshake's coroutine, where the type is one: the
+    /// convention its body's file is reviewed under, and where that
+    /// body was declared.
+    far_end: Option<(&'static FarEndRule, Option<PollSource>)>,
     /// A refcounted allocation's header, where the type is one: the
     /// member its value sits in, and the verdict on its defining units.
     refcount: Option<(&'static str, CompilerVerdict)>,
@@ -934,6 +939,58 @@ fn io_delegation(name: &str) -> Option<&'static DelegatedStream> {
     IO_DELEGATIONS
         .iter()
         .find(|stream| names_type(stream.key, name))
+}
+
+/// A reviewed handshake whose frame keeps the TLS stream it sets up as
+/// a local beside what it knows of the far end: its coroutine, named by
+/// the module and the async fn below some `{impl#N}`, the review of the
+/// file its body is declared in, and the locals that review read.
+#[derive(Debug)]
+pub(super) struct FarEndRule {
+    module: &'static str,
+    function: &'static str,
+    review: &'static GitConvention,
+    stream: &'static str,
+    /// The local holding the far end's `SocketAddr`, where one does.
+    addr: Option<&'static str>,
+    /// The hops from the state to the bytes of the far end's name.
+    name: &'static [&'static str],
+}
+
+/// sprockets-tls's two handshakes (see each convention for the review):
+/// the client's keeps no address, the server's the accepted socket's.
+const FAR_END_RULES: [FarEndRule; 2] = [
+    FarEndRule {
+        module: "sprockets_tls::client::",
+        function: "connect_with_config::{async_fn_env#0}",
+        review: &SPROCKETS_TLS_CLIENT_D2B68E4,
+        stream: "stream",
+        addr: None,
+        name: &["tq_platform_id", "__0"],
+    },
+    FarEndRule {
+        module: "sprockets_tls::server::",
+        function: "handshake::{async_fn_env#0}",
+        review: &SPROCKETS_TLS_SERVER_D2B68E4,
+        stream: "stream",
+        addr: Some("addr"),
+        name: &["tq_platform_id", "__0"],
+    },
+];
+
+/// The handshake a coroutine's name announces: `module`, one
+/// `{impl#N}`, then the async fn's environment.
+fn far_end_rule(name: &str) -> Option<&'static FarEndRule> {
+    FAR_END_RULES.iter().find(|rule| {
+        name.strip_prefix(rule.module)
+            .and_then(|rest| rest.strip_prefix("{impl#"))
+            .and_then(|rest| rest.split_once("}::"))
+            .is_some_and(|(index, function)| {
+                !index.is_empty()
+                    && index.bytes().all(|b| b.is_ascii_digit())
+                    && function == rule.function
+            })
+    })
 }
 
 /// An io operation future as its name announced it: which operation,
@@ -1377,6 +1434,11 @@ pub(super) fn collect_semantic_seeds(
             let seed = seeds.entry(ty).or_default();
             seed.coroutine_candidate = true;
             seed.compiler = Some(verdict(raw, Reviewed::Coroutine));
+            // A reviewed handshake's frame, whose origin is the file its
+            // body was declared in.
+            if let Some(rule) = far_end_rule(name) {
+                seed.far_end = Some((rule, env_source(raw)));
+            }
         }
         // The adapter and wrapper screens run on the shapes their names
         // announce; the screen decides, the name only saves the walk.
@@ -2279,6 +2341,8 @@ struct Draft {
     tls_stream: Option<(TypedPath, TypedPath)>,
     /// A routed stream's peer name, where it binds.
     stream_peer: Option<TypedPath>,
+    /// What a handshake's frame keeps of the far end, where it binds.
+    far_end: Option<FarEndPlan>,
     /// The header's value member, with the rule it binds under.
     refcount: Option<(RuleKey, MemberRef)>,
     /// The lock's word, with the rule it binds under.
@@ -2528,6 +2592,19 @@ pub(super) fn bind_semantics(
         if readable && let Some(request) = &seed.request {
             match plan_request(ty, request, &seed.poll_sources, types, strings) {
                 Ok(plan) => draft.request = Some(plan),
+                Err(decline) => draft.issues.push(decline),
+            }
+        }
+        // And what a handshake's frame keeps of the far end, over the
+        // coroutine's own states: a fact beside its layout, and an issue
+        // beside the record where the review or a state declines.
+        if matches!(storage, StoragePolicy::CoroutineStates)
+            && let Some((rule, source)) = &seed.far_end
+        {
+            // The TLS streams the io plans keep are all routed ones.
+            let tls_stream = |ty: BundleTypeId| io.tls_streams.contains_key(&ty);
+            match plan_far_end(ty, rule, source.as_ref(), &tls_stream, types, strings) {
+                Ok(plan) => draft.far_end = Some(plan),
                 Err(decline) => draft.issues.push(decline),
             }
         }
@@ -3056,6 +3133,10 @@ pub(super) fn bind_semantics(
                 rule: rules.rule(rule, strings, library),
                 name,
             });
+        let far_end = draft.far_end.map(|plan| FarEndBinding {
+            rule: rules.rule(&plan.rule, strings, library),
+            states: plan.states,
+        });
         let io_route = draft
             .io_route
             .filter(|_| readable)
@@ -3137,6 +3218,7 @@ pub(super) fn bind_semantics(
             tls_session,
             tls_stream,
             stream_peer,
+            far_end,
             refcount: draft.refcount.map(|(rule, value)| RefcountBinding {
                 rule: rules.rule(&rule, strings, library),
                 value,
@@ -5025,6 +5107,83 @@ fn plan_stream_peer(
             "its peer's name is not an array of bytes in the final table".to_owned(),
         ))
     }
+}
+
+/// What a handshake's frame keeps of the far end, by state.
+#[derive(Clone, Debug)]
+struct FarEndPlan {
+    rule: RuleKey,
+    states: Vec<FarEndState>,
+}
+
+/// Plan a reviewed handshake's far end: the origin first — the file its
+/// body was declared in, at a reviewed revision — then every state of
+/// the coroutine that holds the stream local, landing on a routed TLS
+/// stream, with the rule's address and name beside it where the state
+/// keeps them: a path that ends early drops what nothing after it
+/// reads, and the name is held only from the certificates on. An
+/// address the state does keep that is no enum declines the whole, as
+/// a stream that is no routed TLS stream does: the layout is not the
+/// one reviewed.
+fn plan_far_end(
+    ty: BundleTypeId,
+    rule: &FarEndRule,
+    source: Option<&PollSource>,
+    tls_stream: &impl Fn(BundleTypeId) -> bool,
+    types: &TypeTable,
+    strings: &StringInterner,
+) -> Result<FarEndPlan, Decline> {
+    use Hop::{Member, Variant};
+    let sources = source.into_iter().cloned().collect();
+    let origin = git_delegation_origin(&sources, rule.review, "async fn body")?;
+    let key = RuleKey::GitDelegation {
+        kind: SemanticRuleKind::SprocketsHandshake,
+        origin,
+    };
+    let Some(TypeDef::Enum { shape, .. }) = types.get(ty) else {
+        return Err((
+            SemanticIssueKind::MissingLayout,
+            "the coroutine is no enum in the final table".to_owned(),
+        ));
+    };
+    let mut states = Vec::new();
+    for variant in &shape.variants {
+        let Some(state) = strings.get(variant.name) else {
+            continue;
+        };
+        let Ok(stream) = hop_landing(types, strings, ty, &[Variant(state), Member(rule.stream)])
+        else {
+            continue;
+        };
+        if !tls_stream(stream.target) {
+            return Err((
+                SemanticIssueKind::MissingLayout,
+                format!("{state}'s {} is no routed TLS stream", rule.stream),
+            ));
+        }
+        let addr = rule
+            .addr
+            .and_then(|addr| hop_landing(types, strings, ty, &[Variant(state), Member(addr)]).ok());
+        if let Some(addr) = &addr
+            && !matches!(types.get(addr.target), Some(TypeDef::Enum { .. }))
+        {
+            return Err((
+                SemanticIssueKind::MissingLayout,
+                format!("{state}'s address is no enum in the final table"),
+            ));
+        }
+        let mut hops = vec![Variant(state)];
+        hops.extend(rule.name.iter().map(|&name| Member(name)));
+        let name = plan_stream_peer(ty, &hops, types, strings).ok();
+        states.push(FarEndState { stream, addr, name });
+    }
+    if states.is_empty() {
+        return Err((
+            SemanticIssueKind::MissingLayout,
+            format!("no state holds its {}", rule.stream),
+        ));
+    }
+    Ok(FarEndPlan { rule: key, states })
 }
 
 /// A routed stream's TLS layer: the paths to the connection it holds,
@@ -10576,6 +10735,266 @@ mod tests {
                 .expect_err(&format!("{count} {size} {encoding:?} {array}"));
             assert_eq!(kind, SemanticIssueKind::MissingLayout);
         }
+    }
+
+    /// A handshake is screened by its module, one `{impl#N}`, and the
+    /// async fn's own environment: the client's and the server's, under
+    /// the review of each one's file, and nothing named near them.
+    #[test]
+    fn test_a_far_end_rule_screens_the_two_handshakes() {
+        let client =
+            far_end_rule("sprockets_tls::client::{impl#2}::connect_with_config::{async_fn_env#0}")
+                .unwrap();
+        assert_eq!(client.review.file, "tls/src/client.rs");
+        assert_eq!(client.addr, None);
+        let server =
+            far_end_rule("sprockets_tls::server::{impl#13}::handshake::{async_fn_env#0}").unwrap();
+        assert_eq!(server.review.file, "tls/src/server.rs");
+        assert_eq!(server.addr, Some("addr"));
+        for name in [
+            "sprockets_tls::client::{impl#2}::connect::{async_fn_env#0}",
+            "sprockets_tls::client::{impl#}::connect_with_config::{async_fn_env#0}",
+            "sprockets_tls::client::{impl#x}::connect_with_config::{async_fn_env#0}",
+            "sprockets_tls::client::connect_with_config::{async_fn_env#0}",
+            "sprockets_tls::client::{impl#2}::handshake::{async_fn_env#0}",
+            "sprockets_tls::server::{impl#1}::handshake::{async_fn_env#1}",
+            "sprockets_tls::server::{impl#1}::handshake::{async_fn_env#0}::Suspend0",
+            "sprockets_tls::server::{impl#1}::{impl#2}::handshake::{async_fn_env#0}",
+            "sprockets_tls_x::server::{impl#1}::handshake::{async_fn_env#0}",
+        ] {
+            assert!(far_end_rule(name).is_none(), "{name}");
+        }
+    }
+
+    /// A handshake's far end binds every state holding the stream, with
+    /// the address and the name where the state keeps them, under the
+    /// review of the file its body was declared in; a stream that is no
+    /// routed TLS stream, an address that is no enum, or no state with
+    /// the stream binds nothing, and neither does an unreviewed body.
+    #[test]
+    fn test_a_far_end_binds_the_states_that_hold_the_stream() {
+        use crate::bundle::Encoding::Unsigned;
+        const CHECKOUT: &str =
+            "/home/u/.cargo/git/checkouts/sprockets-882d17aeeb0cb343/a233079/tls/src";
+        let rule =
+            far_end_rule("sprockets_tls::server::{impl#1}::handshake::{async_fn_env#0}").unwrap();
+        let reviewed = source(
+            &format!("{CHECKOUT}/server.rs"),
+            Some(rule.review.revisions[2].1),
+        );
+        // The coroutine: an unresumed state with nothing, one with the
+        // stream and both facts, and one with the stream alone — the
+        // branch that returns early, whose address nothing reads.
+        let plan = |addr_is_enum: bool, holds: bool, source: Option<&PollSource>| {
+            let (mut types, mut strings) = (TypeTable::default(), StringInterner::new());
+            let push = |types: &mut TypeTable, def| {
+                types.types.push(def);
+                BundleTypeId(types.types.len() as u32 - 1)
+            };
+            let u8_t = push(
+                &mut types,
+                TypeDef::Base {
+                    name: strings.intern("u8"),
+                    size: 1,
+                    encoding: Unsigned,
+                },
+            );
+            let stream = push(
+                &mut types,
+                TypeDef::Struct {
+                    name: strings.intern("tokio_rustls::server::TlsStream<T>"),
+                    size: 8,
+                    members: Vec::new(),
+                },
+            );
+            let v6 = strings.intern("V6");
+            let addr = push(
+                &mut types,
+                match addr_is_enum {
+                    true => TypeDef::Enum {
+                        name: strings.intern("core::net::socket_addr::SocketAddr"),
+                        size: 1,
+                        shape: VariantShape {
+                            discr: None,
+                            variants: vec![VariantDef {
+                                name: v6,
+                                discr_values: None,
+                                payload: MemberDef {
+                                    name: v6,
+                                    ty: u8_t,
+                                    offset: 0,
+                                },
+                                decl: None,
+                                await_site: None,
+                            }],
+                        },
+                    },
+                    false => TypeDef::Base {
+                        name: strings.intern("u64"),
+                        size: 8,
+                        encoding: Unsigned,
+                    },
+                },
+            );
+            let bytes = push(
+                &mut types,
+                TypeDef::Array {
+                    elem: u8_t,
+                    count: 32,
+                },
+            );
+            let id = push(
+                &mut types,
+                TypeDef::Struct {
+                    name: strings.intern("dice_mfg_msgs::PlatformId"),
+                    size: 32,
+                    members: vec![MemberDef {
+                        name: strings.intern("__0"),
+                        ty: bytes,
+                        offset: 0,
+                    }],
+                },
+            );
+            let local = |strings: &mut StringInterner, name: &str, ty, offset| MemberDef {
+                name: strings.intern(name),
+                ty,
+                offset,
+            };
+            let suspend = strings.intern("Suspend");
+            let state = |types: &mut TypeTable, members: Vec<MemberDef>| {
+                push(
+                    types,
+                    TypeDef::Struct {
+                        name: suspend,
+                        size: 64,
+                        members,
+                    },
+                )
+            };
+            let unresumed = state(&mut types, Vec::new());
+            let full = match holds {
+                true => vec![
+                    local(&mut strings, "stream", stream, 0),
+                    local(&mut strings, "addr", addr, 8),
+                    local(&mut strings, "tq_platform_id", id, 16),
+                ],
+                false => Vec::new(),
+            };
+            let full = state(&mut types, full);
+            let early = match holds {
+                true => vec![local(&mut strings, "stream", stream, 0)],
+                false => Vec::new(),
+            };
+            let early = state(&mut types, early);
+            let variants = [
+                ("Unresumed", unresumed),
+                ("Suspend0", full),
+                ("Suspend1", early),
+            ]
+            .map(|(name, ty)| {
+                let name = strings.intern(name);
+                VariantDef {
+                    name,
+                    discr_values: None,
+                    payload: MemberDef {
+                        name,
+                        ty,
+                        offset: 0,
+                    },
+                    decl: None,
+                    await_site: None,
+                }
+            })
+            .to_vec();
+            let coroutine = push(
+                &mut types,
+                TypeDef::Enum {
+                    name: strings
+                        .intern("sprockets_tls::server::{impl#1}::handshake::{async_fn_env#0}"),
+                    size: 64,
+                    shape: VariantShape {
+                        discr: None,
+                        variants,
+                    },
+                },
+            );
+            plan_far_end(
+                coroutine,
+                rule,
+                source,
+                &|ty| ty == stream,
+                &types,
+                &strings,
+            )
+            .map(|plan| {
+                let text = |path: &TypedPath| {
+                    path.steps
+                        .iter()
+                        .map(|step| match step {
+                            Step::Variant(name) | Step::Member(MemberRef::Named(name)) => {
+                                strings.get(*name).unwrap().to_owned()
+                            }
+                            _ => "?".to_owned(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(".")
+                };
+                assert!(matches!(
+                    plan.rule,
+                    RuleKey::GitDelegation {
+                        kind: SemanticRuleKind::SprocketsHandshake,
+                        ..
+                    }
+                ));
+                plan.states
+                    .iter()
+                    .map(|state| {
+                        (
+                            text(&state.stream),
+                            state.addr.as_ref().map(text),
+                            state.name.as_ref().map(text),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let some = |s: &str| Some(s.to_owned());
+        assert_eq!(
+            plan(true, true, Some(&reviewed)).unwrap(),
+            [
+                (
+                    "Suspend0.stream".to_owned(),
+                    some("Suspend0.addr"),
+                    some("Suspend0.tq_platform_id.__0")
+                ),
+                ("Suspend1.stream".to_owned(), None, None),
+            ]
+        );
+        let declined = |result: Result<_, Decline>| result.unwrap_err();
+        let (kind, detail) = declined(plan(false, true, Some(&reviewed)));
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert_eq!(detail, "Suspend0's address is no enum in the final table");
+        let (kind, detail) = declined(plan(true, false, Some(&reviewed)));
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert_eq!(detail, "no state holds its stream");
+        let (kind, detail) = declined(plan(true, true, None));
+        assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
+        assert!(detail.contains("no async fn body declaration"), "{detail}");
+        let client = source(
+            &format!("{CHECKOUT}/client.rs"),
+            Some(rule.review.revisions[2].1),
+        );
+        let (kind, detail) = declined(plan(true, true, Some(&client)));
+        assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
+        assert!(detail.contains("not tls/src/server.rs"), "{detail}");
+        // The client's checksum on the server's file is no revision's.
+        let mismatched = source(
+            &format!("{CHECKOUT}/server.rs"),
+            Some(SPROCKETS_TLS_CLIENT_D2B68E4.revisions[2].1),
+        );
+        let (kind, detail) = declined(plan(true, true, Some(&mismatched)));
+        assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
+        assert!(detail.contains("not revision a233079's"), "{detail}");
     }
 
     /// A lock binds the one word it is — a whole integer at its start,

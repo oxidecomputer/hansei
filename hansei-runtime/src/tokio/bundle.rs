@@ -18,7 +18,7 @@ use super::discovery::{
     DiscoveryIssue, Observation, OwnerClaim, OwnerEvidence, TaskRecordId, TaskSource, list_claim,
 };
 use super::observe::{
-    AcquireObservation, ChannelObservation, Consistency, HttpClientObservation,
+    AcquireObservation, ChannelObservation, Consistency, FarEnd, HttpClientObservation,
     HttpConnObservation, HttpNegotiatingObservation, HttpReading, HttpRequestObservation,
     HttpServerObservation, HttpWriting, IoFutureState, IoObservation, JoinObservation, KeepAlive,
     NotifiedObservation, NotifiedState, NotifyObservation, Observed, OneshotObservation,
@@ -36,11 +36,12 @@ use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
     AccessKind, BundleMember, BundleType, BundleTypeId, BundleView, ContainerKind, Continuation,
-    DynStreamCase, DynStreamLayout, FutureKind, HashTableBinding, IoOperationKind, IoRouteStep,
-    IoSocket, MemberRef, PollAction, PollProgram, ResourceKind, SchedulerClass, SelectBinding,
-    SendableBinding, StaticRole, Step, StoragePolicy, StreamPeerBinding, SymbolLookup, TaskEntryId,
-    TaskFutureEntry, TlsStreamBinding, TypeClass, TypeDef, TypeSemantics, TypedPath, WalkOutcome,
-    WalkRole, socket_roles, strip_build_prefix, strip_llvm_suffix,
+    DynStreamCase, DynStreamLayout, FarEndBinding, FutureKind, HashTableBinding, IoOperationKind,
+    IoRouteStep, IoSocket, MemberRef, PollAction, PollProgram, ResourceKind, SchedulerClass,
+    SelectBinding, SendableBinding, StaticRole, Step, StoragePolicy, StreamPeerBinding,
+    SymbolLookup, TaskEntryId, TaskFutureEntry, TlsStreamBinding, TypeClass, TypeDef,
+    TypeSemantics, TypedPath, WalkOutcome, WalkRole, socket_roles, strip_build_prefix,
+    strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -4196,6 +4197,50 @@ impl<'b, T: Target> Context<'b, T> {
         hansei_bundle::padded_text(name.bytes)
             .map(str::to_owned)
             .ok_or_else(|| "the peer's name is not UTF-8".to_owned())
+    }
+
+    /// What a handshake's frame keeps of the far end, read through its
+    /// binding: the stream the live state holds, by its address, and
+    /// each fact the state keeps beside it. `None` where the live state
+    /// holds no stream — before the TLS handshake finished, or once the
+    /// frame has returned — or where the stream does not read.
+    pub(crate) fn observe_far_end(
+        &self,
+        frame: Value<'b>,
+        binding: &FarEndBinding,
+        read: &ReadContext<'_>,
+    ) -> Option<(u64, FarEnd)> {
+        binding.states.iter().find_map(|state| {
+            let stream = contract::execute_steps(self, read, frame, &state.stream.steps)
+                .ok()?
+                .optional()?;
+            let at = |path: &TypedPath, what: &str| {
+                contract::execute_steps(self, read, frame, &path.steps)
+                    .and_then(|walked| walked.at(what))
+                    .map_err(|e| format!("{e:#}"))
+            };
+            let addr = state.addr.as_ref().map(|path| {
+                at(path, "the far end's address").and_then(|addr| {
+                    socket_addr_text(addr)
+                        .ok_or_else(|| "the far end's address does not decode".to_owned())
+                })
+            });
+            let name = state.name.as_ref().map(|path| {
+                at(path, "the far end's name").and_then(|name| {
+                    hansei_bundle::padded_text(name.bytes)
+                        .map(str::to_owned)
+                        .ok_or_else(|| "the far end's name is not UTF-8".to_owned())
+                })
+            });
+            Some((
+                stream.addr,
+                FarEnd {
+                    frame: frame.ty.id(),
+                    addr,
+                    name,
+                },
+            ))
+        })
     }
 
     /// A TLS stream's connection, read through the paths its binding

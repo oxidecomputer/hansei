@@ -533,6 +533,33 @@ impl PoolInfos {
     }
 }
 
+/// What the frames of reviewed handshakes keep of their far ends, by the
+/// address of the TLS stream each frame holds: the stream a connection
+/// row is keyed by where its route crossed TLS.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct FarEnds(pub std::collections::HashMap<u64, FarEnd>);
+
+impl FarEnds {
+    /// What the frame holding the TLS stream at `stream` keeps of the
+    /// far end.
+    pub fn of(&self, stream: u64) -> Option<&FarEnd> {
+        self.0.get(&stream)
+    }
+}
+
+/// A handshake frame's far end, as one read found it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FarEnd {
+    /// The coroutine whose frame keeps it, the async fn's environment.
+    pub frame: BundleTypeId,
+    /// The far end's socket address, as std writes it; `None` where the
+    /// state keeps none, an error where it did not read.
+    pub addr: Option<Result<String, String>>,
+    /// The far end's name — the platform id its certificates attest —
+    /// as text; `None` where the state keeps none.
+    pub name: Option<Result<String, String>>,
+}
+
 /// A pooled connection's `Connected`, as one read found it. Each word is
 /// `None` where it did not read.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]

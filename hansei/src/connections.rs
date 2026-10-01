@@ -20,7 +20,9 @@ use anyhow::{Context as _, Result, anyhow};
 use hansei_bundle::{HttpRole, IoSocket};
 use hansei_runtime::tokio::assess::{client_phase, http_caller, server_phase};
 use hansei_runtime::tokio::bundle::{HttpCaller, HttpPhase, TaskList, TlsVerdict, deadline_text};
-use hansei_runtime::tokio::observe::{HttpRequestObservation, PoolPeers, ResourceObservation};
+use hansei_runtime::tokio::observe::{
+    FarEnds, HttpRequestObservation, PoolPeers, ResourceObservation, ValueKey,
+};
 use hansei_runtime::tokio::wakers::Owner;
 use hansei_runtime::tokio::{RawInstant, attribution, census};
 
@@ -385,6 +387,7 @@ fn row_of<T: proc::Target>(
         &request_of,
         &caller_of,
         &census.pool_peers,
+        &census.far_ends,
     )
 }
 
@@ -572,7 +575,9 @@ fn caller_task(
 /// connection's own header-read timer, where the census found it;
 /// `request_of` and `caller_of` name what a client's caller sent and
 /// which task it is; `pools` names a client connection's far end by
-/// the pool it belongs to.
+/// the pool it belongs to, and `far_ends` a TLS connection's by the
+/// handshake frame that holds its stream.
+#[allow(clippy::too_many_arguments)]
 fn conn_row(
     base: ConnRow,
     observation: &ResourceObservation,
@@ -581,6 +586,7 @@ fn conn_row(
     request_of: &dyn Fn(&HttpCaller) -> Option<RequestLine>,
     caller_of: &dyn Fn(&HttpCaller) -> Option<String>,
     pools: &PoolPeers,
+    far_ends: &FarEnds,
 ) -> Option<ConnRow> {
     match observation {
         // A wrapper still reading the first bytes has no version, no
@@ -717,13 +723,29 @@ fn conn_row(
                     Some(reading) => reading.map(|reading| RowPhase::Tls(reading.verdict())),
                     None => Some(RowPhase::Open),
                 },
-                peer: io.peer.as_ref().and_then(|peer| peer.clone().ok()),
+                peer: io_peer(io.peer.as_ref(), stream, far_ends),
                 unsent: reading.map(|reading| reading.unsent.1),
                 ..base
             })
         }
         _ => None,
     }
+}
+
+/// A socket row's peer: the far end's address where the frame setting
+/// up its TLS stream keeps one, else the platform id the stream or that
+/// frame keeps, so a row still names the far end where no address is
+/// in memory.
+fn io_peer(
+    named: Option<&Result<String, String>>,
+    stream: Option<ValueKey>,
+    far_ends: &FarEnds,
+) -> Option<String> {
+    let far_end = stream.and_then(|stream| far_ends.of(stream.addr));
+    let read = |fact: Option<&Result<String, String>>| fact.and_then(|fact| fact.clone().ok());
+    read(far_end.and_then(|far_end| far_end.addr.as_ref()))
+        .or_else(|| read(named))
+        .or_else(|| read(far_end.and_then(|far_end| far_end.name.as_ref())))
 }
 
 /// How long a timer armed for `timeout` has run by `stopped`, given
@@ -1372,6 +1394,62 @@ mod tests {
         }
     }
 
+    /// A socket row's peer is the address the handshake frame holding
+    /// its TLS stream keeps, ahead of any platform id; else the platform
+    /// id the stream keeps, ahead of the frame's; and only a fact that
+    /// read, of the frame holding that very stream, names it.
+    #[test]
+    fn test_a_far_end_address_outranks_a_platform_id() {
+        use hansei_runtime::tokio::observe::FarEnd;
+        type Fact = Option<Result<String, String>>;
+        let ok = |s: &str| Some(Ok(s.to_string()));
+        let err = || Some(Err("unread".to_string()));
+        let at = |stream: u64, addr: Fact, name: Fact| {
+            FarEnds(std::collections::HashMap::from([(
+                stream,
+                FarEnd {
+                    frame: hansei_bundle::BundleTypeId(9),
+                    addr,
+                    name,
+                },
+            )]))
+        };
+        let addr = "[fd00::1]:12346";
+        let peer = |named: Fact, stream: Option<u64>, far_ends: &FarEnds| {
+            io_peer(named.as_ref(), stream.map(key), far_ends)
+        };
+        let both = at(0x2, ok(addr), ok("PDV2:frame"));
+        assert_eq!(
+            peer(ok("PDV2:stream"), Some(0x2), &both).as_deref(),
+            Some(addr)
+        );
+        assert_eq!(peer(None, Some(0x2), &both).as_deref(), Some(addr));
+        // No address that read: the stream's platform id, then the
+        // frame's.
+        let named = at(0x2, err(), ok("PDV2:frame"));
+        assert_eq!(
+            peer(ok("PDV2:stream"), Some(0x2), &named).as_deref(),
+            Some("PDV2:stream")
+        );
+        assert_eq!(
+            peer(err(), Some(0x2), &named).as_deref(),
+            Some("PDV2:frame")
+        );
+        let unkept = at(0x2, None, ok("PDV2:frame"));
+        assert_eq!(
+            peer(None, Some(0x2), &unkept).as_deref(),
+            Some("PDV2:frame")
+        );
+        // Another stream's frame, or no stream at all, says nothing.
+        assert_eq!(
+            peer(ok("PDV2:stream"), Some(0x3), &both).as_deref(),
+            Some("PDV2:stream")
+        );
+        assert_eq!(peer(None, Some(0x3), &both), None);
+        assert_eq!(peer(None, None, &both), None);
+        assert_eq!(peer(err(), Some(0x2), &at(0x2, err(), err())), None);
+    }
+
     fn instant(secs: u64) -> RawInstant {
         RawInstant {
             tv_sec: secs,
@@ -1453,6 +1531,7 @@ mod tests {
                 &request_of,
                 &caller_of,
                 &pools,
+                &FarEnds::default(),
             )
             .unwrap()
         };
@@ -1639,6 +1718,7 @@ mod tests {
             &request_of,
             &caller_of,
             &pools,
+            &FarEnds::default(),
         )
         .unwrap();
         assert_eq!((negotiating.key, negotiating.at), (0x12345, 0x12345));
@@ -1668,7 +1748,8 @@ mod tests {
                 stopped,
                 &request_of,
                 &caller_of,
-                &pools
+                &pools,
+                &FarEnds::default()
             )
             .is_none()
         );
@@ -1734,6 +1815,7 @@ mod tests {
                 &|_| None,
                 &|_| None,
                 &PoolPeers::default(),
+                &FarEnds::default(),
             )
         };
         let sprockets = fill(io(

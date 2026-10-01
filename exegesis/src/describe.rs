@@ -1113,6 +1113,19 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 path(record.ty, &peer.name)
             );
         }
+        if let Some(far_end) = &record.far_end {
+            let _ = write!(line, " far-end rule {}", far_end.rule.0);
+            for state in &far_end.states {
+                let _ = write!(line, " [stream {}", path(record.ty, &state.stream));
+                if let Some(addr) = &state.addr {
+                    let _ = write!(line, " addr {}", path(record.ty, addr));
+                }
+                if let Some(name) = &state.name {
+                    let _ = write!(line, " name {}", path(record.ty, name));
+                }
+                line.push(']');
+            }
+        }
         if let Some(refcount) = &record.refcount {
             let value = match refcount.value {
                 MemberRef::Named(name) => s(name).to_owned(),

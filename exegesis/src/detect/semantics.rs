@@ -2653,6 +2653,84 @@ pub const SPROCKETS_TLS_STREAM_D2B68E4: GitConvention = GitConvention {
     ],
 };
 
+/// sprockets-tls's client handshake (`tls/src/client.rs`) at the three
+/// revisions omicron has pinned: `Client::connect_with_config` dials
+/// its `addr` and keeps nothing of it once `TcpStream::connect`
+/// returns; from the TLS handshake on, its frame holds the TLS stream
+/// in the local `stream`, and from the certificates on, the server's
+/// platform id in `tq_platform_id`, a `dice_mfg_msgs::PlatformId`
+/// newtype over its bytes. The later revision changes only how the
+/// nonce is drawn and that the attestation is awaited.
+pub const SPROCKETS_TLS_CLIENT_D2B68E4: GitConvention = GitConvention {
+    package: "sprockets-tls",
+    repository: "sprockets",
+    file: "tls/src/client.rs",
+    family: "sprockets-tls-client-d2b68e4",
+    revisions: &[
+        (
+            "d2b68e4f47e3c22bce0455aeb4cfb2e61ad229ba",
+            [
+                0x0c, 0x74, 0x29, 0x91, 0x02, 0xb2, 0xe2, 0xea, 0xc9, 0x4a, 0x67, 0x1f, 0xd3, 0x14,
+                0xf6, 0xd8,
+            ],
+        ),
+        (
+            "68a4b3bf819722f9f57a3f0c99e1393ed01ba392",
+            [
+                0x0c, 0x74, 0x29, 0x91, 0x02, 0xb2, 0xe2, 0xea, 0xc9, 0x4a, 0x67, 0x1f, 0xd3, 0x14,
+                0xf6, 0xd8,
+            ],
+        ),
+        (
+            "a233079e04d9688454486c452b694587a28c5257",
+            [
+                0xf0, 0x2d, 0xab, 0xb0, 0x68, 0xe8, 0x3b, 0x34, 0x51, 0xf2, 0x5e, 0xc4, 0xa7, 0x66,
+                0xf6, 0xee,
+            ],
+        ),
+    ],
+};
+
+/// sprockets-tls's server handshake (`tls/src/server.rs`) at the same
+/// three revisions: `SprocketsAcceptor::handshake` takes the acceptor
+/// apart into locals, `addr` among them — the `SocketAddr` the
+/// listener's `accept` returned beside the socket, which it returns
+/// with the finished stream, and so holds across every await of the
+/// path that finishes (the branch that refuses a client's version and
+/// returns an error holds the stream without it); from the TLS
+/// handshake on, its frame holds the TLS stream in `stream`, and from
+/// the certificates on, the client's platform id in `tq_platform_id`.
+/// The later revision differs from the earlier as the client's does.
+pub const SPROCKETS_TLS_SERVER_D2B68E4: GitConvention = GitConvention {
+    package: "sprockets-tls",
+    repository: "sprockets",
+    file: "tls/src/server.rs",
+    family: "sprockets-tls-server-d2b68e4",
+    revisions: &[
+        (
+            "d2b68e4f47e3c22bce0455aeb4cfb2e61ad229ba",
+            [
+                0x24, 0xf8, 0x52, 0xe7, 0x97, 0x4b, 0x93, 0x3b, 0xd8, 0x55, 0x9d, 0x53, 0x4e, 0xea,
+                0x2a, 0x2d,
+            ],
+        ),
+        (
+            "68a4b3bf819722f9f57a3f0c99e1393ed01ba392",
+            [
+                0x24, 0xf8, 0x52, 0xe7, 0x97, 0x4b, 0x93, 0x3b, 0xd8, 0x55, 0x9d, 0x53, 0x4e, 0xea,
+                0x2a, 0x2d,
+            ],
+        ),
+        (
+            "a233079e04d9688454486c452b694587a28c5257",
+            [
+                0x38, 0xbc, 0x84, 0x55, 0x3b, 0x8f, 0x2c, 0xd6, 0xbd, 0xc9, 0x10, 0x3a, 0xcd, 0x18,
+                0xd6, 0x17,
+            ],
+        ),
+    ],
+};
+
 /// hashbrown's `RawTable` as 0.12.3 through 0.17.1 lay it out, read in
 /// every release of that range (`src/raw/mod.rs`, `src/raw.rs` from
 /// 0.17.0, beside `src/map.rs` and `src/set.rs`): `HashMap` is

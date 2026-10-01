@@ -83,6 +83,12 @@ pub struct TypeSemantics {
     /// Where the type is a routed stream that names its peer: the
     /// peer's name, as NUL-padded text.
     pub stream_peer: Option<StreamPeerBinding>,
+    /// Where the type is the coroutine of an async fn a reviewed range
+    /// says sets up a TLS stream as a local beside what it knows of the
+    /// far end: per state that holds the stream, the stream and each
+    /// fact. A fact beside the record, read wherever a chain reaches
+    /// the frame; the coroutine polls nothing through it.
+    pub far_end: Option<FarEndBinding>,
     /// Where the type is a refcounted allocation's header — an `Arc`'s
     /// `ArcInner<T>`, an `Rc`'s `RcInner<T>` — the member holding the
     /// value its counts guard: what a path through the pointer names.
@@ -801,6 +807,30 @@ pub struct StreamPeerBinding {
     pub name: TypedPath,
 }
 
+/// What an async fn setting up a TLS stream keeps of the far end, under
+/// the rule of the crate that declares it.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct FarEndBinding {
+    pub rule: SemanticRuleId,
+    pub states: Vec<FarEndState>,
+}
+
+/// One coroutine state that holds the stream, every path from the
+/// coroutine through the state's variant first: the stream, landing on
+/// a routed TLS stream, then each fact the state keeps beside it.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct FarEndState {
+    pub stream: TypedPath,
+    /// The far end's socket address, landing on the `SocketAddr` enum:
+    /// the accepted socket's, for a server. `None` where the state
+    /// keeps none.
+    pub addr: Option<TypedPath>,
+    /// The far end's name, as NUL-padded text in an array of bytes:
+    /// the platform id its certificates attest. `None` where the state
+    /// keeps none.
+    pub name: Option<TypedPath>,
+}
+
 /// The sockets a route ends at, by the walk roles rooted at each.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum IoSocket {
@@ -1077,6 +1107,11 @@ pub enum SemanticRuleKind {
     /// sprockets-tls's `Stream` at a reviewed revision, whose reads and
     /// writes are the TLS stream it holds.
     SprocketsTlsStream,
+    /// sprockets-tls's handshakes at a reviewed revision — the client's
+    /// `connect_with_config`, the server's `SprocketsAcceptor::handshake`
+    /// — whose frames keep the TLS stream they set up beside the far
+    /// end's address and platform id.
+    SprocketsHandshake,
     /// rustls's connection state under a reviewed range, read as the
     /// words of a TLS session.
     RustlsSession,

@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`connections` over illumos/local-set-io"
 ---
-ADDR       TASK  CALLER  PROTO  ROLE  PHASE  DEADLINE  PEER  SERVER  METHOD  REQUEST
+ADDR      TASK  CALLER  PROTO  ROLE  PHASE  DEADLINE  PEER  SERVER  METHOD  REQUEST
 0xADDR  1     —       unix   —     open   —         —     —       —       —
 0xADDR  3     —       unix   —     open   —         —     —       —       —
 0xADDR  5     —       unix   —     open   —         —     —       —       —

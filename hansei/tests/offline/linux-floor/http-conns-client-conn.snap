@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --with type execute<Pin --exec up print conn` over linux-floor/http-conns"
 ---
-task 4
+task 5
 #1  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
       defined at hyper-1.10.1/src/client/conn/http1.rs:622 (Some, 0 locals)
 hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, bytes::bytes::Bytes, hyper::proto::h1::role::Client> {
@@ -15,7 +15,7 @@ hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::str
     read_buf_cap: 8192,
 }
 
-task 8
+task 9
 #1  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
       defined at hyper-1.10.1/src/client/conn/http1.rs:622 (Some, 0 locals)
 hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, bytes::bytes::Bytes, hyper::proto::h1::role::Client> {

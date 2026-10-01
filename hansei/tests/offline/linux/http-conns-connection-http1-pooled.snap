@@ -1,10 +1,10 @@
 ---
 source: hansei/src/offline.rs
-description: "`connection 0x564ee071e010` over linux/http-conns"
+description: "`connection 0x55c5c3fc8190` over linux/http-conns"
 ---
 connection 0xADDR
     proto: http1
-    driven by: task 15
+    driven by: task 16
     http: client, idle
         dispatcher: 0xADDR hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
         conn: 0xADDR
@@ -17,10 +17,10 @@ connection 0xADDR
         stream: 0xADDR tokio::net::tcp::stream::TcpStream
         registration: 0xADDR
         ready: writable
-        waker: the reader slot, task 15
-        local address: 127.0.0.1:47952 (as the pool's connector recorded it)
-    peer: 127.0.0.1:42205 (the authority of the pool key it was made for)
-    peer: 127.0.0.1:42205 (the socket's, as the pool's connector recorded it)
+        waker: the reader slot, task 16
+        local address: 127.0.0.1:45240 (as the pool's connector recorded it)
+    peer: 127.0.0.1:40025 (the authority of the pool key it was made for)
+    peer: 127.0.0.1:40025 (the socket's, as the pool's connector recorded it)
     route:
         0xADDR hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>
         0xADDR tokio::net::tcp::stream::TcpStream

@@ -44,6 +44,7 @@ fn record(ty: BundleTypeId) -> TypeSemantics {
         tls_session: None,
         tls_stream: None,
         stream_peer: None,
+        far_end: None,
         refcount: None,
         lock: None,
         acquires_for: None,
@@ -4491,6 +4492,202 @@ fn test_tls_words_bind_by_shape_under_their_rules() {
     members.last_mut().unwrap().ty = none;
     peer(&mut empty).name = path(inner, none);
     bad(&empty, "stream peer name is not an array of bytes");
+}
+
+/// [`tls_session`] with a handshake's coroutine beside it: two states,
+/// each holding the TLS stream, an address enum (the session's result
+/// stands in) and the platform id's bytes, and a word that is none of
+/// them, bound under sprockets-tls's handshake rule.
+fn far_end() -> Bundle {
+    let mut b = tls_session();
+    let mut strings = StringInterner::new();
+    for s in b.strings.iter() {
+        strings.intern(s);
+    }
+    let [stream, addr, name, plain, s0, s1, env, state] = [
+        "stream",
+        "addr",
+        "tq_platform_id",
+        "plain",
+        "Suspend0",
+        "Suspend1",
+        "{async_fn_env#0}",
+        "Suspend",
+    ]
+    .map(|s| strings.intern(s));
+    b.strings = strings.finish();
+    let (stream_t, addr_t, name_t) = (BundleTypeId(19), BundleTypeId(14), BundleTypeId(20));
+    let payload = BundleTypeId(b.types.types.len() as u32);
+    let coroutine = BundleTypeId(payload.0 + 1);
+    let member = |name, ty, offset| MemberDef { name, ty, offset };
+    let variant = |name, discr: u128| VariantDef {
+        name,
+        discr_values: Some(DiscrValues(vec![DiscrValue::Value(discr)])),
+        payload: member(name, payload, 0),
+        decl: None,
+        await_site: None,
+    };
+    b.types.types.extend([
+        TypeDef::Struct {
+            name: state,
+            size: 80,
+            members: vec![
+                member(stream, stream_t, 0),
+                member(addr, addr_t, 56),
+                member(name, name_t, 58),
+                member(plain, BundleTypeId(0), 64),
+            ],
+        },
+        TypeDef::Enum {
+            name: env,
+            size: 80,
+            shape: VariantShape {
+                discr: Some(DiscrDef {
+                    offset: 72,
+                    ty: BundleTypeId(13),
+                }),
+                variants: vec![variant(s0, 0), variant(s1, 1)],
+            },
+        },
+    ]);
+    b.semantics.origins.push(SemanticOrigin::Rustc {
+        producer: StrRef(6),
+        family: StrRef(7),
+    });
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::RustcAsyncFn,
+        revision: 1,
+        origin: SemanticOriginId(b.semantics.origins.len() as u32 - 1),
+    });
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::SprocketsHandshake,
+        revision: 1,
+        origin: SemanticOriginId(2),
+    });
+    let [kind, handshake] = [5, 6].map(SemanticRuleId);
+    let mut r = record(coroutine);
+    r.storage = StoragePolicy::CoroutineStates;
+    r.future.as_mut().unwrap().evidence = vec![FutureEvidence::Coroutine(kind)];
+    r.coroutine = Some(CoroutineLayout {
+        rule: kind,
+        states: [s0, s1]
+            .map(|variant| CoroutineState {
+                variant,
+                stage: CoroutinePhase::Suspended,
+                locals: vec![stream, addr, name, plain],
+                uncertain_locals: vec![],
+            })
+            .to_vec(),
+    });
+    let in_state =
+        |variant, local, target| path(vec![Step::Variant(variant), named(local)], target);
+    r.far_end = Some(FarEndBinding {
+        rule: handshake,
+        states: [s0, s1]
+            .map(|variant| FarEndState {
+                stream: in_state(variant, stream, stream_t),
+                addr: Some(in_state(variant, addr, addr_t)),
+                name: Some(in_state(variant, name, name_t)),
+            })
+            .to_vec(),
+    });
+    b.semantics.types.push(r);
+    b.validate().unwrap();
+    b
+}
+
+/// A handshake's far end binds per state under sprockets-tls's rule,
+/// on a git origin: every path enters its state's variant first, the
+/// stream lands on a routed TLS stream, the address on an enum, the
+/// name on bytes, and only a coroutine's states hold it.
+#[test]
+fn test_a_far_end_binds_per_state_on_the_handshake_rule() {
+    let b = far_end();
+    let at = b.semantics.types.len() - 1;
+    fn binding(b: &mut Bundle) -> &mut FarEndBinding {
+        b.semantics
+            .types
+            .last_mut()
+            .unwrap()
+            .far_end
+            .as_mut()
+            .unwrap()
+    }
+    let good = binding(&mut b.clone()).clone();
+    let [s0, s1] = [&good.states[0], &good.states[1]];
+    // The word no fact is: the last member of the state.
+    let plain = {
+        let Step::Variant(variant) = s0.stream.steps[0] else {
+            unreachable!()
+        };
+        let TypeDef::Struct { members, .. } = &b.types.types[b.types.types.len() - 2] else {
+            unreachable!()
+        };
+        path(
+            vec![Step::Variant(variant), named(members[3].name)],
+            BundleTypeId(0),
+        )
+    };
+
+    // Facts the state does not keep are left out.
+    let mut bare = b.clone();
+    for state in &mut binding(&mut bare).states {
+        state.addr = None;
+        state.name = None;
+    }
+    bare.validate().unwrap();
+
+    let mut stateless = b.clone();
+    binding(&mut stateless).states.clear();
+    bad(&stateless, "far end binding has no state");
+
+    let mut unselected = b.clone();
+    binding(&mut unselected).states[0].stream.steps.remove(0);
+    bad(&unselected, "selects no state first");
+
+    let mut twice = b.clone();
+    binding(&mut twice).states[1] = s0.clone();
+    bad(&twice, "far end binding names a state twice");
+
+    let mut elsewhere = b.clone();
+    binding(&mut elsewhere).states[0].addr = s1.addr.clone();
+    bad(&elsewhere, "far end address is outside its state");
+    let mut elsewhere = b.clone();
+    binding(&mut elsewhere).states[0].name = s1.name.clone();
+    bad(&elsewhere, "far end name is outside its state");
+
+    let mut untls = b.clone();
+    binding(&mut untls).states[0].stream = plain.clone();
+    bad(&untls, "far end stream is not a routed TLS stream");
+    // Routed, but no TLS stream binds on it.
+    let mut unrouted = b.clone();
+    unrouted.semantics.types[6].tls_stream = None;
+    bad(&unrouted, "far end stream is not a routed TLS stream");
+
+    let mut no_enum = b.clone();
+    binding(&mut no_enum).states[0].addr = Some(plain.clone());
+    bad(&no_enum, "far end address is not an enum");
+
+    let mut no_bytes = b.clone();
+    binding(&mut no_bytes).states[0].name = Some(plain);
+    bad(&no_bytes, "far end name is not an array");
+
+    let mut wrong_rule = b.clone();
+    binding(&mut wrong_rule).rule = SemanticRuleId(3);
+    bad(&wrong_rule, "incompatible capability");
+
+    // The handshake's review is a git checkout's, never a release's.
+    let mut released = b.clone();
+    released.semantics.rules[6].origin = SemanticOriginId(1);
+    bad(&released, "git delegation needs checkout evidence");
+
+    let mut unavailable = b.clone();
+    unavailable.semantics.types[at].storage = StoragePolicy::Unavailable(issue());
+    unavailable.semantics.types[at].coroutine = None;
+    bad(
+        &unavailable,
+        "unavailable storage carries a readable capability",
+    );
 }
 
 /// A route that runs back on itself through matches alone, or through

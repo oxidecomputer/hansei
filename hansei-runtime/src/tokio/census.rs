@@ -56,7 +56,7 @@ use super::observe::ResourceObservation;
 // (omicron's `ParallelTaskSet`, which pairs it with a semaphore) is
 // reached by the same scan, since it holds its `JoinSet` by value.
 use super::observe::{
-    HttpRequestObservation, PoolInfos, PoolPeers, ReadContext, Refusal, ValueKey,
+    FarEnds, HttpRequestObservation, PoolInfos, PoolPeers, ReadContext, Refusal, ValueKey,
 };
 
 use anyhow::{Context as _, Result, anyhow, ensure};
@@ -126,6 +126,9 @@ pub struct FutureCensus {
     /// What those pools keep of how each connection was made, by the
     /// same pointer.
     pub pool_infos: PoolInfos,
+    /// What the frames of reviewed handshakes the walk scanned keep of
+    /// their far ends, by the TLS stream each holds.
+    pub far_ends: FarEnds,
 }
 
 /// How often each of the census's two hard limits stopped it, kept
@@ -399,6 +402,7 @@ impl FutureCensus {
             stats: Stats::default(),
             pool_peers: PoolPeers::default(),
             pool_infos: PoolInfos::default(),
+            far_ends: FarEnds::default(),
         }
     }
 
@@ -876,6 +880,7 @@ struct Walker<'a, 'b, T> {
     stats: Stats,
     pool_peers: PoolPeers,
     pool_infos: PoolInfos,
+    far_ends: FarEnds,
     /// Where this walk's hard limits sit; [`Bounds::default`] outside
     /// the tests.
     bounds: Bounds,
@@ -959,6 +964,7 @@ pub fn census_bounded<T: Target>(
         stats: Stats::default(),
         pool_peers: PoolPeers::default(),
         pool_infos: PoolInfos::default(),
+        far_ends: FarEnds::default(),
         bounds,
         visited: HashSet::default(),
         plans: HashMap::default(),
@@ -996,6 +1002,7 @@ pub fn census_bounded<T: Target>(
         stats: walker.stats,
         pool_peers: walker.pool_peers,
         pool_infos: walker.pool_infos,
+        far_ends: walker.far_ends,
     }
 }
 
@@ -1127,6 +1134,19 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     &on_chain,
                 );
                 continue;
+            }
+            // A reviewed handshake's frame names the far end of the TLS
+            // stream it holds: a fact beside the finds, read once per
+            // frame.
+            if scope == Scope::All
+                && let Some(binding) = self
+                    .ctx
+                    .type_semantics(frame.future.ty.id())
+                    .and_then(|record| record.far_end.as_ref())
+                && let Some((stream, far_end)) =
+                    self.ctx.observe_far_end(frame.future, binding, &self.read)
+            {
+                self.far_ends.0.entry(stream).or_insert(far_end);
             }
             let locals = frame_locals(self.ctx, frame);
             if scope == Scope::All {
@@ -3888,6 +3908,7 @@ mod tests {
             stats: Stats::default(),
             pool_peers: PoolPeers::default(),
             pool_infos: PoolInfos::default(),
+            far_ends: FarEnds::default(),
             bounds: nesting(0),
             visited: HashSet::default(),
             plans: HashMap::default(),
@@ -4077,6 +4098,7 @@ mod tests {
             stats: Stats::default(),
             pool_peers: PoolPeers::default(),
             pool_infos: PoolInfos::default(),
+            far_ends: FarEnds::default(),
         }
     }
 
@@ -5417,5 +5439,132 @@ mod table_tests {
             })
         );
         assert_eq!(n, 2);
+    }
+}
+
+#[cfg(test)]
+mod far_end_tests {
+    use super::*;
+    use crate::testkit::{self, FIXTURE_SETS};
+    use crate::tokio::bundle::FutureInfo;
+    use crate::tokio::observe::FarEnd;
+
+    use hansei_bundle::{
+        BundleTypeId, BundleView, FarEndBinding, FarEndState, MemberRef, SemanticOrigin,
+        SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind, Step, StringInterner,
+        TypedPath,
+    };
+
+    /// A handshake's frame is indexed by the TLS stream it holds, at the
+    /// address the wait on that stream's socket reaches it by: the
+    /// `tls-conns` server that reads an exact length holds its stream
+    /// as a local across every await, so bound as a handshake — under
+    /// sprockets-tls's rule, on a git origin the copy of its bundle is
+    /// given — its frame names the stream its own read polls. It keeps
+    /// no address and no name, and the entry says so.
+    #[test]
+    fn test_a_handshake_frame_is_found_by_the_stream_its_wait_reaches() {
+        for set in FIXTURE_SETS {
+            let (mut bundle, snapshot) = testkit::load(set, "tls-conns");
+            let mut strings = StringInterner::new();
+            for s in bundle.strings.iter() {
+                strings.intern(s);
+            }
+            let [package, repository, revision, family, source] = [
+                "sprockets-tls",
+                "sprockets",
+                "a233079",
+                "sprockets-tls-server-d2b68e4",
+                "git/checkouts/sprockets-882d17aeeb0cb343/a233079/tls/src/server.rs",
+            ]
+            .map(|s| strings.intern(s));
+            bundle.strings = strings.finish();
+            bundle
+                .semantics
+                .origins
+                .push(SemanticOrigin::GitDelegation {
+                    package,
+                    repository,
+                    revision,
+                    family,
+                    source,
+                    files: Vec::new(),
+                });
+            let rule = SemanticRuleId(bundle.semantics.rules.len() as u32);
+            bundle.semantics.rules.push(SemanticRule {
+                kind: SemanticRuleKind::SprocketsHandshake,
+                revision: 1,
+                origin: SemanticOriginId(bundle.semantics.origins.len() as u32 - 1),
+            });
+            let (server, states) = {
+                let view = BundleView::new(&bundle);
+                let server = (0..bundle.types.types.len() as u32)
+                    .filter_map(|i| view.ty(BundleTypeId(i)))
+                    .find(|ty| ty.name().ends_with("::exact_server::{async_fn_env#0}"))
+                    .unwrap_or_else(|| panic!("{set}: no exact_server coroutine"));
+                let states: Vec<FarEndState> = server
+                    .variants()
+                    .filter_map(|variant| {
+                        let stream = variant.ty.member("stream")?;
+                        Some(FarEndState {
+                            stream: TypedPath {
+                                steps: vec![
+                                    Step::Variant(server.variant_name_ref(variant.name)?),
+                                    Step::Member(MemberRef::Named(stream.name_ref())),
+                                ],
+                                target: stream.ty().id(),
+                            },
+                            addr: None,
+                            name: None,
+                        })
+                    })
+                    .collect();
+                (server.id(), states)
+            };
+            assert!(!states.is_empty(), "{set}: no state holds the stream");
+            let record = bundle
+                .semantics
+                .types
+                .iter_mut()
+                .find(|record| record.ty == server)
+                .unwrap_or_else(|| panic!("{set}: the coroutine has no record"));
+            record.far_end = Some(FarEndBinding { rule, states });
+            bundle.validate().unwrap();
+
+            let ctx = testkit::context(&bundle, &snapshot);
+            let list = testkit::tasks(&ctx, &snapshot);
+            let census = testkit::census(&ctx, &list);
+            let task = list
+                .tasks
+                .iter()
+                .find(|t| {
+                    matches!(&t.future, FutureInfo::Known(k) if k.name(ctx.view).contains("exact_server"))
+                })
+                .unwrap_or_else(|| panic!("{set}: no exact_server task"));
+            let inspection = ctx
+                .inspect_task(task, &ReadContext::none())
+                .expect("the task's root reads")
+                .expect("the task holds a resident future");
+            let Some(ResourceObservation::Io(io)) = &inspection.primitive.value else {
+                panic!("{set}: exact_server waits on no io");
+            };
+            let stream = io
+                .tls_stream
+                .unwrap_or_else(|| panic!("{set}: the read's route crosses no TLS stream"));
+            assert_eq!(
+                census.far_ends.0.keys().collect::<Vec<_>>(),
+                [&stream.addr],
+                "{set}"
+            );
+            assert_eq!(
+                census.far_ends.of(stream.addr),
+                Some(&FarEnd {
+                    frame: server,
+                    addr: None,
+                    name: None,
+                }),
+                "{set}"
+            );
+        }
     }
 }

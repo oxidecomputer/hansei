@@ -730,9 +730,13 @@ pub enum Command {
     /// Every peer known is listed with where it came from: the
     /// accepted socket's address a server's service keeps, the
     /// authority of the pool key a client connection was made for,
-    /// the socket's address the pool's connector recorded, or a name
-    /// a stream on the route keeps. Last comes the route: every
-    /// stream from the connection's own down to the socket's.
+    /// the socket's address the pool's connector recorded, or the
+    /// accepted socket's address a sprockets server's handshake keeps
+    /// beside the TLS stream it sets up. Apart from them come the
+    /// platform ids that name the far end, each with where it came
+    /// from: a sprockets stream's, or the one a sprockets handshake
+    /// read off the certificates. Last comes the route: every stream
+    /// from the connection's own down to the socket's.
     ///
     /// Any address inside one of the connection's objects selects it —
     /// the `ADDR` `connections` prints, the HTTP dispatcher, a stream
@@ -758,7 +762,9 @@ pub enum Command {
     /// server has waited for the next request, `idle (19ms)`, where its
     /// header-read timer and the core's stop time say — the method in
     /// flight, the peer where the server's service keeps one (a
-    /// dropshot server's does; hyper itself keeps none on either side),
+    /// dropshot server's does; hyper itself keeps none on either side)
+    /// — for a sprockets connection, the address its handshake keeps
+    /// where one does, else the platform id its far end attested —
     /// the header-read timer's deadline where the server has armed
     /// one, the context
     /// type of the server that accepted the connection where its

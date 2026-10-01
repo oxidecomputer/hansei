@@ -5,9 +5,9 @@ description: "`census` over linux/gen-0007"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        820597
-    1  0   worker           parked           820596
-    1  0   entered runtime  block_on caller  820594
+    1  0   worker           in driver        130580
+    1  0   worker           parked           130581
+    1  0   entered runtime  block_on caller  130578
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 

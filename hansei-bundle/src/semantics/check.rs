@@ -262,7 +262,7 @@ impl<'a> Check<'a> {
                 );
             }
             // A crate with no release, reviewed per git revision.
-            SprocketsTlsStream => {
+            SprocketsTlsStream | SprocketsHandshake => {
                 return require(
                     matches!(origin, SemanticOrigin::GitDelegation { package, .. }
                     if self.0.strings.get(*package) == Some("sprockets-tls")),
@@ -1123,10 +1123,13 @@ impl<'a> Check<'a> {
             "stream peer binding is not its route's",
         )?;
         self.path(record.ty, &binding.name)?;
-        let TypeDef::Array { elem, count } = self.ty(binding.name.target)? else {
-            return Err(Error::Corrupt(
-                "semantics: stream peer name is not an array".into(),
-            ));
+        self.byte_array(&binding.name, "stream peer name")
+    }
+
+    /// Whether a path lands on a nonempty array of unsigned bytes.
+    fn byte_array(&self, path: &TypedPath, what: &str) -> Result<()> {
+        let TypeDef::Array { elem, count } = self.ty(path.target)? else {
+            return Err(Error::Corrupt(format!("semantics: {what} is not an array")));
         };
         require(
             *count > 0
@@ -1138,8 +1141,56 @@ impl<'a> Check<'a> {
                         ..
                     }
                 ),
-            "stream peer name is not an array of bytes",
+            &format!("{what} is not an array of bytes"),
         )
+    }
+
+    /// What a handshake's frame keeps of the far end, under its crate's
+    /// rule: per state, every path entering one variant of the
+    /// coroutine first, the same for all three; the stream landing on a
+    /// routed TLS stream, the address on an enum, the name on an array
+    /// of bytes; and no state named twice.
+    fn far_end(
+        &self,
+        record: &TypeSemantics,
+        binding: &FarEndBinding,
+        tls_stream: &impl Fn(BundleTypeId) -> bool,
+    ) -> Result<()> {
+        self.rule(binding.rule, &[SemanticRuleKind::SprocketsHandshake])?;
+        require(!binding.states.is_empty(), "far end binding has no state")?;
+        let mut variants = BTreeSet::new();
+        for state in &binding.states {
+            let Some(variant @ Step::Variant(name)) = state.stream.steps.first() else {
+                return Err(Error::Corrupt(
+                    "semantics: a far end's stream selects no state first".into(),
+                ));
+            };
+            require(
+                variants.insert(*name),
+                "far end binding names a state twice",
+            )?;
+            let in_state = |path: &TypedPath, what: &str| -> Result<()> {
+                self.path(record.ty, path)?;
+                require(path.steps.first() == Some(variant), what)
+            };
+            in_state(&state.stream, "far end stream is outside its state")?;
+            require(
+                tls_stream(state.stream.target),
+                "far end stream is not a routed TLS stream",
+            )?;
+            if let Some(addr) = &state.addr {
+                in_state(addr, "far end address is outside its state")?;
+                require(
+                    matches!(self.ty(addr.target)?, TypeDef::Enum { .. }),
+                    "far end address is not an enum",
+                )?;
+            }
+            if let Some(name) = &state.name {
+                in_state(name, "far end name is outside its state")?;
+                self.byte_array(name, "far end name")?;
+            }
+        }
+        Ok(())
     }
 
     /// An operation's stream, under the resource's rule: a path through
@@ -2112,6 +2163,7 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                         && record.tls_session.is_none()
                         && record.tls_stream.is_none()
                         && record.stream_peer.is_none()
+                        && record.far_end.is_none()
                         && record.refcount.is_none()
                         && record.lock.is_none(),
                     "unavailable storage carries a readable capability",
@@ -2242,6 +2294,19 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                 "stream peer binding needs declared-member storage",
             )?;
             check.stream_peer(record, peer)?;
+        }
+        if let Some(far_end) = &record.far_end {
+            require(
+                matches!(record.storage, StoragePolicy::CoroutineStates),
+                "far end binding needs coroutine state storage",
+            )?;
+            let tls_stream = |ty| {
+                positions.get(&ty).is_some_and(|&i| {
+                    let stream = &table.types[i];
+                    stream.io_route.is_some() && stream.tls_stream.is_some()
+                })
+            };
+            check.far_end(record, far_end, &tls_stream)?;
         }
         if let Some(refcount) = &record.refcount {
             check.rule(refcount.rule, &[SemanticRuleKind::StdRefcountHeader])?;

@@ -20,7 +20,7 @@ task 5
     held futures: 1
     join sets: 0
 
-task 7
+task 8
     state: idle
     thread: <none>
     type: async fn http_conns::serve
@@ -38,7 +38,7 @@ task 7
     held futures: 0
     join sets: 0
 
-task 10
+task 11
     state: idle
     thread: <none>
     type: async fn http_conns::serve
@@ -56,7 +56,7 @@ task 10
     held futures: 0
     join sets: 0
 
-task 12
+task 13
     state: idle
     thread: <none>
     type: async fn http_conns::serve
@@ -68,7 +68,7 @@ task 12
     held futures: 1
     join sets: 0
 
-task 14
+task 15
     state: idle
     thread: <none>
     type: async fn http_conns::serve
