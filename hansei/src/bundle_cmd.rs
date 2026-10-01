@@ -195,9 +195,9 @@ fn extract(
     let explaining = explain_format.clone();
     let explaining_walk = explain_walk.clone();
     let opts = ExtractOptions {
+        extract_args: provenance(binary, debug_info, &include_types, allow_missing_infra),
         include_types,
         allow_missing_infra,
-        extract_args: std::env::args().skip(1).collect::<Vec<_>>().join(" "),
         explain_format,
         explain_walk,
     };
@@ -223,6 +223,43 @@ fn extract(
         ),
         None => format!("failed to extract from {}", binary.display()),
     })?
+}
+
+/// The command line a bundle records as its provenance: the verb and
+/// only the inputs that shape what the bundle holds, so extracting one
+/// file with the same flags writes the same bytes whatever directory it
+/// ran in and wherever the output went. Files are named by basename, as
+/// `Meta` identifies them anyway; `--output`, `--stats` and the
+/// `--explain-*` reports change what is printed, not what is written,
+/// and are left out.
+fn provenance(
+    binary: &Path,
+    debug_info: Option<&Path>,
+    include_types: &[String],
+    allow_missing_infra: bool,
+) -> String {
+    let basename = |path: &Path| {
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let mut words = vec![
+        "tokio-info".to_owned(),
+        "extract".to_owned(),
+        basename(binary),
+    ];
+    if let Some(debug_info) = debug_info {
+        words.push("--debug-info".to_owned());
+        words.push(basename(debug_info));
+    }
+    for ty in include_types {
+        words.push("--include-type".to_owned());
+        words.push(ty.clone());
+    }
+    if allow_missing_infra {
+        words.push("--allow-missing-infra".to_owned());
+    }
+    words.join(" ")
 }
 
 /// The extract verb's second half: report, write, and say what was written.
@@ -654,7 +691,9 @@ fn dump_dwarf(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BundleCmd, ExtractStats, RUSTC_FLOOR, exec, warnings};
+    use super::{BundleCmd, ExtractStats, RUSTC_FLOOR, exec, provenance, warnings};
+
+    use std::path::Path;
 
     #[cfg(not(target_os = "macos"))]
     use hansei_bundle::Bundle;
@@ -718,6 +757,58 @@ mod tests {
         let binary = std::env::current_exe().expect("this test binary's path");
         exec(extract_cmd(binary, output.clone())).expect("extraction should succeed");
         Bundle::load(&output).expect("the bundle it wrote should load");
+    }
+
+    /// The provenance a bundle records names the files it came from by
+    /// basename and keeps every flag that shapes the bundle, so two
+    /// spellings of one invocation agree and two different extractions
+    /// do not.
+    #[test]
+    fn test_provenance_keeps_what_shapes_the_bundle() {
+        assert_eq!(
+            provenance(Path::new("../cores/nexus"), None, &[], false),
+            "tokio-info extract nexus",
+        );
+        assert_eq!(
+            provenance(Path::new("/data/nexus"), None, &[], false),
+            provenance(Path::new("./nexus"), None, &[], false),
+        );
+        assert_eq!(
+            provenance(
+                Path::new("/data/rama.bin"),
+                Some(Path::new("/data/rama.dwp")),
+                &[
+                    "tokio::sync::Notify".to_owned(),
+                    "std::net::IpAddr".to_owned()
+                ],
+                true,
+            ),
+            "tokio-info extract rama.bin --debug-info rama.dwp \
+             --include-type tokio::sync::Notify --include-type std::net::IpAddr \
+             --allow-missing-infra",
+        );
+    }
+
+    /// Extracting the same binary twice writes the same bytes, even when
+    /// the binary path is written differently and the output goes
+    /// somewhere else: neither is anything the bundle describes.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn test_extract_writes_the_same_bytes_from_any_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let binary = std::env::current_exe().expect("this test binary's path");
+        let respelled = binary
+            .parent()
+            .expect("the test binary sits in a directory")
+            .join(".")
+            .join(binary.file_name().expect("the test binary has a name"));
+        let first = dir.path().join("first.tinfo");
+        let second = dir.path().join("a-longer-second-name.tinfo");
+        exec(extract_cmd(binary, first.clone())).expect("extraction should succeed");
+        exec(extract_cmd(respelled, second.clone())).expect("extraction should succeed");
+        let first = std::fs::read(&first).expect("read the first bundle");
+        let second = std::fs::read(&second).expect("read the second bundle");
+        assert!(first == second, "re-extracting changed the bundle's bytes");
     }
 
     /// A macOS test binary carries no DWARF of its own — the compiler

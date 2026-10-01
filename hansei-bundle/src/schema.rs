@@ -92,7 +92,10 @@ pub struct Meta {
     ///
     /// [`None`]: VtableDataSource::None
     pub vtable_data: VtableDataSource,
-    /// Command line of the extraction, for provenance.
+    /// Command line of the extraction, for provenance: the flags that
+    /// shape the bundle, with files by basename. Output paths and
+    /// working directories are left out, so re-extracting the same
+    /// file with the same flags writes the same bytes.
     pub extract_args: String,
     /// Mangled task poll symbols sampled (or all) for target match-rate
     /// validation at attach time.

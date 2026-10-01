@@ -78,7 +78,8 @@ pub struct ExtractOptions {
     /// missing, instead of failing.
     pub allow_missing_infra: bool,
     /// Provenance string recorded in the bundle's `Meta` (typically the
-    /// extraction command line).
+    /// extraction command line, reduced to the inputs that shape the
+    /// bundle so that re-extracting writes the same bytes).
     pub extract_args: String,
     /// Report why a formatter did or did not attach, for every emitted type
     /// whose fully-qualified name contains this substring
