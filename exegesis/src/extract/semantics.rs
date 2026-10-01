@@ -4081,26 +4081,24 @@ fn plan_http(
             // outside the reviewed range leaves the binding without a
             // peer or a context rather than without a verdict.
             let service = match &server.service {
-                Some(service) => {
-                    match delegation_origin(&service.sources, &DROPSHOT_SERVER_V0_17_0, "method") {
-                        Ok(origin) => Some((
-                            RuleKey::Delegation {
-                                kind: SemanticRuleKind::DropshotRequestHandler,
-                                origin,
-                            },
-                            route(
-                                strings,
-                                &[(M, DISPATCH), (M, SERVICE), (M, REMOTE_ADDR)],
-                                service.peer,
-                            )?,
-                            service.context,
-                        )),
-                        Err(declined) => {
-                            peer_declined = Some(declined);
-                            None
-                        }
+                Some(service) => match method_origin(&service.sources, &DROPSHOT_SERVER_V0_17_0) {
+                    Ok(origin) => Some((
+                        RuleKey::Delegation {
+                            kind: SemanticRuleKind::DropshotRequestHandler,
+                            origin,
+                        },
+                        route(
+                            strings,
+                            &[(M, DISPATCH), (M, SERVICE), (M, REMOTE_ADDR)],
+                            service.peer,
+                        )?,
+                        service.context,
+                    )),
+                    Err(declined) => {
+                        peer_declined = Some(declined);
+                        None
                     }
-                }
+                },
                 None => None,
             };
             // The timeout's two words, through the `Option` and std's
@@ -4246,14 +4244,10 @@ fn plan_request(
             &seed.sources,
         ),
     };
-    let sources = if declared_by == "method" {
-        own_declarations(sources, |path| {
-            registry_origin(path).is_some_and(|origin| origin.package == convention.package)
-        })
-    } else {
-        Cow::Borrowed(sources)
+    let origin = match declared_by {
+        "method" => method_origin(sources, convention)?,
+        _ => delegation_origin(sources, convention, declared_by)?,
     };
-    let origin = delegation_origin(&sources, convention, declared_by)?;
     let rule = RuleKey::Delegation { kind, origin };
     fn under(prefix: &[&'static str], rest: &[&'static str]) -> Vec<&'static str> {
         prefix.iter().chain(rest).copied().collect()
@@ -5099,6 +5093,22 @@ fn own_declarations(
     }
 }
 
+/// The origin a type's own method declarations establish under a
+/// release's review: those [`own_declarations`] places in the
+/// convention's crate, held to [`delegation_origin`]. A generic impl
+/// another crate writes for every type of a shape — hyper's
+/// `HttpService` for every `Service` — counts as the type's own impl
+/// once its self type resolves, and is declared in that crate.
+fn method_origin(
+    sources: &BTreeSet<PollSource>,
+    convention: &'static LibraryConvention,
+) -> Result<DelegationOrigin, Decline> {
+    let sources = own_declarations(sources, |path| {
+        registry_origin(path).is_some_and(|origin| origin.package == convention.package)
+    });
+    delegation_origin(&sources, convention, "method")
+}
+
 /// A reviewed third-party stream's route: its origin first — the
 /// type's own method declarations, checked against the review — then
 /// the reviewed route's hops, held to the final table. A match's cases
@@ -5113,15 +5123,10 @@ fn delegated_route(
 ) -> Result<(RuleKey, PlannedStep), Decline> {
     let kind = stream.kind;
     let rule = match stream.review {
-        Review::Release(convention) => {
-            let sources = own_declarations(sources, |path| {
-                registry_origin(path).is_some_and(|origin| origin.package == convention.package)
-            });
-            RuleKey::Delegation {
-                kind,
-                origin: delegation_origin(&sources, convention, "method")?,
-            }
-        }
+        Review::Release(convention) => RuleKey::Delegation {
+            kind,
+            origin: method_origin(sources, convention)?,
+        },
         Review::Git(convention) => {
             let sources = own_declarations(sources, |path| {
                 git_origin(path).is_some_and(|origin| origin.repository == convention.repository)
@@ -7334,6 +7339,34 @@ mod tests {
         let polls = BTreeSet::from([source(&reqwest, None), source(&tokio, None)]);
         let why = decline(&pending, &polls);
         assert!(why.contains("which is not the reqwest crate"), "{why}");
+    }
+
+    /// A type's own method declarations decide its origin, whatever
+    /// another crate implements for every type of its shape: dropshot's
+    /// request handler, whose one out-of-line method on a real target
+    /// is hyper's blanket `HttpService::call`, binds where a dropshot
+    /// declaration survives beside it, and declines naming hyper's file
+    /// where none does. Held to every declaration, the pair declines.
+    #[test]
+    fn test_a_blanket_impl_leaves_the_types_own_origin() {
+        let dropshot = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/dropshot-0.17.1/src/server.rs";
+        let hyper = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-1.10.1/src/service/http.rs";
+        let both = BTreeSet::from([source(dropshot, None), source(hyper, None)]);
+        let origin = method_origin(&both, &DROPSHOT_SERVER_V0_17_0).unwrap();
+        assert_eq!(origin.package, "dropshot");
+        assert_eq!(origin.version, "0.17.1");
+        assert!(origin.source.ends_with("dropshot-0.17.1/src/server.rs"));
+        let (kind, why) = method_origin(
+            &BTreeSet::from([source(hyper, None)]),
+            &DROPSHOT_SERVER_V0_17_0,
+        )
+        .unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
+        assert!(
+            why.contains("hyper-1.10.1/src/service/http.rs, which is not the dropshot crate"),
+            "{why}"
+        );
+        assert!(delegation_origin(&both, &DROPSHOT_SERVER_V0_17_0, "method").is_err());
     }
 
     const REGISTRY: &str = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-0.1.40/src/instrument.rs";
