@@ -951,6 +951,7 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 entries_ptr,
                 entry,
                 want,
+                conn_info,
                 ..
             }) => {
                 let bucket = bundle
@@ -975,11 +976,15 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                     type_name(*entry),
                     path(*entry, want)
                 );
+                if let Some(conn_info) = conn_info {
+                    let _ = write!(line, " info {}", path(*entry, conn_info));
+                }
             }
             Some(HttpPoolBinding::Checkout {
                 rule,
                 key_ptr,
                 want,
+                conn_info,
                 ..
             }) => {
                 let _ = write!(
@@ -989,8 +994,40 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                     path(record.ty, key_ptr),
                     path(record.ty, want)
                 );
+                if let Some(conn_info) = conn_info {
+                    let _ = write!(line, " info {}", path(record.ty, conn_info));
+                }
             }
             None => {}
+        }
+        // A pooled connection's info: its two words, the box of its
+        // extras, and each extra the vtable may name, by type, with the
+        // addresses an `HttpInfo` keeps and the box a chain wraps.
+        if let Some(connected) = &record.connected {
+            let _ = write!(
+                line,
+                " connected rule {} alpn {} proxied {} extra {} slot {}",
+                connected.rule.0,
+                path(record.ty, &connected.alpn),
+                path(record.ty, &connected.is_proxied),
+                path(record.ty, &connected.extra),
+                connected.layout.read_slot
+            );
+            for case in &connected.cases {
+                let _ = write!(line, " {{{}", type_name(case.target));
+                if let (Some(remote), Some(local)) = (&case.remote_addr, &case.local_addr) {
+                    let _ = write!(
+                        line,
+                        ": remote {} local {}",
+                        path(case.target, remote),
+                        path(case.target, local)
+                    );
+                }
+                if let Some(next) = &case.next {
+                    let _ = write!(line, " next {}", path(case.target, next));
+                }
+                line.push('}');
+            }
         }
         if let Some(table) = &record.table {
             let _ = write!(

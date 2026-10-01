@@ -13,12 +13,12 @@
 //! so that pointer, read on both sides, says which connection a key
 //! belongs to.
 
-use super::bundle::{Context, read_request_text};
+use super::bundle::{Context, read_request_text, socket_addr_text};
 use super::census::{NodeStop, walk_table_buckets};
-use super::observe::{PoolPeers, ReadContext};
+use super::observe::{PoolInfo, PoolInfos, PoolPeers, ReadContext};
 
 use anyhow::{Result, anyhow};
-use hansei_bundle::{HttpPoolBinding, TypedPath};
+use hansei_bundle::{DynStreamCase, HttpPoolBinding, TypedPath};
 use proc::Target;
 use reify::Value;
 
@@ -29,7 +29,12 @@ const MAX_IDLE_PER_KEY: u64 = 4096;
 /// The most buckets one pool's idle map is walked for.
 const MAX_KEYS: usize = 4096;
 
-/// Read the connections the pool value names into `peers`: a reaper's
+/// The most extras one connection's chain is followed through: each
+/// connector layer adds one, and a chain past this did not read as one.
+const MAX_EXTRAS: usize = 16;
+
+/// Read the connections the pool value names into `peers`, and what
+/// the pool keeps of how each was made into `infos`: a reaper's
 /// idle entries, each under its bucket's key, or a checkout's one
 /// connection under its own key. A reaper whose pool's strong count is
 /// zero names nothing — the pool was dropped, and the map behind it is
@@ -42,6 +47,7 @@ pub(crate) fn read_pool<'b, T: Target>(
     value: Value<'b>,
     binding: &HttpPoolBinding,
     peers: &mut PoolPeers,
+    infos: &mut PoolInfos,
 ) -> Result<()> {
     let at = |root: Value<'b>, path: &TypedPath| -> Option<Value<'b>> {
         let landed = super::contract::execute_steps(ctx, read, root, &path.steps)
@@ -55,11 +61,15 @@ pub(crate) fn read_pool<'b, T: Target>(
     let text = |root: Value<'b>, ptr: &TypedPath, len: &TypedPath| -> Option<String> {
         read_request_text(ctx.proc, word(root, ptr)?, word(root, len)?)
     };
+    let info = |root: Value<'b>, path: &Option<TypedPath>| -> Option<PoolInfo> {
+        read_connected(ctx, read, at(root, path.as_ref()?)?)
+    };
     match binding {
         HttpPoolBinding::Checkout {
             key_ptr,
             key_len,
             want,
+            conn_info,
             ..
         } => {
             // A checkout whose `value` is `None` has handed its
@@ -69,6 +79,9 @@ pub(crate) fn read_pool<'b, T: Target>(
                 .zip(text(value, key_ptr, key_len))
             {
                 peers.0.insert(want, key);
+                if let Some(info) = info(value, conn_info) {
+                    infos.0.insert(want, info);
+                }
             }
             Ok(())
         }
@@ -81,6 +94,7 @@ pub(crate) fn read_pool<'b, T: Target>(
             entries_len,
             entry,
             want,
+            conn_info,
             ..
         } => {
             let Some(count) = word(value, strong) else {
@@ -127,6 +141,9 @@ pub(crate) fn read_pool<'b, T: Target>(
                     };
                     if let Some(want) = word(idle, want).filter(|want| *want != 0) {
                         peers.0.insert(want, key.clone());
+                        if let Some(info) = info(idle, conn_info) {
+                            infos.0.insert(want, info);
+                        }
                     }
                 }
                 Ok(())
@@ -141,6 +158,65 @@ pub(crate) fn read_pool<'b, T: Target>(
                 })
         }
     }
+}
+
+/// What a pooled connection's `Connected` says, through the binding its
+/// type's record carries: the ALPN enum's enumerator, the proxy flag's
+/// byte, and the socket's two addresses, which the connector's
+/// `HttpInfo` keeps among the extras — each extra named by the symbol
+/// its vtable's `set` slot holds, a chain's own value tried before the
+/// extras it wraps. `None` where the type binds no info; a word that
+/// does not read is left out on its own.
+fn read_connected<'b, T: Target>(
+    ctx: &Context<'b, T>,
+    read: &ReadContext<'_>,
+    connected: Value<'b>,
+) -> Option<PoolInfo> {
+    let binding = ctx.type_semantics(connected.ty.id())?.connected.as_ref()?;
+    let at = |root: Value<'b>, path: &TypedPath| -> Option<Value<'b>> {
+        let landed = super::contract::execute_steps(ctx, read, root, &path.steps)
+            .ok()?
+            .optional()?;
+        (landed.ty.id() == path.target).then_some(landed)
+    };
+    let mut info = PoolInfo {
+        h2: at(connected, &binding.alpn)
+            .and_then(|alpn| alpn.ty.enumerator_name(alpn.bytes))
+            .map(|name| name == "H2"),
+        proxied: at(connected, &binding.is_proxied)
+            .and_then(|flag| flag.bytes.first().copied())
+            .map(|byte| byte != 0),
+        ..PoolInfo::default()
+    };
+    let cases: Vec<DynStreamCase> = binding
+        .cases
+        .iter()
+        .map(|case| DynStreamCase {
+            symbol: case.symbol,
+            target: case.target,
+        })
+        .collect();
+    // The extras the connector recorded, latest first: an extra without
+    // the addresses hands on to the one it wraps.
+    let (mut holder, mut pointer) = (connected, &binding.extra);
+    for _ in 0..MAX_EXTRAS {
+        let Ok(extra) = ctx.dyn_stream(holder, pointer, &binding.layout, &cases, read) else {
+            break;
+        };
+        let Some(case) = binding.cases.iter().find(|c| c.target == extra.ty.id()) else {
+            break;
+        };
+        if let (Some(remote), Some(local)) = (&case.remote_addr, &case.local_addr) {
+            info.remote = at(extra, remote).and_then(socket_addr_text);
+            info.local = at(extra, local).and_then(socket_addr_text);
+            break;
+        }
+        match &case.next {
+            Some(next) => (holder, pointer) = (extra, next),
+            None => break,
+        }
+    }
+    Some(info)
 }
 
 /// An idle list of `len` entries `stride` bytes apart from `base`: the
@@ -220,6 +296,43 @@ mod tests {
             for want in peers.keys() {
                 assert_ne!(*want, 0, "{set}");
                 assert_eq!(census.pool_peers.authority(*want), Some(authority));
+            }
+        }
+    }
+
+    /// The same three connections' info, as each pool keeps it beside
+    /// the sender: HTTP/1 over no proxy, and the connector's record of
+    /// the socket — the listener's address, which the key names, and a
+    /// loopback address of the client's own on another port. Every one
+    /// reads, whichever of the extras' two shapes the connector built.
+    #[test]
+    fn test_the_census_reads_each_pooled_connections_info() {
+        for set in FIXTURE_SETS {
+            let (bundle, snapshot) = testkit::load(set, "http-conns");
+            let ctx = testkit::context(&bundle, &snapshot);
+            let list = testkit::tasks(&ctx, &snapshot);
+            let census = census(&ctx, &list);
+            let infos = &census.pool_infos.0;
+            assert_eq!(
+                infos.keys().collect::<std::collections::BTreeSet<_>>(),
+                census
+                    .pool_peers
+                    .0
+                    .keys()
+                    .collect::<std::collections::BTreeSet<_>>(),
+                "{set}: {infos:?}"
+            );
+            for (want, info) in infos {
+                let authority = census.pool_peers.authority(*want);
+                assert_eq!(info.h2, Some(false), "{set}: {info:?}");
+                assert_eq!(info.proxied, Some(false), "{set}: {info:?}");
+                assert_eq!(info.remote.as_deref(), authority, "{set}: {info:?}");
+                let local = info
+                    .local
+                    .as_deref()
+                    .unwrap_or_else(|| panic!("{set}: {info:?}"));
+                assert!(local.starts_with("127.0.0.1:"), "{set}: {info:?}");
+                assert_ne!(Some(local), authority, "{set}: {info:?}");
             }
         }
     }

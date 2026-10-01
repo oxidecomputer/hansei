@@ -1192,6 +1192,7 @@ fn assert_pool(program: &str, bundle: &Bundle) {
         "hyper_util::client::legacy::client::PoolClient<reqwest::async_impl::body::Body>";
     const KEY: &str = "(http::uri::scheme::Scheme, http::uri::authority::Authority)";
     const WANT: &str = "*const alloc::sync::ArcInner<want::Inner>";
+    const CONNECTED: &str = "hyper_util::client::legacy::connect::Connected";
     let s = |id| bundle.strings.get(id).unwrap();
     let route = |path: &hansei_bundle::TypedPath| {
         format!(
@@ -1249,10 +1250,16 @@ fn assert_pool(program: &str, bundle: &Bundle) {
             entries_len,
             entry,
             want,
+            conn_info,
         }) = &record.pool
         else {
             panic!("{program}: {name} has no reaper binding: {record:?}");
         };
+        assert_eq!(
+            conn_info.as_ref().map(route).as_deref(),
+            Some(format!("value.conn_info -> {CONNECTED}").as_str()),
+            "{program}: {name}"
+        );
         rule_of(name, *rule);
         let pool = "pool.__0.Some.__0.ptr.pointer.*";
         assert_eq!(
@@ -1318,10 +1325,16 @@ fn assert_pool(program: &str, bundle: &Bundle) {
             key_ptr,
             key_len,
             want,
+            conn_info,
         }) = &record.pool
         else {
             panic!("{program}: {name} has no checkout binding: {record:?}");
         };
+        assert_eq!(
+            conn_info.as_ref().map(route).as_deref(),
+            Some(format!("value.Some.__0.conn_info -> {CONNECTED}").as_str()),
+            "{program}: {name}"
+        );
         rule_of(name, *rule);
         assert_eq!(
             [key_ptr, key_len, want].map(route),
@@ -1335,6 +1348,88 @@ fn assert_pool(program: &str, bundle: &Bundle) {
         seen += 1;
     }
     assert!(seen > 0, "{program}: no type named {checkout}");
+    assert_connected(program, bundle, CONNECTED, &route);
+}
+
+/// hyper-util's `Connected`, which the pool keeps beside each sender:
+/// under its own rule, read off `connect/mod.rs` in the reviewed range,
+/// its ALPN and proxy flag, and the box of its extras, read through
+/// the vtable's `set` slot. The connector's `HttpInfo` envelope is a
+/// case, with both addresses.
+fn assert_connected(
+    program: &str,
+    bundle: &Bundle,
+    connected: &str,
+    route: &dyn Fn(&hansei_bundle::TypedPath) -> String,
+) {
+    use exegesis::detect::semantics::{EXTRA_INNER_SET_SLOT, HYPER_UTIL_CONNECTED_V0_1_10};
+    use hansei_bundle::{SemanticOrigin, SemanticRuleKind};
+    let s = |id| bundle.strings.get(id).unwrap();
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, connected) {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no semantic record"));
+        let binding = record
+            .connected
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} has no binding: {record:?}"));
+        let rule = &bundle.semantics.rules[binding.rule.0 as usize];
+        assert_eq!(rule.kind, SemanticRuleKind::HyperUtilConnected);
+        let SemanticOrigin::LibraryDelegation { family, source, .. } =
+            &bundle.semantics.origins[rule.origin.0 as usize]
+        else {
+            panic!("{program}: {name}: {rule:?}");
+        };
+        assert_eq!(s(*family), HYPER_UTIL_CONNECTED_V0_1_10.family);
+        assert!(
+            s(*source).ends_with("/src/client/legacy/connect/mod.rs"),
+            "{program}: {}",
+            s(*source)
+        );
+        assert_eq!(
+            [&binding.alpn, &binding.is_proxied, &binding.extra].map(route),
+            [
+                "alpn -> hyper_util::client::legacy::connect::Alpn".to_owned(),
+                "is_proxied -> bool".to_owned(),
+                format!(
+                    "extra.Some.__0.__0 -> {}",
+                    type_name_of(bundle, binding.extra.target)
+                ),
+            ],
+            "{program}: {name}"
+        );
+        assert!(
+            type_name_of(bundle, binding.extra.target).starts_with(
+                "alloc::boxed::Box<dyn hyper_util::client::legacy::connect::ExtraInner"
+            ),
+            "{program}: {}",
+            type_name_of(bundle, binding.extra.target)
+        );
+        assert_eq!(binding.layout.read_slot, EXTRA_INNER_SET_SLOT);
+        let http_info = binding
+            .cases
+            .iter()
+            .find(|case| {
+                type_name_of(bundle, case.target)
+                    == "hyper_util::client::legacy::connect::ExtraEnvelope<hyper_util::client::legacy::connect::http::HttpInfo>"
+            })
+            .unwrap_or_else(|| panic!("{program}: no HttpInfo envelope among {:?}", binding.cases));
+        assert!(
+            s(http_info.symbol).contains("ExtraInner"),
+            "{program}: {}",
+            s(http_info.symbol)
+        );
+        assert_eq!(
+            [&http_info.remote_addr, &http_info.local_addr].map(|path| path.as_ref().map(route)),
+            [
+                Some("__0.remote_addr -> core::net::socket_addr::SocketAddr".to_owned()),
+                Some("__0.local_addr -> core::net::socket_addr::SocketAddr".to_owned()),
+            ],
+            "{program}: {name}"
+        );
+        assert_eq!(http_info.next, None);
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no type named {connected}");
 }
 
 /// The forwards between reqwest's in-flight future and hyper-util's
@@ -2518,16 +2613,17 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                     assert_eq!(program, "watch-stream", "{program}");
                 }
                 // hyper-util's sleep over tokio's, its version-choosing
-                // server connection, its client pool and its client's
+                // server connection, its client pool, the connection info
+                // the pool keeps, and its client's
                 // response future, which only the hyper fixture links,
                 // each read off its own file; whether a poll survives out
                 // of line for the origin to be recorded at all is the
                 // target's call (the Mach-O build inlines the sleep's).
                 "hyper-util" => {
                     use exegesis::detect::semantics::{
-                        HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_IO_V0_1_10,
-                        HYPER_UTIL_POOL_V0_1_16, HYPER_UTIL_RESPONSE_V0_1_10,
-                        HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
+                        HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_CONNECTED_V0_1_10,
+                        HYPER_UTIL_IO_V0_1_10, HYPER_UTIL_POOL_V0_1_16,
+                        HYPER_UTIL_RESPONSE_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
                     };
                     let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
                         unreachable!()
@@ -2536,6 +2632,8 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         &HYPER_UTIL_AUTO_CONN_V0_1_10
                     } else if s(*family) == HYPER_UTIL_POOL_V0_1_16.family {
                         &HYPER_UTIL_POOL_V0_1_16
+                    } else if s(*family) == HYPER_UTIL_CONNECTED_V0_1_10.family {
+                        &HYPER_UTIL_CONNECTED_V0_1_10
                     } else if s(*family) == HYPER_UTIL_RESPONSE_V0_1_10.family {
                         &HYPER_UTIL_RESPONSE_V0_1_10
                     } else if s(*family) == HYPER_UTIL_IO_V0_1_10.family {

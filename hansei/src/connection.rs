@@ -17,7 +17,8 @@ use anyhow::{Result, anyhow};
 use hansei_bundle::{BundleView, HttpRole, IoSocket};
 use hansei_runtime::tokio::bundle::{IoResourceInfo, IoSlot, TaskList, TlsReading};
 use hansei_runtime::tokio::observe::{
-    HttpConnObservation, HttpReading, HttpWriting, KeepAlive, ResourceObservation, ValueKey,
+    HttpConnObservation, HttpReading, HttpWriting, KeepAlive, PoolInfo, ResourceObservation,
+    ValueKey,
 };
 
 use std::io;
@@ -235,7 +236,20 @@ fn print_connection<T: proc::Target>(
             )?;
         }
         ResourceObservation::HttpConn(http) => {
-            print_http(row, http, &names, &mut peers, out)?;
+            // What the client's pool keeps of how the connection was
+            // made, found by the want pointer its sender shares.
+            let pooled = http
+                .client
+                .as_ref()
+                .and_then(|client| client.want)
+                .and_then(|want| session.census().pool_infos.info(want));
+            print_http(row, http, &names, pooled, &mut peers, out)?;
+            if let Some(remote) = pooled.and_then(|info| info.remote.as_ref()) {
+                peers.push(format!(
+                    "{remote} (the socket's, as the pool's connector recorded it)"
+                ));
+            }
+            let local = pooled.and_then(|info| info.local.as_deref());
             match &http.stream {
                 Some(Ok(socket)) => {
                     if let Some(tls) = &socket.tls {
@@ -252,6 +266,12 @@ fn print_connection<T: proc::Target>(
                         socket.scheduled_io,
                         out,
                     )?;
+                    if let Some(local) = local {
+                        writeln!(
+                            out,
+                            "        local address: {local} (as the pool's connector recorded it)"
+                        )?;
+                    }
                     print_peers(&peers, out)?;
                     print_route(&socket.streams, &names, out)?;
                 }
@@ -299,6 +319,7 @@ fn print_http(
     row: &ConnRow,
     http: &HttpConnObservation,
     names: &TypeNames<'_>,
+    pooled: Option<&PoolInfo>,
     peers: &mut Vec<String>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -372,6 +393,23 @@ fn print_http(
             peers.push(format!(
                 "{peer} (the accepted socket's, kept by the server's service)"
             ));
+        }
+    }
+    // What the client's pool keeps of how the connection was made.
+    if let Some(info) = pooled {
+        if let Some(h2) = info.h2 {
+            let alpn = match h2 {
+                true => "h2",
+                false => "none",
+            };
+            writeln!(out, "        alpn: {alpn}")?;
+        }
+        if let Some(proxied) = info.proxied {
+            let proxied = match proxied {
+                true => "yes",
+                false => "no",
+            };
+            writeln!(out, "        proxied: {proxied}")?;
         }
     }
     if http.role == HttpRole::Client

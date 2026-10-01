@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/nested-await"
 ---
-LWP      NAME  ROLE                 TASK  FRAME 0
-3387643  —     entered runtime      —     0xADDR
-3387645  —     worker 0, in driver  —     0xADDR
-3387646  —     worker 1, parked     —     0xADDR
+LWP     NAME  ROLE                 TASK  FRAME 0
+728522  —     entered runtime      —     0xADDR
+728524  —     worker 0, parked     —     0xADDR
+728525  —     worker 1, in driver  —     0xADDR
 [3 threads]

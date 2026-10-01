@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task` over linux-floor/futurelock"
 ---
 COUNT  HAS TASK  LWPS
-    1  no        3503299
+    1  no        735674
 [1 group]

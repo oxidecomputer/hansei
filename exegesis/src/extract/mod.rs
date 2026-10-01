@@ -962,6 +962,7 @@ fn extract_from_view(
         fut_polls,
         explicit_polls,
         stream_reads,
+        extra_sets,
         poll_sources,
         poll_decls,
         coroutine_candidates,
@@ -1258,6 +1259,12 @@ fn extract_from_view(
         em.emit(id);
     }
     for id in vtable_type_ids {
+        em.emit(id);
+    }
+    // The concrete extras a hyper-util `Connected` may hold: reached only
+    // through its trait object's vtable, so no member emits them, and a
+    // case the table does not carry is no case.
+    for &id in extra_sets.keys() {
         em.emit(id);
     }
 
@@ -1567,6 +1574,7 @@ fn extract_from_view(
         &em,
         &explicit_polls,
         &stream_reads,
+        &extra_sets,
         &poll_sources,
         &coroutine_candidates,
         compiler_verdict,

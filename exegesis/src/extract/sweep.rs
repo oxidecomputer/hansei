@@ -43,6 +43,9 @@ const STREAM_POLL_NEXT_SUFFIX: &str = " as futures_core::stream::Stream>::poll_n
 /// read method a stream trait object's vtable names its concrete
 /// stream by.
 const HYPER_READ_SUFFIX: &str = " as hyper::rt::io::Read>::poll_read";
+/// hyper-util's `ExtraInner::set`, whose symbol names the concrete
+/// extra a `Connected`'s trait object holds.
+const EXTRA_SET_SUFFIX: &str = " as hyper_util::client::legacy::connect::ExtraInner>::set";
 
 /// Below this many subprograms, sweeping them by hand beats spawning threads.
 const SWEEP_PARALLEL_THRESHOLD: usize = 4096;
@@ -61,6 +64,9 @@ pub(super) struct Sweep {
     /// Linkage names of every `hyper::rt::Read::poll_read` impl, by the
     /// self type: what a stream trait object's read slot names.
     pub(super) stream_reads: BTreeMap<TypeId, BTreeSet<String>>,
+    /// Linkage names of every hyper-util `ExtraInner::set` impl, by the
+    /// self type: what a `Connected`'s extras vtable names.
+    pub(super) extra_sets: BTreeMap<TypeId, BTreeSet<String>>,
     /// Where each explicit poll was declared: the implementing file, as
     /// the line table spells it, with its checksum when the table
     /// carries one. A third-party rule reads its origin — which crate,
@@ -186,6 +192,9 @@ impl Sweep {
         }
         for (t, syms) in other.stream_reads {
             self.stream_reads.entry(t).or_default().extend(syms);
+        }
+        for (t, syms) in other.extra_sets {
+            self.extra_sets.entry(t).or_default().extend(syms);
         }
         for (t, syms) in other.explicit_polls {
             self.explicit_polls.entry(t).or_default().extend(syms);
@@ -398,6 +407,22 @@ fn sweep_function(
             _ => {}
         }
     } else if let Some(linkage) = func.linkage_name() {
+        // A `Connected` extra's `set`, recorded by its linkage name and
+        // nothing else: the name the extras vtable's slot is joined by.
+        // A member of a generic impl is named with the impl's arguments
+        // (`set<HttpInfo>`).
+        if name == "set" || name.starts_with("set<") {
+            let demangled = format!("{:#}", rustc_demangle::demangle(linkage));
+            if demangled.ends_with(EXTRA_SET_SUFFIX)
+                && let Ok(t) = future_poll_self_type(reader, func)
+            {
+                out.extra_sets
+                    .entry(t)
+                    .or_default()
+                    .insert(strip(linkage).to_owned());
+            }
+            return;
+        }
         // `<T as Future>::poll` impls live in `{impl#N}` namespaces; the trait
         // path is only visible in the mangled name.
         if !name.starts_with("poll") {

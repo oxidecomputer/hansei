@@ -62,6 +62,9 @@ pub struct TypeSemantics {
     /// a hyper-util client pool's reaper or checkout under a reviewed
     /// range: what names a client connection's far end.
     pub pool: Option<HttpPoolBinding>,
+    /// Where the type is hyper-util's `Connected` under a reviewed
+    /// range: what a pooled connection's info says of it.
+    pub connected: Option<ConnectedBinding>,
     /// Where the type is a stream a reviewed range says forwards its
     /// reads and writes, or a socket registered with tokio's io driver:
     /// how reading or writing a value of it reaches the registration.
@@ -536,6 +539,11 @@ pub enum HttpPoolBinding {
         /// From an entry to its sender's `want` pointer,
         /// `value.tx.Http1.__0.dispatch.giver.inner.ptr.pointer`.
         want: TypedPath,
+        /// From an entry to the connection's info, `value.conn_info`,
+        /// landing on a type whose record carries the `Connected`
+        /// binding. `None` where the info's layout did not bind; the
+        /// key and the sender stand without it.
+        conn_info: Option<TypedPath>,
     },
     /// `Pooled<T, K>`, a connection checked out of the pool: its key
     /// and its sender, held by whoever checked it out.
@@ -546,7 +554,49 @@ pub enum HttpPoolBinding {
         key_len: TypedPath,
         /// `value.Some.__0.tx.Http1.__0.dispatch.giver.inner.ptr.pointer`.
         want: TypedPath,
+        /// `value.Some.__0.conn_info`, as the reaper's.
+        conn_info: Option<TypedPath>,
     },
+}
+
+/// hyper-util's `Connected` as a reviewed range lays it out: what the
+/// pool keeps of how its connection was made. Every path starts at
+/// the `Connected` and names its members.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ConnectedBinding {
+    pub rule: SemanticRuleId,
+    /// `alpn`, the `Alpn` enum: `H2` where ALPN chose HTTP/2, `None`
+    /// otherwise.
+    pub alpn: TypedPath,
+    /// `is_proxied`: whether the connection goes through a proxy.
+    pub is_proxied: TypedPath,
+    /// `extra.Some.__0.__0`, the `Box<dyn ExtraInner>` the connector's
+    /// extras sit behind; the read reports the variant inactive where
+    /// it recorded none.
+    pub extra: TypedPath,
+    /// The box's vtable under the compiler's rule for its header, with
+    /// `read_slot` the slot of `ExtraInner::set`, whose symbol names
+    /// the concrete extra.
+    pub layout: DynStreamLayout,
+    /// Every concrete extra the vtable may name.
+    pub cases: Vec<ExtraCase>,
+}
+
+/// One concrete extra a `Connected` may hold: hyper-util's envelope of
+/// one value, or its chain of a value over the extras before it.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ExtraCase {
+    /// The linkage symbol of its `ExtraInner::set`.
+    pub symbol: StrRef,
+    pub target: BundleTypeId,
+    /// Where the value it carries is hyper-util's `HttpInfo`: its
+    /// `remote_addr` and `local_addr`, each landing on std's
+    /// `SocketAddr` enum.
+    pub remote_addr: Option<TypedPath>,
+    pub local_addr: Option<TypedPath>,
+    /// For a chain, `__0`: the box of the extras it wraps, the same
+    /// type as the binding's `extra`.
+    pub next: Option<TypedPath>,
 }
 
 /// tokio's io operation futures, by the `io::util` module each lives
@@ -955,6 +1005,11 @@ pub enum SemanticRuleKind {
     /// reaper and its checked-out connections, which name each pooled
     /// connection by its key and its sender.
     HyperUtilPool,
+    /// hyper-util's `Connected` under a reviewed range: the connection
+    /// info its client pool keeps beside each sender — how the
+    /// connection was negotiated, and the extras its connector recorded
+    /// behind a trait object.
+    HyperUtilConnected,
     /// futures-util's `future::Either<A, B>`: a match on which side it
     /// holds, forwarding to that side's future.
     FuturesUtilEither,

@@ -38,6 +38,7 @@ fn record(ty: BundleTypeId) -> TypeSemantics {
         request: None,
         table: None,
         pool: None,
+        connected: None,
         io_route: None,
         io: None,
         tls_session: None,
@@ -3369,12 +3370,14 @@ fn pool() -> (Bundle, HttpPoolBinding, HttpPoolBinding) {
         entries_len: route(&[named(second), named(len)], word),
         entry: entry_t,
         want: route(&[named(want)], byte_ptr),
+        conn_info: None,
     };
     let checkout = HttpPoolBinding::Checkout {
         rule,
         key_ptr: route(&[named(key), named(ptr)], byte_ptr),
         key_len: route(&[named(key), named(len)], word),
         want: route(&[named(want)], byte_ptr),
+        conn_info: None,
     };
     for (ty, binding) in [(reaper_t, &reaper), (checkout_t, &checkout)] {
         let mut r = record(ty);
@@ -4697,4 +4700,218 @@ fn test_a_stream_trait_object_routes_through_its_cases() {
         target: STATE,
     });
     bad(&unrouted, "forwards to an unrouted type");
+}
+
+/// [`dyn_route`]'s wide pointer as a `Connected`'s extras: a record of
+/// its own, holding the box beside an ALPN enum and a proxy byte, whose
+/// two extras are an envelope of an address pair and a chain of one
+/// over the box, under hyper-util's rule.
+fn connected() -> (Bundle, BundleTypeId) {
+    let mut b = dyn_route();
+    let mut strings = StringInterner::new();
+    for s in b.strings.iter() {
+        strings.intern(s);
+    }
+    let mut name = |s: &str| strings.intern(s);
+    let (hyper_util, version, family, source, set, chain_set) = (
+        name("hyper-util"),
+        name("0.1.20"),
+        name("hyper-util-connected-0.1.10"),
+        name(
+            "registry/src/index.crates.io-1949cf8c6b5b557f/hyper-util-0.1.20/src/client/legacy/connect/mod.rs",
+        ),
+        name("set"),
+        name("chain_set"),
+    );
+    b.strings = strings.finish();
+    let (wide, address) = (BundleTypeId(9), STATE);
+    let (other, byte) = (StrRef(14), StrRef(15));
+    let member = |name, ty, offset| MemberDef { name, ty, offset };
+    let next = b.types.types.len() as u32;
+    let [byte_t, info_t, envelope_t, chain_t, connected_t] =
+        [0, 1, 2, 3, 4].map(|i| BundleTypeId(next + i));
+    b.types.types.extend([
+        TypeDef::Base {
+            name: StrRef(0),
+            size: 1,
+            encoding: Encoding::Unsigned,
+        },
+        TypeDef::Struct {
+            name: FIELD,
+            size: 48,
+            members: vec![member(other, address, 0), member(byte, address, 24)],
+        },
+        TypeDef::Struct {
+            name: FIELD,
+            size: 48,
+            members: vec![member(FIELD, info_t, 0)],
+        },
+        TypeDef::Struct {
+            name: FIELD,
+            size: 64,
+            members: vec![member(FIELD, wide, 0), member(other, info_t, 16)],
+        },
+        TypeDef::Struct {
+            name: FIELD,
+            size: 48,
+            members: vec![
+                member(FIELD, wide, 0),
+                member(other, address, 16),
+                member(byte, byte_t, 40),
+            ],
+        },
+    ]);
+    let origin = SemanticOriginId(b.semantics.origins.len() as u32);
+    b.semantics.origins.push(SemanticOrigin::LibraryDelegation {
+        package: hyper_util,
+        version,
+        family,
+        source,
+        files: Vec::new(),
+    });
+    let rule = SemanticRuleId(b.semantics.rules.len() as u32);
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::HyperUtilConnected,
+        revision: 1,
+        origin,
+    });
+    let pair = |value: StrRef, target| {
+        (
+            Some(path(vec![named(value), named(other)], target)),
+            Some(path(vec![named(value), named(byte)], target)),
+        )
+    };
+    let (remote_addr, local_addr) = pair(FIELD, address);
+    let (chain_remote, chain_local) = pair(other, address);
+    let mut r = record(connected_t);
+    r.future = None;
+    r.connected = Some(ConnectedBinding {
+        rule,
+        alpn: path(vec![named(other)], address),
+        is_proxied: path(vec![named(byte)], byte_t),
+        extra: path(vec![named(FIELD)], wide),
+        layout: DynStreamLayout {
+            abi: SemanticRuleId(2),
+            data: path(vec![named(StrRef(14))], BundleTypeId(7)),
+            vtable: path(vec![named(StrRef(15))], BundleTypeId(8)),
+            size_slot: 1,
+            align_slot: 2,
+            read_slot: 4,
+        },
+        cases: vec![
+            ExtraCase {
+                symbol: set,
+                target: envelope_t,
+                remote_addr,
+                local_addr,
+                next: None,
+            },
+            ExtraCase {
+                symbol: chain_set,
+                target: chain_t,
+                remote_addr: chain_remote,
+                local_addr: chain_local,
+                next: Some(path(vec![named(FIELD)], wide)),
+            },
+        ],
+    });
+    b.semantics.types.push(r);
+    b.validate().unwrap();
+    (b, connected_t)
+}
+
+/// A pooled connection's info: under hyper-util's own rule, its ALPN an
+/// enum and its proxy flag a byte, its extras' box read under the
+/// compiler's header rule with `set` past the header's slots, every
+/// extra listed once, each address pair complete and of one enum, and
+/// a chain wrapping the binding's own box.
+#[test]
+fn test_a_connections_info_reads_its_extras_by_their_set_slot() {
+    let (b, connected_t) = connected();
+    let at = |b: &Bundle| {
+        b.semantics
+            .types
+            .iter()
+            .position(|r| r.ty == connected_t)
+            .unwrap()
+    };
+    fn binding(b: &mut Bundle, at: usize) -> &mut ConnectedBinding {
+        b.semantics.types[at].connected.as_mut().unwrap()
+    }
+    let i = at(&b);
+
+    let mut wrong_rule = b.clone();
+    binding(&mut wrong_rule, i).rule = SemanticRuleId(2);
+    bad(&wrong_rule, "incompatible capability");
+
+    let mut abi = b.clone();
+    binding(&mut abi, i).layout.abi = SemanticRuleId(3);
+    bad(&abi, "incompatible capability");
+
+    let mut alpn = b.clone();
+    let proxied = binding(&mut alpn, i).is_proxied.clone();
+    binding(&mut alpn, i).alpn = proxied;
+    bad(&alpn, "ALPN is not an enum");
+
+    let mut wide_flag = b.clone();
+    let extra = binding(&mut wide_flag, i).extra.clone();
+    binding(&mut wide_flag, i).is_proxied = extra;
+    bad(&wide_flag, "proxy flag is not a byte");
+
+    let mut overlap = b.clone();
+    binding(&mut overlap, i).layout.read_slot = 2;
+    bad(&overlap, "vtable slots overlap");
+    // `set` past the alignment's slot but on the size's is no less an
+    // overlap.
+    let mut on_size = b.clone();
+    let layout = &mut binding(&mut on_size, i).layout;
+    (layout.size_slot, layout.align_slot, layout.read_slot) = (3, 1, 3);
+    bad(&on_size, "vtable slots overlap");
+
+    let mut twice = b.clone();
+    let case = binding(&mut twice, i).cases[0].clone();
+    binding(&mut twice, i).cases.push(case);
+    bad(&twice, "lists one extra twice");
+
+    let mut half = b.clone();
+    binding(&mut half, i).cases[0].local_addr = None;
+    bad(&half, "addresses are not a pair");
+    // An extra that keeps no addresses at all binds.
+    let mut bare = b.clone();
+    let chain = &mut binding(&mut bare, i).cases[1];
+    (chain.remote_addr, chain.local_addr) = (None, None);
+    bare.validate().unwrap();
+
+    // The chain's own value, a real member of it, is not the box.
+    let mut unwrapped = b.clone();
+    let chain = &mut binding(&mut unwrapped, i).cases[1];
+    let value = chain.remote_addr.as_ref().unwrap().steps[..1].to_vec();
+    let info = semantic_path_target(&b.types, chain.target, &Selector(value.clone())).unwrap();
+    chain.next = Some(path(value, info));
+    bad(&unwrapped, "chain does not wrap its extras' box");
+}
+
+/// A pool's route to a connection's info lands on a type whose record
+/// carries the binding: the key's text does not.
+#[test]
+fn test_a_pools_connection_info_lands_on_a_binding() {
+    let (mut b, _, checkout) = pool();
+    let HttpPoolBinding::Checkout { key_ptr, .. } = &checkout else {
+        unreachable!()
+    };
+    let landing = path(key_ptr.steps[..1].to_vec(), {
+        let steps = key_ptr.steps[..1].to_vec();
+        semantic_path_target(
+            &b.types,
+            b.semantics.types.last().unwrap().ty,
+            &Selector(steps),
+        )
+        .unwrap()
+    });
+    let record = b.semantics.types.last_mut().unwrap();
+    let Some(HttpPoolBinding::Checkout { conn_info, .. }) = &mut record.pool else {
+        unreachable!()
+    };
+    *conn_info = Some(landing);
+    bad(&b, "connection info carries no binding");
 }

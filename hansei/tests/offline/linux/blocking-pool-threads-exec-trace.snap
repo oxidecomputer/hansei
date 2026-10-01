@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads --with has-task yes --exec trace -l 1` over linux/blocking-pool"
 ---
-thread 3391610
-lwp 3391610 native stack:
+thread 732157
+lwp 732157 native stack:
 0xADDR  
 [Executed against 1 thread, 0 failed]

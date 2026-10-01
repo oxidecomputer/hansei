@@ -711,20 +711,25 @@ pub enum Command {
     /// the protocol on top down to the socket. An HTTP/1 connection's
     /// section has its role and phase, the dispatcher's words
     /// (keep-alive, reading, writing, the method in flight), the
-    /// request behind it, a client's caller, and a server's handler
-    /// and header-read timer. A TLS connection's has its side, version
+    /// request behind it, a client's caller, a server's handler and
+    /// header-read timer, the address the accepting server listens on
+    /// and whether it serves TLS (a dropshot server's state says), and
+    /// the ALPN and proxy flag a client's pool recorded for a
+    /// connection it keeps idle. A TLS connection's has its side, version
     /// and verdict, the records each direction carried, what is
     /// written and unsent, and how far each direction has closed. The
-    /// socket's has its descriptor, its stream, and its registration
-    /// with the io driver: the readiness last delivered and every
-    /// waker parked there. The HTTP role and the TLS side are each
+    /// socket's has its descriptor, its stream, its registration
+    /// with the io driver — the readiness last delivered and every
+    /// waker parked there — and its local address where a client's
+    /// pool recorded one. The HTTP role and the TLS side are each
     /// their own layer's.
     ///
     /// Every peer known is listed with where it came from: the
     /// accepted socket's address a server's service keeps, the
     /// authority of the pool key a client connection was made for,
-    /// or a name a stream on the route keeps. Last comes the route:
-    /// every stream from the connection's own down to the socket's.
+    /// the socket's address the pool's connector recorded, or a name
+    /// a stream on the route keeps. Last comes the route: every
+    /// stream from the connection's own down to the socket's.
     ///
     /// Any address inside one of the connection's objects selects it —
     /// the `ADDR` `connections` prints, the HTTP dispatcher, a stream

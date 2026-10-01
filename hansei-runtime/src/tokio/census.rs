@@ -55,7 +55,9 @@ use super::observe::ResourceObservation;
 // reported apart from a set of futures; anything built on one
 // (omicron's `ParallelTaskSet`, which pairs it with a semaphore) is
 // reached by the same scan, since it holds its `JoinSet` by value.
-use super::observe::{HttpRequestObservation, PoolPeers, ReadContext, Refusal, ValueKey};
+use super::observe::{
+    HttpRequestObservation, PoolInfos, PoolPeers, ReadContext, Refusal, ValueKey,
+};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use foldhash::{HashMap, HashSet};
@@ -121,6 +123,9 @@ pub struct FutureCensus {
     /// walk scanned holds a pool of: a pool's idle reaper, or a
     /// connection checked out of one.
     pub pool_peers: PoolPeers,
+    /// What those pools keep of how each connection was made, by the
+    /// same pointer.
+    pub pool_infos: PoolInfos,
 }
 
 /// How often each of the census's two hard limits stopped it, kept
@@ -393,6 +398,7 @@ impl FutureCensus {
             refused: 0,
             stats: Stats::default(),
             pool_peers: PoolPeers::default(),
+            pool_infos: PoolInfos::default(),
         }
     }
 
@@ -869,6 +875,7 @@ struct Walker<'a, 'b, T> {
     refused: usize,
     stats: Stats,
     pool_peers: PoolPeers,
+    pool_infos: PoolInfos,
     /// Where this walk's hard limits sit; [`Bounds::default`] outside
     /// the tests.
     bounds: Bounds,
@@ -951,6 +958,7 @@ pub fn census_bounded<T: Target>(
         refused: 0,
         stats: Stats::default(),
         pool_peers: PoolPeers::default(),
+        pool_infos: PoolInfos::default(),
         bounds,
         visited: HashSet::default(),
         plans: HashMap::default(),
@@ -987,6 +995,7 @@ pub fn census_bounded<T: Target>(
         refused: walker.refused,
         stats: walker.stats,
         pool_peers: walker.pool_peers,
+        pool_infos: walker.pool_infos,
     }
 }
 
@@ -1141,6 +1150,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                         local,
                         pool,
                         &mut self.pool_peers,
+                        &mut self.pool_infos,
                     )
                 {
                     self.errors.push(e);
@@ -3877,6 +3887,7 @@ mod tests {
             refused: 0,
             stats: Stats::default(),
             pool_peers: PoolPeers::default(),
+            pool_infos: PoolInfos::default(),
             bounds: nesting(0),
             visited: HashSet::default(),
             plans: HashMap::default(),
@@ -4065,6 +4076,7 @@ mod tests {
             refused: 0,
             stats: Stats::default(),
             pool_peers: PoolPeers::default(),
+            pool_infos: PoolInfos::default(),
         }
     }
 

@@ -6,9 +6,9 @@ core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 23/23
 allocator evidence: unavailable
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.2 MiB swept in 199 chunks
-    hits: 36 task-pattern, 0 set-pattern; 25 admitted; 3 unlisted headers
-    by class: 3 task extent, 3 find, 11 lwp stack, 19 anon
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.3 MiB swept in 191 chunks
+    hits: 35 task-pattern, 0 set-pattern; 25 admitted; 4 unlisted headers
+    by class: 4 task extent, 3 find, 9 lwp stack, 19 anon
     attributed: 13 by a registry, 7 by owner type, 1 by holding type, 2 from another task's side, 2 unknown; 0 stale
 process: not recorded by this target
 signal: none recorded

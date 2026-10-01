@@ -26,20 +26,21 @@ use crate::TypeId;
 use crate::bundle::names::coroutine_kind;
 use crate::bundle::origin::{git_origin, registry_origin};
 use crate::bundle::{
-    AccessBinding, AccessKind, AcquiresForBinding, BundleTypeId, ContainerBinding, ContainerKind,
-    Continuation, CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, DynStreamCase,
-    DynStreamLayout, FutureEvidence, FutureFacts, FutureTarget, HashTableBinding,
-    HttpClientBinding, HttpConnBinding, HttpPoolBinding, HttpRequestBinding, HttpRequestTarget,
-    HttpRole, HttpServerBinding, HttpServiceBinding, IoOperationBinding, IoOperationKind,
-    IoRouteBinding, IoRouteStep, IoSocket, LayoutSelection, LockBinding, LockWord, MemberRef,
-    PollAction, PollCase, PollProgram, RefcountBinding, ResourceBinding, ResourceKind,
-    SchedulerBinding, SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind,
-    SemanticOrigin, SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind,
-    SemanticTable, SendableBinding, SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef,
-    StreamPeerBinding, StringInterner, TaskEntryId, TaskFutureEntry, TlsSessionBinding,
-    TlsStreamBinding, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome, WalkRole,
-    WalksTable, container_roles, container_routes, required_resource_roles,
-    required_resource_routes, scheduler_role, semantic_path_target, socket_roles,
+    AccessBinding, AccessKind, AcquiresForBinding, BundleTypeId, ConnectedBinding,
+    ContainerBinding, ContainerKind, Continuation, CoroutineLayout, CoroutinePhase, CoroutineState,
+    DynFutureLayout, DynStreamCase, DynStreamLayout, ExtraCase, FutureEvidence, FutureFacts,
+    FutureTarget, HashTableBinding, HttpClientBinding, HttpConnBinding, HttpPoolBinding,
+    HttpRequestBinding, HttpRequestTarget, HttpRole, HttpServerBinding, HttpServiceBinding,
+    IoOperationBinding, IoOperationKind, IoRouteBinding, IoRouteStep, IoSocket, LayoutSelection,
+    LockBinding, LockWord, MemberRef, PollAction, PollCase, PollProgram, RefcountBinding,
+    ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass, SelectBinding, Selector,
+    SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId, SemanticRule,
+    SemanticRuleId, SemanticRuleKind, SemanticTable, SendableBinding, SourceFileEvidence,
+    SourceLoc, Step, StoragePolicy, StrRef, StreamPeerBinding, StringInterner, TaskEntryId,
+    TaskFutureEntry, TlsSessionBinding, TlsStreamBinding, TypeDef, TypeSemantics, TypeTable,
+    TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles, container_routes,
+    required_resource_roles, required_resource_routes, scheduler_role, semantic_path_target,
+    socket_roles,
 };
 use crate::detect::Family;
 use crate::detect::adapters::{
@@ -48,20 +49,20 @@ use crate::detect::adapters::{
     hyper_h1, hyper_pool, request,
 };
 use crate::detect::semantics::{
-    DROPSHOT_HANDLER_V0_17_0, DROPSHOT_SERVER_V0_17_0, FUTURES_UTIL_ADAPTERS_V0_3_30,
-    GitConvention, HASHBROWN_TABLE_V0_12_3, HTTP_REQUEST_V1_0_0, HYPER_H1_CONN_V1_6_0,
-    HYPER_RUSTLS_STREAM_V0_27_0, HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_IO_V0_1_10,
-    HYPER_UTIL_POOL_V0_1_16, HYPER_UTIL_RESPONSE_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
-    LibraryConvention, PARKING_LOT_RAW_MUTEX_V0_12_1, REQWEST_CONN_READ_SLOT,
-    REQWEST_CONN_V0_12_14, REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0,
-    RUSTLS_SESSION_V0_23_23, RustcConvention, SPROCKETS_TLS_STREAM_D2B68E4,
-    TOKIO_INTERVAL_TICK_V1_47, TOKIO_RUSTLS_HANDSHAKE_V0_26_0, TOKIO_RUSTLS_STREAM_V0_26_0,
-    TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
-    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2, TRACING_INSTRUMENTED_V0_1_40,
-    library_convention, rustc_core_pending_convention, rustc_coroutine_convention,
-    rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
-    rustc_std_futex_mutex_convention, rustc_std_refcount_convention, tokio_acquire_owner,
-    tokio_state_protocol,
+    DROPSHOT_HANDLER_V0_17_0, DROPSHOT_SERVER_V0_17_0, EXTRA_INNER_SET_SLOT,
+    FUTURES_UTIL_ADAPTERS_V0_3_30, GitConvention, HASHBROWN_TABLE_V0_12_3, HTTP_REQUEST_V1_0_0,
+    HYPER_H1_CONN_V1_6_0, HYPER_RUSTLS_STREAM_V0_27_0, HYPER_UTIL_AUTO_CONN_V0_1_10,
+    HYPER_UTIL_CONNECTED_V0_1_10, HYPER_UTIL_IO_V0_1_10, HYPER_UTIL_POOL_V0_1_16,
+    HYPER_UTIL_RESPONSE_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
+    PARKING_LOT_RAW_MUTEX_V0_12_1, REQWEST_CONN_READ_SLOT, REQWEST_CONN_V0_12_14,
+    REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0, RUSTLS_SESSION_V0_23_23,
+    RustcConvention, SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_INTERVAL_TICK_V1_47,
+    TOKIO_RUSTLS_HANDSHAKE_V0_26_0, TOKIO_RUSTLS_STREAM_V0_26_0, TOKIO_SELECT_V1_47,
+    TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
+    TOWER_RETRY_V0_5_2, TRACING_INSTRUMENTED_V0_1_40, library_convention,
+    rustc_core_pending_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
+    rustc_std_adapter_convention, rustc_std_futex_mutex_convention, rustc_std_refcount_convention,
+    tokio_acquire_owner, tokio_state_protocol,
 };
 
 use std::borrow::Cow;
@@ -562,12 +563,15 @@ enum PoolSeed {
         entries_len: BundleTypeId,
         entry: BundleTypeId,
         want: BundleTypeId,
+        /// The `PoolClient`'s `conn_info`, where its type was emitted.
+        conn_info: Option<BundleTypeId>,
         sources: BTreeSet<PollSource>,
     },
     Checkout {
         key_ptr: BundleTypeId,
         key_len: BundleTypeId,
         want: BundleTypeId,
+        conn_info: Option<BundleTypeId>,
         sources: BTreeSet<PollSource>,
     },
 }
@@ -589,6 +593,7 @@ fn pool_reaper_seed(
         entries_len: bundle_id(layout.entries_len)?,
         entry: bundle_id(layout.entry)?,
         want: bundle_id(layout.want)?,
+        conn_info: layout.conn_info.and_then(&bundle_id),
         sources,
     })
 }
@@ -603,6 +608,7 @@ fn pool_checkout_seed(
         key_ptr: bundle_id(layout.key_ptr)?,
         key_len: bundle_id(layout.key_len)?,
         want: bundle_id(layout.want)?,
+        conn_info: layout.conn_info.and_then(&bundle_id),
         sources,
     })
 }
@@ -669,6 +675,11 @@ pub(super) struct Seed {
     /// The linkage names of the type's `hyper::rt::Read::poll_read`, by
     /// which a stream trait object's vtable names it.
     read_symbols: BTreeSet<String>,
+    /// The linkage names of the type's hyper-util `ExtraInner::set`, by
+    /// which a `Connected`'s extras vtable names it.
+    extra_symbols: BTreeSet<String>,
+    /// hyper-util's `Connected`, where the type is it.
+    connected: Option<ConnectedSeed>,
     /// A refcounted allocation's header, where the type is one: the
     /// member its value sits in, and the verdict on its defining units.
     refcount: Option<(&'static str, CompilerVerdict)>,
@@ -699,11 +710,23 @@ impl Seed {
             || self.request.is_some()
             || self.table.is_some()
             || self.pool.is_some()
+            || self.connected.is_some()
             || self.io_op.is_some()
             || self.handshake
             || self.refcount.is_some()
             || self.lock.is_some()
     }
+}
+
+/// hyper-util's `Connected` as its screen saw it, by bundle id: the
+/// types its routes land on — the boxed trait object last — and the
+/// type's own method declarations, which its version is read off.
+#[derive(Clone, Debug)]
+struct ConnectedSeed {
+    alpn: BundleTypeId,
+    is_proxied: BundleTypeId,
+    extra: BundleTypeId,
+    sources: BTreeSet<PollSource>,
 }
 
 /// A stream's route as its name announced it: the hops to the stream
@@ -1328,6 +1351,7 @@ pub(super) fn collect_semantic_seeds(
     em: &Emitter<'_>,
     polls: &BTreeMap<TypeId, BTreeSet<String>>,
     stream_reads: &BTreeMap<TypeId, BTreeSet<String>>,
+    extra_sets: &BTreeMap<TypeId, BTreeSet<String>>,
     poll_sources: &BTreeMap<TypeId, BTreeSet<PollSource>>,
     coroutines: &BTreeSet<TypeId>,
     mut verdict: impl FnMut(TypeId, Reviewed) -> CompilerVerdict,
@@ -1472,6 +1496,20 @@ pub(super) fn collect_semantic_seeds(
             && let Some(seed) = pool_checkout_seed(layout, bundle_id, type_sources(raw))
         {
             seeds.entry(ty).or_default().pool = Some(seed);
+        } else if name == "hyper_util::client::legacy::connect::Connected"
+            && let Some(layout) = adapters::hyper_util_connected(reader, raw)
+            && let (Some(alpn), Some(is_proxied), Some(extra)) = (
+                bundle_id(layout.alpn),
+                bundle_id(layout.is_proxied),
+                bundle_id(layout.extra),
+            )
+        {
+            seeds.entry(ty).or_default().connected = Some(ConnectedSeed {
+                alpn,
+                is_proxied,
+                extra,
+                sources: type_sources(raw),
+            });
         } else if let Some(route) = io_route_seed(name) {
             seeds.entry(ty).or_default().io_route = Some(route);
         } else if let Some(stream) = io_delegation(name) {
@@ -1525,6 +1563,17 @@ pub(super) fn collect_semantic_seeds(
                 .entry(ty)
                 .or_default()
                 .read_symbols
+                .extend(symbols.iter().cloned());
+        }
+    }
+    // An extra's `set` symbols, for the `Connected` extras vtable that
+    // names it, likewise.
+    for (raw, symbols) in extra_sets {
+        if let Some(ty) = bundle_id(*raw) {
+            seeds
+                .entry(ty)
+                .or_default()
+                .extra_symbols
                 .extend(symbols.iter().cloned());
         }
     }
@@ -2215,6 +2264,9 @@ struct Draft {
     /// The pooled connections this value names, where its type is a
     /// hyper-util pool's reaper or checkout under a reviewed range.
     pool: Option<PoolPlan>,
+    /// A pooled connection's info, where the type is hyper-util's
+    /// `Connected` under a reviewed range.
+    connected: Option<ConnectedPlan>,
     /// The route a read or write through a value of the type takes,
     /// where it ends at a socket.
     io_route: Option<(RuleKey, PlannedStep)>,
@@ -2288,6 +2340,14 @@ pub(super) fn bind_semantics(
     for (&ty, op) in &io.operations {
         seeds.entry(ty).or_default().resource = Some(ResourceKind::IoOperation(op.kind));
     }
+
+    // Every extra a `Connected`'s vtable may name: the types whose `set`
+    // the sweep found.
+    let extras: Vec<(BundleTypeId, BTreeSet<String>)> = seeds
+        .iter()
+        .filter(|(_, seed)| !seed.extra_symbols.is_empty())
+        .map(|(&ty, seed)| (ty, seed.extra_symbols.clone()))
+        .collect();
 
     // Phase A: decide storage, layout and the candidate program of every
     // seed, without numbering anything.
@@ -2486,6 +2546,13 @@ pub(super) fn bind_semantics(
                 Err(decline) => draft.issues.push(decline),
             }
         }
+        // And the info the pool keeps beside each sender.
+        if readable && let Some(connected) = &seed.connected {
+            match plan_connected(ty, connected, &seeds, &extras, types, names, strings) {
+                Ok(plan) => draft.connected = Some(plan),
+                Err(decline) => draft.issues.push(decline),
+            }
+        }
         // A header's value and a lock's word are facts beside the
         // record, read wherever a path or a wait list reaches a value
         // of the type; an origin or a layout the review did not cover
@@ -2595,6 +2662,14 @@ pub(super) fn bind_semantics(
         })
         .map(|(&ty, _)| ty)
         .collect();
+    // A pool's route to a connection's info stands only where that info
+    // binds.
+    let connected: BTreeSet<BundleTypeId> = included
+        .iter()
+        .filter(|ty| drafts[ty].connected.is_some())
+        .copied()
+        .collect();
+    let info = |path: Option<TypedPath>| path.filter(|path| connected.contains(&path.target));
 
     // Phase D: number the rules in record order and emit.
     let issue = |kind| SemanticIssue { kind, detail: None };
@@ -2895,6 +2970,7 @@ pub(super) fn bind_semantics(
                 entries_len,
                 entry,
                 want,
+                conn_info,
             } => HttpPoolBinding::Reaper {
                 rule: rules.rule(&rule, strings, library),
                 strong,
@@ -2905,19 +2981,50 @@ pub(super) fn bind_semantics(
                 entries_len,
                 entry,
                 want,
+                conn_info: info(conn_info),
             },
             PoolPlan::Checkout {
                 rule,
                 key_ptr,
                 key_len,
                 want,
+                conn_info,
             } => HttpPoolBinding::Checkout {
                 rule: rules.rule(&rule, strings, library),
                 key_ptr,
                 key_len,
                 want,
+                conn_info: info(conn_info),
             },
         });
+        let connected = draft
+            .connected
+            .filter(|_| readable)
+            .map(|plan| ConnectedBinding {
+                rule: rules.rule(&plan.rule, strings, library),
+                alpn: plan.alpn,
+                is_proxied: plan.is_proxied,
+                extra: plan.extra,
+                layout: DynStreamLayout {
+                    abi: rules.rule(&plan.abi, strings, library),
+                    data: plan.data,
+                    vtable: plan.vtable,
+                    size_slot: 1,
+                    align_slot: 2,
+                    read_slot: EXTRA_INNER_SET_SLOT,
+                },
+                cases: plan
+                    .cases
+                    .into_iter()
+                    .map(|case| ExtraCase {
+                        symbol: strings.intern(&case.symbol),
+                        target: case.target,
+                        remote_addr: case.remote_addr,
+                        local_addr: case.local_addr,
+                        next: case.next,
+                    })
+                    .collect(),
+            });
         // An operation's stream is reached under the operation's own
         // rule, beside the resource it is; a stream's route under the
         // rule of whoever implements the stream.
@@ -3018,6 +3125,7 @@ pub(super) fn bind_semantics(
             request,
             table,
             pool,
+            connected,
             io_route,
             io,
             tls_session,
@@ -4449,8 +4557,9 @@ enum Hop<'a> {
 }
 
 /// A second address a layout keeps, where it lands on the type of the
-/// first: a server's listening address beside the peer it accepted. One
-/// that lands elsewhere is not the address the review read.
+/// first: a server's listening address beside the peer it accepted, a
+/// pooled connection's local address beside its remote one. One that
+/// lands elsewhere is not the address the review read.
 fn landing_on(address: Option<TypedPath>, ty: BundleTypeId) -> Option<TypedPath> {
     address.filter(|path| path.target == ty)
 }
@@ -5370,12 +5479,14 @@ enum PoolPlan {
         entries_len: TypedPath,
         entry: BundleTypeId,
         want: TypedPath,
+        conn_info: Option<TypedPath>,
     },
     Checkout {
         rule: RuleKey,
         key_ptr: TypedPath,
         key_len: TypedPath,
         want: TypedPath,
+        conn_info: Option<TypedPath>,
     },
 }
 
@@ -5416,6 +5527,18 @@ fn plan_pool(
     let giver: Vec<Hop<'_>> = GIVER_PTR.iter().map(|name| Member(name)).collect();
     // The sender behind a `PoolClient`: `tx`'s `Http1`, down to its giver.
     let client_want = [Member(TX), Variant(HTTP1)];
+    // The connection's info beside the sender: a fact the key and the
+    // sender stand without, so a route that does not hold leaves none.
+    let conn_info = |root, client: &[Hop<'_>], target: &Option<BundleTypeId>| {
+        target.and_then(|target| {
+            route(
+                root,
+                &[client, &[Member(adapters::hyper_connected::CONN_INFO)]],
+                target,
+            )
+            .ok()
+        })
+    };
     match seed {
         PoolSeed::Reaper {
             strong,
@@ -5427,6 +5550,7 @@ fn plan_pool(
             entries_len,
             entry,
             want,
+            conn_info: info,
             ..
         } => {
             let pool = [
@@ -5464,31 +5588,174 @@ fn plan_pool(
                 entries_len: route(*bucket, &[&list, &[Member(LEN)]], *entries_len)?,
                 entry: *entry,
                 want: route(*entry, &[&[Member(VALUE)], &client_want, &giver], *want)?,
+                conn_info: conn_info(*entry, &[Member(VALUE)], info),
             })
         }
         PoolSeed::Checkout {
             key_ptr,
             key_len,
             want,
+            conn_info: info,
             ..
         } => {
             let key = [Member(KEY), Member(AUTHORITY), Member(DATA), Member(BYTES)];
+            let client = [Member(VALUE), Variant(SOME), Member(PAYLOAD)];
             Ok(PoolPlan::Checkout {
                 rule,
                 key_ptr: route(ty, &[&key, &[Member(PTR)]], *key_ptr)?,
                 key_len: route(ty, &[&key, &[Member(LEN)]], *key_len)?,
-                want: route(
-                    ty,
-                    &[
-                        &[Member(VALUE), Variant(SOME), Member(PAYLOAD)],
-                        &client_want,
-                        &giver,
-                    ],
-                    *want,
-                )?,
+                want: route(ty, &[&client, &client_want, &giver], *want)?,
+                conn_info: conn_info(ty, &client, info),
             })
         }
     }
+}
+
+/// `Connected`'s binding as planned, with its rules unnumbered and each
+/// case's symbol not yet interned.
+#[derive(Clone, Debug)]
+struct ConnectedPlan {
+    rule: RuleKey,
+    alpn: TypedPath,
+    is_proxied: TypedPath,
+    extra: TypedPath,
+    data: TypedPath,
+    vtable: TypedPath,
+    abi: RuleKey,
+    cases: Vec<ExtraCasePlan>,
+}
+
+#[derive(Clone, Debug)]
+struct ExtraCasePlan {
+    symbol: String,
+    target: BundleTypeId,
+    remote_addr: Option<TypedPath>,
+    local_addr: Option<TypedPath>,
+    next: Option<TypedPath>,
+}
+
+/// Plan hyper-util's `Connected`: the origin first — the type's own
+/// method declarations in hyper-util, at a version inside the reviewed
+/// range — then its two words and the box of its extras, read under
+/// the compiler's rule for a trait object's header, and a case for
+/// every extra whose `set` the sweep found: an envelope of one value
+/// at `__0`, or a chain of a value at `__1` over the box of the extras
+/// before it at `__0`. A value that is `HttpInfo` binds its two
+/// addresses, each landing on one address enum; a case whose layout
+/// does not hold is left out, and its symbol then names no extra.
+fn plan_connected(
+    ty: BundleTypeId,
+    seed: &ConnectedSeed,
+    seeds: &SemanticSeeds,
+    extras: &[(BundleTypeId, BTreeSet<String>)],
+    types: &TypeTable,
+    names: &[Option<String>],
+    strings: &StringInterner,
+) -> Result<ConnectedPlan, Decline> {
+    use Hop::{Member, Variant};
+    use adapters::hyper_connected::*;
+    let origin = method_origin(&seed.sources, &HYPER_UTIL_CONNECTED_V0_1_10)?;
+    let rule = RuleKey::Delegation {
+        kind: SemanticRuleKind::HyperUtilConnected,
+        origin,
+    };
+    let alpn = hop_route(types, strings, ty, &[Member(ALPN)], seed.alpn)?;
+    let is_proxied = hop_route(types, strings, ty, &[Member(IS_PROXIED)], seed.is_proxied)?;
+    let (steps, wide) = hop_steps(
+        types,
+        strings,
+        ty,
+        &[
+            Member(EXTRA),
+            Variant(SOME),
+            Member(PAYLOAD),
+            Member(PAYLOAD),
+        ],
+    )?;
+    if wide != seed.extra {
+        return Err((
+            SemanticIssueKind::MissingLayout,
+            "its extras' box is not the one screened".to_owned(),
+        ));
+    }
+    let Some(AdapterSeed {
+        kind: AdapterKind::Box,
+        pin: None,
+        pointee: PointeeSeed::Dyn(dyn_seed),
+        ..
+    }) = seeds.get(&wide).and_then(|seed| seed.adapter.as_ref())
+    else {
+        return Err((
+            SemanticIssueKind::MissingLayout,
+            "its extras are no boxed trait object the screen saw".to_owned(),
+        ));
+    };
+    let Target::Dynamic {
+        pointer: extra,
+        data,
+        vtable,
+        abi,
+        ..
+    } = dynamic_target(ty, steps, wide, dyn_seed, types, strings)?
+    else {
+        unreachable!("a dynamic target is dynamic");
+    };
+    let named = |target: BundleTypeId| names.get(target.0 as usize).and_then(|n| n.as_deref());
+    let mut cases = Vec::new();
+    for (target, symbols) in extras {
+        let Some(name) = named(*target) else {
+            continue;
+        };
+        let (value, next) = if name.starts_with(ENVELOPE) {
+            (PAYLOAD, None)
+        } else if name.starts_with(CHAIN) {
+            match hop_route(types, strings, *target, &[Member(PAYLOAD)], wide) {
+                Ok(next) => (CHAINED, Some(next)),
+                Err(_) => continue,
+            }
+        } else {
+            continue;
+        };
+        let Ok(held) = hop_landing(types, strings, *target, &[Member(value)]) else {
+            continue;
+        };
+        let address = |field: &'static str| {
+            hop_landing(types, strings, *target, &[Member(value), Member(field)])
+                .ok()
+                .filter(|path| matches!(types.get(path.target), Some(TypeDef::Enum { .. })))
+        };
+        let (remote_addr, local_addr) = match named(held.target) {
+            Some(HTTP_INFO) => {
+                let Some(remote) = address(REMOTE_ADDR) else {
+                    continue;
+                };
+                let Some(local) = landing_on(address(LOCAL_ADDR), remote.target) else {
+                    continue;
+                };
+                (Some(remote), Some(local))
+            }
+            _ => (None, None),
+        };
+        for symbol in symbols {
+            cases.push(ExtraCasePlan {
+                symbol: symbol.clone(),
+                target: *target,
+                remote_addr: remote_addr.clone(),
+                local_addr: local_addr.clone(),
+                next: next.clone(),
+            });
+        }
+    }
+    Ok(ConnectedPlan {
+        rule,
+        alpn,
+        is_proxied,
+        extra,
+        data,
+        vtable,
+        abi,
+        cases,
+    })
 }
 
 /// Plan a `select!`'s binding: the origin first — the closure

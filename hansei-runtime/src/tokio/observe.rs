@@ -520,6 +520,33 @@ impl PoolPeers {
     }
 }
 
+/// What hyper-util's pool keeps of how each pooled connection was made,
+/// by the same `want::Inner` pointer [`PoolPeers`] names it by.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct PoolInfos(pub std::collections::HashMap<u64, PoolInfo>);
+
+impl PoolInfos {
+    /// What the pool keeps of the connection whose receiver shares
+    /// `want`.
+    pub fn info(&self, want: u64) -> Option<&PoolInfo> {
+        self.0.get(&want)
+    }
+}
+
+/// A pooled connection's `Connected`, as one read found it. Each word is
+/// `None` where it did not read.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct PoolInfo {
+    /// Whether ALPN chose HTTP/2.
+    pub h2: Option<bool>,
+    /// Whether the connection goes through a proxy.
+    pub proxied: Option<bool>,
+    /// The socket's two addresses, as std writes them, where the
+    /// connector recorded them (hyper-util's `HttpInfo`).
+    pub remote: Option<String>,
+    pub local: Option<String>,
+}
+
 /// The server dispatch as one read found it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct HttpServerObservation {

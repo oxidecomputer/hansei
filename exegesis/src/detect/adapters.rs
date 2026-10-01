@@ -1770,6 +1770,9 @@ pub(crate) struct PoolReaperLayout {
     /// `Idle<T>`, and its sender's `want` pointer.
     pub(crate) entry: TypeId,
     pub(crate) want: TypeId,
+    /// The `PoolClient`'s `conn_info`, where it is hyper-util's
+    /// `Connected`.
+    pub(crate) conn_info: Option<TypeId>,
 }
 
 /// A connection checked out of the pool, `Pooled<T, K>`, as the raw
@@ -1779,6 +1782,85 @@ pub(crate) struct PoolCheckoutLayout {
     pub(crate) key_ptr: TypeId,
     pub(crate) key_len: TypeId,
     pub(crate) want: TypeId,
+    pub(crate) conn_info: Option<TypeId>,
+}
+
+/// hyper-util's `Connected` as the raw screen saw it: the types its
+/// routes land on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ConnectedLayout {
+    /// `alpn`, the `Alpn` enum.
+    pub(crate) alpn: TypeId,
+    /// `is_proxied`, a `bool`.
+    pub(crate) is_proxied: TypeId,
+    /// `extra.Some.__0.__0`: the `Box<dyn ExtraInner>`.
+    pub(crate) extra: TypeId,
+}
+
+/// Where hyper-util's connector types are declared.
+const CONNECT_MODULE: &str = "hyper_util::client::legacy::connect";
+
+/// The member names a `Connected`'s routes are made of, as the reviewed
+/// hyper-util layout declares them.
+pub(crate) mod hyper_connected {
+    pub(crate) const CONN_INFO: &str = "conn_info";
+    pub(crate) const ALPN: &str = "alpn";
+    pub(crate) const IS_PROXIED: &str = "is_proxied";
+    pub(crate) const EXTRA: &str = "extra";
+    pub(crate) const SOME: &str = "Some";
+    pub(crate) const PAYLOAD: &str = "__0";
+    /// A chain's value, beside the box of the extras it wraps.
+    pub(crate) const CHAINED: &str = "__1";
+    /// `HttpInfo`'s two addresses.
+    pub(crate) const REMOTE_ADDR: &str = "remote_addr";
+    pub(crate) const LOCAL_ADDR: &str = "local_addr";
+    /// The extras' two shapes, and the one value whose addresses are read,
+    /// by the names their instantiations start with.
+    pub(crate) const ENVELOPE: &str = "hyper_util::client::legacy::connect::ExtraEnvelope<";
+    pub(crate) const CHAIN: &str = "hyper_util::client::legacy::connect::ExtraChain<";
+    pub(crate) const HTTP_INFO: &str = "hyper_util::client::legacy::connect::http::HttpInfo";
+}
+
+/// Screen `id` as hyper-util's `Connected`, declared in its connector
+/// module: `alpn` the `Alpn` enum, `is_proxied` a `bool`, and `extra` an
+/// `Option` of the `Extra` newtype over a `Box` of the extras' trait
+/// object.
+pub(crate) fn hyper_util_connected(reader: &DwReader<'_>, id: TypeId) -> Option<ConnectedLayout> {
+    use hyper_connected::*;
+    let st = declared_in(reader, id, CONNECT_MODULE, "Connected")?;
+    if st.name.map(|name| reader.strings.get(name)) != Some("Connected") {
+        return None;
+    }
+    let alpn = member_of(reader, id, ALPN)?;
+    let is_proxied = member_of(reader, id, IS_PROXIED)?;
+    if fq_name(reader, alpn).as_deref() != Some("hyper_util::client::legacy::connect::Alpn")
+        || fq_name(reader, is_proxied).as_deref() != Some("bool")
+    {
+        return None;
+    }
+    let option = member_of(reader, id, EXTRA)?;
+    let extra = member_of(reader, variant_payload(reader, option, SOME)?, PAYLOAD)?;
+    declared_in(reader, extra, CONNECT_MODULE, "Extra")?;
+    // The box is a wide pointer, not a struct the module path screens; its
+    // name says it boxes the extras' trait object, and the plan holds its
+    // shape to the trait-object screen's.
+    let boxed = member_of(reader, extra, PAYLOAD)?;
+    if !fq_name(reader, boxed)?
+        .starts_with("alloc::boxed::Box<dyn hyper_util::client::legacy::connect::ExtraInner")
+    {
+        return None;
+    }
+    Some(ConnectedLayout {
+        alpn,
+        is_proxied,
+        extra: boxed,
+    })
+}
+
+/// A `PoolClient`'s `conn_info`, where it is hyper-util's `Connected`.
+fn pool_client_conn_info(reader: &DwReader<'_>, client: TypeId) -> Option<TypeId> {
+    let conn_info = member_of(reader, client, hyper_connected::CONN_INFO)?;
+    hyper_util_connected(reader, conn_info).map(|_| conn_info)
 }
 
 /// The pool key `(Scheme, Authority)`'s authority text: the pointer and
@@ -2031,7 +2113,9 @@ pub(crate) fn hyper_util_pool_reaper(
     {
         return None;
     }
-    let want = pool_client_want(reader, member_of(reader, entry, VALUE)?)?;
+    let client = member_of(reader, entry, VALUE)?;
+    let want = pool_client_want(reader, client)?;
+    let conn_info = pool_client_conn_info(reader, client);
     Some(PoolReaperLayout {
         strong,
         idle,
@@ -2042,6 +2126,7 @@ pub(crate) fn hyper_util_pool_reaper(
         entries_len,
         entry,
         want,
+        conn_info,
     })
 }
 
@@ -2062,6 +2147,7 @@ pub(crate) fn hyper_util_pool_checkout(
         key_ptr,
         key_len,
         want,
+        conn_info: pool_client_conn_info(reader, client),
     })
 }
 

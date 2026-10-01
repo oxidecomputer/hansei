@@ -788,6 +788,50 @@ pub const HYPER_UTIL_POOL_V0_1_16: LibraryConvention = LibraryConvention {
     ],
 };
 
+/// hyper-util's `Connected` as 0.1.10 through 0.1.20 lay it out,
+/// reviewed in `src/client/legacy/connect/mod.rs` and `connect/http.rs`
+/// of each release: `Connected { alpn: Alpn, is_proxied: bool, extra:
+/// Option<Extra>, poisoned }`, `Extra(Box<dyn ExtraInner>)`, the trait
+/// `ExtraInner { fn clone_box(&self); fn set(&self, &mut Extensions); }`
+/// implemented by `ExtraEnvelope<T>(T)` and by `ExtraChain<T>(Box<dyn
+/// ExtraInner>, T)`, which a second extra wraps the first in; and
+/// `HttpInfo { remote_addr: SocketAddr, local_addr: SocketAddr }`, which
+/// the connector's `TcpStream` records from the socket once it connects.
+/// What the review establishes: the pool keeps a connection's
+/// `Connected` beside its sender for as long as the connection is
+/// pooled, the extras are every value the connector recorded, and a
+/// chain's own value is the later one. The releases differ in
+/// documentation only.
+pub const HYPER_UTIL_CONNECTED_V0_1_10: LibraryConvention = LibraryConvention {
+    package: "hyper-util",
+    family: "hyper-util-connected-0.1.10",
+    floor: (0, 1, 10),
+    ceiling: (0, 1, 20),
+    checksums: &[
+        // src/client/legacy/connect/mod.rs, 0.1.10 through 0.1.11
+        (
+            "src/client/legacy/connect/mod.rs",
+            [
+                0xde, 0xbe, 0x4f, 0x51, 0x36, 0xd4, 0x06, 0x34, 0x3f, 0xeb, 0x4f, 0xbf, 0x46, 0x74,
+                0x10, 0x53,
+            ],
+        ),
+        // src/client/legacy/connect/mod.rs, 0.1.12 through 0.1.20
+        (
+            "src/client/legacy/connect/mod.rs",
+            [
+                0x2d, 0x70, 0xf2, 0x64, 0xc6, 0xdb, 0x56, 0x1f, 0x3f, 0xe6, 0x2e, 0x01, 0x40, 0x33,
+                0x41, 0x98,
+            ],
+        ),
+    ],
+};
+
+/// The slot `ExtraInner::set` holds in hyper-util's `dyn ExtraInner`
+/// vtable, under [`HYPER_UTIL_CONNECTED_V0_1_10`]: after the header's
+/// drop, size and alignment, and `clone_box`.
+pub const EXTRA_INNER_SET_SLOT: u32 = 4;
+
 /// hyper-util's legacy client `ResponseFuture` as 0.1.10 through 0.1.20
 /// lay it out, reviewed in `src/client/legacy/client.rs` of each
 /// release: `struct ResponseFuture { inner: SyncWrapper<Pin<Box<dyn

@@ -203,6 +203,7 @@ impl<'a> Check<'a> {
             | HyperUtilTokioSleep
             | HyperUtilAutoConn
             | HyperUtilPool
+            | HyperUtilConnected
             | HyperUtilResponseFuture
             | HyperH1Conn
             | DropshotRequestHandler
@@ -230,6 +231,7 @@ impl<'a> Check<'a> {
                     HyperUtilTokioSleep
                     | HyperUtilAutoConn
                     | HyperUtilPool
+                    | HyperUtilConnected
                     | HyperUtilResponseFuture
                     | HyperUtilStream => "hyper-util",
                     HyperH1Conn => "hyper",
@@ -450,8 +452,12 @@ impl<'a> Check<'a> {
                 entries_len,
                 entry,
                 want,
+                conn_info,
             } => {
                 self.rule(*rule, &[SemanticRuleKind::HyperUtilPool])?;
+                if let Some(conn_info) = conn_info {
+                    self.conn_info(*entry, conn_info)?;
+                }
                 self.path(record.ty, strong)?;
                 require(
                     self.0.types.size_of(strong.target) == Some(crate::POINTER_SIZE),
@@ -505,12 +511,106 @@ impl<'a> Check<'a> {
                 key_ptr,
                 key_len,
                 want,
+                conn_info,
             } => {
                 self.rule(*rule, &[SemanticRuleKind::HyperUtilPool])?;
                 self.text(record.ty, key_ptr, key_len, "HTTP pool key")?;
+                if let Some(conn_info) = conn_info {
+                    self.conn_info(record.ty, conn_info)?;
+                }
                 self.pointer(record.ty, want, "HTTP pool checkout's want handle")
             }
         }
+    }
+
+    /// A pooled connection's info: a path from the pool's value landing
+    /// on a type whose record carries the `Connected` binding.
+    fn conn_info(&self, root: BundleTypeId, path: &TypedPath) -> Result<()> {
+        self.path(root, path)?;
+        let binds = self
+            .0
+            .semantics
+            .types
+            .binary_search_by_key(&path.target, |r| r.ty)
+            .ok()
+            .is_some_and(|i| self.0.semantics.types[i].connected.is_some());
+        require(binds, "HTTP pool connection info carries no binding")
+    }
+
+    /// hyper-util's `Connected`, under its own rule: the negotiated
+    /// protocol an enum, the proxy flag a byte, and the extras a box of
+    /// a trait object read under the compiler's header rule, whose
+    /// cases each name a distinct symbol and type. A case's addresses
+    /// come as a pair, each landing on one address enum; a chain's
+    /// `next` lands on the binding's own box, so the walk down a chain
+    /// reads every link the same way.
+    fn connected(&self, record: &TypeSemantics, binding: &ConnectedBinding) -> Result<()> {
+        self.rule(binding.rule, &[SemanticRuleKind::HyperUtilConnected])?;
+        self.path(record.ty, &binding.alpn)?;
+        require(
+            matches!(
+                self.ty(binding.alpn.target)?,
+                TypeDef::Enum { .. } | TypeDef::CEnum { .. }
+            ),
+            "connection info's ALPN is not an enum",
+        )?;
+        self.path(record.ty, &binding.is_proxied)?;
+        require(
+            self.0.types.size_of(binding.is_proxied.target) == Some(1),
+            "connection info's proxy flag is not a byte",
+        )?;
+        self.path(record.ty, &binding.extra)?;
+        let wide = binding.extra.target;
+        let layout = &binding.layout;
+        self.rule(layout.abi, &[SemanticRuleKind::DynFutureAbi])?;
+        for (word, what) in [(&layout.data, "data"), (&layout.vtable, "vtable")] {
+            self.path(wide, word)?;
+            require(
+                self.0.types.size_of(word.target) == Some(crate::POINTER_SIZE),
+                &format!("connection info's extras {what} word is not a pointer"),
+            )?;
+        }
+        require(
+            layout.size_slot != layout.align_slot
+                && layout.read_slot > layout.size_slot
+                && layout.read_slot > layout.align_slot,
+            "connection info's extras vtable slots overlap",
+        )?;
+        let mut seen = BTreeSet::new();
+        let mut address = None;
+        for case in &binding.cases {
+            self.string(case.symbol)?;
+            self.ty(case.target)?;
+            require(
+                seen.insert((case.symbol, case.target)),
+                "connection info lists one extra twice",
+            )?;
+            match (&case.remote_addr, &case.local_addr) {
+                (Some(remote), Some(local)) => {
+                    for path in [remote, local] {
+                        self.path(case.target, path)?;
+                        require(
+                            matches!(self.ty(path.target)?, TypeDef::Enum { .. }),
+                            "connection info's address is not an enum",
+                        )?;
+                        require(
+                            *address.get_or_insert(path.target) == path.target,
+                            "connection info's addresses are not one type",
+                        )?;
+                    }
+                }
+                (None, None) => {}
+                _ => return require(false, "connection info's addresses are not a pair"),
+            }
+            if let Some(next) = &case.next {
+                self.path(case.target, next)?;
+                require(
+                    next.target == wide,
+                    "connection info's chain does not wrap its extras' box",
+                )?;
+            }
+        }
+        Ok(())
     }
 
     fn target(&self, root: BundleTypeId, target: &FutureTarget) -> Result<()> {
@@ -1959,6 +2059,7 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                         && record.request.is_none()
                         && record.table.is_none()
                         && record.pool.is_none()
+                        && record.connected.is_none()
                         && record.io_route.is_none()
                         && record.io.is_none()
                         && record.tls_session.is_none()
@@ -2042,6 +2143,13 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                 "HTTP pool binding needs declared-member storage",
             )?;
             check.pool(record, pool)?;
+        }
+        if let Some(connected) = &record.connected {
+            require(
+                matches!(record.storage, StoragePolicy::DeclaredMembers),
+                "connection info binding needs declared-member storage",
+            )?;
+            check.connected(record, connected)?;
         }
         if let Some(route) = &record.io_route {
             require(

@@ -4092,8 +4092,9 @@ impl<'b, T: Target> Context<'b, T> {
     /// hashes choosing among releases — then the size and alignment the
     /// vtable records held to that case's layout, and the stream read
     /// whole under `read`. A symbol that names no case, or several the
-    /// pairing does not settle, is no route.
-    fn dyn_stream(
+    /// pairing does not settle, is no route. A pooled connection's extras
+    /// are read the same way, their `set` slot the one the layout names.
+    pub(crate) fn dyn_stream(
         &self,
         value: Value<'b>,
         pointer: &TypedPath,
@@ -5095,7 +5096,7 @@ impl<'b, T: Target> Context<'b, T> {
 /// enum's active variant: `V4`/`V6`, whose payload holds the address
 /// struct with its `ip.octets` array, `port` word and, for v6, `scope_id`.
 /// `None` where any of those did not read.
-fn socket_addr_text(addr: Value<'_>) -> Option<String> {
+pub(crate) fn socket_addr_text(addr: Value<'_>) -> Option<String> {
     let (variant, payload) = addr.active_variant_raw().ok()?;
     let inner = payload.member("__0").ok()?;
     let word = |name: &str| -> Option<u64> {

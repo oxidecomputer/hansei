@@ -1976,6 +1976,7 @@ mod tests {
                     request: None,
                     table: None,
                     pool: None,
+                    connected: None,
                     io_route: None,
                     io: None,
                     tls_session: None,

@@ -190,6 +190,8 @@ fn commands(
         ) {
             (Some("negotiating"), _, _) => "connection-negotiating",
             (_, "http1", Some("client")) if row.caller.is_some() => "connection-http1-caller",
+            // A connection its pool keeps idle, whose info the pool has.
+            (_, "http1", Some("client")) if row.peer.is_some() => "connection-http1-pooled",
             (_, "http1", Some("client")) => "connection-http1-client",
             (_, "http1", _) => "connection-http1-server",
             (_, "http1/tls", _) => "connection-http1-tls",
