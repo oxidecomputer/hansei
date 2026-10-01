@@ -1,0 +1,15 @@
+---
+source: hansei/src/offline.rs
+description: "`connection 0x1a9caa0` over illumos/tls-conns"
+---
+connection 0xADDR
+    proto: tcp
+    driven by: task 7
+    tcp: fd 14
+        stream: 0xADDR tokio::net::tcp::stream::TcpStream
+        registration: 0xADDR
+        ready: writable
+        waker: the reader slot, task 7
+    route:
+        0xADDR tokio::net::tcp::split_owned::OwnedReadHalf
+        0xADDR tokio::net::tcp::stream::TcpStream

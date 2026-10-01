@@ -1,0 +1,21 @@
+---
+source: hansei/src/offline.rs
+description: "`connection 0x55f04d02e160` over linux/http-conns"
+---
+connection 0xADDR
+    proto: http1
+    driven by: task 4
+    http: client, idle
+        dispatcher: 0xADDR hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
+        conn: 0xADDR
+        keep-alive: idle
+        reading: init
+        writing: init
+    tcp: fd 11
+        stream: 0xADDR tokio::net::tcp::stream::TcpStream
+        registration: 0xADDR
+        ready: writable
+        waker: the reader slot, task 4
+    route:
+        0xADDR hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>
+        0xADDR tokio::net::tcp::stream::TcpStream

@@ -259,12 +259,16 @@ pub struct IoObservation {
     /// words, or why they did not read. The first one crossed, where a
     /// route crosses several, is the one the task speaks.
     pub tls: Option<Result<TlsReading, String>>,
+    /// The stream on the route the TLS connection was read from.
+    pub tls_stream: Option<ValueKey>,
     /// The socket the route ended at; `None` for a readiness await,
     /// which names its registration outright.
     pub socket: Option<IoSocket>,
     /// The peer a stream on the route names, where one does: its name,
     /// or why it did not read.
     pub peer: Option<Result<String, String>>,
+    /// The stream on the route that named the peer.
+    pub peer_stream: Option<ValueKey>,
 }
 
 /// A readiness await's `State`, as its own enumeration spells it.
@@ -455,14 +459,21 @@ pub struct HttpConnObservation {
 /// crossed on the way.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SocketReading {
+    /// The streams the route crossed, from the connection's own down
+    /// to the socket, outermost first.
+    pub streams: Vec<ValueKey>,
     /// The socket's registration with the io driver.
     pub scheduled_io: ValueKey,
     pub fd: Option<i32>,
     pub socket: IoSocket,
     /// The TLS connection the route crossed, where it crossed one.
     pub tls: Option<Result<TlsReading, String>>,
+    /// The stream on the route the TLS connection was read from.
+    pub tls_stream: Option<ValueKey>,
     /// The peer a stream on the route names, where one does.
     pub peer: Option<Result<String, String>>,
+    /// The stream on the route that named the peer.
+    pub peer_stream: Option<ValueKey>,
 }
 
 impl HttpConnObservation {

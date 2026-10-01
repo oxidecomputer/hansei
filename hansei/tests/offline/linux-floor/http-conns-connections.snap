@@ -2,14 +2,14 @@
 source: hansei/src/offline.rs
 description: "`connections` over linux-floor/http-conns"
 ---
-TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE                                     SENDQ  PEER             SERVER  METHOD  REQUEST
-4     —       http1  client  idle               —                                            —      —                —       —       —
-5     —       http1  server  idle               TS on the target's monotonic clock  —      —                —       —       —
-8     7       http1  client  awaiting response  —                                            —      127.0.0.1:43771  —       GET     —
-9     —       http1  server  handling request   —                                            —      —                —       GET     /park
-11    —       http1  server  handling request   —                                            —      —                —       GET     /park
-12    10      http1  client  awaiting response  —                                            —      127.0.0.1:43771  —       GET     http://127.0.0.1:43771/park
-13    —       http1  server  negotiating        —                                            —      —                —       —       —
-15    —       http1  server  idle               TS on the target's monotonic clock  —      —                —       —       —
-16    —       http1  client  idle               —                                            —      127.0.0.1:43771  —       —       —
+ADDR            TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE                                     SENDQ  PEER             SERVER  METHOD  REQUEST
+0xADDR  4     —       http1  client  idle               —                                            —      —                —       —       —
+0xADDR  5     —       http1  server  idle               TS on the target's monotonic clock  —      —                —       —       —
+0xADDR  8     7       http1  client  awaiting response  —                                            —      127.0.0.1:43771  —       GET     —
+0xADDR  9     —       http1  server  handling request   —                                            —      —                —       GET     /park
+0xADDR  11    —       http1  server  handling request   —                                            —      —                —       GET     /park
+0xADDR  12    10      http1  client  awaiting response  —                                            —      127.0.0.1:43771  —       GET     http://127.0.0.1:43771/park
+0xADDR  13    —       http1  server  negotiating        —                                            —      —                —       —       —
+0xADDR  15    —       http1  server  idle               TS on the target's monotonic clock  —      —                —       —       —
+0xADDR  16    —       http1  client  idle               —                                            —      127.0.0.1:43771  —       —       —
 [9 connections]

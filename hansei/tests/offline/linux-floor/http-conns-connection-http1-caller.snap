@@ -1,0 +1,24 @@
+---
+source: hansei/src/offline.rs
+description: "`connection 0x7fcbc400b680` over linux-floor/http-conns"
+---
+connection 0xADDR
+    proto: http1
+    driven by: task 8
+    http: client, awaiting response
+        dispatcher: 0xADDR hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
+        conn: 0xADDR
+        keep-alive: busy
+        reading: init
+        writing: keep-alive
+        method: GET
+        caller: task 7
+    tcp: fd 13
+        stream: 0xADDR tokio::net::tcp::stream::TcpStream
+        registration: 0xADDR
+        ready: writable
+        waker: the reader slot, task 8
+    peer: 127.0.0.1:43771 (the authority of the pool key it was made for)
+    route:
+        0xADDR hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>
+        0xADDR tokio::net::tcp::stream::TcpStream

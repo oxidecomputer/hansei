@@ -5,6 +5,7 @@
 //! The `whatis` command: what an address is, outermost first.
 
 use crate::Session;
+use crate::connection::Claim;
 use crate::tasks::{future_name, task_id, task_label};
 use crate::typenames::TypeNames;
 
@@ -37,6 +38,7 @@ pub(crate) fn exec_whatis<T: proc::Target>(
         region_of(session, addr),
         vtable.as_ref(),
         session.attribution().at(addr),
+        &crate::connection::claims_at(session, addr),
         session.registries.stopped,
         &session.impl_fold,
         addr,
@@ -159,6 +161,8 @@ fn report_whatis(
     // The waker slot at exactly this address, where the sweep admitted
     // one and the attribution named it.
     slot: Option<&AttributedSlot>,
+    // Every connection with an object containing the address.
+    connections: &[Claim],
     stopped: Option<hansei_runtime::tokio::RawInstant>,
     impls: &names::ImplFold,
     addr: u64,
@@ -414,6 +418,25 @@ fn report_whatis(
         )?;
     }
 
+    // A connection's objects sit inside whatever holds them — the
+    // dispatcher in its task's frame, a stream behind a box — so the
+    // connection is the innermost claim, and `connection` the command
+    // that prints it whole.
+    for claim in connections {
+        separate(&mut blocks, out)?;
+        writeln!(
+            out,
+            "Connection {:#x}: {}, {}",
+            claim.at, claim.summary, claim.tasks
+        )?;
+        writeln!(
+            out,
+            "    At: offset {:#x} in {}, {}",
+            claim.offset, claim.layer, claim.ty
+        )?;
+        writeln!(out, "    In full: connection {:#x}", claim.at)?;
+    }
+
     if blocks == uninterpreted {
         separate(&mut blocks, out)?;
         writeln!(
@@ -461,7 +484,7 @@ fn within(start: u64, size: u64, addr: u64) -> Option<u64> {
 }
 
 /// Open a block, with a blank line between it and the one before.
-fn separate(blocks: &mut usize, out: &mut dyn io::Write) -> Result<()> {
+pub(crate) fn separate(blocks: &mut usize, out: &mut dyn io::Write) -> Result<()> {
     if *blocks > 0 {
         writeln!(out)?;
     }
@@ -547,6 +570,7 @@ mod whatis_tests {
             region.map(str::to_owned),
             vtable,
             None,
+            &[],
             None,
             &hansei_bundle::names::ImplFold::default(),
             addr,

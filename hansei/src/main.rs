@@ -22,6 +22,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 mod bundle_cmd;
+mod connection;
 mod connections;
 mod cursor;
 mod dump;
@@ -705,8 +706,39 @@ pub enum Command {
         scope: Option<RuntimeScope>,
     },
 
+    /// Print one connection `connections` lists, in full: what it
+    /// speaks and the tasks driving it, then a section per layer from
+    /// the protocol on top down to the socket. An HTTP/1 connection's
+    /// section has its role and phase, the dispatcher's words
+    /// (keep-alive, reading, writing, the method in flight), the
+    /// request behind it, a client's caller, and a server's handler
+    /// and header-read timer. A TLS connection's has its side, version
+    /// and verdict, the records each direction carried, what is
+    /// written and unsent, and how far each direction has closed. The
+    /// socket's has its descriptor, its stream, and its registration
+    /// with the io driver: the readiness last delivered and every
+    /// waker parked there. The HTTP role and the TLS side are each
+    /// their own layer's.
+    ///
+    /// Every peer known is listed with where it came from: the
+    /// accepted socket's address a server's service keeps, the
+    /// authority of the pool key a client connection was made for,
+    /// or a name a stream on the route keeps. Last comes the route:
+    /// every stream from the connection's own down to the socket's.
+    ///
+    /// Any address inside one of the connection's objects selects it —
+    /// the `ADDR` `connections` prints, the HTTP dispatcher, a stream
+    /// on the route, the registration a task block's `io` line names.
+    Connection {
+        /// An address inside the connection, in hex with a required
+        /// leading `0x` (see `connections`).
+        #[arg(value_parser = parse_hex_addr)]
+        addr: u64,
+    },
+
     /// List every HTTP connection the target holds, one row each:
-    /// the task driving it, the task that sent a client's request in
+    /// the address `connection` takes, the task driving it, the task
+    /// that sent a client's request in
     /// flight (the one awaiting the response, or the one polling the
     /// set whose child awaits it), its role, the phase the connection's
     /// own words put it
@@ -1354,7 +1386,10 @@ pub enum Command {
     },
 
     /// Say what an address is: the task whose allocation contains it,
-    /// every future the census found that claims it — and, for the
+    /// every future the census found that claims it, the connection
+    /// one of whose objects holds it — the HTTP dispatcher, a stream on
+    /// its route, the socket's registration, each named, with the
+    /// `connection` that prints it in full — and, for the
     /// second word of a trait object, the vtable it points at, named
     /// by the concrete type it erases.
     ///
@@ -1368,9 +1403,10 @@ pub enum Command {
     ///
     /// Any pointer into a thing resolves to it, not just its first
     /// byte: a task's Header, its future's state machine and its
-    /// Trailer all name the task, and every address `futures`
+    /// Trailer all name the task, every address `futures`
     /// prints — a held future's, a set's, a set child's node — names
-    /// what it was printed for.
+    /// what it was printed for, and so does every `ADDR`
+    /// `connections` prints.
     Whatis {
         /// The address to look up, written in hex with a required
         /// leading `0x` (e.g. `0x7fffb1c26100`). Naming none asks
@@ -2203,6 +2239,7 @@ pub fn dispatch<T: Target>(
             let render = RenderOpts::from_settings(&session.settings.borrow());
             runtimes::exec_runtime(session, scope, render, out)?
         }
+        Command::Connection { addr } => connection::exec_connection(session, addr, out)?,
         Command::Connections {
             limit,
             with,

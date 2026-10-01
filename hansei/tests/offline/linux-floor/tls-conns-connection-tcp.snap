@@ -1,0 +1,15 @@
+---
+source: hansei/src/offline.rs
+description: "`connection 0x55f93af93830` over linux-floor/tls-conns"
+---
+connection 0xADDR
+    proto: tcp
+    driven by: task 7
+    tcp: fd 15
+        stream: 0xADDR tokio::net::tcp::stream::TcpStream
+        registration: 0xADDR
+        ready: writable
+        waker: the reader slot, task 7
+    route:
+        0xADDR tokio::net::tcp::split_owned::OwnedReadHalf
+        0xADDR tokio::net::tcp::stream::TcpStream

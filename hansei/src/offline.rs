@@ -176,6 +176,35 @@ fn commands(
     if let Some(held) = session.census().held.first() {
         list.push(("future-held", format!("future {:#x}", held.addr)));
     }
+    // One connection of each kind the fixture holds, in full — an HTTP
+    // one on each side, and one still choosing its version — then a
+    // socket's registration, which `whatis` answers with the
+    // connection it belongs to.
+    let rows = crate::connections::rows(session);
+    let mut kinds: Vec<&'static str> = Vec::new();
+    for row in rows {
+        let kind = match (
+            row.phase_cell().as_deref(),
+            row.proto.word(),
+            row.role_word(),
+        ) {
+            (Some("negotiating"), _, _) => "connection-negotiating",
+            (_, "http1", Some("client")) if row.caller.is_some() => "connection-http1-caller",
+            (_, "http1", Some("client")) => "connection-http1-client",
+            (_, "http1", _) => "connection-http1-server",
+            (_, "http1/tls", _) => "connection-http1-tls",
+            (_, "tls", _) => "connection-tls",
+            (_, "tcp", _) => "connection-tcp",
+            (_, _, _) => "connection-unix",
+        };
+        if !kinds.contains(&kind) {
+            list.push((kind, format!("connection {:#x}", row.at)));
+            kinds.push(kind);
+        }
+    }
+    if let Some(row) = rows.iter().find(|row| row.key != row.at) {
+        list.push(("whatis-registration", format!("whatis {:#x}", row.key)));
+    }
     if let Some(lwp) = session.lwps.first() {
         list.push(("thread-one", format!("thread {}", lwp.tid)));
     }

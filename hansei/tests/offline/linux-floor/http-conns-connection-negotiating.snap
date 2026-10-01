@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`connection 0x7fcbbc0117f0` over linux-floor/http-conns"
+---
+connection 0xADDR
+    proto: http1
+    driven by: task 13
+    http: server, negotiating
+        wrapper: 0xADDR hyper_util::server::conn::auto::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper_util::rt::tokio::TokioExecutor>

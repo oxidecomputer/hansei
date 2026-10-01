@@ -536,6 +536,25 @@ fn hansei_ok(bundle: &Path, core: &Path, command: &str) -> String {
     String::from_utf8(out.stdout).expect("hansei output is UTF-8")
 }
 
+/// Every row of a `connections` listing selects its own connection:
+/// `connection` over each `ADDR` prints that one connection's block and
+/// no other, headed by the same address.
+fn assert_connections_print(bundle: &Path, core: &Path, listing: &str, rows: usize) {
+    let addrs: Vec<&str> = listing
+        .lines()
+        .skip(1)
+        .take(rows)
+        .map(|line| line.split_whitespace().next().expect("a row has cells"))
+        .collect();
+    let commands: Vec<String> = addrs.iter().map(|a| format!("connection {a}\n")).collect();
+    let out = hansei_ok(bundle, core, &commands.concat());
+    let heads: Vec<&str> = out
+        .lines()
+        .filter_map(|line| line.strip_prefix("connection "))
+        .collect();
+    assert_eq!(heads, addrs, "{out}");
+}
+
 #[derive(Debug)]
 struct TaskRow {
     id: String,
@@ -4024,11 +4043,13 @@ fn test_http_conns_connections_acceptance() {
             2 * usize::from(cfg!(target_os = "illumos")),
             "{out}"
         );
+        // Every row's address selects its connection.
+        assert_connections_print(&bundle, core, &out, 9);
         let lines: Vec<Vec<&str>> = out
             .lines()
             .skip(1)
             .take(9)
-            .map(|line| line.split_whitespace().collect())
+            .map(|line| line.split_whitespace().skip(1).collect())
             .collect();
         // A caller is a task, one per request in flight, and never one
         // that drives a connection.
@@ -4121,6 +4142,7 @@ fn test_tls_conns_connections_acceptance() {
     with_core("tls-conns", |core| {
         let out = hansei_ok(&bundle, core, "connections");
         assert!(out.ends_with("[13 connections]\n"), "{out}");
+        assert_connections_print(&bundle, core, &out, 13);
         // How much the socket took before it refused is the kernel's
         // to say: a nonzero `SENDQ` reads as `N`.
         let mut rows: Vec<String> = out
@@ -4128,7 +4150,7 @@ fn test_tls_conns_connections_acceptance() {
             .skip(1)
             .take(13)
             .map(|line| {
-                let mut cells: Vec<&str> = line.split_whitespace().skip(1).collect();
+                let mut cells: Vec<&str> = line.split_whitespace().skip(2).collect();
                 if cells[5].parse::<u64>().is_ok_and(|queued| queued > 0) {
                     cells[5] = "N";
                 }

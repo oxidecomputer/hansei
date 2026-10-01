@@ -37,8 +37,17 @@ pub(crate) struct ConnRow {
     /// whose stream is routed — else the `Conn`'s address, the
     /// wrapper's own for a connection still choosing its version. It
     /// tells one connection from another and orders a task's rows;
-    /// nothing else prints it, so no cell does.
-    pub(crate) addr: u64,
+    /// it names objects of three kinds, so no cell prints it.
+    pub(crate) key: u64,
+    /// The `ADDR` cell: the connection's outermost object, as the task
+    /// block names it where it names one — the `Conn` of an HTTP
+    /// connection, the wrapper of one choosing its version, the TLS
+    /// stream a route crossed, else the socket's stream.
+    pub(crate) at: u64,
+    /// Every observation that is this connection, first the one the
+    /// row was read from: two tasks driving a socket's two halves are
+    /// one connection, and one row.
+    pub(crate) sources: Vec<ConnSource>,
     /// The task driving the connection, as an index and as `tasks`
     /// names it.
     pub(crate) owner: usize,
@@ -79,6 +88,48 @@ pub(crate) struct ConnRow {
     /// names it: the task awaiting the response, or the one polling
     /// the set whose child awaits it.
     pub(crate) caller: Option<String>,
+}
+
+/// Where a row's observation was read: the chain end of a task's wait,
+/// a future the census found held, or a set child's chain end — each
+/// under the task that owns it.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct ConnSource {
+    pub(crate) owner: usize,
+    pub(crate) from: ObservedAt,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum ObservedAt {
+    Wait,
+    Held(usize),
+    Child { set: usize, child: usize },
+}
+
+impl ConnSource {
+    /// The observation this source names.
+    pub(crate) fn observation<'s, T: proc::Target>(
+        self,
+        session: &'s Session<'_, T>,
+    ) -> Option<&'s ResourceObservation> {
+        let census = session.census();
+        match self.from {
+            ObservedAt::Wait => session
+                .analysis()
+                .waits
+                .get(self.owner)?
+                .observation
+                .as_ref(),
+            ObservedAt::Held(index) => census.held.get(index)?.observation.as_ref(),
+            ObservedAt::Child { set, child } => census
+                .sets
+                .get(set)?
+                .children
+                .get(child)?
+                .observation
+                .as_ref(),
+        }
+    }
 }
 
 /// A request as the census read it: its method and its target's text,
@@ -125,7 +176,7 @@ pub(crate) enum Proto {
 }
 
 impl Proto {
-    fn word(self) -> &'static str {
+    pub(crate) fn word(self) -> &'static str {
         match self {
             Proto::Http1 => "http1",
             Proto::Http1Tls => "http1/tls",
@@ -157,7 +208,7 @@ impl RowPhase {
 }
 
 impl ConnRow {
-    fn role_word(&self) -> Option<&'static str> {
+    pub(crate) fn role_word(&self) -> Option<&'static str> {
         self.role.map(|role| match role {
             HttpRole::Client => "client",
             HttpRole::Server => "server",
@@ -186,7 +237,7 @@ impl ConnRow {
 
     /// The `PHASE` cell: the phase's word, with how long an idle server
     /// connection has waited beside it — `idle (19ms)`.
-    fn phase_cell(&self) -> Option<String> {
+    pub(crate) fn phase_cell(&self) -> Option<String> {
         let word = self.phase_word()?;
         Some(match (self.phase, self.idle_for) {
             (Some(RowPhase::Http(HttpPhase::Idle)), Some(idle)) => {
@@ -228,7 +279,8 @@ impl ConnRow {
 /// chains end in, then every one the census found held in a frame —
 /// a connection behind a wrapper no rule delegates through — and every
 /// socket a pending read or write on either reaches, in task order,
-/// each connection once: a socket's reads and writes are one row.
+/// each connection once: a socket's reads and writes are one row,
+/// whichever tasks drive them, and the row keeps every observation.
 pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [ConnRow] {
     session.conn_rows.get_or_init(|| build_rows(session))
 }
@@ -238,33 +290,63 @@ fn build_rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<ConnRow> {
     let requests = RequestIndex::of(census);
     let stopped = session.registries.stopped;
     let mut rows: Vec<ConnRow> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut push = |owner: usize, observation: &ResourceObservation| {
-        let Some(row) = row_of(session, owner, observation, census, &requests, stopped) else {
+    let mut seen: HashMap<u64, usize> = HashMap::new();
+    let mut push = |source: ConnSource, observation: &ResourceObservation| {
+        let Some(mut row) = row_of(
+            session,
+            source.owner,
+            observation,
+            census,
+            &requests,
+            stopped,
+        ) else {
             return;
         };
-        if seen.insert(row.addr) {
-            rows.push(row);
+        match seen.get(&row.key) {
+            Some(&index) => rows[index].sources.push(source),
+            None => {
+                seen.insert(row.key, rows.len());
+                row.sources.push(source);
+                rows.push(row);
+            }
         }
     };
     for (owner, wait) in session.analysis().waits.iter().enumerate() {
         if let Some(observation) = &wait.observation {
-            push(owner, observation);
+            let from = ObservedAt::Wait;
+            push(ConnSource { owner, from }, observation);
         }
     }
-    for held in &census.held {
+    for (index, held) in census.held.iter().enumerate() {
         if let Some(observation) = &held.observation {
-            push(held.owner, observation);
+            let from = ObservedAt::Held(index);
+            push(
+                ConnSource {
+                    owner: held.owner,
+                    from,
+                },
+                observation,
+            );
         }
     }
-    for set in &census.sets {
-        for child in &set.children {
+    for (set_index, set) in census.sets.iter().enumerate() {
+        for (child_index, child) in set.children.iter().enumerate() {
             if let Some(observation) = &child.observation {
-                push(set.owner, observation);
+                let from = ObservedAt::Child {
+                    set: set_index,
+                    child: child_index,
+                };
+                push(
+                    ConnSource {
+                        owner: set.owner,
+                        from,
+                    },
+                    observation,
+                );
             }
         }
     }
-    rows.sort_by_key(|row| (row.owner, row.addr));
+    rows.sort_by_key(|row| (row.owner, row.key));
     rows
 }
 
@@ -280,7 +362,9 @@ fn row_of<T: proc::Target>(
 ) -> Option<ConnRow> {
     let list = &session.tasks;
     let base = ConnRow {
-        addr: 0,
+        key: 0,
+        at: 0,
+        sources: Vec::new(),
         owner,
         task: task_id(list, owner),
         rt: RowOwner::of(&list.tasks[owner], &session.owners),
@@ -508,7 +592,8 @@ fn conn_row(
         // A wrapper still reading the first bytes has no version, no
         // words and no service to hold a peer: the phase is all.
         ResourceObservation::HttpNegotiating(negotiating) => Some(ConnRow {
-            addr: negotiating.wrapper.addr,
+            key: negotiating.wrapper.addr,
+            at: negotiating.wrapper.addr,
             proto: Proto::Http1,
             role: Some(HttpRole::Server),
             phase: Some(RowPhase::Http(HttpPhase::Negotiating)),
@@ -583,7 +668,8 @@ fn conn_row(
             // this row and not another.
             let socket = http.stream.as_ref().and_then(|stream| stream.as_ref().ok());
             Some(ConnRow {
-                addr: socket.map_or(http.conn, |socket| socket.scheduled_io.addr),
+                key: socket.map_or(http.conn, |socket| socket.scheduled_io.addr),
+                at: http.conn,
                 proto: match http.tls() {
                     Some(_) => Proto::Http1Tls,
                     None => Proto::Http1,
@@ -615,8 +701,15 @@ fn conn_row(
                 (false, IoSocket::UnixStream) => Proto::Unix,
             };
             let reading = tls.flatten();
+            // The TLS stream where the route crossed one, else the
+            // socket's own stream — the route's last hop.
+            let stream = match (tls, io.tls_stream) {
+                (Some(_), Some(stream)) => Some(stream),
+                _ => io.route.last().copied(),
+            };
             Some(ConnRow {
-                addr: io.scheduled_io.addr,
+                key: io.scheduled_io.addr,
+                at: stream.map_or(io.scheduled_io.addr, |stream| stream.addr),
                 proto,
                 role: reading.and_then(|reading| match reading.side.as_str() {
                     "Client" => Some(HttpRole::Client),
@@ -684,6 +777,7 @@ fn header_read_deadline(
 fn row_cells(row: &ConnRow) -> Vec<String> {
     let dash = || "—".to_string();
     vec![
+        format!("{:#x}", row.at),
         row.task.clone(),
         row.caller.clone().unwrap_or_else(dash),
         row.proto.word().to_string(),
@@ -698,7 +792,8 @@ fn row_cells(row: &ConnRow) -> Vec<String> {
     ]
 }
 
-/// Print the listing: one row per connection, the caller beside the
+/// Print the listing: one row per connection, led by the address
+/// `connection` takes, the caller beside the
 /// task driving it so the two read as who asked and who carries it,
 /// the request last since a URL is the one cell that runs wide, its
 /// method just before it so the two read as the request line, and the
@@ -715,7 +810,7 @@ fn print_table(
 ) -> Result<()> {
     let shown = limit.unwrap_or(rows.len()).min(rows.len());
     let header = [
-        "TASK", "CALLER", "PROTO", "ROLE", "PHASE", "DEADLINE", "SENDQ", "PEER", "SERVER",
+        "ADDR", "TASK", "CALLER", "PROTO", "ROLE", "PHASE", "DEADLINE", "SENDQ", "PEER", "SERVER",
         "METHOD", "REQUEST",
     ];
     let columns = header.len();
@@ -1044,7 +1139,9 @@ mod tests {
 
     fn row(addr: u64, role: HttpRole, phase: Option<HttpPhase>) -> ConnRow {
         ConnRow {
-            addr,
+            key: addr,
+            at: addr,
+            sources: Vec::new(),
             owner: 0,
             task: "7".to_string(),
             rt: RowOwner::Group(0),
@@ -1099,7 +1196,7 @@ mod tests {
             let clauses = parse_clauses(&with, &[], &[]).unwrap();
             rows.iter()
                 .filter(|row| clauses.iter().all(|c| survives(c, row)))
-                .map(|row| row.addr)
+                .map(|row| row.key)
                 .collect()
         };
         assert_eq!(select(&["role", "client"]), [0x10, 0x40]);
@@ -1130,7 +1227,7 @@ mod tests {
         let kept: Vec<u64> = rows
             .iter()
             .filter(|row| clauses.iter().all(|c| survives(c, row)))
-            .map(|row| row.addr)
+            .map(|row| row.key)
             .collect();
         assert_eq!(kept, [0x10, 0x40]);
     }
@@ -1142,8 +1239,9 @@ mod tests {
             format!("{:#}", parse_clauses(&with, &[], &[]).unwrap_err())
         };
         assert!(refused(&["nope", "x"]).contains("no field \"nope\""));
-        // The address and the version are no fields: no cell prints
-        // either.
+        // The address and the version are no fields: an address names
+        // one row, which `connection` prints, and no cell prints the
+        // version.
         assert!(refused(&["addr", "0x20"]).contains("no field \"addr\""));
         assert!(refused(&["version", "http1"]).contains("no field \"version\""));
         assert!(refused(&["sendq", "many"]).contains("'>N', '<N' or '=N'"));
@@ -1156,13 +1254,15 @@ mod tests {
         }
     }
 
-    /// The cells print the row: a dash where a column is empty, the
+    /// The cells print the row: the printed address and not the key, a
+    /// dash where a column is empty, the
     /// deadline without the word its header says, the bytes queued to
     /// send beside it, the method beside the request's text and not in
-    /// it; no address, owner or version.
+    /// it; no owner or version.
     #[test]
     fn test_cells_print_the_row() {
         let full = ConnRow {
+            at: 0x6533090,
             request: Some(line(Some("GET"), Some("http://one/park"))),
             caller: Some("621".to_string()),
             unsent: Some(80),
@@ -1171,6 +1271,7 @@ mod tests {
         assert_eq!(
             row_cells(&full),
             [
+                "0x6533090",
                 "7",
                 "621",
                 "http1",
@@ -1197,7 +1298,7 @@ mod tests {
                 request: Some(request),
                 ..full.clone()
             };
-            assert_eq!(row_cells(&at)[9..], cells);
+            assert_eq!(row_cells(&at)[10..], cells);
         }
         let bare = ConnRow {
             method: None,
@@ -1209,6 +1310,7 @@ mod tests {
         assert_eq!(
             row_cells(&bare),
             [
+                "0x30",
                 "7",
                 "—",
                 "http1",
@@ -1236,7 +1338,7 @@ mod tests {
                 deadline: Some(text.to_string()),
                 ..bare.clone()
             };
-            assert_eq!(row_cells(&at)[5], cell);
+            assert_eq!(row_cells(&at)[6], cell);
         }
         assert_eq!(full.label(), "client task 7");
         assert_eq!(bare.label(), "server task 7");
@@ -1255,7 +1357,7 @@ mod tests {
             (HttpPhase::Idle, 4250, "idle (4.250s)"),
             (HttpPhase::HandlingRequest, 19, "handling request"),
         ] {
-            assert_eq!(row_cells(&waited(phase, ms))[4], cell);
+            assert_eq!(row_cells(&waited(phase, ms))[5], cell);
         }
     }
 
@@ -1372,7 +1474,7 @@ mod tests {
             .unwrap()
         };
         let armed = fill(server_observation(true), held, stopped);
-        assert_eq!(armed.addr, 0x7b78948);
+        assert_eq!((armed.key, armed.at), (0x7b78948, 0x7b78948));
         assert_eq!(armed.role, Some(HttpRole::Server));
         assert_eq!(armed.phase, Some(RowPhase::Http(HttpPhase::Idle)));
         assert_eq!(armed.method, None);
@@ -1433,6 +1535,7 @@ mod tests {
         // socket, and speaks HTTP over TLS where the route crossed a
         // TLS connection — words that did not read still crossed it; a
         // route that did not read keys it by its `Conn`, as before.
+        // Either way it prints as its `Conn`, as its task block does.
         {
             use hansei_runtime::tokio::bundle::TlsReading;
             use hansei_runtime::tokio::observe::SocketReading;
@@ -1457,15 +1560,21 @@ mod tests {
             };
             let socket = |tls| {
                 Some(Ok(SocketReading {
+                    streams: vec![key(0x6400), key(0x6480)],
                     scheduled_io: key(0x6500),
                     fd: Some(9),
                     socket: IoSocket::TcpStream,
                     tls,
+                    tls_stream: Some(key(0x6400)),
                     peer: None,
+                    peer_stream: None,
                 }))
             };
             let plain = fill(over(socket(None)), held, stopped);
-            assert_eq!((plain.addr, plain.proto), (0x6500, Proto::Http1));
+            assert_eq!(
+                (plain.key, plain.at, plain.proto),
+                (0x6500, 0x7b78948, Proto::Http1)
+            );
             // A find awaiting the connection reads its TLS words the
             // same way, for the line under its wait.
             let observed = |stream| {
@@ -1479,15 +1588,21 @@ mod tests {
             );
             assert_eq!(observed(socket(None)), None);
             let secure = fill(over(socket(Some(Ok(tls)))), held, stopped);
-            assert_eq!((secure.addr, secure.proto), (0x6500, Proto::Http1Tls));
+            assert_eq!(
+                (secure.key, secure.at, secure.proto),
+                (0x6500, 0x7b78948, Proto::Http1Tls)
+            );
             assert_eq!(secure.label(), "client task 7");
             let unread = fill(over(socket(Some(Err("x".into())))), held, stopped);
             assert_eq!(unread.proto, Proto::Http1Tls);
             let unrouted = fill(over(Some(Err("x".into()))), held, stopped);
-            assert_eq!((unrouted.addr, unrouted.proto), (0x7b78948, Proto::Http1));
+            assert_eq!(
+                (unrouted.key, unrouted.at, unrouted.proto),
+                (0x7b78948, 0x7b78948, Proto::Http1)
+            );
             // The HTTP row's own words are the listing's, TLS or not.
             assert_eq!(secure.phase, plain.phase);
-            assert_eq!(row_cells(&secure)[2], "http1/tls");
+            assert_eq!(row_cells(&secure)[3], "http1/tls");
         }
         // A client between exchanges has no caller and no request; one
         // with a request in flight has the caller its callback names,
@@ -1534,7 +1649,7 @@ mod tests {
             &pools,
         )
         .unwrap();
-        assert_eq!(negotiating.addr, 0x12345);
+        assert_eq!((negotiating.key, negotiating.at), (0x12345, 0x12345));
         assert_eq!(negotiating.proto, Proto::Http1);
         assert_eq!(negotiating.unsent, None);
         assert_eq!(negotiating.role, Some(HttpRole::Server));
@@ -1602,11 +1717,16 @@ mod tests {
                 remaining: None,
                 readiness_state: None,
                 waiter_ready: None,
-                route: vec![key(0x2)],
+                // The TLS stream over the socket's: a row that crossed
+                // a TLS connection prints as its stream, and any other
+                // as the socket's.
+                route: vec![key(0x2), key(0x3)],
                 fd: Some(80),
                 tls,
+                tls_stream: Some(key(0x2)),
                 socket,
                 peer,
+                peer_stream: Some(key(0x2)),
             })
         };
         let fill = |observation: ResourceObservation| {
@@ -1626,7 +1746,7 @@ mod tests {
             Some(Ok("PDV2:913-0000023".to_string())),
         ))
         .unwrap();
-        assert_eq!(sprockets.addr, 0x6500);
+        assert_eq!((sprockets.key, sprockets.at), (0x6500, 0x2));
         assert_eq!(sprockets.proto, Proto::Tls);
         assert_eq!(sprockets.role, Some(HttpRole::Server));
         assert_eq!(
@@ -1638,7 +1758,7 @@ mod tests {
         assert_eq!(sprockets.method, Some("GET".to_string()), "the base's");
         assert_eq!(sprockets.label(), "server task 7");
         assert_eq!(
-            row_cells(&sprockets)[2..8],
+            row_cells(&sprockets)[3..9],
             [
                 "tls",
                 "server",
@@ -1666,8 +1786,9 @@ mod tests {
             (tcp.proto, tcp.role, tcp.phase, tcp.unsent, tcp.peer.clone()),
             (Proto::Tcp, None, Some(RowPhase::Open), None, None)
         );
+        assert_eq!((tcp.key, tcp.at), (0x6500, 0x3));
         assert_eq!(tcp.label(), "tcp task 7");
-        assert_eq!(row_cells(&tcp)[2..4], ["tcp", "—"]);
+        assert_eq!(row_cells(&tcp)[3..5], ["tcp", "—"]);
         let unix = fill(io(Some(IoSocket::UnixStream), None, None)).unwrap();
         assert_eq!(unix.proto, Proto::Unix);
         // A readiness await names no stream.

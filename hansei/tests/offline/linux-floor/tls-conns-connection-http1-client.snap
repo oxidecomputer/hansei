@@ -1,0 +1,14 @@
+---
+source: hansei/src/offline.rs
+description: "`connection 0x555c6e359958` over linux-floor/tls-conns"
+---
+connection 0xADDR
+    proto: http1
+    driven by: task 17
+    http: client, idle
+        dispatcher: 0xADDR hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::io::util::mem::DuplexStream>, hyper::proto::h1::role::Client>
+        conn: 0xADDR
+        keep-alive: busy
+        reading: init
+        writing: init
+    socket: no route recorded for the connection's stream

@@ -635,7 +635,15 @@ const HELP_SECTIONS: &[(&str, &[&str])] = &[
     (
         "Inspection",
         &[
-            "trace", "locals", "children", "print", "dump", "regs", "runtime", "whatis",
+            "trace",
+            "locals",
+            "children",
+            "print",
+            "dump",
+            "regs",
+            "runtime",
+            "connection",
+            "whatis",
         ],
     ),
     (

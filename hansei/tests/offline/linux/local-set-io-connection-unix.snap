@@ -1,0 +1,14 @@
+---
+source: hansei/src/offline.rs
+description: "`connection 0x55d346e75568` over linux/local-set-io"
+---
+connection 0xADDR
+    proto: unix
+    driven by: task 1
+    unix: fd 10
+        stream: 0xADDR tokio::net::unix::stream::UnixStream
+        registration: 0xADDR
+        ready: writable
+        waker: the reader slot, task 1
+    route:
+        0xADDR tokio::net::unix::stream::UnixStream

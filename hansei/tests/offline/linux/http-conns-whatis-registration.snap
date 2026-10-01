@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`whatis 0x55f04d02e800` over linux/http-conns"
+---
+Connection 0xADDR: http1 client, idle, task 4
+    At: offset 0xADDR in the socket's registration, tokio::runtime::io::scheduled_io::ScheduledIo
+    In full: connection 0xADDR

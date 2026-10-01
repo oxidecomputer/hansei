@@ -67,8 +67,12 @@ pub(crate) struct FollowedRoute<'b> {
     pub(crate) scheduled_io: Value<'b>,
     pub(crate) fd: Option<i32>,
     pub(crate) tls: Option<Result<TlsReading, String>>,
+    /// The stream the TLS connection was read from, where it was.
+    pub(crate) tls_stream: Option<ValueKey>,
     pub(crate) socket: IoSocket,
     pub(crate) peer: Option<Result<String, String>>,
+    /// The stream that named the peer, where one did.
+    pub(crate) peer_stream: Option<ValueKey>,
 }
 
 /// Whether `addr` lies in `value`'s storage.
@@ -3701,19 +3705,24 @@ impl<'b, T: Target> Context<'b, T> {
             (|| -> Result<SocketReading> {
                 let stream = word(path, "stream")?;
                 let FollowedRoute {
+                    streams,
                     scheduled_io,
                     fd,
                     tls,
+                    tls_stream,
                     socket,
                     peer,
-                    ..
+                    peer_stream,
                 } = self.follow_io_route(stream, read)?;
                 Ok(SocketReading {
+                    streams,
                     scheduled_io: ValueKey::of(scheduled_io),
                     fd,
                     socket,
                     tls,
+                    tls_stream,
                     peer,
+                    peer_stream,
                 })
             })()
             .map_err(|e| format!("{e:#}"))
@@ -3932,8 +3941,10 @@ impl<'b, T: Target> Context<'b, T> {
             scheduled_io,
             fd,
             tls,
+            tls_stream,
             socket,
             peer,
+            peer_stream,
         } = self.follow_io_route(stream, read)?;
         let remaining = binding
             .remaining
@@ -3957,8 +3968,10 @@ impl<'b, T: Target> Context<'b, T> {
             route,
             fd,
             tls,
+            tls_stream,
             socket: Some(socket),
             peer,
+            peer_stream,
         })
     }
 
@@ -3977,7 +3990,9 @@ impl<'b, T: Target> Context<'b, T> {
         let mut current = stream;
         let mut route = Vec::new();
         let mut tls = None;
+        let mut tls_stream = None;
         let mut peer = None;
+        let mut peer_stream = None;
         while route.len() < MAX_IO_ROUTE {
             route.push(ValueKey::of(current));
             let record = self.type_semantics(current.ty.id());
@@ -3990,12 +4005,14 @@ impl<'b, T: Target> Context<'b, T> {
                     self.observe_tls(current, binding, read)
                         .map_err(|e| format!("{e:#}")),
                 );
+                tls_stream = Some(ValueKey::of(current));
             }
             // A stream that names its peer: the name's text.
             if peer.is_none()
                 && let Some(binding) = record.and_then(|record| record.stream_peer.as_ref())
             {
                 peer = Some(self.observe_peer(current, binding, read));
+                peer_stream = Some(ValueKey::of(current));
             }
             let step = record
                 .and_then(|record| record.io_route.as_ref())
@@ -4043,8 +4060,10 @@ impl<'b, T: Target> Context<'b, T> {
                         scheduled_io,
                         fd,
                         tls,
+                        tls_stream,
                         socket: *socket,
                         peer,
+                        peer_stream,
                     });
                 }
             }
@@ -4339,8 +4358,10 @@ impl<'b, T: Target> Context<'b, T> {
             route: Vec::new(),
             fd: None,
             tls: None,
+            tls_stream: None,
             socket: None,
             peer: None,
+            peer_stream: None,
         })
     }
 

@@ -460,7 +460,10 @@ hansei_example::Config {
 // `request:` line under a connection's `caller:` in the task block
 // (the method and URL the caller sent, read off reqwest's in-flight
 // request) and under a server connection's verdict (the method and
-// path its handler is running for).
+// path its handler is running for). Also the listing's `ADDR` column,
+// the `connection ADDR` view it selects (the HTTP, TLS and socket
+// layers in turn, every peer by its source, the route), and the
+// `Connection` block `whatis` prints for an address inside one.
 
 == Development
 
