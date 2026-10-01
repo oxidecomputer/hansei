@@ -5,9 +5,9 @@ description: "`census` over linux/two-releases"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        2812625
-    1  0   worker           parked           2812626
-    1  0   entered runtime  block_on caller  2812623
+    1  0   worker           in driver        2858031
+    1  0   worker           parked           2858032
+    1  0   entered runtime  block_on caller  2858029
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 

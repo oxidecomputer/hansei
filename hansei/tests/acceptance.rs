@@ -4110,21 +4110,23 @@ fn test_http_conns_connections_acceptance() {
 /// through TLS has nothing queued to send, but the client whose writes
 /// filled its socket: the records its connection kept, unwritten, are
 /// its `SENDQ`, the one row a filter on it keeps, and the words its
-/// read's wait carries. The tasks parked on anything but a socket are
-/// no rows. Grouping by protocol files the twelve under three buckets,
-/// and a filter on it keeps the TCP pair.
+/// read's wait carries. The HTTP/1 client over an in-memory duplex is a
+/// row with no socket under it: plain HTTP/1, keyed by its connection.
+/// The tasks parked on anything but a connection are no rows. Grouping
+/// by protocol files the thirteen under four buckets, and a filter on
+/// it keeps the TCP pair.
 #[test]
 fn test_tls_conns_connections_acceptance() {
     let bundle = fixtures().bundle("tls-conns");
     with_core("tls-conns", |core| {
         let out = hansei_ok(&bundle, core, "connections");
-        assert!(out.ends_with("[12 connections]\n"), "{out}");
+        assert!(out.ends_with("[13 connections]\n"), "{out}");
         // How much the socket took before it refused is the kernel's
         // to say: a nonzero `SENDQ` reads as `N`.
         let mut rows: Vec<String> = out
             .lines()
             .skip(1)
-            .take(12)
+            .take(13)
             .map(|line| {
                 let mut cells: Vec<&str> = line.split_whitespace().skip(1).collect();
                 if cells[5].parse::<u64>().is_ok_and(|queued| queued > 0) {
@@ -4137,6 +4139,7 @@ fn test_tls_conns_connections_acceptance() {
         assert_eq!(
             rows,
             [
+                "— http1 client idle — — — — — —",
                 "— http1/tls client idle — 0 — — — —",
                 "— http1/tls server idle — 0 — — — —",
                 "— tcp — open — — — — — —",
@@ -4153,7 +4156,7 @@ fn test_tls_conns_connections_acceptance() {
             "{out}"
         );
         let grouped = hansei_ok(&bundle, core, "connections --group proto");
-        for bucket in ["8  tls", "2  tcp", "2  http1/tls"] {
+        for bucket in ["8  tls", "2  tcp", "2  http1/tls", "1  http1"] {
             assert!(grouped.contains(bucket), "{grouped}");
         }
         let queued = hansei_ok(&bundle, core, "connections --with sendq >0");

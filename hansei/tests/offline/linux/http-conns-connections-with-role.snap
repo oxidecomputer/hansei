@@ -3,8 +3,8 @@ source: hansei/src/offline.rs
 description: "`connections --with role server --without phase negotiating` over linux/http-conns"
 ---
 TASK  CALLER  PROTO  ROLE    PHASE             DEADLINE                                     SENDQ  PEER  SERVER  METHOD  REQUEST
-4     —       http1  server  idle              TS on the target's monotonic clock  —      —     —       —       —
-7     —       http1  server  handling request  —                                            —      —     —       GET     /park
-10    —       http1  server  handling request  —                                            —      —     —       GET     /park
-14    —       http1  server  idle              TS on the target's monotonic clock  —      —     —       —       —
+5     —       http1  server  idle              TS on the target's monotonic clock  —      —     —       —       —
+8     —       http1  server  handling request  —                                            —      —     —       GET     /park
+11    —       http1  server  handling request  —                                            —      —     —       GET     /park
+15    —       http1  server  idle              TS on the target's monotonic clock  —      —     —       —       —
 [4 connections]

@@ -26,7 +26,10 @@
 //! through hyper's own connection. (h) A client whose writes filled
 //! its socket, against a server that reads nothing, parked reading
 //! with records its connection holds unsent: what a write without a
-//! flush leaves, as sprockets' `send_msg` did before it flushed.
+//! flush leaves, as sprockets' `send_msg` did before it flushed. (i)
+//! An HTTP/1 client connection over an in-memory duplex, parked
+//! between exchanges: a stream with no route to a socket, which the
+//! connection reads but binds no stream for.
 //!
 //! The certificate authority and the `localhost` certificate it signed
 //! are embedded below: generated once with openssl, ECDSA P-256, valid
@@ -49,7 +52,7 @@ use hyper_util::server::conn::auto;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use test_programs::census_expect;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufStream, ReadHalf, WriteHalf};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufStream, DuplexStream, ReadHalf, WriteHalf};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
@@ -383,6 +386,15 @@ async fn deaf_server(stream: server::TlsStream<TcpStream>, park: oneshot::Receiv
     drop(stream);
 }
 
+/// (i) hyper's connection over one end of an in-memory duplex, whose
+/// other end nothing writes to, parked reading.
+async fn duplex_client(
+    conn: hyper::client::conn::http1::Connection<TokioIo<DuplexStream>, Empty<Bytes>>,
+) {
+    census_expect::task("tls_conns::duplex_client");
+    let _ = conn.await;
+}
+
 /// A oneshot whose sender is gone for good without ever being dropped,
 /// so its receiver parks forever.
 fn never() -> oneshot::Receiver<()> {
@@ -441,6 +453,17 @@ fn main() {
         let (client, server) = tls_pair(&connector, &acceptor).await;
         tokio::spawn(deaf_server(server, never()));
         tokio::spawn(unflushed_client(client, signal()));
+
+        // (i) The far end is kept for good, so the near end never reads
+        // an end of stream; the handshake writes nothing.
+        let (near, far) = tokio::io::duplex(1024);
+        std::mem::forget(far);
+        let (sender, conn) =
+            hyper::client::conn::http1::handshake::<_, Empty<Bytes>>(TokioIo::new(near))
+                .await
+                .expect("an HTTP/1 handshake over a duplex completes");
+        std::mem::forget(sender);
+        tokio::spawn(duplex_client(conn));
 
         drop(ready_tx);
         while let Some(rx) = ready.recv().await {

@@ -2,4 +2,5 @@
 source: hansei/src/offline.rs
 description: "`channels` over linux/joinset"
 ---
-
+mpsc 0xADDR: 5 senders, capacity 6, 0 unread
+    rx: task 3

@@ -238,6 +238,7 @@ core::cell::UnsafeCell<libc::new::apple::libpthread::sys::_pthread::_pthread_typ
 core::cell::UnsafeCell<libc::new::apple::libpthread::sys::_pthread::_pthread_types::pthread_mutex_t> :: Node Alias { value, follow }
 core::cell::UnsafeCell<std::sync::mpmc::waker::Waker> :: Node Alias { value, follow }
 core::cell::UnsafeCell<std::sync::mpmc::zero::Inner> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::io::util::mem::SimplexStream> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::blocking::pool::Shared> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::context::runtime::EnterRuntime> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::driver::Driver> :: Node Alias { value, follow }
@@ -320,6 +321,7 @@ core::cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::buffered_ser
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::closing_client::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::deaf_server::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::drained_server::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::duplex_client::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::exact_server::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::handshaking_client::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::handshaking_server::{async_fn_env#0}>> :: Node Alias { value, follow }
@@ -442,6 +444,7 @@ core::ptr::non_null::NonNull<alloc::sync::ArcInner<std::thread::lifecycle::Packe
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<std::thread::scoped::ScopeData>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<std::thread::thread::Inner>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::io::split::Inner<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>> :: Node Alias { pointer, follow }
+core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::io::util::mem::SimplexStream>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::net::tcp::stream::TcpStream>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::runtime::blocking::pool::Inner>> :: Node Alias { pointer, follow }
@@ -562,9 +565,11 @@ http::uri::path::PathAndQuery :: Node Alias { data, follow } — http 1.4.2
 hyper::body::length::DecodedLength :: Node Alias { __0, follow } — hyper 1.10.1
 hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server> :: Node Struct { version: Alias { state.version, follow }, keep_alive: Alias { state.keep_alive, follow }, reading: Alias { state.reading, follow }, writing: Alias { state.writing, follow }, method: Alias { state.method, follow }, read_buf_len: io.read_buf.len, read_buf_cap: io.read_buf.cap, header_read_timer: state.h1_header_read_timeout_running } — hyper 1.10.1
 hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server> :: Node Struct { version: Alias { state.version, follow }, keep_alive: Alias { state.keep_alive, follow }, reading: Alias { state.reading, follow }, writing: Alias { state.writing, follow }, method: Alias { state.method, follow }, read_buf_len: io.read_buf.len, read_buf_cap: io.read_buf.cap, header_read_timer: state.h1_header_read_timeout_running } — hyper 1.10.1
+hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::io::util::mem::DuplexStream>, bytes::bytes::Bytes, hyper::proto::h1::role::Client> :: Node Struct { version: Alias { state.version, follow }, keep_alive: Alias { state.keep_alive, follow }, reading: Alias { state.reading, follow }, writing: Alias { state.writing, follow }, method: Alias { state.method, follow }, read_buf_len: io.read_buf.len, read_buf_cap: io.read_buf.cap } — hyper 1.10.1
 hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, bytes::bytes::Bytes, hyper::proto::h1::role::Client> :: Node Struct { version: Alias { state.version, follow }, keep_alive: Alias { state.keep_alive, follow }, reading: Alias { state.reading, follow }, writing: Alias { state.writing, follow }, method: Alias { state.method, follow }, read_buf_len: io.read_buf.len, read_buf_cap: io.read_buf.cap } — hyper 1.10.1
 hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Client> :: Node Struct { version: Alias { state.version, follow }, keep_alive: Alias { state.keep_alive, follow }, reading: Alias { state.reading, follow }, writing: Alias { state.writing, follow }, method: Alias { state.method, follow }, read_buf_len: io.read_buf.len, read_buf_cap: io.read_buf.cap } — hyper 1.10.1
 hyper::proto::h1::conn::Conn<reqwest::connect::sealed::Conn, bytes::bytes::Bytes, hyper::proto::h1::role::Client> :: Node Struct { version: Alias { state.version, follow }, keep_alive: Alias { state.keep_alive, follow }, reading: Alias { state.reading, follow }, writing: Alias { state.writing, follow }, method: Alias { state.method, follow }, read_buf_len: io.read_buf.len, read_buf_cap: io.read_buf.cap } — hyper 1.10.1
+hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::io::util::mem::DuplexStream>, hyper::proto::h1::role::Client> :: Node Struct { conn: <structural>, dispatch: <structural>, is_closing: <structural> } — hyper 1.10.1
 hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client> :: Node Struct { conn: <structural>, dispatch: <structural>, is_closing: <structural> } — hyper 1.10.1
 hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>, hyper::proto::h1::role::Client> :: Node Struct { conn: <structural>, dispatch: <structural>, is_closing: <structural> } — hyper 1.10.1
 hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<reqwest::async_impl::body::Body>, reqwest::async_impl::body::Body, reqwest::connect::sealed::Conn, hyper::proto::h1::role::Client> :: Node Struct { conn: <structural>, dispatch: <structural>, is_closing: <structural> } — hyper 1.10.1
@@ -572,6 +577,7 @@ hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper:
 hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<tls_conns::https_server::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>, hyper::proto::h1::role::Server> :: Node Struct { conn: <structural>, dispatch: <structural>, is_closing: <structural> } — hyper 1.10.1
 hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>> :: Node Alias { inner, follow } — hyper-util 0.1.20
 hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>> :: Node Alias { inner, follow } — hyper-util 0.1.20
+hyper_util::rt::tokio::TokioIo<tokio::io::util::mem::DuplexStream> :: Node Alias { inner, follow } — hyper-util 0.1.20
 hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream> :: Node Alias { inner, follow } — hyper-util 0.1.20
 hyper_util::rt::tokio::TokioIo<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>> :: Node Alias { inner, follow } — hyper-util 0.1.20
 hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>> :: Node Alias { inner, follow } — hyper-util 0.1.20
@@ -601,6 +607,7 @@ tokio::loom::std::parking_lot::Condvar :: Node Alias { __1, follow } — tokio 1
 tokio::loom::std::parking_lot::Mutex<()> :: Node Alias { __1, follow } — tokio 1.48.0
 tokio::loom::std::parking_lot::Mutex<alloc::vec::Vec<alloc::boxed::Box<tokio::runtime::scheduler::multi_thread::worker::Core, alloc::alloc::Global>, alloc::alloc::Global>> :: Node Alias { __1, follow } — tokio 1.48.0
 tokio::loom::std::parking_lot::Mutex<core::option::Option<alloc::collections::vec_deque::VecDeque<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::task::local::Shared, alloc::alloc::Global>>, alloc::alloc::Global>>> :: Node Alias { __1, follow } — tokio 1.48.0
+tokio::loom::std::parking_lot::Mutex<tokio::io::util::mem::SimplexStream> :: Node Alias { __1, follow } — tokio 1.48.0
 tokio::loom::std::parking_lot::Mutex<tokio::runtime::blocking::pool::Shared> :: Node Alias { __1, follow } — tokio 1.48.0
 tokio::loom::std::parking_lot::Mutex<tokio::runtime::io::registration_set::Synced> :: Node Alias { __1, follow } — tokio 1.48.0
 tokio::loom::std::parking_lot::Mutex<tokio::runtime::io::scheduled_io::Waiters> :: Node Alias { __1, follow } — tokio 1.48.0
@@ -711,6 +718,7 @@ tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::closing_client::{async_fn_env#0}>> :: Node Alias { __0, follow } — tokio 1.48.0
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::deaf_server::{async_fn_env#0}>> :: Node Alias { __0, follow } — tokio 1.48.0
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::drained_server::{async_fn_env#0}>> :: Node Alias { __0, follow } — tokio 1.48.0
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::duplex_client::{async_fn_env#0}>> :: Node Alias { __0, follow } — tokio 1.48.0
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::exact_server::{async_fn_env#0}>> :: Node Alias { __0, follow } — tokio 1.48.0
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::handshaking_client::{async_fn_env#0}>> :: Node Alias { __0, follow } — tokio 1.48.0
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<tls_conns::handshaking_server::{async_fn_env#0}>> :: Node Alias { __0, follow } — tokio 1.48.0

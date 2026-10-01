@@ -6,13 +6,16 @@ oneshot 0xADDR: nothing sent, sender alive
     rx: task 10
 
 oneshot 0xADDR: nothing sent, sender alive
-    rx: task 11
+    rx: task 13
 
 oneshot 0xADDR: nothing sent, sender alive
-    rx: task 13
+    rx: task 11
 
 oneshot 0xADDR: nothing sent, sender alive
     rx: task 15
 
 mpsc 0xADDR: 1 sender, 0 unread
-    rx: task 18
+    rx: task 17
+
+mpsc 0xADDR: 1 sender, 0 unread
+    rx: task 19

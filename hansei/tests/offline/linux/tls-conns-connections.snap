@@ -13,6 +13,7 @@ TASK  CALLER  PROTO      ROLE    PHASE        DEADLINE  SENDQ  PEER  SERVER  MET
 12    —       tls        client  handshaking  —         0      —     —       —       —
 14    —       tls        server  handshaking  —         0      —     —       —       —
 16    —       tls        client  established  —         3432   —     —       —       —
-17    —       http1/tls  server  idle         —         0      —     —       —       —
-18    —       http1/tls  client  idle         —         0      —     —       —       —
-[12 connections]
+17    —       http1      client  idle         —         —      —     —       —       —
+18    —       http1/tls  server  idle         —         0      —     —       —       —
+19    —       http1/tls  client  idle         —         0      —     —       —       —
+[13 connections]

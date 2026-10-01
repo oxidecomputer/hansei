@@ -49,5 +49,8 @@ error: the tokio info records no type named no::such::Type; try `find-types no::
 
 task 18
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
-[Executed against 16 tasks, 16 failed]
-error: --exec failed against 16 of 16 tasks
+
+task 19
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+[Executed against 17 tasks, 17 failed]
+error: --exec failed against 17 of 17 tasks

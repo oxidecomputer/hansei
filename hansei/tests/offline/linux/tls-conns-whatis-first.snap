@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x55b98ed19600` over linux/tls-conns"
+description: "`whatis 0x55eb4bd55600` over linux/tls-conns"
 ---
 Task 3: async fn tls_conns::plain_client
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
-    Spawned at: src/bin/tls-conns.rs:410:9
+    Spawned at: src/bin/tls-conns.rs:422:9

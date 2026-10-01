@@ -4389,6 +4389,38 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<",
             &["conn.io.io", "inner", "inner", "io", "socket TcpStream"],
         );
+        // An HTTP/1 connection over a stream with no route to a socket —
+        // an in-memory duplex — keeps its words and binds no stream,
+        // saying why.
+        let duplex = "hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<\
+                      http_body_util::empty::Empty<bytes::bytes::Bytes>>, \
+                      http_body_util::empty::Empty<bytes::bytes::Bytes>, \
+                      hyper_util::rt::tokio::TokioIo<tokio::io::util::mem::DuplexStream>, \
+                      hyper::proto::h1::role::Client>";
+        let mut seen = 0;
+        for (name, _, record) in types_named(bundle, duplex) {
+            let record = record.unwrap_or_else(|| panic!("{program}: {name} has no record"));
+            let http = record
+                .http
+                .as_ref()
+                .unwrap_or_else(|| panic!("{program}: {name} has no HTTP binding"));
+            assert!(http.stream.is_none(), "{program}: {name}");
+            assert!(
+                record.issues.iter().any(|issue| {
+                    issue.kind == hansei_bundle::SemanticIssueKind::NoRule
+                        && issue
+                            .detail
+                            .and_then(|detail| bundle.strings.get(detail))
+                            .is_some_and(|detail| {
+                                detail.contains("has no reviewed route to a socket")
+                            })
+                }),
+                "{program}: {name}: {:?}",
+                record.issues
+            );
+            seen += 1;
+        }
+        assert!(seen > 0, "{program}: no type named {duplex}");
         // Each of tokio-rustls's streams holds its rustls connection,
         // whose words bind under rustls's session rule at the pinned
         // release; the stream's own binding is under its route's rule.

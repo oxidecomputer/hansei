@@ -6,6 +6,6 @@ COUNT  WAITING ON         TASKS
     8  io                 3, 4, 5, …
     4  oneshot rx         10, 11, 13, …
     2  handshaking        12, 14
-    1  http1 client idle  18
-    1  http1 server idle  17
+    2  http1 client idle  17, 19
+    1  http1 server idle  18
 [5 groups]

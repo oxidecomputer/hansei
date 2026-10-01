@@ -4,11 +4,11 @@ description: "`tasks --group waiting-on` over illumos/http-conns"
 ---
 COUNT  WAITING ON                          TASKS
     3  oneshot rx                          7, 10, 14
-    2  http1 client awaiting response      9, 12
+    2  http1 client awaiting response      8, 12
     2  http1 client idle                   5, 16
-    2  http1 server handling request       8, 11
+    2  http1 server handling request       9, 11
     2  http1 server idle                   4, 15
-    1  futures_channel::lock::Lock, timer  18
+    1  futures_channel::lock::Lock, timer  17
     1  http server negotiating             13
     1  io                                  3
 [8 groups]

@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`connections --with request park` over linux/http-conns"
 ---
 TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE  SENDQ  PEER             SERVER  METHOD  REQUEST
-7     —       http1  server  handling request   —         —      —                —       GET     /park
-10    —       http1  server  handling request   —         —      —                —       GET     /park
-11    9       http1  client  awaiting response  —         —      127.0.0.1:43119  —       GET     http://127.0.0.1:43119/park
+8     —       http1  server  handling request   —         —      —                —       GET     /park
+11    —       http1  server  handling request   —         —      —                —       GET     /park
+12    10      http1  client  awaiting response  —         —      127.0.0.1:44513  —       GET     http://127.0.0.1:44513/park
 [3 connections]

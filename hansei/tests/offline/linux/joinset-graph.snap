@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`graph` over linux/joinset"
 ---
 TASK                         STATE  WAITING ON
-3                            idle   tokio::util::idle_notified_set::ListsInner
+3                            idle   mpsc rx, tokio::util::idle_notified_set::ListsInner
 ├─ 4 [in the JoinSet above]  idle   notify rx
 ├─ 5 [in the JoinSet above]  idle   notify rx
 ├─ 6 [in the JoinSet above]  idle   notify rx

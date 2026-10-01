@@ -13,6 +13,11 @@ task 3
             declared at: src/bin/joinset.rs:52
             awaiting at: src/bin/joinset.rs:83
             waker: tokio::util::idle_notified_set::ListsInner @ 0xADDR
+    will wake:
+        0xADDR: tokio::sync::mpsc::bounded::Sender<()>
+            held in: frame 2 `started_tx`
+            declared at: src/bin/joinset.rs:51
+            woken by: mpsc rx 0xADDR (5 senders, capacity 6, 0 unread)
     spawned at: src/bin/joinset.rs:100:21
     type defined at: src/bin/joinset.rs:48
     held futures: 0

@@ -4,7 +4,7 @@ description: "`futures --exec trace -l 1` over linux/http-conns"
 ---
 future 0xADDR
 future 0xADDR: future hyper_util::rt::tokio::TokioSleep
-Held by: task 4 — async fn http_conns::serve (frame 0, `conn`)
+Held by: task 5 — async fn http_conns::serve (frame 0, `conn`)
 
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
@@ -12,7 +12,7 @@ Held by: task 4 — async fn http_conns::serve (frame 0, `conn`)
 
 future 0xADDR
 future 0xADDR: future futures_util::future::either::Either<reqwest::cookie::service::ResponseFuture<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, reqwest::async_impl::body::Body>, tower::util::oneshot::Oneshot<reqwest::cookie::service::CookieService<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>>, http::request::Request<reqwest::async_impl::body::Body>>>
-Held by: task 9 — async fn http_conns::reqwest_requester (frame 0, `future`, via held future at 0xADDR)
+Held by: task 10 — async fn http_conns::reqwest_requester (frame 0, `future`, via held future at 0xADDR)
 
 #0  future        tokio::sync::oneshot::Receiver<Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<reqwest::async_impl::body::Body>>>>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
@@ -20,7 +20,7 @@ Held by: task 9 — async fn http_conns::reqwest_requester (frame 0, `future`, v
 
 future 0xADDR
 future 0xADDR: future futures_util::future::either::Either<reqwest::cookie::service::ResponseFuture<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, reqwest::async_impl::body::Body>, tower::util::oneshot::Oneshot<reqwest::cookie::service::CookieService<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>>, http::request::Request<reqwest::async_impl::body::Body>>>
-Held by: task 9 — async fn http_conns::reqwest_requester (frame 0, `future`, via held future at 0xADDR)
+Held by: task 10 — async fn http_conns::reqwest_requester (frame 0, `future`, via held future at 0xADDR)
 
 #0  future        tokio::sync::oneshot::Receiver<Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<reqwest::async_impl::body::Body>>>>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
@@ -28,7 +28,7 @@ Held by: task 9 — async fn http_conns::reqwest_requester (frame 0, `future`, v
 
 future 0xADDR
 future 0xADDR: future futures_util::future::either::Either<reqwest::cookie::service::ResponseFuture<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, reqwest::async_impl::body::Body>, tower::util::oneshot::Oneshot<reqwest::cookie::service::CookieService<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>>, http::request::Request<reqwest::async_impl::body::Body>>>
-Held by: task 9 — async fn http_conns::reqwest_requester (frame 0, `future`, via held future at 0xADDR)
+Held by: task 10 — async fn http_conns::reqwest_requester (frame 0, `future`, via held future at 0xADDR)
 
 #0  future        tokio::sync::oneshot::Receiver<Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<reqwest::async_impl::body::Body>>>>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
@@ -36,14 +36,14 @@ Held by: task 9 — async fn http_conns::reqwest_requester (frame 0, `future`, v
 
 future 0xADDR
 future 0xADDR: future hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
-Held by: task 12 — async fn http_conns::serve (frame 0, `read_version`)
+Held by: task 13 — async fn http_conns::serve (frame 0, `read_version`)
 
 #0  future        hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
       defined at hyper-util-0.1.20/src/server/conn/auto/mod.rs:337 (<no_state>, 5 locals)
 
 future 0xADDR
 future 0xADDR: future hyper_util::rt::tokio::TokioSleep
-Held by: task 14 — async fn http_conns::serve (frame 0, `conn`)
+Held by: task 15 — async fn http_conns::serve (frame 0, `conn`)
 
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
@@ -51,14 +51,14 @@ Held by: task 14 — async fn http_conns::serve (frame 0, `conn`)
 
 future 0xADDR
 future 0xADDR: future futures_channel::oneshot::Receiver<core::convert::Infallible>
-Held by: task 16 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `self`)
+Held by: task 18 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `self`)
 
 #0  future        futures_channel::oneshot::Receiver<core::convert::Infallible>
       defined at futures-channel-0.3.33/src/oneshot.rs:458 (<no_state>, 1 local)
 
 future 0xADDR
 future 0xADDR: future hyper_util::rt::tokio::TokioSleep
-Held by: task 16 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `sleep`)
+Held by: task 18 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `sleep`)
 
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
@@ -66,7 +66,7 @@ Held by: task 16 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `
 
 future 0xADDR
 future 0xADDR: future futures_channel::oneshot::Receiver<core::convert::Infallible>
-Held by: task 16 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `on_pool_drop`)
+Held by: task 18 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `on_pool_drop`)
 
 #0  future        futures_channel::oneshot::Receiver<core::convert::Infallible>
       defined at futures-channel-0.3.33/src/oneshot.rs:458 (<no_state>, 1 local)

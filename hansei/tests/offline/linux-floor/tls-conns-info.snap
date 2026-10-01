@@ -4,11 +4,11 @@ description: "`info` over linux-floor/tls-conns"
 ---
 core:       <snapshot>
 tokio info: <tokio info>
-symbols resolved: 38/38
+symbols resolved: 40/40
 allocator evidence: unavailable
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.3 MiB swept in 173 chunks
-    hits: 38 task-pattern, 0 set-pattern; 18 admitted; 3 unlisted headers
-    by class: 20 lwp stack, 18 anon
-    attributed: 13 by a registry, 5 by owner type, 0 by holding type, 0 from another task's side, 0 unknown; 0 stale
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.3 MiB swept in 181 chunks
+    hits: 42 task-pattern, 0 set-pattern; 20 admitted; 3 unlisted headers
+    by class: 22 lwp stack, 20 anon
+    attributed: 13 by a registry, 6 by owner type, 1 by holding type, 0 from another task's side, 0 unknown; 0 stale
 process: not recorded by this target
 signal: none recorded

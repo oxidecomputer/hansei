@@ -7,5 +7,5 @@ ID  STATE  FUT  AWAITING AT                                      WAITING ON     
 10  idle     1  src/bin/http-conns.rs:180                        oneshot rx                          async fn http_conns::reqwest_requester
 13  idle     1  src/bin/http-conns.rs:137                        http server                         async fn http_conns::serve
 15  idle     1  src/bin/http-conns.rs:137                        http1 server                        async fn http_conns::serve
-18  idle     3  hyper-util-0.1.20/src/client/legacy/pool.rs:798  futures_channel::lock::Lock, timer  future Pin<Box<(dyn Future<Output=()> + Send)>>
+17  idle     3  hyper-util-0.1.20/src/client/legacy/pool.rs:798  futures_channel::lock::Lock, timer  future Pin<Box<(dyn Future<Output=()> + Send)>>
 [5 tasks]
