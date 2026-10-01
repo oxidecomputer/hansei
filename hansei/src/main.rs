@@ -737,6 +737,10 @@ pub enum Command {
     /// Any address inside one of the connection's objects selects it —
     /// the `ADDR` `connections` prints, the HTTP dispatcher, a stream
     /// on the route, the registration a task block's `io` line names.
+    // An alias is an exact name, which the REPL's prefix matching tries
+    // first: `conn` is a prefix of `connections` too, and would
+    // otherwise name neither.
+    #[command(visible_alias = "conn")]
     Connection {
         /// An address inside the connection, in hex with a required
         /// leading `0x` (see `connections`).
@@ -773,6 +777,9 @@ pub enum Command {
     /// method, peer, server, request — are case-insensitive regexes over the
     /// printed value; task, caller and rt are exact. What a TLS
     /// connection holds unsent or unread is `connection`'s to print.
+    // `conns` is a unique prefix already; the alias keeps it one
+    // whatever command is added later, and shows it in `help`.
+    #[command(visible_alias = "conns")]
     Connections {
         /// Show at most this many connections — or, under --group,
         /// this many buckets; a footer counts what the cut left out.

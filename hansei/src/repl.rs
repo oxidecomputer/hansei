@@ -660,7 +660,8 @@ const HELP_WIDTH: usize = 100;
 /// The listing bare `help` prints: every command clap would list,
 /// under [`HELP_SECTIONS`]' headings. The text beside each command is
 /// its own first paragraph — what clap would have printed — so this
-/// and `help COMMAND` never disagree.
+/// and `help COMMAND` never disagree — then its short names, as clap
+/// writes them, `[aliases: conn]`.
 fn help_listing(theme: &Theme) -> String {
     let mut root = Line::command();
     root.build();
@@ -682,8 +683,8 @@ fn help_listing(theme: &Theme) -> String {
         out.push_str(&theme.bold(&format!("{heading}:")));
         out.push('\n');
         for name in names.iter() {
-            let about = root
-                .find_subcommand(name)
+            let command = root.find_subcommand(name);
+            let about = command
                 .and_then(|c| c.get_about())
                 .map(|a| a.to_string())
                 .unwrap_or_default();
@@ -697,6 +698,15 @@ fn help_listing(theme: &Theme) -> String {
                 }
                 out.push_str(line);
                 out.push('\n');
+            }
+            // The short names on a line of their own, where wrapping
+            // the text cannot split them.
+            let aliases: Vec<&str> = command
+                .map(|c| c.get_visible_aliases().collect())
+                .unwrap_or_default();
+            if !aliases.is_empty() {
+                out.push_str(&" ".repeat(column));
+                out.push_str(&format!("[aliases: {}]\n", aliases.join(", ")));
             }
         }
     }
@@ -1174,12 +1184,12 @@ fn path_candidates(
 }
 
 /// The subcommand `word` names, by the rule the grammar's
-/// `infer_subcommands` applies: its name exactly, else the one command
-/// it is a prefix of. The grammar declares no aliases, for commands or
-/// flags, so neither lookup here nor the flag lookup above reads them.
+/// `infer_subcommands` applies: its name or one of its aliases exactly,
+/// else the one command it is a prefix of. Flags declare no aliases, so
+/// the flag lookup above reads none.
 fn find_command<'c>(root: &'c clap::Command, word: &str) -> Option<&'c clap::Command> {
     root.get_subcommands()
-        .find(|c| c.get_name() == word)
+        .find(|c| c.get_name() == word || c.get_all_aliases().any(|alias| alias == word))
         .or_else(|| {
             let mut prefixed = root
                 .get_subcommands()
@@ -2421,6 +2431,25 @@ mod tests {
             completions("futu --").is_empty(),
             "`futu` names future and futures"
         );
+        // An alias is an exact name, ahead of any prefix: `conns`
+        // completes as `connections` does.
+        assert_eq!(completions("conns --"), completions("connections --"));
+        assert!(!completions("connections --").is_empty());
+    }
+
+    /// The short names: `conn` is `connection` although `connections`
+    /// shares the prefix, and `conns` is `connections`; the rest of the
+    /// line reads as the full name's would.
+    #[test]
+    fn test_the_connection_commands_answer_to_their_short_names() {
+        assert!(matches!(
+            parse_line("conn 0x10"),
+            Ok(crate::Command::Connection { addr: 0x10 })
+        ));
+        assert!(matches!(
+            parse_line("conns --limit 2"),
+            Ok(crate::Command::Connections { limit: Some(2), .. })
+        ));
     }
 
     /// Nothing is offered on the shell's side of a `!`, inside an
@@ -2606,6 +2635,15 @@ mod tests {
             listing.contains("\n  quit             Leave the session\n"),
             "{listing}"
         );
+        // A command's short names follow its text on a line of their
+        // own, whole.
+        for alias in ["[aliases: conn]", "[aliases: conns]"] {
+            let indent = " ".repeat(19);
+            assert!(
+                listing.contains(&format!("\n{indent}{alias}\n")),
+                "{listing}"
+            );
+        }
         for line in listing.lines() {
             assert!(line.chars().count() <= HELP_WIDTH, "{line}");
         }
