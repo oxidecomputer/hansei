@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux-floor/sleep-join"
 ---
 COUNT  ROLE             LWPS
-    2  worker           622469, 622470
-    1  entered runtime  622467
+    2  worker           2818534, 2818535
+    1  entered runtime  2818532
 [2 groups]

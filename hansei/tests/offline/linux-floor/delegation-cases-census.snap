@@ -5,9 +5,9 @@ description: "`census` over linux-floor/delegation-cases"
 Threads: 2 lwps, 2 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE           LWPS
-    1  0   block_on thread  in driver       625559
+    1  0   block_on thread  in driver       2822440
     0  0   blocking pool    0 idle, 0 busy  —
-    1  —   entered runtime  —               625557
+    1  —   entered runtime  —               2822438
 [2 lwps]
 
 Tasks: 12 owned by runtime 0 @ 0xADDR

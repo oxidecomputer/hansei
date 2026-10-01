@@ -5,9 +5,9 @@ description: "`census` over linux/watch-stream"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        612888
-    1  0   worker           parked           612887
-    1  0   entered runtime  block_on caller  612885
+    1  0   worker           in driver        2811774
+    1  0   worker           parked           2811773
+    1  0   entered runtime  block_on caller  2811771
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 

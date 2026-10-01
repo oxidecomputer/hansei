@@ -3981,8 +3981,8 @@ fn test_wrong_binary_refused_by_build_id() {
 /// listener's loopback address. No other row names a peer or a server:
 /// hyper keeps neither on either side, a pool with no reaper is reached
 /// by nothing, and the fixture's service is its own closure, which no
-/// reviewed convention says stores them (dropshot's does). The buffers
-/// hold nothing unparsed at the parked state. The idle servers have
+/// reviewed convention says stores them (dropshot's does). The idle
+/// servers have
 /// armed their header-read timers, whose deadlines are masked whole —
 /// their form is the system's — and whose waits beside the phase only
 /// an illumos core, which records when the process stopped, can put a
@@ -4001,11 +4001,7 @@ fn test_wrong_binary_refused_by_build_id() {
 /// `client.request()` on the requester's worker, the server's by the
 /// accept loop on the other, and the client's pool spawns background
 /// tasks of its own between them, so the same capture assigns the ids
-/// in either order. The buffer capacities are pinned: each is what the
-/// reads left of a fresh 16 KiB buffer, fixed by the length of the
-/// requests the connection read — two on (a)'s idle server, one on
-/// every other — and the ephemeral port in each `host` header is five
-/// digits on every host the suite runs on.
+/// in either order.
 #[test]
 fn test_http_conns_connections_acceptance() {
     let bundle = fixtures().bundle("http-conns");
@@ -4066,15 +4062,15 @@ fn test_http_conns_connections_acceptance() {
         assert_eq!(
             rows,
             [
-                "CALLER http1 client awaiting response — 0/8192 — 127.0.0.1:PORT — GET http://127.0.0.1:PORT/park",
-                "CALLER http1 client awaiting response — 0/8192 — 127.0.0.1:PORT — GET —",
-                "— http1 client idle — 0/8192 — 127.0.0.1:PORT — — —",
-                "— http1 client idle — 0/8192 — — — — —",
-                "— http1 server handling request — 0/16326 — — — GET /park",
-                "— http1 server handling request — 0/16339 — — — GET /park",
-                "— http1 server idle DEADLINE 0/16302 — — — — —",
-                "— http1 server idle DEADLINE 0/16343 — — — — —",
-                "— http1 server negotiating — — — — — — —",
+                "CALLER http1 client awaiting response — — 127.0.0.1:PORT — GET http://127.0.0.1:PORT/park",
+                "CALLER http1 client awaiting response — — 127.0.0.1:PORT — GET —",
+                "— http1 client idle — — 127.0.0.1:PORT — — —",
+                "— http1 client idle — — — — — —",
+                "— http1 server handling request — — — — GET /park",
+                "— http1 server handling request — — — — GET /park",
+                "— http1 server idle DEADLINE — — — — —",
+                "— http1 server idle DEADLINE — — — — —",
+                "— http1 server negotiating — — — — — —",
             ],
             "{out}"
         );
@@ -4103,14 +4099,12 @@ fn test_http_conns_connections_acceptance() {
 /// reading directly and through a boxed `BufStream`, all established;
 /// the client that sent its close_notify, closing; and the TCP client
 /// reading and writing through owned halves and the server reading its
-/// bare stream, open. Each TLS row's buffer is the deframer's, empty,
-/// out of the 4 KiB rustls starts it at; no row names a peer — the
-/// fixture has no sprockets stream, the one this listing reads a peer
-/// from. The HTTP/1 pair over TLS is two rows of their own, idle
-/// between exchanges, each keyed by its socket as the listing reaches
-/// it through the dispatcher's stream: the server's buffer is what its
-/// one request left of a fresh 16 KiB, the client's hyper's 8 KiB
-/// start. The two handshakes in progress are rows too, handshaking,
+/// bare stream, open. No row names a peer — the fixture has no
+/// sprockets stream, the one this listing reads a peer from. The
+/// HTTP/1 pair over TLS is two rows of their own, idle between
+/// exchanges, each keyed by its socket as the listing reaches it
+/// through the dispatcher's stream. The two handshakes in progress are
+/// rows too, handshaking,
 /// and each task driving one waits on its socket as handshaking, not
 /// as a read — both for the peer's first flight. Every connection
 /// through TLS has nothing queued to send, but the client whose writes
@@ -4133,8 +4127,8 @@ fn test_tls_conns_connections_acceptance() {
             .take(12)
             .map(|line| {
                 let mut cells: Vec<&str> = line.split_whitespace().skip(1).collect();
-                if cells[6].parse::<u64>().is_ok_and(|queued| queued > 0) {
-                    cells[6] = "N";
+                if cells[5].parse::<u64>().is_ok_and(|queued| queued > 0) {
+                    cells[5] = "N";
                 }
                 cells.join(" ")
             })
@@ -4143,18 +4137,18 @@ fn test_tls_conns_connections_acceptance() {
         assert_eq!(
             rows,
             [
-                "— http1/tls client idle — 0/8192 0 — — — —",
-                "— http1/tls server idle — 0/16349 0 — — — —",
-                "— tcp — open — — — — — — —",
-                "— tcp — open — — — — — — —",
-                "— tls client closing — 0/4096 0 — — — —",
-                "— tls client established — 0/4096 0 — — — —",
-                "— tls client established — 0/4096 0 — — — —",
-                "— tls client established — 0/4096 N — — — —",
-                "— tls client handshaking — 0/4096 0 — — — —",
-                "— tls server established — 0/4096 0 — — — —",
-                "— tls server established — 0/4096 0 — — — —",
-                "— tls server handshaking — 0/4096 0 — — — —",
+                "— http1/tls client idle — 0 — — — —",
+                "— http1/tls server idle — 0 — — — —",
+                "— tcp — open — — — — — —",
+                "— tcp — open — — — — — —",
+                "— tls client closing — 0 — — — —",
+                "— tls client established — 0 — — — —",
+                "— tls client established — 0 — — — —",
+                "— tls client established — N — — — —",
+                "— tls client handshaking — 0 — — — —",
+                "— tls server established — 0 — — — —",
+                "— tls server established — 0 — — — —",
+                "— tls server handshaking — 0 — — — —",
             ],
             "{out}"
         );

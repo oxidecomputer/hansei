@@ -3599,13 +3599,6 @@ impl<'b, T: Target> Context<'b, T> {
         };
         let is_closing = word(&binding.is_closing, "closing flag")?;
         let is_closing = is_closing.bytes.first().is_some_and(|byte| *byte != 0);
-        // The read buffer's two words, a fact beside the verdict: a
-        // buffer that does not read leaves the verdict standing.
-        let buffer_word = |path: &TypedPath, what: &str| -> Option<u64> {
-            word(path, what).ok()?.parse::<u64>(self.proc).ok()
-        };
-        let read_buf = buffer_word(&binding.read_buf_len, "read buffer length")
-            .zip(buffer_word(&binding.read_buf_cap, "read buffer capacity"));
         let client = match &binding.client {
             Some(client) => {
                 let callback = match word(&client.callback, "callback")?.active_variant_raw()?.0 {
@@ -3682,7 +3675,7 @@ impl<'b, T: Target> Context<'b, T> {
                     .filter(|addr| *addr != 0);
                 // The peer and the server's context, where a convention
                 // routes to them: facts beside the verdict, like the
-                // buffer.
+                // timer.
                 let service = server.service.as_ref();
                 let peer = service
                     .and_then(|service| word(&service.peer, "peer address").ok())
@@ -3734,7 +3727,6 @@ impl<'b, T: Target> Context<'b, T> {
             writing,
             method,
             is_closing,
-            read_buf,
             client,
             server,
             stream,
@@ -4246,10 +4238,6 @@ impl<'b, T: Target> Context<'b, T> {
             sent_fatal_alert: flag(&words.sent_fatal_alert, "fatal alert flag")?,
             read_seq: seq(&words.read_seq, "read sequence")?,
             write_seq: seq(&words.write_seq, "write sequence")?,
-            deframer: (
-                seq(&words.deframer_used, "deframer's fill")?,
-                seq(&words.deframer_len, "deframer's size")?,
-            ),
             unsent: self.unsent_records(&words.sendable, &seq, read)?,
             stream_state: stream_state.to_owned(),
         })

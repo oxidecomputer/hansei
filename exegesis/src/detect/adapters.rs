@@ -873,9 +873,6 @@ pub(crate) struct HttpDispatcherLayout {
     pub(crate) write_body_kind: TypeId,
     /// `is_closing`, a `bool`.
     pub(crate) is_closing: TypeId,
-    /// `conn.io.read_buf.len` and `.cap`, the read buffer's two words.
-    pub(crate) read_buf_len: TypeId,
-    pub(crate) read_buf_cap: TypeId,
     /// The client dispatch's words, for a `T` of `role::Client`.
     pub(crate) client: Option<HttpClientLayout>,
     /// The server dispatch's words, for a `T` of `role::Server`.
@@ -976,9 +973,6 @@ pub(crate) mod hyper_h1 {
     /// The header-read timer, a pinned box of hyper's `dyn Sleep`.
     pub(crate) const HEADER_READ_TIMEOUT_FUT: &str = "h1_header_read_timeout_fut";
     pub(crate) const IO: &str = "io";
-    pub(crate) const READ_BUF: &str = "read_buf";
-    pub(crate) const LEN: &str = "len";
-    pub(crate) const CAP: &str = "cap";
     pub(crate) const SERVICE: &str = "service";
     /// dropshot's request handler: the member its server stores the
     /// accepted socket's peer address in.
@@ -1045,20 +1039,6 @@ pub(crate) fn hyper_h1_dispatcher(
     if fq_name(reader, is_closing).as_deref() != Some("bool") {
         return None;
     }
-    // The read buffer: hyper's buffered io holds a `BytesMut`, whose
-    // length and capacity words are read by name.
-    let io = member_of(reader, conn, IO)?;
-    declared_in(reader, io, "hyper::proto::h1::io", "Buffered<")?;
-    let read_buf = member_of(reader, io, READ_BUF)?;
-    if fq_name(reader, read_buf).as_deref() != Some("bytes::bytes_mut::BytesMut") {
-        return None;
-    }
-    let buffer_word = |name: &str| {
-        let ty = member_of(reader, read_buf, name)?;
-        (fq_name(reader, ty).as_deref() == Some("usize")).then_some(ty)
-    };
-    let read_buf_len = buffer_word(LEN)?;
-    let read_buf_cap = buffer_word(CAP)?;
     let dispatch = member_of(reader, id, DISPATCH)?;
     let mut server = None;
     let client = match role {
@@ -1168,8 +1148,6 @@ pub(crate) fn hyper_h1_dispatcher(
         read_body_kind,
         write_body_kind,
         is_closing,
-        read_buf_len,
-        read_buf_cap,
         client,
         server,
     })

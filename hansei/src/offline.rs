@@ -390,7 +390,7 @@ fn commands(
         ));
         list.push((
             "connections-with-role",
-            "connections --with role server --with buffered =0".to_owned(),
+            "connections --with role server --without phase negotiating".to_owned(),
         ));
         list.push((
             "connections-with-request",

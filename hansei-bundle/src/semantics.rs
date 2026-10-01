@@ -365,13 +365,6 @@ pub struct HttpConnBinding {
     pub write_body_kind: TypedPath,
     /// `is_closing`: set once the dispatcher has closed both directions.
     pub is_closing: TypedPath,
-    /// `conn.io.read_buf.len` and `.cap`: how much of the read buffer
-    /// holds bytes read off the socket and not yet parsed, and its
-    /// capacity — the buffer is `bytes::BytesMut`, whose two words are
-    /// read by name under hyper's rule, since hyper's buffered io owns
-    /// the member that holds it.
-    pub read_buf_len: TypedPath,
-    pub read_buf_cap: TypedPath,
     /// `conn.io.io`: the stream the connection reads and writes, where
     /// its type is routed to a socket — the route a reader follows to
     /// the connection's registration and descriptor, and to the TLS
@@ -670,11 +663,6 @@ pub struct TlsSessionBinding {
     /// each direction has carried, as unsigned words.
     pub read_seq: TypedPath,
     pub write_seq: TypedPath,
-    /// `deframer_buffer.used` and `deframer_buffer.buf.len`: how much of
-    /// the buffer the socket's bytes are read into holds bytes not yet
-    /// deframed, and the buffer's size.
-    pub deframer_used: TypedPath,
-    pub deframer_len: TypedPath,
     /// `core.common_state.sendable_tls`: the records written into the
     /// connection and not yet written to its socket — a `VecDeque` ring
     /// of encoded records, one `Vec<u8>` each, whose first one has

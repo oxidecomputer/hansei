@@ -998,8 +998,6 @@ fn assert_tls_stream(program: &str, bundle: &Bundle, key: &str) {
                 &session.write_seq,
                 format!("{common}.record_layer.write_seq"),
             ),
-            (&session.deframer_used, "deframer_buffer.used".to_owned()),
-            (&session.deframer_len, "deframer_buffer.buf.len".to_owned()),
             (
                 &session.sendable.prefix_used,
                 format!("{common}.sendable_tls.prefix_used"),
@@ -1590,18 +1588,6 @@ fn assert_http_conn(program: &str, bundle: &Bundle, key: &str, client: bool) {
         assert_eq!(
             route(&http.is_closing),
             "is_closing -> bool",
-            "{program}: {name}"
-        );
-        // The read buffer's words, through hyper's buffered io to the
-        // `BytesMut` it holds.
-        assert_eq!(
-            route(&http.read_buf_len),
-            "conn.io.read_buf.len -> usize",
-            "{program}: {name}"
-        );
-        assert_eq!(
-            route(&http.read_buf_cap),
-            "conn.io.read_buf.cap -> usize",
             "{program}: {name}"
         );
         assert_eq!(http.role == HttpRole::Client, client, "{program}: {name}");

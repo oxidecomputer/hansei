@@ -1017,8 +1017,6 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 ("fatal", &session.sent_fatal_alert),
                 ("read-seq", &session.read_seq),
                 ("write-seq", &session.write_seq),
-                ("deframer-used", &session.deframer_used),
-                ("deframer-len", &session.deframer_len),
                 ("unsent-prefix", &session.sendable.prefix_used),
                 ("unsent-head", &session.sendable.head),
                 ("unsent-len", &session.sendable.len),

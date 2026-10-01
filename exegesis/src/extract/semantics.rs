@@ -473,8 +473,6 @@ struct HttpSeed {
     read_body_kind: BundleTypeId,
     write_body_kind: BundleTypeId,
     is_closing: BundleTypeId,
-    read_buf_len: BundleTypeId,
-    read_buf_cap: BundleTypeId,
     client: Option<HttpClientSeed>,
     server: Option<HttpServerSeed>,
 }
@@ -1300,8 +1298,6 @@ fn http_seed(
         read_body_kind: bundle_id(layout.read_body_kind)?,
         write_body_kind: bundle_id(layout.write_body_kind)?,
         is_closing: bundle_id(layout.is_closing)?,
-        read_buf_len: bundle_id(layout.read_buf_len)?,
-        read_buf_cap: bundle_id(layout.read_buf_cap)?,
         client,
         server,
     })
@@ -2689,8 +2685,6 @@ pub(super) fn bind_semantics(
                     read_body_kind: plan.read_body_kind,
                     write_body_kind: plan.write_body_kind,
                     is_closing: plan.is_closing,
-                    read_buf_len: plan.read_buf_len,
-                    read_buf_cap: plan.read_buf_cap,
                     stream: plan.stream,
                     client: plan.client,
                     server: plan.server.map(|server| HttpServerBinding {
@@ -3006,8 +3000,6 @@ pub(super) fn bind_semantics(
                 sent_fatal_alert: plan.sent_fatal_alert,
                 read_seq: plan.read_seq,
                 write_seq: plan.write_seq,
-                deframer_used: plan.deframer_used,
-                deframer_len: plan.deframer_len,
                 sendable: plan.sendable,
             });
         records.push(TypeSemantics {
@@ -3879,8 +3871,6 @@ struct HttpPlan {
     read_body_kind: TypedPath,
     write_body_kind: TypedPath,
     is_closing: TypedPath,
-    read_buf_len: TypedPath,
-    read_buf_cap: TypedPath,
     client: Option<HttpClientBinding>,
     server: Option<HttpServerPlan>,
     /// The stream the connection reads and writes, where its type's
@@ -4014,15 +4004,6 @@ fn plan_http(
     let read_body_kind = framing(strings, READING, BODY, seed.read_body_kind)?;
     let write_body_kind = framing(strings, WRITING, BODY, seed.write_body_kind)?;
     let is_closing = route(strings, &[(M, IS_CLOSING)], seed.is_closing)?;
-    let buffer_word = |strings: &mut StringInterner, name: &str, target| {
-        route(
-            strings,
-            &[(M, CONN), (M, IO), (M, READ_BUF), (M, name)],
-            target,
-        )
-    };
-    let read_buf_len = buffer_word(strings, LEN, seed.read_buf_len)?;
-    let read_buf_cap = buffer_word(strings, CAP, seed.read_buf_cap)?;
     let mut peer_declined = None;
     let client = match &seed.client {
         Some(client) => {
@@ -4187,8 +4168,6 @@ fn plan_http(
         read_body_kind,
         write_body_kind,
         is_closing,
-        read_buf_len,
-        read_buf_cap,
         client,
         server,
         stream: None,
@@ -4558,8 +4537,6 @@ struct TlsSessionPlan {
     sent_fatal_alert: TypedPath,
     read_seq: TypedPath,
     write_seq: TypedPath,
-    deframer_used: TypedPath,
-    deframer_len: TypedPath,
     sendable: SendableBinding,
 }
 
@@ -4685,14 +4662,6 @@ fn plan_tls_session(
         sent_fatal_alert: flag("sent_fatal_alert")?,
         read_seq: seq("read_seq")?,
         write_seq: seq("write_seq")?,
-        deframer_used: count(
-            &[Member("deframer_buffer"), Member("used")],
-            "deframer's fill",
-        )?,
-        deframer_len: count(
-            &[Member("deframer_buffer"), Member("buf"), Member("len")],
-            "deframer's size",
-        )?,
         sendable: plan_sendable(ty, &count, types, names, strings)?,
     })
 }
@@ -6334,8 +6303,6 @@ mod tests {
                 read_body_kind: id,
                 write_body_kind: id,
                 is_closing: id,
-                read_buf_len: id,
-                read_buf_cap: id,
                 client: None,
                 server: None,
             }),

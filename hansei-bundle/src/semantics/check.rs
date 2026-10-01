@@ -887,8 +887,6 @@ impl<'a> Check<'a> {
         for seq in [
             &binding.read_seq,
             &binding.write_seq,
-            &binding.deframer_used,
-            &binding.deframer_len,
             &sendable.prefix_used,
             &sendable.head,
             &sendable.len,
@@ -1247,31 +1245,6 @@ impl<'a> Check<'a> {
             self.0.types.size_of(binding.is_closing.target) == Some(1),
             "HTTP connection closing flag is not one byte",
         )?;
-        // The read buffer's two words: each an unsigned machine word,
-        // reached through the connection's buffered io.
-        for (word, what) in [
-            (&binding.read_buf_len, "read buffer length"),
-            (&binding.read_buf_cap, "read buffer capacity"),
-        ] {
-            self.path(record.ty, word)?;
-            require(
-                matches!(
-                    self.ty(word.target)?,
-                    TypeDef::Base {
-                        encoding: crate::Encoding::Unsigned,
-                        size: 8,
-                        ..
-                    }
-                ),
-                &format!("HTTP connection {what} is not an unsigned word"),
-            )?;
-            // Under the connection member: a word of the right width
-            // reached from anywhere else is not this buffer's.
-            require(
-                word.steps.first() == binding.keep_alive.steps.first(),
-                &format!("HTTP connection {what} is not reached through the connection"),
-            )?;
-        }
         // The stream the connection reads, where one is bound: through
         // the connection member, onto a routed type.
         if let Some(stream) = &binding.stream {

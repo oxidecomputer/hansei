@@ -2213,7 +2213,6 @@ mod tests {
             writing,
             method: in_flight.then(|| "GET".to_owned()),
             is_closing,
-            read_buf: Some((0, 8192)),
             client: Some(HttpClientObservation {
                 callback: in_flight.then_some(OneshotObservation {
                     future: key,
@@ -2428,7 +2427,6 @@ mod tests {
             writing,
             method: in_flight.then(|| "GET".to_owned()),
             is_closing,
-            read_buf: Some((0, 8192)),
             client: None,
             server: Some(HttpServerObservation {
                 in_flight,

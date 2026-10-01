@@ -1,10 +1,10 @@
 ---
 source: hansei/src/offline.rs
-description: "`connections --with role server --with buffered =0` over linux-floor/http-conns"
+description: "`connections --with role server --without phase negotiating` over linux-floor/http-conns"
 ---
-TASK  CALLER  PROTO  ROLE    PHASE             DEADLINE                                     BUF      SENDQ  PEER  SERVER  METHOD  REQUEST
-4     —       http1  server  idle              TS on the target's monotonic clock  0/16302  —      —     —       —       —
-8     —       http1  server  handling request  —                                            0/16339  —      —     —       GET     /park
-11    —       http1  server  handling request  —                                            0/16326  —      —     —       GET     /park
-15    —       http1  server  idle              TS on the target's monotonic clock  0/16343  —      —     —       —       —
+TASK  CALLER  PROTO  ROLE    PHASE             DEADLINE                                     SENDQ  PEER  SERVER  METHOD  REQUEST
+4     —       http1  server  idle              TS on the target's monotonic clock  —      —     —       —       —
+7     —       http1  server  handling request  —                                            —      —     —       GET     /park
+10    —       http1  server  handling request  —                                            —      —     —       GET     /park
+14    —       http1  server  idle              TS on the target's monotonic clock  —      —     —       —       —
 [4 connections]

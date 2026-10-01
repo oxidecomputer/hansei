@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/walk-shapes"
 ---
-LWP     NAME  ROLE             TASK  FRAME 0
-611792  —     block_on caller  —     0xADDR
-611794  —     entered runtime  —     0xADDR
-611795  —     entered runtime  —     0xADDR
+LWP      NAME  ROLE             TASK  FRAME 0
+2809137  —     block_on caller  —     0xADDR
+2809139  —     entered runtime  —     0xADDR
+2809140  —     entered runtime  —     0xADDR
 [3 threads]

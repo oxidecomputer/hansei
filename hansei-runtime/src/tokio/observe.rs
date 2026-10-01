@@ -442,10 +442,6 @@ pub struct HttpConnObservation {
     /// an extension method, and where the word did not read.
     pub method: Option<String>,
     pub is_closing: bool,
-    /// The read buffer's fill: bytes read off the socket and not yet
-    /// parsed, and the buffer's capacity; `None` where the words did
-    /// not read.
-    pub read_buf: Option<(u64, u64)>,
     /// The client dispatch's words, for a client.
     pub client: Option<HttpClientObservation>,
     /// The server dispatch's words, for a server.

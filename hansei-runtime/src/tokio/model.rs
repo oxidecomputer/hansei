@@ -1626,9 +1626,6 @@ pub struct TlsReading {
     pub sent_fatal_alert: bool,
     pub read_seq: u64,
     pub write_seq: u64,
-    /// The bytes read off the socket and not yet deframed, and the
-    /// size of the buffer they are read into.
-    pub deframer: (u64, u64),
     /// The records written into the connection that it has not yet
     /// written to its socket, and their bytes: what the next write or
     /// flush sends, and nothing else will — a read never does.
@@ -2697,7 +2694,6 @@ mod tests {
             sent_fatal_alert: false,
             read_seq: 9239,
             write_seq: 9239,
-            deframer: (0, 4096),
             unsent: (0, 0),
             stream_state: "Stream".to_owned(),
         };

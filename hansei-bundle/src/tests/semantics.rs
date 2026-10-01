@@ -1847,8 +1847,9 @@ fn test_semantic_never_ready_is_a_whole_program_under_its_own_rule() {
 /// hand: the words the binding routes to, each of the shape the
 /// verdict reads, under the hyper rule read off its registry path. The
 /// second value is the client's dispatch routes, kept apart so a
-/// server-shaped record can be built from the same table.
-fn http_conn() -> (Bundle, HttpClientBinding, [TypedPath; 3]) {
+/// server-shaped record can be built from the same table; the third,
+/// the server's header-read words and a word no binding reads.
+fn http_conn() -> (Bundle, HttpClientBinding, [TypedPath; 4]) {
     let mut b = base();
     let mut strings = StringInterner::new();
     for s in b.strings.iter() {
@@ -2294,14 +2295,6 @@ fn http_conn() -> (Bundle, HttpClientBinding, [TypedPath; 3]) {
         read_body_kind: framing(reading, body, dkind),
         write_body_kind: framing(writing, body, dkind),
         is_closing: route(vec![named(is_closing)], bool_t),
-        read_buf_len: route(
-            vec![named(conn), named(io), named(read_buf), named(len)],
-            word,
-        ),
-        read_buf_cap: route(
-            vec![named(conn), named(io), named(read_buf), named(cap)],
-            word,
-        ),
         stream: None,
         client: Some(client_binding.clone()),
         server: None,
@@ -2331,12 +2324,19 @@ fn http_conn() -> (Bundle, HttpClientBinding, [TypedPath; 3]) {
         ],
         pointer,
     );
-    let server_words = [
+    // A word under the connection that no rule routes and no state
+    // selects: the read buffer's length, which the binding does not read.
+    let unrouted = route(
+        vec![named(conn), named(io), named(read_buf), named(len)],
+        word,
+    );
+    let words = [
         timeout_word(&[named(secs)], word),
         timeout_word(&[named(nanos), named(first)], u32_t),
         timer_route,
+        unrouted,
     ];
-    (b, client_binding, server_words)
+    (b, client_binding, words)
 }
 
 /// The HTTP connection binding: the resource and the binding come
@@ -2347,7 +2347,7 @@ fn http_conn() -> (Bundle, HttpClientBinding, [TypedPath; 3]) {
 /// present are the role's own.
 #[test]
 fn test_semantic_http_conn_binding_routes_every_word() {
-    let (b, client, [secs, nanos, timer]) = http_conn();
+    let (b, client, [secs, nanos, timer, unrouted]) = http_conn();
     let mut bytes = Vec::new();
     b.write_to(&mut bytes).unwrap();
     assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
@@ -2376,9 +2376,9 @@ fn test_semantic_http_conn_binding_routes_every_word() {
     wrong.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
     bad(&wrong, "unavailable storage carries a readable capability");
     // The stream, where one is bound, lands on a routed type through
-    // the connection: the read buffer's words are neither.
+    // the connection: the read buffer's length is neither.
     let mut wrong = b.clone();
-    http(&mut wrong).stream = Some(http(&mut wrong).read_buf_len.clone());
+    http(&mut wrong).stream = Some(unrouted.clone());
     bad(&wrong, "HTTP connection stream has no route");
     let mut wrong = b.clone();
     http(&mut wrong).stream = Some(http(&mut wrong).is_closing.clone());
@@ -2411,26 +2411,6 @@ fn test_semantic_http_conn_binding_routes_every_word() {
     bad(&wrong, "sender is not reached through the callback");
     // The dispatch routes present are the role's own: both, or the
     // other role's, disagree.
-    // The read buffer's words: unsigned words, under the connection.
-    let mut wrong = b.clone();
-    http(&mut wrong).read_buf_len = http(&mut wrong).reading.clone();
-    bad(&wrong, "read buffer length is not an unsigned word");
-    let mut wrong = b.clone();
-    http(&mut wrong).read_buf_cap = http(&mut wrong).is_closing.clone();
-    bad(&wrong, "read buffer capacity is not an unsigned word");
-    // A word of the right width reached from the dispatch is not the
-    // connection's read buffer: the receiver's route, retyped to a word.
-    let mut wrong = b.clone();
-    wrong.types.types[client.rx.target.0 as usize] = TypeDef::Base {
-        name: StrRef(0),
-        size: 8,
-        encoding: Encoding::Unsigned,
-    };
-    http(&mut wrong).read_buf_len = client.rx.clone();
-    bad(
-        &wrong,
-        "read buffer length is not reached through the connection",
-    );
     // The server's handler option is reached through the dispatch —
     // here the client's callback stands in for it, an enum under
     // `dispatch` as the handler's option is.
@@ -2493,7 +2473,7 @@ fn test_semantic_http_conn_binding_routes_every_word() {
         .server
         .as_mut()
         .unwrap()
-        .header_read_timeout_secs = http(&mut wrong).read_buf_len.clone();
+        .header_read_timeout_secs = unrouted.clone();
     bad(
         &wrong,
         "header-read timeout seconds is not selected from the state",
@@ -4124,8 +4104,6 @@ fn tls_session() -> Bundle {
         sent_fatal_alert: flag(fatal),
         read_seq: word(read_seq),
         write_seq: word(write_seq),
-        deframer_used: word(read_seq),
-        deframer_len: word(write_seq),
         sendable: SendableBinding {
             prefix_used: word(read_seq),
             head: word(read_seq),

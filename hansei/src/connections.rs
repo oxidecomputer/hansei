@@ -6,8 +6,8 @@
 //! apiece, read from what the wait analysis and the census observed —
 //! an HTTP connection's resource, with the verdict's words and the facts
 //! beside them (the peer, the accepting server, the task that sent a
-//! client's request, the read buffer, an armed timer's deadline and how
-//! long an idle server has waited), and every other socket a pending
+//! client's request, an armed timer's deadline and how long an idle
+//! server has waited), and every other socket a pending
 //! read or write reaches through its stream's route, with the TLS
 //! connection the route crossed where it crossed one — which the task
 //! block does not have room to say.
@@ -63,11 +63,6 @@ pub(crate) struct ConnRow {
     /// How long an idle server connection has waited for the next
     /// request head, where its header-read timer says.
     pub(crate) idle_for: Option<Duration>,
-    /// The read buffer's fill and capacity: hyper's, or the TLS
-    /// connection's deframer — bytes read off the socket and not yet
-    /// parsed either way. A buffered stream on the way keeps its own,
-    /// which this is not.
-    pub(crate) read_buf: Option<(u64, u64)>,
     /// The bytes of records the TLS connection holds written and not
     /// yet sent to its socket, where the row crossed a connection whose
     /// words read: what a flush would send, and a peer waiting on them
@@ -201,11 +196,6 @@ impl ConnRow {
         })
     }
 
-    /// The `BUF` cell: bytes read and not yet parsed over the capacity.
-    fn buffer_cell(&self) -> Option<String> {
-        self.read_buf.map(|(len, cap)| format!("{len}/{cap}"))
-    }
-
     /// The `SENDQ` cell: the TLS connection's bytes written and not yet
     /// sent, as netstat's `Send-Q` counts a socket's.
     fn sendq_cell(&self) -> Option<String> {
@@ -301,7 +291,6 @@ fn row_of<T: proc::Target>(
         peer: None,
         server: None,
         idle_for: None,
-        read_buf: None,
         unsent: None,
         deadline: None,
         request: None,
@@ -527,7 +516,6 @@ fn conn_row(
             peer: None,
             server: None,
             idle_for: None,
-            read_buf: None,
             unsent: None,
             deadline: None,
             request: None,
@@ -606,7 +594,6 @@ fn conn_row(
                 peer,
                 server: server.and_then(|server| server.context.clone()),
                 idle_for,
-                read_buf: http.read_buf,
                 unsent: http.tls().and_then(|tls| tls.ok()).map(|tls| tls.unsent.1),
                 deadline,
                 request,
@@ -644,7 +631,6 @@ fn conn_row(
                     None => Some(RowPhase::Open),
                 },
                 peer: io.peer.as_ref().and_then(|peer| peer.clone().ok()),
-                read_buf: reading.map(|reading| reading.deframer),
                 unsent: reading.map(|reading| reading.unsent.1),
                 ..base
             })
@@ -704,7 +690,6 @@ fn row_cells(row: &ConnRow) -> Vec<String> {
         row.role_word().map_or_else(dash, str::to_string),
         row.phase_cell().unwrap_or_else(dash),
         row.deadline_cell().unwrap_or_else(dash),
-        row.buffer_cell().unwrap_or_else(dash),
         row.sendq_cell().unwrap_or_else(dash),
         row.peer.clone().unwrap_or_else(dash),
         row.server.clone().unwrap_or_else(dash),
@@ -717,8 +702,8 @@ fn row_cells(row: &ConnRow) -> Vec<String> {
 /// task driving it so the two read as who asked and who carries it,
 /// the request last since a URL is the one cell that runs wide, its
 /// method just before it so the two read as the request line, and the
-/// count under it. The deadline follows the phase it times, the buffer
-/// the deadline, and what is queued to send the buffer read. The
+/// count under it. The deadline follows the phase it times, and what
+/// is queued to send the deadline. The
 /// runtime is the task's to say, under `tasks`: a target seldom holds
 /// more than one, so the column would repeat one value down the page.
 fn print_table(
@@ -730,7 +715,7 @@ fn print_table(
 ) -> Result<()> {
     let shown = limit.unwrap_or(rows.len()).min(rows.len());
     let header = [
-        "TASK", "CALLER", "PROTO", "ROLE", "PHASE", "DEADLINE", "BUF", "SENDQ", "PEER", "SERVER",
+        "TASK", "CALLER", "PROTO", "ROLE", "PHASE", "DEADLINE", "SENDQ", "PEER", "SERVER",
         "METHOD", "REQUEST",
     ];
     let columns = header.len();
@@ -781,14 +766,12 @@ pub(crate) enum Field {
     Caller,
     /// The request behind the connection, as printed.
     Request,
-    /// The bytes read and not yet parsed — compared.
-    Buffered,
     /// The TLS connection's bytes written and not yet sent — compared.
     Sendq,
 }
 
 impl Field {
-    const NAMES: [(&'static str, Field); 12] = [
+    const NAMES: [(&'static str, Field); 11] = [
         ("task", Field::Task),
         ("rt", Field::Rt),
         ("proto", Field::Proto),
@@ -799,7 +782,6 @@ impl Field {
         ("server", Field::Server),
         ("caller", Field::Caller),
         ("request", Field::Request),
-        ("buffered", Field::Buffered),
         ("sendq", Field::Sendq),
     ];
 
@@ -856,14 +838,13 @@ impl Field {
             Field::Server => row.server.clone(),
             Field::Caller => row.caller.clone(),
             Field::Request => row.request_text().map(str::to_string),
-            Field::Buffered | Field::Sendq => self.count(row).map(|n| n.to_string()),
+            Field::Sendq => self.count(row).map(|n| n.to_string()),
         }
     }
 
     /// The count a compared field holds for a row.
     fn count(self, row: &ConnRow) -> Option<u64> {
         match self {
-            Field::Buffered => row.read_buf.map(|(len, _)| len),
             Field::Sendq => row.unsent,
             _ => None,
         }
@@ -873,7 +854,7 @@ impl Field {
     /// the count the argument compares against.
     fn values(self, rows: &[ConnRow]) -> Option<Vec<String>> {
         match self {
-            Field::Buffered | Field::Sendq => None,
+            Field::Sendq => None,
             _ => Some(distinct_values(rows.iter().map(|row| self.text(row)))),
         }
     }
@@ -936,7 +917,7 @@ fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
     Ok(match field {
         Field::Task | Field::Caller => Matcher::Exact(arg.to_string()),
         Field::Rt => Matcher::Exact(crate::tasks::resolve_rt(arg, handles)?.cell()),
-        Field::Buffered | Field::Sendq => Matcher::Cmp(Cmp::parse(arg)?),
+        Field::Sendq => Matcher::Cmp(Cmp::parse(arg)?),
         _ => Matcher::Pattern(crate::pattern::Pattern::new(arg)?),
     })
 }
@@ -1074,7 +1055,6 @@ mod tests {
             peer: Some("[fd00::25]:57400".to_string()),
             server: None,
             idle_for: None,
-            read_buf: Some((12, 8192)),
             unsent: None,
             deadline: None,
             request: None,
@@ -1104,7 +1084,6 @@ mod tests {
             ConnRow {
                 method: None,
                 peer: None,
-                read_buf: None,
                 ..row(0x30, HttpRole::Server, Some(HttpPhase::Negotiating))
             },
             // A task and an owner whose spellings contain the others':
@@ -1138,10 +1117,8 @@ mod tests {
         assert_eq!(select(&["caller", "7"]), []);
         assert_eq!(select(&["rt", "0"]), [0x10, 0x20, 0x30]);
         assert_eq!(select(&["rt", "10"]), [0x40]);
-        assert_eq!(select(&["buffered", ">0"]), [0x10, 0x20, 0x40]);
-        assert_eq!(select(&["buffered", "=0"]), []);
-        // What a TLS connection holds unsent compares the same way; a
-        // row that crossed none has nothing to compare.
+        // What a TLS connection holds unsent is compared; a row that
+        // crossed none has nothing to compare.
         assert_eq!(select(&["sendq", ">0"]), [0x10]);
         assert_eq!(select(&["sendq", "=0"]), [0x20]);
         assert_eq!(select(&["sendq", "<81"]), [0x10, 0x20]);
@@ -1169,7 +1146,7 @@ mod tests {
         // either.
         assert!(refused(&["addr", "0x20"]).contains("no field \"addr\""));
         assert!(refused(&["version", "http1"]).contains("no field \"version\""));
-        assert!(refused(&["buffered", "many"]).contains("'>N', '<N' or '=N'"));
+        assert!(refused(&["sendq", "many"]).contains("'>N', '<N' or '=N'"));
     }
 
     fn line(method: Option<&str>, text: Option<&str>) -> RequestLine {
@@ -1180,10 +1157,9 @@ mod tests {
     }
 
     /// The cells print the row: a dash where a column is empty, the
-    /// buffer as fill over capacity, the bytes queued to send beside
-    /// it, the deadline without the word its header says, the method
-    /// beside the request's text and not in it; no address, owner or
-    /// version.
+    /// deadline without the word its header says, the bytes queued to
+    /// send beside it, the method beside the request's text and not in
+    /// it; no address, owner or version.
     #[test]
     fn test_cells_print_the_row() {
         let full = ConnRow {
@@ -1201,7 +1177,6 @@ mod tests {
                 "client",
                 "awaiting response",
                 "—",
-                "12/8192",
                 "80",
                 "[fd00::25]:57400",
                 "—",
@@ -1222,12 +1197,11 @@ mod tests {
                 request: Some(request),
                 ..full.clone()
             };
-            assert_eq!(row_cells(&at)[10..], cells);
+            assert_eq!(row_cells(&at)[9..], cells);
         }
         let bare = ConnRow {
             method: None,
             peer: None,
-            read_buf: None,
             deadline: Some("deadline +29.981s".to_string()),
             server: Some("app::Context".to_string()),
             ..row(0x30, HttpRole::Server, None)
@@ -1241,7 +1215,6 @@ mod tests {
                 "server",
                 "—",
                 "+29.981s",
-                "—",
                 "—",
                 "—",
                 "app::Context",
@@ -1333,7 +1306,6 @@ mod tests {
             writing: HttpWriting::Init,
             method: None,
             is_closing: false,
-            read_buf: Some((0, 8192)),
             client: None,
             server: Some(HttpServerObservation {
                 in_flight: false,
@@ -1349,7 +1321,7 @@ mod tests {
     }
 
     /// The facts beside the verdict reach the row: the peer, the
-    /// server's context, the buffer, and the deadline of the held timer
+    /// server's context, and the deadline of the held timer
     /// — only while the header-read timer is armed — with the wait an
     /// idle server's timer says beside it. A negotiating wrapper is a
     /// row at its own address with no words; any other observation is
@@ -1365,7 +1337,6 @@ mod tests {
             peer: Some("SENTINEL".to_string()),
             server: Some("SENTINEL".to_string()),
             idle_for: Some(Duration::from_secs(7)),
-            read_buf: Some((1, 1)),
             deadline: Some("SENTINEL".to_string()),
             request: Some(line(Some("SENTINEL"), Some("SENTINEL"))),
             caller: Some("SENTINEL".to_string()),
@@ -1408,7 +1379,6 @@ mod tests {
         assert_eq!(armed.peer.as_deref(), Some("[fd00::25]:57400"));
         assert_eq!(armed.server.as_deref(), Some("app::Context"));
         assert_eq!(armed.idle_for, Some(Duration::from_millis(19)));
-        assert_eq!(armed.read_buf, Some((0, 8192)));
         assert_eq!(armed.deadline.as_deref(), Some("deadline +29.981s"));
         assert_eq!(armed.request, None);
         // A server has no caller: its request is the handler's.
@@ -1478,7 +1448,6 @@ mod tests {
                 sent_fatal_alert: false,
                 read_seq: 1,
                 write_seq: 1,
-                deframer: (0, 4096),
                 unsent: (0, 0),
                 stream_state: "Stream".to_string(),
             };
@@ -1505,7 +1474,7 @@ mod tests {
             let unrouted = fill(over(Some(Err("x".into()))), held, stopped);
             assert_eq!((unrouted.addr, unrouted.proto), (0x7b78948, Proto::Http1));
             // The HTTP row's own words are the listing's, TLS or not.
-            assert_eq!(secure.read_buf, plain.read_buf);
+            assert_eq!(secure.phase, plain.phase);
             assert_eq!(row_cells(&secure)[2], "http1/tls");
         }
         // A client between exchanges has no caller and no request; one
@@ -1557,7 +1526,6 @@ mod tests {
         assert_eq!(negotiating.peer, None);
         assert_eq!(negotiating.server, None);
         assert_eq!(negotiating.idle_for, None);
-        assert_eq!(negotiating.read_buf, None);
         assert_eq!(negotiating.deadline, None);
         assert_eq!(negotiating.request, None);
         assert_eq!(negotiating.caller, None);
@@ -1582,7 +1550,7 @@ mod tests {
 
     /// A read or write whose route ended at a socket is that socket's
     /// row, keyed by its registration: a TLS connection's side, verdict,
-    /// deframer and peer where the route crossed one, a bare socket
+    /// unsent bytes and peer where the route crossed one, a bare socket
     /// open and saying nothing else; a readiness await is no row.
     #[test]
     fn test_a_socket_read_through_its_stream_is_a_row() {
@@ -1601,8 +1569,7 @@ mod tests {
             sent_fatal_alert: false,
             read_seq: 4,
             write_seq: 3,
-            deframer: (5, 4096),
-            unsent: (0, 0),
+            unsent: (2, 160),
             stream_state: "Stream".to_string(),
         };
         let io = |socket, tls, peer| {
@@ -1646,13 +1613,20 @@ mod tests {
             sprockets.phase,
             Some(RowPhase::Tls(TlsVerdict::Established))
         );
-        assert_eq!(sprockets.read_buf, Some((5, 4096)));
+        assert_eq!(sprockets.unsent, Some(160));
         assert_eq!(sprockets.peer.as_deref(), Some("PDV2:913-0000023"));
         assert_eq!(sprockets.method, Some("GET".to_string()), "the base's");
         assert_eq!(sprockets.label(), "server task 7");
         assert_eq!(
-            row_cells(&sprockets)[2..7],
-            ["tls", "server", "established", "—", "5/4096"]
+            row_cells(&sprockets)[2..8],
+            [
+                "tls",
+                "server",
+                "established",
+                "—",
+                "160",
+                "PDV2:913-0000023"
+            ]
         );
         // Words that did not read: still TLS, with nothing to say.
         let unread = fill(io(
@@ -1662,20 +1636,14 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(
-            (unread.proto, unread.role, unread.phase, unread.read_buf),
+            (unread.proto, unread.role, unread.phase, unread.unsent),
             (Proto::Tls, None, None, None)
         );
         assert_eq!(unread.peer, None);
         // A bare socket: its kind, open, and nothing else of its own.
         let tcp = fill(io(Some(IoSocket::TcpStream), None, None)).unwrap();
         assert_eq!(
-            (
-                tcp.proto,
-                tcp.role,
-                tcp.phase,
-                tcp.read_buf,
-                tcp.peer.clone()
-            ),
+            (tcp.proto, tcp.role, tcp.phase, tcp.unsent, tcp.peer.clone()),
             (Proto::Tcp, None, Some(RowPhase::Open), None, None)
         );
         assert_eq!(tcp.label(), "tcp task 7");
@@ -2088,7 +2056,7 @@ mod tests {
             field_values(&session, "method"),
             Some((vec!["GET".to_string()], true))
         );
-        assert_eq!(field_values(&session, "buffered"), None);
+        assert_eq!(field_values(&session, "sendq"), None);
         assert_eq!(field_values(&session, "colour"), None);
     }
 
@@ -2101,13 +2069,12 @@ mod tests {
         assert_eq!(Field::Proto.values(&rows).unwrap(), ["http1"]);
         assert_eq!(Field::Role.values(&rows).unwrap(), ["client", "server"]);
         assert_eq!(Field::Phase.values(&rows).unwrap(), ["idle"]);
-        assert_eq!(Field::Buffered.values(&rows), None);
         assert_eq!(Field::Sendq.values(&rows), None);
         assert!(Field::Peer.is_pattern());
         assert!(!Field::Task.is_pattern());
         assert!(!Field::Caller.is_pattern());
         let names: Vec<&str> = Field::names().collect();
-        assert_eq!(names.len(), 12);
+        assert_eq!(names.len(), 11);
         for name in names {
             assert_eq!(Field::parse(name).unwrap().name(), name);
         }

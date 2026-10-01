@@ -715,8 +715,8 @@ pub enum Command {
     /// header-read timer and the core's stop time say — the method in
     /// flight, the peer where the server's service keeps one (a
     /// dropshot server's does; hyper itself keeps none on either side),
-    /// the read buffer's fill over its capacity, the header-read
-    /// timer's deadline where the server has armed one, the context
+    /// the header-read timer's deadline where the server has armed
+    /// one, the context
     /// type of the server that accepted the connection where its
     /// service names one (a dropshot server's does), and the request
     /// behind the connection — what the handler is running for, or
@@ -731,10 +731,9 @@ pub enum Command {
     /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
     /// tallies the survivors. The string fields — proto, role, phase,
     /// method, peer, server, request — are case-insensitive regexes over the
-    /// printed value; task, caller and rt are exact; buffered compares
-    /// the bytes read and not yet parsed, and sendq a TLS connection's
-    /// bytes written and not yet sent, written '>N', '<N' or '=N'
-    /// (quote them from a shell).
+    /// printed value; task, caller and rt are exact; sendq compares a
+    /// TLS connection's bytes written and not yet sent, written '>N',
+    /// '<N' or '=N' (quote them from a shell).
     Connections {
         /// Show at most this many connections — or, under --group,
         /// this many buckets; a footer counts what the cut left out.
@@ -746,7 +745,7 @@ pub enum Command {
         /// Keep only the connections whose FIELD matches ARG; repeat
         /// for more clauses, which AND. Fields: proto, role, phase, method,
         /// peer, server, request (case-insensitive regexes); task,
-        /// caller, rt (exact); buffered, sendq ('>N', '<N', '=N'). ARG may list
+        /// caller, rt (exact); sendq ('>N', '<N', '=N'). ARG may list
         /// alternatives, `idle,closing`, of which any matches; a
         /// literal comma is `\,`.
         #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]
