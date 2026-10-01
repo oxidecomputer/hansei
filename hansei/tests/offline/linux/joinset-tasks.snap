@@ -2,11 +2,11 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux/joinset"
 ---
-ID  STATE  FUT  AWAITING AT            WAITING ON                                           TYPE
-3   idle     0  src/bin/joinset.rs:83  mpsc rx, tokio::util::idle_notified_set::ListsInner  async fn joinset::driver
-4   idle     0  src/bin/joinset.rs:34  notify rx                                            async fn joinset::member
-5   idle     0  src/bin/joinset.rs:34  notify rx                                            async fn joinset::member
-6   idle     0  src/bin/joinset.rs:34  notify rx                                            async fn joinset::member
-7   idle     0  src/bin/joinset.rs:34  notify rx                                            async fn joinset::member
-8   idle     0  src/bin/joinset.rs:34  notify rx                                            async fn joinset::member
+ID  STATE  FUT  AWAITING AT            WAITING ON                                  TYPE
+3   idle     0  src/bin/joinset.rs:83  tokio::util::idle_notified_set::ListsInner  async fn joinset::driver
+4   idle     0  src/bin/joinset.rs:34  notify rx                                   async fn joinset::member
+5   idle     0  src/bin/joinset.rs:34  notify rx                                   async fn joinset::member
+6   idle     0  src/bin/joinset.rs:34  notify rx                                   async fn joinset::member
+7   idle     0  src/bin/joinset.rs:34  notify rx                                   async fn joinset::member
+8   idle     0  src/bin/joinset.rs:34  notify rx                                   async fn joinset::member
 [6 tasks]

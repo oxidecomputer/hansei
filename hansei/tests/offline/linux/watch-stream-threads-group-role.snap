@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux/watch-stream"
 ---
 COUNT  ROLE             LWPS
-    2  worker           2857470, 2857471
-    1  entered runtime  2857468
+    2  worker           3392696, 3392697
+    1  entered runtime  3392694
 [2 groups]

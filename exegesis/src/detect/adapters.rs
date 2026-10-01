@@ -975,8 +975,15 @@ pub(crate) mod hyper_h1 {
     pub(crate) const IO: &str = "io";
     pub(crate) const SERVICE: &str = "service";
     /// dropshot's request handler: the member its server stores the
-    /// accepted socket's peer address in.
+    /// accepted socket's peer address in, and the `Arc` of the state
+    /// the server shares with every connection it accepted — through
+    /// `ArcInner`'s `data` — whose listening address and TLS acceptor
+    /// are the server's.
     pub(crate) const REMOTE_ADDR: &str = "remote_addr";
+    pub(crate) const SERVER: &str = "server";
+    pub(crate) const DATA: &str = "data";
+    pub(crate) const LOCAL_ADDR: &str = "local_addr";
+    pub(crate) const TLS_ACCEPTOR: &str = "tls_acceptor";
     /// hyper-util's version-choosing wrapper: its state member and
     /// the state's three variants.
     pub(crate) const READ_VERSION: &str = "ReadVersion";

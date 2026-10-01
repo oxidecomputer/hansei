@@ -2693,13 +2693,13 @@ pub(super) fn bind_semantics(
                         header_read_timeout_secs: server.header_read_timeout_secs,
                         header_read_timeout_nanos: server.header_read_timeout_nanos,
                         header_read_timer: server.header_read_timer,
-                        service: server
-                            .service
-                            .map(|(key, peer, context)| HttpServiceBinding {
-                                rule: rules.rule(&key, strings, library),
-                                peer,
-                                context,
-                            }),
+                        service: server.service.map(|service| HttpServiceBinding {
+                            rule: rules.rule(&service.key, strings, library),
+                            peer: service.peer,
+                            context: service.context,
+                            local_addr: service.local_addr,
+                            tls_acceptor: service.tls_acceptor,
+                        }),
                     }),
                 },
             )
@@ -3882,9 +3882,7 @@ struct HttpPlan {
     peer_declined: Option<Decline>,
 }
 
-/// The server dispatch's routes with the service's — the peer's route
-/// and the context type — under the key its rule is interned by once
-/// the plan is bound.
+/// The server dispatch's routes with the service's.
 #[derive(Clone, Debug)]
 struct HttpServerPlan {
     in_flight: TypedPath,
@@ -3892,7 +3890,19 @@ struct HttpServerPlan {
     header_read_timeout_secs: TypedPath,
     header_read_timeout_nanos: TypedPath,
     header_read_timer: TypedPath,
-    service: Option<(RuleKey, TypedPath, BundleTypeId)>,
+    service: Option<HttpServicePlan>,
+}
+
+/// What the service keeps — the peer's route, the context type, and
+/// the routes into the server's shared state where they bound — under
+/// the key its rule is interned by once the plan is bound.
+#[derive(Clone, Debug)]
+struct HttpServicePlan {
+    key: RuleKey,
+    peer: TypedPath,
+    context: BundleTypeId,
+    local_addr: Option<TypedPath>,
+    tls_acceptor: Option<TypedPath>,
 }
 
 /// Plan hyper's dispatcher as the connection resource: the origin first
@@ -4082,18 +4092,47 @@ fn plan_http(
             // peer or a context rather than without a verdict.
             let service = match &server.service {
                 Some(service) => match method_origin(&service.sources, &DROPSHOT_SERVER_V0_17_0) {
-                    Ok(origin) => Some((
-                        RuleKey::Delegation {
-                            kind: SemanticRuleKind::DropshotRequestHandler,
-                            origin,
-                        },
-                        route(
+                    Ok(origin) => {
+                        let peer = route(
                             strings,
                             &[(M, DISPATCH), (M, SERVICE), (M, REMOTE_ADDR)],
                             service.peer,
-                        )?,
-                        service.context,
-                    )),
+                        )?;
+                        // The state every connection the server accepted
+                        // shares, behind the handler's `Arc`: where it
+                        // does not bind, the peer and the context stand
+                        // without it.
+                        let state = |field: &'static str| {
+                            hop_landing(
+                                types,
+                                strings,
+                                ty,
+                                &[
+                                    Hop::Member(DISPATCH),
+                                    Hop::Member(SERVICE),
+                                    Hop::Member(SERVER),
+                                    Hop::Member(PTR),
+                                    Hop::Member(POINTER),
+                                    Hop::Deref,
+                                    Hop::Member(DATA),
+                                    Hop::Member(field),
+                                ],
+                            )
+                            .ok()
+                        };
+                        Some(HttpServicePlan {
+                            key: RuleKey::Delegation {
+                                kind: SemanticRuleKind::DropshotRequestHandler,
+                                origin,
+                            },
+                            peer,
+                            context: service.context,
+                            local_addr: landing_on(state(LOCAL_ADDR), service.peer),
+                            tls_acceptor: state(TLS_ACCEPTOR).filter(|path| {
+                                matches!(types.get(path.target), Some(TypeDef::Enum { .. }))
+                            }),
+                        })
+                    }
                     Err(declined) => {
                         peer_declined = Some(declined);
                         None
@@ -4407,6 +4446,13 @@ enum Hop<'a> {
     Member(&'a str),
     Variant(&'a str),
     Deref,
+}
+
+/// A second address a layout keeps, where it lands on the type of the
+/// first: a server's listening address beside the peer it accepted. One
+/// that lands elsewhere is not the address the review read.
+fn landing_on(address: Option<TypedPath>, ty: BundleTypeId) -> Option<TypedPath> {
+    address.filter(|path| path.target == ty)
 }
 
 /// A route from `root` as a run of hops, each level checked in the final
@@ -7367,6 +7413,21 @@ mod tests {
             "{why}"
         );
         assert!(delegation_origin(&both, &DROPSHOT_SERVER_V0_17_0, "method").is_err());
+    }
+
+    /// A second address binds only where it lands on the first's type:
+    /// another type, or no address at all, binds nothing.
+    #[test]
+    fn test_a_second_address_lands_on_the_firsts_type() {
+        let at = |target| {
+            Some(TypedPath {
+                steps: Vec::new(),
+                target: BundleTypeId(target),
+            })
+        };
+        assert_eq!(landing_on(at(4), BundleTypeId(4)), at(4));
+        assert_eq!(landing_on(at(5), BundleTypeId(4)), None);
+        assert_eq!(landing_on(None, BundleTypeId(4)), None);
     }
 
     const REGISTRY: &str = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-0.1.40/src/instrument.rs";

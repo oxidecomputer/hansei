@@ -1338,7 +1338,10 @@ impl<'a> Check<'a> {
             )?;
             // The service: under its crate's own rule, the peer an
             // address enum reached through the dispatch, past the
-            // handler, and the context a type the table carries.
+            // handler, and the context a type the table carries. The
+            // server's state is past the handler too, behind the
+            // pointer it shares: the listening address the peer's
+            // type, the acceptor an enum.
             if let Some(service) = &server.service {
                 self.rule(service.rule, &[SemanticRuleKind::DropshotRequestHandler])?;
                 enumeration(&service.peer, "peer address")?;
@@ -1348,6 +1351,24 @@ impl<'a> Check<'a> {
                     "HTTP peer address is not reached through the dispatch",
                 )?;
                 self.ty(service.context)?;
+                let handler = &service.peer.steps[..2];
+                let shared = |path: &TypedPath, what: &str| -> Result<()> {
+                    enumeration(path, what)?;
+                    require(
+                        path.steps.starts_with(handler) && path.steps.contains(&Step::Deref),
+                        &format!("HTTP server {what} is not reached through the handler's state"),
+                    )
+                };
+                if let Some(local_addr) = &service.local_addr {
+                    shared(local_addr, "listening address")?;
+                    require(
+                        local_addr.target == service.peer.target,
+                        "HTTP server listening address is not the peer's address type",
+                    )?;
+                }
+                if let Some(tls_acceptor) = &service.tls_acceptor {
+                    shared(tls_acceptor, "TLS acceptor")?;
+                }
             }
         }
         Ok(())

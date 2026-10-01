@@ -3687,6 +3687,17 @@ impl<'b, T: Target> Context<'b, T> {
                 let context = service
                     .and_then(|service| self.view.ty(service.context))
                     .map(|ty| ty.name().to_string());
+                // The server's own state, which every connection it
+                // accepted shares: where it listens, and whether it
+                // serves TLS.
+                let local_addr = service
+                    .and_then(|service| service.local_addr.as_ref())
+                    .and_then(|path| word(path, "listening address").ok())
+                    .and_then(socket_addr_text);
+                let tls = service
+                    .and_then(|service| service.tls_acceptor.as_ref())
+                    .and_then(|path| word(path, "TLS acceptor").ok())
+                    .and_then(option_present);
                 Some(HttpServerObservation {
                     in_flight,
                     header_read_timer_running,
@@ -3694,6 +3705,8 @@ impl<'b, T: Target> Context<'b, T> {
                     header_read_timer,
                     peer,
                     context,
+                    local_addr,
+                    tls,
                     request,
                 })
             }

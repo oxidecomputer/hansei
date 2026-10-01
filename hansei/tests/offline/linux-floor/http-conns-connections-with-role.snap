@@ -4,7 +4,7 @@ description: "`connections --with role server --without phase negotiating` over 
 ---
 ADDR            TASK  CALLER  PROTO  ROLE    PHASE             DEADLINE                                     SENDQ  PEER  SERVER  METHOD  REQUEST
 0xADDR  5     —       http1  server  idle              TS on the target's monotonic clock  —      —     —       —       —
-0xADDR  9     —       http1  server  handling request  —                                            —      —     —       GET     /park
+0xADDR  8     —       http1  server  handling request  —                                            —      —     —       GET     /park
 0xADDR  11    —       http1  server  handling request  —                                            —      —     —       GET     /park
 0xADDR  15    —       http1  server  idle              TS on the target's monotonic clock  —      —     —       —       —
 [4 connections]

@@ -437,6 +437,15 @@ pub struct HttpServiceBinding {
     /// `C` of `DropshotState<C>`, whose `private` holds it — which is
     /// what tells one server of a program from another.
     pub context: BundleTypeId,
+    /// The address the server listens on, in the state the handler
+    /// shares with every connection the server accepted:
+    /// `dispatch.service.server.ptr.pointer.*.data.local_addr`, landing
+    /// on the `SocketAddr` enum. `None` where the state's layout did
+    /// not bind; the peer and the context stand without it.
+    pub local_addr: Option<TypedPath>,
+    /// The same state's `tls_acceptor`, an `Option` whose variant says
+    /// whether the server serves TLS. `None` as `local_addr` is.
+    pub tls_acceptor: Option<TypedPath>,
 }
 
 /// Where a request's method and target are stored in a value, under

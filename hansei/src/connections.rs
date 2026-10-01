@@ -1416,6 +1416,8 @@ mod tests {
                 header_read_timer: Some(0x100),
                 peer: Some("[fd00::25]:57400".to_string()),
                 context: Some("app::Context".to_string()),
+                local_addr: Some("[fd00::25]:12223".to_string()),
+                tls: Some(false),
                 request: None,
             }),
             stream: None,

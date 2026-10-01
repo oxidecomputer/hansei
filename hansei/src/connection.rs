@@ -356,6 +356,18 @@ fn print_http(
         if let Some(context) = &server.context {
             writeln!(out, "        server: {context}")?;
         }
+        // The accepting server's own state, which every connection it
+        // accepted shares.
+        let scheme = server.tls.map(|tls| match tls {
+            true => "https",
+            false => "http",
+        });
+        match (&server.local_addr, scheme) {
+            (Some(addr), Some(scheme)) => writeln!(out, "        listening: {addr} ({scheme})")?,
+            (Some(addr), None) => writeln!(out, "        listening: {addr}")?,
+            (None, Some(scheme)) => writeln!(out, "        listening: unread ({scheme})")?,
+            (None, None) => {}
+        }
         if let Some(peer) = &server.peer {
             peers.push(format!(
                 "{peer} (the accepted socket's, kept by the server's service)"

@@ -540,6 +540,11 @@ pub struct HttpServerObservation {
     /// The context type of the server the connection was accepted by,
     /// where the service is one a reviewed convention says names it.
     pub context: Option<String>,
+    /// The address that server listens on, as std writes it, where its
+    /// state bound and read.
+    pub local_addr: Option<String>,
+    /// Whether that server serves TLS: its state holds an acceptor.
+    pub tls: Option<bool>,
     /// The request the handler is running for, where a frame of the
     /// handler's chain holds a value a reviewed range keeps one in.
     pub request: Option<HttpRequestObservation>,

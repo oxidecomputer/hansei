@@ -2515,6 +2515,8 @@ fn test_semantic_http_conn_binding_routes_every_word() {
             rule,
             peer,
             context: secs.target,
+            local_addr: None,
+            tls_acceptor: None,
         })
     };
     let with_peer = |service| {
@@ -2558,6 +2560,67 @@ fn test_semantic_http_conn_binding_routes_every_word() {
     let mut service = peer(dropshot_rule, callback_enum.clone());
     service.as_mut().unwrap().context = BundleTypeId(b.types.types.len() as u32);
     bad(&with_peer(service), "invalid type id");
+    // The server's state is behind the pointer the handler shares: an
+    // address enum reached under the dispatch without crossing one is
+    // not the listening address, nor the acceptor; and an acceptor
+    // must be an enum.
+    let mut service = peer(dropshot_rule, callback_enum.clone());
+    service.as_mut().unwrap().local_addr = Some(callback_enum.clone());
+    bad(
+        &with_peer(service),
+        "listening address is not reached through the handler's state",
+    );
+    let mut service = peer(dropshot_rule, callback_enum.clone());
+    service.as_mut().unwrap().tls_acceptor = Some(callback_enum.clone());
+    bad(
+        &with_peer(service),
+        "TLS acceptor is not reached through the handler's state",
+    );
+    let mut service = peer(dropshot_rule, callback_enum.clone());
+    service.as_mut().unwrap().tls_acceptor = Some(http(&mut b.clone()).is_closing.clone());
+    bad(&with_peer(service), "TLS acceptor is not an enum");
+    // A listening address behind a pointer the handler holds, landing
+    // on the peer's own enum, binds; one landing on another enum is not
+    // the listening address.
+    let listening = |address: BundleTypeId| {
+        let mut service = peer(dropshot_rule, callback_enum.clone());
+        let mut conn = with_peer(None);
+        let state_t = BundleTypeId(conn.types.types.len() as u32);
+        let pointer_t = BundleTypeId(state_t.0 + 1);
+        conn.types.types.extend([
+            TypeDef::Struct {
+                name: FIELD,
+                size: 64,
+                members: vec![MemberDef {
+                    name: FIELD,
+                    ty: address,
+                    offset: 0,
+                }],
+            },
+            TypeDef::Pointer {
+                name: None,
+                target: state_t,
+            },
+        ]);
+        // The pointer the callback's sender holds, under the handler,
+        // stands in for the handler's state pointer.
+        let TypeDef::Struct { members, .. } = &mut conn.types.types[client.retry.target.0 as usize]
+        else {
+            unreachable!()
+        };
+        members[0].ty = pointer_t;
+        let inner = members[0].name;
+        let mut steps = client.retry.steps.clone();
+        steps.extend([named(inner), Step::Deref, named(FIELD)]);
+        service.as_mut().unwrap().local_addr = Some(path(steps, address));
+        http(&mut conn).server.as_mut().unwrap().service = service;
+        conn
+    };
+    listening(callback_enum.target).validate().unwrap();
+    bad(
+        &listening(http(&mut b.clone()).method.target),
+        "listening address is not the peer's address type",
+    );
     // The rule is hyper's, read off its own file.
     let mut wrong = b.clone();
     wrong.semantics.rules[1].kind = SemanticRuleKind::HyperUtilTokioSleep;

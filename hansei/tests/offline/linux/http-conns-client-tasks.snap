@@ -11,7 +11,6 @@ task 4
         via: mpsc rx 0xADDR (1 sender, 0 unread)
         io 0xADDR read
             waker: the read-waiter slot, awaiting readable, ready: writable
-        unknown @ 0xADDR
     spawned at: src/bin/http-conns.rs:75:9
     type defined at: src/bin/http-conns.rs:75
     held futures: 0

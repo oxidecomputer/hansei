@@ -8,6 +8,3 @@ a tokio::task::join_set::JoinSet<u32> (set 0xADDR): 3 members, driven by task 3 
 a tokio::task::join_set::JoinSet<u32> (set 0xADDR): 3 members, driven by task 3 (`kept`)
     Members (complete, awaiting join): task 9
     Members (idle): task 8, task 7
-
-mpsc 0xADDR: 5 senders, capacity 6, 0 unread
-    rx: task 3

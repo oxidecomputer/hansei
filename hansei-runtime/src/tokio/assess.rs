@@ -2435,6 +2435,8 @@ mod tests {
                 header_read_timer: None,
                 peer: Some("[fd00::25]:57400".to_owned()),
                 context: Some("app::Context".to_owned()),
+                local_addr: None,
+                tls: None,
                 request: None,
             }),
             stream: None,
@@ -2714,6 +2716,8 @@ mod tests {
             header_read_timer: None,
             peer: None,
             context: None,
+            local_addr: None,
+            tls: None,
             request: None,
         };
     }
