@@ -1,0 +1,25 @@
+# Weekly: hold omicron's dependencies and toolchain to what hansei was
+# reviewed against, and open an issue for each release outside that
+# no issue has named yet. See .github/scripts/review-drift.sh.
+name: review drift
+
+on:
+  schedule:
+    - cron: "23 14 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  omicron:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build hansei
+        run: cargo build --locked -p hansei
+      - name: Hold omicron to the reviews
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/review-drift.sh oxidecomputer/omicron
