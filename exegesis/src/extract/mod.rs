@@ -36,6 +36,7 @@ mod sweep;
 mod vtables;
 
 pub(crate) use emitter::Emitter;
+pub use semantics::{UnreviewedRelease, UnreviewedReleases};
 pub use sources::DebugFlavor;
 
 use self::paths::{
@@ -247,12 +248,16 @@ pub struct ExtractStats {
     /// some compiler convention, with each convention it outgrew: those
     /// bind nothing the compiler emitted.
     pub rustc_outgrown: Option<(String, Vec<&'static RustcConvention>)>,
+    /// The crate releases no review covers that some record names a
+    /// rule declining over, each with the families that declined.
+    pub unreviewed_releases: UnreviewedReleases,
 }
 
 impl ExtractStats {
     /// What the reviews could not vouch for, one sentence per subject:
-    /// the compiler conventions a newer rustc outgrew, by range. The
-    /// `--stats` form and the extract verb's warnings both say these.
+    /// the compiler conventions a newer rustc outgrew, by range, and
+    /// each crate release a rule declined over. The `--stats` form and
+    /// the extract verb's warnings both say these.
     pub fn review_warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some((version, outgrown)) = &self.rustc_outgrown {
@@ -270,6 +275,13 @@ impl ExtractStats {
                     conjoin(&families)
                 ));
             }
+        }
+        for (release, families) in &self.unreviewed_releases {
+            let families: Vec<&str> = families.iter().copied().collect();
+            out.push(format!(
+                "{release} of {}, whose rules decline over it",
+                conjoin(&families)
+            ));
         }
         out
     }
@@ -1648,7 +1660,9 @@ fn extract_from_view(
         impls,
         counts,
         semantics,
+        unreviewed,
     } = em.finish(&impl_selfs, seeds, &mut entries, &walks);
+    stats.unreviewed_releases = unreviewed;
     stats.types_emitted = types.types.len();
     stats.opaque_types = counts.opaque;
     stats.types_demoted_out_of_bounds = counts.demoted;

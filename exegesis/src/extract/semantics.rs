@@ -4599,6 +4599,157 @@ fn plan_table(
     })
 }
 
+/// A crate release some reviewed rule declined over because no review
+/// covers it: a registry release outside the reviewed range, or a git
+/// checkout at a revision the review did not read. Extraction warns of
+/// each one a record's issue names; the issue itself says which type
+/// the rule declined at.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum UnreviewedRelease {
+    Version {
+        package: &'static str,
+        version: semver::Version,
+        /// Whether the release is newer than the range, not older.
+        newer: bool,
+        range: String,
+    },
+    Revision {
+        package: &'static str,
+        revision: String,
+    },
+}
+
+impl UnreviewedRelease {
+    fn outside(
+        convention: &LibraryConvention,
+        version: &semver::Version,
+        side: LayoutSelection,
+    ) -> Self {
+        UnreviewedRelease::Version {
+            package: convention.package,
+            version: version.clone(),
+            newer: side != LayoutSelection::BelowFloor,
+            range: convention.range(),
+        }
+    }
+}
+
+impl std::fmt::Display for UnreviewedRelease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UnreviewedRelease::Version {
+                package,
+                version,
+                newer,
+                range,
+            } => {
+                let side = if *newer { "newer" } else { "older" };
+                write!(
+                    f,
+                    "{package} {version} is {side} than the reviewed range {range}"
+                )
+            }
+            UnreviewedRelease::Revision { package, revision } => {
+                write!(
+                    f,
+                    "{package} revision {revision} is not a reviewed revision"
+                )
+            }
+        }
+    }
+}
+
+/// Every unreviewed release a table's records name a rule declining
+/// over, with the families that declined.
+pub type UnreviewedReleases = BTreeMap<UnreviewedRelease, BTreeSet<&'static str>>;
+
+/// The releases the origin gates refuse while [`capture`](refusals::capture)
+/// runs.
+///
+/// The sink is thread-local rather than a reporter threaded through
+/// every planner, for the reason [`crate::detect::trace`]'s is: binding
+/// is single-threaded, and a parameter only the extraction's warning
+/// reads would spread across every plan's signature. Each refusal keeps
+/// the detail its decline carries, so the warning can keep only the
+/// refusals some record kept.
+mod refusals {
+    use super::UnreviewedRelease;
+
+    use std::cell::RefCell;
+
+    pub(super) struct Refusal {
+        pub(super) detail: String,
+        pub(super) family: &'static str,
+        pub(super) release: UnreviewedRelease,
+    }
+
+    thread_local! {
+        static SINK: RefCell<Option<Vec<Refusal>>> = const { RefCell::new(None) };
+    }
+
+    /// Add one refusal to those being collected, if any.
+    pub(super) fn note(refusal: Refusal) {
+        SINK.with_borrow_mut(|sink| {
+            if let Some(refusals) = sink {
+                refusals.push(refusal);
+            }
+        });
+    }
+
+    /// Run `f` with refusals collected, returning them alongside `f`'s
+    /// result.
+    pub(super) fn capture<T>(f: impl FnOnce() -> T) -> (T, Vec<Refusal>) {
+        SINK.with_borrow_mut(|sink| *sink = Some(Vec::new()));
+        let out = f();
+        let refused = SINK.with_borrow_mut(Option::take).unwrap_or_default();
+        (out, refused)
+    }
+}
+
+/// A gate's decline over a release no review covers, noted for the
+/// extraction's warning.
+fn refuse(family: &'static str, release: UnreviewedRelease, detail: String) -> Decline {
+    refusals::note(refusals::Refusal {
+        detail: detail.clone(),
+        family,
+        release,
+    });
+    (SemanticIssueKind::UnsupportedOrigin, detail)
+}
+
+/// [`bind_semantics`], with every unreviewed release the table names a
+/// rule declining over: one a gate refused whose decline some record
+/// keeps among its issues. A refusal no record keeps cost the bundle
+/// nothing, and is not reported.
+pub(super) fn bind_semantics_noting_releases(
+    seeds: SemanticSeeds,
+    types: &TypeTable,
+    names: &[Option<String>],
+    strings: &mut StringInterner,
+    tasks: &mut [TaskFutureEntry],
+    library: &Library<'_>,
+) -> (SemanticTable, UnreviewedReleases) {
+    let (table, refused) =
+        refusals::capture(|| bind_semantics(seeds, types, names, strings, tasks, library));
+    let recorded: BTreeSet<&str> = table
+        .types
+        .iter()
+        .flat_map(|record| &record.issues)
+        .filter(|issue| issue.kind == SemanticIssueKind::UnsupportedOrigin)
+        .filter_map(|issue| strings.get(issue.detail?))
+        .collect();
+    let mut releases = UnreviewedReleases::new();
+    for refusal in refused {
+        if recorded.contains(refusal.detail.as_str()) {
+            releases
+                .entry(refusal.release)
+                .or_default()
+                .insert(refusal.family);
+        }
+    }
+    (table, releases)
+}
+
 /// The release a layout rule's type was declared in — hashbrown's map,
 /// rustls's connection: a cargo registry release, or the one the
 /// toolchain vendors for std. A declaration in another crate — a trait
@@ -4650,20 +4801,23 @@ fn layout_release(
             ),
         }));
     };
-    if let Some(side) = releases.iter().find_map(|version| {
+    if let Some((version, side)) = releases.iter().find_map(|version| {
         library_convention(convention, version)
             .err()
             .map(|s| (version, s))
     }) {
-        let (version, side) = side;
-        let side = match side {
+        let word = match side {
             LayoutSelection::BelowFloor => "below",
             _ => "above",
         };
-        return Err(decline(format!(
-            "{package} {version} is {side} the reviewed range {}",
-            convention.range()
-        )));
+        return Err(refuse(
+            convention.family,
+            UnreviewedRelease::outside(convention, version, side),
+            format!(
+                "{package} {version} is {word} the reviewed range {}",
+                convention.range()
+            ),
+        ));
     }
     Ok(newest.to_string())
 }
@@ -6347,16 +6501,20 @@ fn delegation_origin(
                     first.0, last.0
                 )));
             }
-            if let Some((_, outside)) = declared
+            if let Some((outside, side)) = declared
                 .iter()
-                .find(|(_, v)| library_convention(convention, v).is_err())
+                .find_map(|(_, v)| library_convention(convention, v).err().map(|s| (v, s)))
             {
-                return Err(decline(format!(
-                    "declared in both {} and {}, and {outside} is outside the reviewed range {}",
-                    first.0,
-                    last.0,
-                    convention.range()
-                )));
+                return Err(refuse(
+                    convention.family,
+                    UnreviewedRelease::outside(convention, outside, side),
+                    format!(
+                        "declared in both {} and {}, and {outside} is outside the reviewed range {}",
+                        first.0,
+                        last.0,
+                        convention.range()
+                    ),
+                ));
             }
             last.clone()
         }
@@ -6364,14 +6522,18 @@ fn delegation_origin(
     let convention = match library_convention(convention, &version) {
         Ok(convention) => convention,
         Err(side) => {
-            let side = match side {
+            let word = match side {
                 LayoutSelection::BelowFloor => "below",
                 _ => "above",
             };
-            return Err(decline(format!(
-                "{package} {version} is {side} the reviewed range {}",
-                convention.range()
-            )));
+            return Err(refuse(
+                convention.family,
+                UnreviewedRelease::outside(convention, &version, side),
+                format!(
+                    "{package} {version} is {word} the reviewed range {}",
+                    convention.range()
+                ),
+            ));
         }
     };
     files.sort();
@@ -6449,10 +6611,17 @@ fn git_delegation_origin(
     }
     let (source, repository, revision) = declared.expect("at least one source");
     let Some((_, reviewed)) = convention.reviewed_revision(&revision) else {
-        return Err(decline(format!(
-            "{} revision {revision} is not a reviewed revision of {}",
-            convention.repository, convention.family
-        )));
+        return Err(refuse(
+            convention.family,
+            UnreviewedRelease::Revision {
+                package: convention.package,
+                revision: revision.clone(),
+            },
+            format!(
+                "{} revision {revision} is not a reviewed revision of {}",
+                convention.repository, convention.family
+            ),
+        ));
     };
     files.sort();
     files.dedup();
@@ -9919,6 +10088,187 @@ mod tests {
         ));
         assert!(record.access.is_none());
         assert!(table.rules.is_empty());
+    }
+
+    /// An unreviewed release is reported where a record keeps the
+    /// decline it caused, and only there: a stream map tokio-stream
+    /// 0.1.20 declares records its container rule's decline, so the
+    /// release and its family are named; a rustls 0.24.0 session on an
+    /// opaque type is refused too, but nothing reads that type, no
+    /// record keeps the decline, and the release goes unreported.
+    #[test]
+    fn test_an_unreviewed_release_is_reported_where_a_record_keeps_its_decline() {
+        let mut strings = StringInterner::new();
+        let mut names = Vec::new();
+        let mut types = Vec::new();
+        let mut add = |name: &str, def: TypeDef| {
+            names.push(Some(name.to_owned()));
+            types.push(def);
+            BundleTypeId(types.len() as u32 - 1)
+        };
+        let map_name = "tokio_stream::stream_map::StreamMap<u8, u8>";
+        let map = add(
+            map_name,
+            TypeDef::Struct {
+                name: strings.intern(map_name),
+                size: 24,
+                members: Vec::new(),
+            },
+        );
+        let session_name = "rustls::conn::ConnectionCommon<u8>";
+        let session = add(
+            session_name,
+            TypeDef::Opaque {
+                name: strings.intern(session_name),
+                size: Some(8),
+            },
+        );
+        let types = TypeTable {
+            types,
+            ..Default::default()
+        };
+        let registry = |package: &str| {
+            source(
+                &format!(
+                    "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\
+                     {package}/src/lib.rs"
+                ),
+                None,
+            )
+        };
+        let mut seeds = SemanticSeeds::new();
+        seeds.insert(
+            map,
+            Seed {
+                container: Some(ContainerKind::StreamMap),
+                type_sources: BTreeSet::from([registry("tokio-stream-0.1.20")]),
+                ..Default::default()
+            },
+        );
+        seeds.insert(
+            session,
+            Seed {
+                tls_session: Some(BTreeSet::from([registry("rustls-0.24.0")])),
+                ..Default::default()
+            },
+        );
+        let library = Library {
+            walks: &WalksTable::default(),
+            tokio_version: None,
+            family: Family::select(None),
+        };
+        let (table, releases) =
+            bind_semantics_noting_releases(seeds, &types, &names, &mut strings, &mut [], &library);
+        let record = table.types.iter().find(|r| r.ty == map).unwrap();
+        let [issue] = record.issues.as_slice() else {
+            panic!("one issue: {:?}", record.issues)
+        };
+        assert_eq!(
+            strings.get(issue.detail.unwrap()),
+            Some("tokio-stream 0.1.20 is above the reviewed range 0.1.14–0.1.19")
+        );
+        let reported: Vec<(String, Vec<&str>)> = releases
+            .iter()
+            .map(|(release, families)| (release.to_string(), families.iter().copied().collect()))
+            .collect();
+        assert_eq!(
+            reported,
+            [(
+                "tokio-stream 0.1.20 is newer than the reviewed range 0.1.14–0.1.19".to_owned(),
+                vec![TOKIO_STREAM_MAP_V0_1_14.family]
+            )]
+        );
+    }
+
+    /// Each origin gate notes the release it refuses, saying which side
+    /// of the range a version falls on or which revision is unread, and
+    /// notes nothing for a release it binds or a decline that names no
+    /// release; nothing is noted outside a capture.
+    #[test]
+    fn test_the_origin_gates_note_each_refused_release() {
+        let at = |path: &str| BTreeSet::from([source(path, None)]);
+        let registry = |dir: &str, file: &str| {
+            at(&format!(
+                "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/{dir}/{file}"
+            ))
+        };
+        let refused = |gate: &dyn Fn() -> bool| {
+            let (declined, refusals) = refusals::capture(gate);
+            assert!(declined, "the gate declines");
+            refusals
+                .into_iter()
+                .map(|r| (r.family, r.release.to_string()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            refused(&|| layout_release(
+                &registry("rustls-0.23.22", "src/conn.rs"),
+                &RUSTLS_SESSION_V0_23_23
+            )
+            .is_err()),
+            [(
+                RUSTLS_SESSION_V0_23_23.family,
+                "rustls 0.23.22 is older than the reviewed range 0.23.23–0.23.45".to_owned()
+            )]
+        );
+        assert_eq!(
+            refused(&|| delegation_origin(
+                &registry("tracing-0.1.45", "src/instrument.rs"),
+                &TRACING_INSTRUMENTED_V0_1_40,
+                "poll"
+            )
+            .is_err()),
+            [(
+                TRACING_INSTRUMENTED_V0_1_40.family,
+                "tracing 0.1.45 is newer than the reviewed range 0.1.40–0.1.44".to_owned()
+            )]
+        );
+        let mut both = registry("parking_lot-0.11.2", "src/raw_mutex.rs");
+        both.extend(registry("parking_lot-0.12.5", "src/raw_mutex.rs"));
+        assert_eq!(
+            refused(
+                &|| delegation_origin(&both, &PARKING_LOT_RAW_MUTEX_V0_12_1, "method").is_err()
+            ),
+            [(
+                PARKING_LOT_RAW_MUTEX_V0_12_1.family,
+                "parking_lot 0.11.2 is older than the reviewed range 0.12.1–0.12.5".to_owned()
+            )]
+        );
+        assert_eq!(
+            refused(&|| git_delegation_origin(
+                &at(
+                    "/home/u/.cargo/git/checkouts/sprockets-882d17aeeb0cb343/0123abc/tls/src/lib.rs"
+                ),
+                &SPROCKETS_TLS_STREAM_D2B68E4,
+                "method"
+            )
+            .is_err()),
+            [(
+                SPROCKETS_TLS_STREAM_D2B68E4.family,
+                "sprockets-tls revision 0123abc is not a reviewed revision".to_owned()
+            )]
+        );
+        // A decline that names no release notes nothing, and neither
+        // does a release that binds.
+        assert!(
+            refused(&|| layout_release(&BTreeSet::new(), &RUSTLS_SESSION_V0_23_23).is_err())
+                .is_empty()
+        );
+        let (bound, refusals) = refusals::capture(|| {
+            layout_release(
+                &registry("rustls-0.23.41", "src/conn.rs"),
+                &RUSTLS_SESSION_V0_23_23,
+            )
+        });
+        assert_eq!(bound.unwrap(), "0.23.41");
+        assert!(refusals.is_empty());
+        // Outside a capture a refusal is dropped, not kept for the next.
+        let _ = layout_release(
+            &registry("rustls-0.24.0", "src/conn.rs"),
+            &RUSTLS_SESSION_V0_23_23,
+        );
+        let ((), refusals) = refusals::capture(|| ());
+        assert!(refusals.is_empty());
     }
 
     /// A `Pin<Box<F>>` whose box's definitions name several `F`s is no

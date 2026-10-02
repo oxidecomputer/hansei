@@ -746,7 +746,7 @@ impl<'a> Emitter<'a> {
             tokio_version: self.tokio_version.as_ref(),
             family: self.family,
         };
-        let semantics = super::semantics::bind_semantics(
+        let (semantics, unreviewed) = super::semantics::bind_semantics_noting_releases(
             seeds,
             &types,
             &self.names,
@@ -796,6 +796,7 @@ impl<'a> Emitter<'a> {
             impls,
             counts,
             semantics,
+            unreviewed,
         }
     }
 }
@@ -806,6 +807,9 @@ pub(super) struct Finished {
     pub(super) impls: ImplTable,
     pub(super) counts: Emitted,
     pub(super) semantics: crate::bundle::SemanticTable,
+    /// The unreviewed crate releases the semantic table's records name
+    /// a rule declining over.
+    pub(super) unreviewed: super::semantics::UnreviewedReleases,
 }
 
 /// What the closing passes over the emitted table found.

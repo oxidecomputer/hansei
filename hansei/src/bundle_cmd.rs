@@ -750,24 +750,65 @@ mod tests {
 
     /// What the reviews could not vouch for is said once per subject:
     /// one sentence for every compiler convention a newer rustc outgrew
-    /// over one range, naming each of them.
+    /// over one range, naming each of them, and one per unreviewed
+    /// crate release, naming every family that declined over it.
     #[test]
     fn test_warnings_name_what_the_reviews_do_not_cover() {
-        use exegesis::detect::semantics::{RUSTC_COROUTINE_V1_97, RUSTC_STD_ADAPTERS_V1_97};
+        use exegesis::detect::semantics::{
+            RUSTC_COROUTINE_V1_97, RUSTC_STD_ADAPTERS_V1_97, RUSTLS_SESSION_V0_23_23,
+            SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_RUSTLS_HANDSHAKE_V0_26_0,
+            TOKIO_RUSTLS_STREAM_V0_26_0,
+        };
+        use exegesis::extract::{UnreviewedRelease, UnreviewedReleases};
 
+        let tokio_rustls = UnreviewedRelease::Version {
+            package: "tokio-rustls",
+            version: semver::Version::new(0, 27, 0),
+            newer: true,
+            range: "0.26.0–0.26.6".to_owned(),
+        };
+        let rustls = UnreviewedRelease::Version {
+            package: "rustls",
+            version: semver::Version::new(0, 23, 22),
+            newer: false,
+            range: "0.23.23–0.23.45".to_owned(),
+        };
+        let sprockets = UnreviewedRelease::Revision {
+            package: "sprockets-tls",
+            revision: "0123abc".to_owned(),
+        };
         let stats = ExtractStats {
             rustc_outgrown: Some((
                 "1.99.0".to_owned(),
                 vec![&RUSTC_COROUTINE_V1_97, &RUSTC_STD_ADAPTERS_V1_97],
             )),
+            unreviewed_releases: UnreviewedReleases::from([
+                (
+                    tokio_rustls,
+                    [
+                        TOKIO_RUSTLS_STREAM_V0_26_0.family,
+                        TOKIO_RUSTLS_HANDSHAKE_V0_26_0.family,
+                    ]
+                    .into(),
+                ),
+                (rustls, [RUSTLS_SESSION_V0_23_23.family].into()),
+                (sprockets, [SPROCKETS_TLS_STREAM_D2B68E4.family].into()),
+            ]),
             ..Default::default()
         };
         assert_eq!(
             warnings(&stats),
             [
                 "warning: rustc 1.99.0 is newer than the reviewed range 1.97–1.98 of \
-              rustc-coroutine-1.97 and rustc-std-adapters-1.97, whose rules decline \
-              over it"
+                 rustc-coroutine-1.97 and rustc-std-adapters-1.97, whose rules decline \
+                 over it",
+                "warning: rustls 0.23.22 is older than the reviewed range 0.23.23–0.23.45 \
+                 of rustls-session-0.23.23, whose rules decline over it",
+                "warning: tokio-rustls 0.27.0 is newer than the reviewed range \
+                 0.26.0–0.26.6 of tokio-rustls-handshake-0.26.0 and \
+                 tokio-rustls-stream-0.26.0, whose rules decline over it",
+                "warning: sprockets-tls revision 0123abc is not a reviewed revision of \
+                 sprockets-tls-stream-d2b68e4, whose rules decline over it",
             ]
         );
     }
