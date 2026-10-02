@@ -107,6 +107,15 @@ pub struct Meta {
     /// point of use instead of only in `--explain-format`. `None` only
     /// in hand-built bundles.
     pub newest_family: Option<FamilyCeiling>,
+    /// What no extraction rule supports, one sentence each, as
+    /// extraction said them: a version outside a supported range, a
+    /// tokio version it had to guess at. The extract verb refuses to
+    /// write a bundle with any unless told to proceed
+    /// (`--allow-unsupported`), so a non-empty list is one written over
+    /// that refusal, and a session over it says so at attach. Sentences
+    /// rather than structure: the reviews they name live in exegesis,
+    /// which the read side never depends on, and it only prints them.
+    pub unsupported: Vec<String>,
 }
 
 /// The extractor's newest known tokio family: the tag `--explain-format`

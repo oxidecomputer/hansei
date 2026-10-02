@@ -5,9 +5,9 @@ description: "`census` over linux/tls-conns"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        1610796
-    1  0   worker           parked           1610795
-    1  0   entered runtime  block_on caller  1610793
+    1  0   worker           in driver        2093760
+    1  0   worker           parked           2093759
+    1  0   entered runtime  block_on caller  2093757
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 

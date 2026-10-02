@@ -3,13 +3,13 @@ source: hansei/src/offline.rs
 description: "`connections` over linux/http-conns"
 ---
 ADDR            TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE                                     PEER             SERVER  METHOD  REQUEST
-0xADDR  4     —       http1  server  idle               TS on the target's monotonic clock  —                —       —       —
-0xADDR  5     —       http1  client  idle               —                                            —                —       —       —
+0xADDR  4     —       http1  client  idle               —                                            —                —       —       —
+0xADDR  5     —       http1  server  idle               TS on the target's monotonic clock  —                —       —       —
 0xADDR  8     —       http1  server  handling request   —                                            —                —       GET     /park
-0xADDR  9     7       http1  client  awaiting response  —                                            127.0.0.1:36803  —       GET     —
+0xADDR  9     7       http1  client  awaiting response  —                                            127.0.0.1:35949  —       GET     —
 0xADDR  11    —       http1  server  handling request   —                                            —                —       GET     /park
-0xADDR  12    10      http1  client  awaiting response  —                                            127.0.0.1:36803  —       GET     http://127.0.0.1:36803/park
+0xADDR  12    10      http1  client  awaiting response  —                                            127.0.0.1:35949  —       GET     http://127.0.0.1:35949/park
 0xADDR  13    —       http1  server  negotiating        —                                            —                —       —       —
 0xADDR  15    —       http1  server  idle               TS on the target's monotonic clock  —                —       —       —
-0xADDR  16    —       http1  client  idle               —                                            127.0.0.1:36803  —       —       —
+0xADDR  16    —       http1  client  idle               —                                            127.0.0.1:35949  —       —       —
 [9 connections]

@@ -21,14 +21,14 @@ lwp 1  polling no task  runtime 0 @ 0xADDR
     core:
       tokio::runtime::scheduler::current_thread::Core {
           tasks: [],
-          tick: 10,
+          tick: 9,
           driver: core::option::Option<tokio::runtime::driver::Driver> = None,
           metrics: tokio::runtime::metrics::batch::MetricsBatch {
-              busy_duration_total: 925559,
+              busy_duration_total: 1508988,
               processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant> { .. } @ 0xADDR,
-              park_count: 2,
-              park_unpark_count: 3,
-              noop_count: 1,
+              park_count: 1,
+              park_unpark_count: 1,
+              noop_count: 0,
               steal_count: 0,
               steal_operations: 0,
               poll_count: 7,

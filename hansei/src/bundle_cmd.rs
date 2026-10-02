@@ -136,16 +136,15 @@ fn load(path: &Path) -> Result<Bundle> {
 /// as a positional: a separate debug build is one file playing every
 /// role, never a sibling.
 ///
-/// The warnings come back as text for the caller to print when it
-/// suits; nothing here writes to stderr, because this runs on the
-/// thread overlapping the attach. A binary with parts no extraction
-/// rule supports is refused, as the extract verb refuses it, unless
-/// `allow_unsupported` says to attach anyway.
+/// A binary with parts no extraction rule supports is refused, as the
+/// extract verb refuses it, unless `allow_unsupported` says to attach
+/// anyway; the bundle then records what it was admitted over, for the
+/// session to warn of as it would over a tokio-info file.
 pub fn extract_for_session_with<R>(
     debug_info: &Path,
     binary: Option<&Path>,
     allow_unsupported: bool,
-    then: impl FnOnce(Bundle, Vec<String>, bool) -> R,
+    then: impl FnOnce(Bundle, bool) -> R,
 ) -> Result<R> {
     let flavor = classify_file(debug_info)
         .with_context(|| format!("failed to read {}", debug_info.display()))?;
@@ -168,20 +167,21 @@ pub fn extract_for_session_with<R>(
         &sources,
         &ExtractOptions::default(),
         ParsedDwarf::Free,
-        |bundle, stats| {
-            let warnings = admit(
-                stats.unsupported(),
+        |bundle, _| {
+            admit(
+                bundle.meta.unsupported.clone(),
                 allow_unsupported,
                 "refusing to attach",
                 "attach",
             )?;
-            Ok(then(bundle, warnings, flavor.is_split()))
+            Ok(then(bundle, flavor.is_split()))
         },
     )
     .with_context(|| format!("failed to extract from {}", debug_info.display()))?
 }
 
-/// The warnings to print over what [`ExtractStats::unsupported`] found when
+/// The warnings to print over what a bundle records no extraction rule
+/// supports ([`hansei_bundle::Meta::unsupported`]) when
 /// `--allow-unsupported` admits it, or the refusal naming all of it
 /// when nothing does. `refusing` says what is refused and `proceed`
 /// what the flag lets the operator do instead.
@@ -311,7 +311,7 @@ fn write_extracted(
 ) -> Result<()> {
     let refusing = format!("refusing to write {}", output.display());
     let admitted = admit(
-        stats.unsupported(),
+        bundle.meta.unsupported.clone(),
         allow_unsupported,
         &refusing,
         "write it",
@@ -398,6 +398,15 @@ fn stats(path: &Path) -> Result<()> {
     }
     println!("  extract args:    {}", m.extract_args);
     println!("  fingerprint:     {} symbols", m.symbol_fingerprint.len());
+    match m.unsupported.as_slice() {
+        [] => println!("  unsupported:     none"),
+        unsupported => {
+            println!("  unsupported:");
+            for s in unsupported {
+                println!("    {s}");
+            }
+        }
+    }
 
     let mut kinds = [
         ("base", 0usize),
@@ -797,23 +806,21 @@ mod tests {
 
     /// The verb writes nothing it refuses: an unsupported extraction
     /// fails naming the flag and leaves no file behind, and the flag
-    /// writes the same bundle out. Any checked-in bundle stands in for
-    /// the extraction's, since what is refused is the stats' doing.
+    /// writes the same bundle out, still recording what it was written
+    /// over. Any checked-in bundle stands in for the extraction's, with
+    /// that record added.
     #[test]
     fn test_extract_writes_nothing_it_refuses() {
         let tinfo = testkit::fixture(FIXTURE_SETS[0], &format!("{}.tinfo", PROGRAMS[0]));
-        let bundle = Bundle::load(&tinfo).expect("the fixture bundle should load");
-        let stats = || ExtractStats {
-            tokio_family_guessed: Some("v1_53".to_owned()),
-            ..Default::default()
-        };
+        let mut bundle = Bundle::load(&tinfo).expect("the fixture bundle should load");
+        bundle.meta.unsupported = vec!["parking_lot 0.11.2 is older".to_owned()];
         let dir = tempfile::tempdir().expect("tempdir");
         let output = dir.path().join("x.tinfo");
 
         let write = |allow_unsupported| {
             write_extracted(
                 bundle.clone(),
-                stats(),
+                ExtractStats::default(),
                 &output,
                 false,
                 allow_unsupported,

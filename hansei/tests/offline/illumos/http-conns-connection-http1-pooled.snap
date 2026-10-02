@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`connection 0x1c72390` over illumos/http-conns"
+description: "`connection 0x17ff390` over illumos/http-conns"
 ---
 connection 0xADDR
     proto: http1
@@ -18,8 +18,8 @@ connection 0xADDR
         registration: 0xADDR
         ready: writable
         waker: the reader slot, task 16
-        local address: 127.0.0.1:59706
-    peer: 127.0.0.1:39372
+        local address: 127.0.0.1:64393
+    peer: 127.0.0.1:58396
     route:
         0xADDR hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>
         0xADDR tokio::net::tcp::stream::TcpStream

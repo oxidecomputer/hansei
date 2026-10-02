@@ -309,6 +309,9 @@ fn random_bundle(seed: u64) -> Bundle {
                 major: 1,
                 minor: 53,
             }),
+            unsupported: (0..rng.below(3))
+                .map(|i| format!("crate-{i} 0.1.0 is older than the supported version range"))
+                .collect(),
         },
         strings: table,
         types: type_table,

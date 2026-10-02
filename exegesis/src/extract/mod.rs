@@ -1413,7 +1413,7 @@ fn extract_from_view(
 
     let newest = *Family::ALL.last().expect("at least one family");
     let (newest_major, newest_minor) = newest.floor();
-    let meta = Meta {
+    let mut meta = Meta {
         format_version: crate::bundle::FORMAT_VERSION,
         rustc_version,
         tokio_version,
@@ -1428,6 +1428,8 @@ fn extract_from_view(
             major: newest_major,
             minor: newest_minor,
         }),
+        // Known only once emission has said which releases it declined.
+        unsupported: Vec::new(),
     };
 
     stats.unresolved_refs = em.unresolved_refs;
@@ -1710,6 +1712,8 @@ fn extract_from_view(
     stats.state_members_dropped = counts.states.members_dropped;
     stats.state_members_deduplicated = counts.states.members_deduplicated;
     stats.state_captures_kept = counts.states.captures_kept;
+
+    meta.unsupported = stats.unsupported();
 
     let task_normalized = normalized_candidate_index(&by_symbol);
     let dyn_normalized = normalized_candidate_index(&dyn_table);

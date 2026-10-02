@@ -2551,7 +2551,7 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
                 });
                 (open_core(), bundle.join().expect("bundle loader panicked"))
             });
-            session(proc?, bundle?, Vec::new(), false, args, exec)
+            session(proc?, bundle?, false, args, exec)
         }
         // Extraction leaves the parsed DWARF to free, which takes
         // seconds; the session runs inside its continuation so that
@@ -2562,9 +2562,9 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
                 path,
                 args.binary.as_deref(),
                 args.allow_unsupported,
-                |bundle, warnings, binary_extracted_from| {
+                |bundle, binary_extracted_from| {
                     let proc = proc.join().expect("core opener panicked")?;
-                    session(proc, bundle, warnings, binary_extracted_from, args, exec)
+                    session(proc, bundle, binary_extracted_from, args, exec)
                 },
             )?
         }),
@@ -2576,14 +2576,15 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
 fn session(
     proc: Proc,
     bundle: Bundle,
-    warnings: Vec<String>,
     binary_extracted_from: bool,
     args: &SessionArgs,
     exec: &[String],
 ) -> Result<()> {
-    // Held back until here rather than printed by the worker, whose
+    // Read from the bundle rather than from an extraction at launch, so
+    // a tokio-info file says what it was written over as often as it
+    // is opened — and printed here, not by the extraction worker, whose
     // stderr the attach's own warnings are interleaved with.
-    for warning in &warnings {
+    if let Some(warning) = unsupported_warning(&bundle.meta) {
         writeln!(io::stderr(), "{warning}")?;
     }
     check_binary(&proc, args, binary_extracted_from)?;
@@ -2933,6 +2934,25 @@ fn warning_lines<'a>(errors: impl IntoIterator<Item = &'a anyhow::Error>) -> Vec
         .collect()
 }
 
+/// The attach's warning over a bundle with parts no extraction rule
+/// supports — one written with `--allow-unsupported`, or by a library
+/// caller that never asked — naming everything it recorded; `None`
+/// over one with none. The wording matches the extract verb's refusal,
+/// so the operator who saw one recognizes the other.
+fn unsupported_warning(meta: &hansei_bundle::Meta) -> Option<String> {
+    if meta.unsupported.is_empty() {
+        return None;
+    }
+    let mut out = "warning: parts of this target's binary do not have extraction rules, \
+                   and may show incomplete, raw, or wrong data:"
+        .to_owned();
+    for s in &meta.unsupported {
+        out.push_str("\n  ");
+        out.push_str(s);
+    }
+    Some(out)
+}
+
 /// The version-ceiling warning a walk command should print now: the
 /// notice, stated once — the first walk command of a session takes it,
 /// later ones (and every command on an undrifted target) get `None`.
@@ -2985,6 +3005,39 @@ mod session_gate_tests {
         let on = Cell::new(false);
         assert!(first_audit(true, &on));
         assert!(!first_audit(true, &on));
+    }
+}
+
+#[cfg(test)]
+mod unsupported_warning_tests {
+    use super::unsupported_warning;
+
+    use hansei_bundle::Meta;
+
+    /// A bundle with nothing unsupported draws nothing at attach; one
+    /// that recorded something draws one warning naming all of it.
+    #[test]
+    fn test_attach_names_what_no_extraction_rule_supports() {
+        assert_eq!(unsupported_warning(&Meta::default()), None);
+
+        let meta = Meta {
+            unsupported: vec![
+                "parking_lot 0.11.2 is older than the supported version range: 0.12.1-0.12.5"
+                    .to_owned(),
+                "rustc 1.96.0 is older than the supported version range: 1.97-1.98".to_owned(),
+            ],
+            ..Meta::default()
+        };
+        assert_eq!(
+            unsupported_warning(&meta).as_deref(),
+            Some(
+                "warning: parts of this target's binary do not have extraction rules, \
+                 and may show incomplete, raw, or wrong data:\n  \
+                 parking_lot 0.11.2 is older than the supported version range: \
+                 0.12.1-0.12.5\n  \
+                 rustc 1.96.0 is older than the supported version range: 1.97-1.98"
+            )
+        );
     }
 }
 
