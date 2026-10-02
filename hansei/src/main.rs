@@ -389,8 +389,8 @@ pub enum Command {
     /// member starts where its holder does — selects the innermost;
     /// `futures --exec` reaches each of them. The
     /// cursor roots at the future itself, frame #0 of its own chain, so
-    /// `trace`, `frame` and `locals` follow that chain and `$_` is its
-    /// address; the holder stays one explicit `task` away — bare `task`
+    /// `trace`, `frame` and `locals` follow that chain and `$_` is that
+    /// frame's address, as after `task`; the holder stays one explicit `task` away — bare `task`
     /// prints it without moving, and `up` past the future's root names
     /// it. Either way it prints the future
     /// as one labelled line per field: its type, where it sits (the

@@ -48,8 +48,9 @@ pub struct Cursor {
     /// outward to the root.
     pub frame: usize,
     /// `$_`: the base address of the current frame's future — the
-    /// chain's leaf at selection (#0), a lone root's own address, the
-    /// lwp's stack pointer for a thread cursor with no task.
+    /// chain's leaf at selection (#0), a lone root's own address where
+    /// its chain cannot be walked, the lwp's stack pointer for a thread
+    /// cursor with no task.
     pub last_addr: Option<u64>,
 }
 
@@ -307,8 +308,8 @@ pub(crate) fn cursor_future<T: proc::Target>(session: &Session<'_, T>) -> Option
 /// Move the cursor to the future at `addr`, answering what the census
 /// says it is. The root is the future itself, at frame #0 of its own
 /// chain, whether a task holds it or a set drives it: `trace`, `frame`
-/// and `locals` then follow the future's chain and `$_` is its own
-/// address, and the holder is one explicit `task` away — bare `task`
+/// and `locals` then follow the future's chain and `$_` is its frame
+/// #0's address, and the holder is one explicit `task` away — bare `task`
 /// names it without moving. A set child roots at its node: that is the
 /// address every listing prints for the child and every address command
 /// resolves back to it, where the chain's own root — a boxed child's
@@ -354,8 +355,10 @@ pub(crate) fn scope_to<T: proc::Target>(session: &Session<'_, T>, index: usize) 
 /// — what `future 0x…` selects, and what `futures --exec` sets before
 /// each surviving future's run. The root is the future itself even
 /// when a task holds it: `trace` under it follows the future's own
-/// chain and `$_` is its own address. The lwp is the holding task's
-/// where it is mid-poll, as selecting the task would set it.
+/// chain, and `$_` is frame #0's base — the leaf's, as a task selection
+/// sets it, or the future's own address where its chain cannot be
+/// walked. The lwp is the holding task's where it is mid-poll, as
+/// selecting the task would set it.
 pub(crate) fn scope_to_future<T: proc::Target>(session: &Session<'_, T>, at: trace::FutureAt) {
     let census = session.census();
     let (addr, lwp) = match at {
@@ -375,6 +378,14 @@ pub(crate) fn scope_to_future<T: proc::Target>(session: &Session<'_, T>, at: tra
         frame: 0,
         last_addr: Some(addr),
     };
+    // The leaf is the chain's to say, and the chain is the root's just
+    // set.
+    if let Some(leaf) = chain_of(session, TraceTarget::Future(addr))
+        .ok()
+        .and_then(|resolved| resolved.chain.frames.last().map(|f| f.future.addr))
+    {
+        session.cursor.borrow_mut().last_addr = Some(leaf);
+    }
 }
 
 /// Whether a `Future` root is a task's in address clothing: rooted at
@@ -1035,7 +1046,8 @@ mod tests {
     }
 
     /// A held future roots the cursor at itself — frame #0 of its own
-    /// chain, `$_` its own address, the prompt naming it — and the
+    /// chain, `$_` that frame's address (the chain's leaf, as a task
+    /// selection sets it), the prompt naming it — and the
     /// holder is one explicit `task` away: bare `task` prints the
     /// holder's block without moving, and `up` past the future's root
     /// refuses, naming the holding frame and the selection, rather
@@ -1057,10 +1069,18 @@ mod tests {
         assert!(block.starts_with(&format!("future {addr:#x}\n")), "{block}");
         assert!(block.contains("\n    held by: "), "{block}");
 
+        let leaf = chain_of(&session, TraceTarget::Future(addr))
+            .expect("the future's chain resolves")
+            .chain
+            .frames
+            .last()
+            .map(|f| f.future.addr)
+            .expect("the chain has a frame");
+        assert_ne!(leaf, addr, "the chain runs deeper than its root");
         let at_root = |c: &Cursor| {
             matches!(c.root, Some(TraceTarget::Future(a)) if a == addr)
                 && c.frame == 0
-                && c.last_addr == Some(addr)
+                && c.last_addr == Some(leaf)
         };
         let c = *session.cursor.borrow();
         assert!(
