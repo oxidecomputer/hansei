@@ -203,10 +203,10 @@ fn test_the_verbs_reject_what_is_not_theirs_to_read() {
     for verb in ["stats", "dump", "dump-dwarf"] {
         let out = hansei(&[verb, path.to_str().unwrap()]);
         assert!(!out.status.success(), "{verb} accepted garbage");
-        // The whole cause chain, named file included: `Error: …` is
+        // The whole cause chain, named file included: `error: …` is
         // anyhow's `Debug`, which is where a context line shows up.
         let err = stderr(&out);
-        assert!(err.starts_with("Error: "), "{verb}: {err}");
+        assert!(err.starts_with("error: "), "{verb}: {err}");
         assert!(err.contains(&path.display().to_string()), "{verb}: {err}");
     }
 }

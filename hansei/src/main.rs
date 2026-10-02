@@ -2479,7 +2479,9 @@ fn main() {
             return;
         }
 
-        let _ = writeln!(io::stderr(), "Error: {e:?}");
+        // Lowercase, as every other diagnostic hansei prints is, and
+        // anyhow's `Debug`, so the cause chain follows.
+        let _ = writeln!(io::stderr(), "error: {e:?}");
         std::process::exit(1);
     }
 }
@@ -2499,7 +2501,7 @@ fn build_pool(cap: Option<usize>, name: &'static str) {
         builder = builder.num_threads(threads);
     }
     if let Err(e) = builder.build_global() {
-        let _ = writeln!(io::stderr(), "Error: {e:?}");
+        let _ = writeln!(io::stderr(), "error: {e:?}");
         std::process::exit(1);
     }
 }
