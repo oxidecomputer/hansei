@@ -2656,8 +2656,10 @@ pub const SPROCKETS_TLS_STREAM_D2B68E4: GitConvention = GitConvention {
 /// sprockets-tls's client handshake (`tls/src/client.rs`) at the three
 /// revisions omicron has pinned: `Client::connect_with_config` dials
 /// its `addr` and keeps nothing of it once `TcpStream::connect`
-/// returns; from the TLS handshake on, its frame holds the TLS stream
-/// in the local `stream`, and from the certificates on, the server's
+/// returns, so while it awaits the TLS handshake — `connector.connect`,
+/// tokio-rustls's `Connect` over the socket — its frame keeps nothing of
+/// the far end; from the handshake on, it holds the TLS stream in the
+/// local `stream`, and from the certificates on, the server's
 /// platform id in `tq_platform_id`, a `dice_mfg_msgs::PlatformId`
 /// newtype over its bytes. The later revision changes only how the
 /// nonce is drawn and that the attestation is awaited.
@@ -2697,9 +2699,11 @@ pub const SPROCKETS_TLS_CLIENT_D2B68E4: GitConvention = GitConvention {
 /// listener's `accept` returned beside the socket, which it returns
 /// with the finished stream, and so holds across every await of the
 /// path that finishes (the branch that refuses a client's version and
-/// returns an error holds the stream without it); from the TLS
-/// handshake on, its frame holds the TLS stream in `stream`, and from
-/// the certificates on, the client's platform id in `tq_platform_id`.
+/// returns an error holds the stream without it) — the TLS handshake's
+/// await among them, `tls_acceptor.accept(stream)`, tokio-rustls's
+/// `Accept` over that socket; from the handshake on, its frame holds
+/// the TLS stream in `stream`, and from the certificates on, the
+/// client's platform id in `tq_platform_id`.
 /// The later revision differs from the earlier as the client's does.
 pub const SPROCKETS_TLS_SERVER_D2B68E4: GitConvention = GitConvention {
     package: "sprockets-tls",

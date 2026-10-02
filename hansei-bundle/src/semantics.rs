@@ -817,7 +817,9 @@ pub struct FarEndBinding {
 
 /// One coroutine state that holds the stream, every path from the
 /// coroutine through the state's variant first: the stream, landing on
-/// a routed TLS stream, then each fact the state keeps beside it.
+/// a routed TLS stream — a local of the state, or, while the state
+/// awaits the TLS handshake, the stream that handshake holds, through
+/// the state's `__awaitee` — then each fact the state keeps beside it.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct FarEndState {
     pub stream: TypedPath,

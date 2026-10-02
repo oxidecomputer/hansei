@@ -1148,13 +1148,15 @@ impl<'a> Check<'a> {
     /// What a handshake's frame keeps of the far end, under its crate's
     /// rule: per state, every path entering one variant of the
     /// coroutine first, the same for all three; the stream landing on a
-    /// routed TLS stream, the address on an enum, the name on an array
-    /// of bytes; and no state named twice.
-    fn far_end(
+    /// routed TLS stream — a local of the state, or the one the handshake
+    /// it awaits holds, reached by the hops the records name — the
+    /// address on an enum, the name on an array of bytes; and no state
+    /// named twice.
+    fn far_end<'t>(
         &self,
         record: &TypeSemantics,
         binding: &FarEndBinding,
-        tls_stream: &impl Fn(BundleTypeId) -> bool,
+        record_of: &impl Fn(BundleTypeId) -> Option<&'t TypeSemantics>,
     ) -> Result<()> {
         self.rule(binding.rule, &[SemanticRuleKind::SprocketsHandshake])?;
         require(!binding.states.is_empty(), "far end binding has no state")?;
@@ -1175,9 +1177,13 @@ impl<'a> Check<'a> {
             };
             in_state(&state.stream, "far end stream is outside its state")?;
             require(
-                tls_stream(state.stream.target),
+                record_of(state.stream.target)
+                    .is_some_and(|stream| stream.io_route.is_some() && stream.tls_stream.is_some()),
                 "far end stream is not a routed TLS stream",
             )?;
+            if state.stream.steps.len() > 2 {
+                self.awaited_stream(record.ty, &state.stream, record_of)?;
+            }
             if let Some(addr) = &state.addr {
                 in_state(addr, "far end address is outside its state")?;
                 require(
@@ -1191,6 +1197,58 @@ impl<'a> Check<'a> {
             }
         }
         Ok(())
+    }
+
+    /// A far end's stream that is no local of its state: the one the
+    /// handshake the state awaits holds. Its path runs through the
+    /// state's `__awaitee`, then exactly the hops tokio-rustls's records
+    /// take — the awaited future's delegate to the handshake it polls,
+    /// then that handshake's io operation to its stream — so the far end
+    /// crosses no layout those reviews did not cover.
+    fn awaited_stream<'t>(
+        &self,
+        root: BundleTypeId,
+        stream: &TypedPath,
+        record_of: &impl Fn(BundleTypeId) -> Option<&'t TypeSemantics>,
+    ) -> Result<()> {
+        let unnamed = "far end stream crosses a hop no record names";
+        let (local, rest) = stream.steps.split_at(2);
+        let Step::Member(MemberRef::Named(member)) = local[1] else {
+            return require(false, unnamed);
+        };
+        require(self.string(member)? == "__awaitee", unnamed)?;
+        let awaitee =
+            crate::io::semantic_path_target(&self.0.types, root, &Selector(local.to_vec()))?;
+        let Some(FutureFacts {
+            continuation:
+                Continuation::Bound {
+                    rule,
+                    program:
+                        PollProgram::Direct(PollAction::Delegate {
+                            target: FutureTarget::Value(delegate),
+                            ..
+                        }),
+                },
+            ..
+        }) = record_of(awaitee).and_then(|awaited| awaited.future.as_ref())
+        else {
+            return require(false, unnamed);
+        };
+        self.rule(*rule, &[SemanticRuleKind::TokioRustlsHandshake])?;
+        let Some(into_handshake) = rest.strip_prefix(delegate.steps.as_slice()) else {
+            return require(false, unnamed);
+        };
+        let Some(handshake) =
+            record_of(delegate.target).and_then(|handshake| handshake.io.as_ref())
+        else {
+            return require(false, unnamed);
+        };
+        self.rule(handshake.rule, &[SemanticRuleKind::TokioRustlsHandshake])?;
+        require(
+            into_handshake == handshake.stream.steps.as_slice()
+                && handshake.stream.target == stream.target,
+            unnamed,
+        )
     }
 
     /// An operation's stream, under the resource's rule: a path through
@@ -2300,13 +2358,8 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                 matches!(record.storage, StoragePolicy::CoroutineStates),
                 "far end binding needs coroutine state storage",
             )?;
-            let tls_stream = |ty| {
-                positions.get(&ty).is_some_and(|&i| {
-                    let stream = &table.types[i];
-                    stream.io_route.is_some() && stream.tls_stream.is_some()
-                })
-            };
-            check.far_end(record, far_end, &tls_stream)?;
+            let record_of = |ty| positions.get(&ty).map(|&i| &table.types[i]);
+            check.far_end(record, far_end, &record_of)?;
         }
         if let Some(refcount) = &record.refcount {
             check.rule(refcount.rule, &[SemanticRuleKind::StdRefcountHeader])?;

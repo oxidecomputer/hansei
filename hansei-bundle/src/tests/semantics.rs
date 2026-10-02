@@ -4688,6 +4688,88 @@ fn test_a_far_end_binds_per_state_on_the_handshake_rule() {
         &unavailable,
         "unavailable storage carries a readable capability",
     );
+
+    // A stream deeper than a local of its state is only the one the
+    // handshake the state awaits holds, by the hops that handshake's
+    // records name: through a member that is no awaitee, or an awaitee
+    // no record covers, it is refused.
+    let through = |member: &str| {
+        let mut b = b.clone();
+        let mut strings = StringInterner::new();
+        for s in b.strings.iter() {
+            strings.intern(s);
+        }
+        let [member, state] = [member, "Suspend2"].map(|s| strings.intern(s));
+        b.strings = strings.finish();
+        let (wrapper, payload) = (
+            BundleTypeId(b.types.types.len() as u32),
+            BundleTypeId(b.types.types.len() as u32 + 1),
+        );
+        b.types.types.extend([
+            TypeDef::Struct {
+                name: FIELD,
+                size: 56,
+                members: vec![MemberDef {
+                    name: FIELD,
+                    ty: BundleTypeId(19),
+                    offset: 0,
+                }],
+            },
+            TypeDef::Struct {
+                name: state,
+                size: 80,
+                members: vec![MemberDef {
+                    name: member,
+                    ty: wrapper,
+                    offset: 0,
+                }],
+            },
+        ]);
+        let coroutine = b.semantics.types[at].ty;
+        let TypeDef::Enum { shape, .. } = &mut b.types.types[coroutine.0 as usize] else {
+            unreachable!()
+        };
+        shape.variants.push(VariantDef {
+            name: state,
+            discr_values: Some(DiscrValues(vec![DiscrValue::Value(2)])),
+            payload: MemberDef {
+                name: state,
+                ty: payload,
+                offset: 0,
+            },
+            decl: None,
+            await_site: None,
+        });
+        let record = &mut b.semantics.types[at];
+        record
+            .coroutine
+            .as_mut()
+            .unwrap()
+            .states
+            .push(CoroutineState {
+                variant: state,
+                stage: CoroutinePhase::Suspended,
+                locals: vec![member],
+                uncertain_locals: vec![],
+            });
+        record.far_end.as_mut().unwrap().states.push(FarEndState {
+            stream: path(
+                vec![Step::Variant(state), named(member), named(FIELD)],
+                BundleTypeId(19),
+            ),
+            addr: None,
+            name: None,
+        });
+        b
+    };
+    bad(
+        &through("wrapper"),
+        "far end stream crosses a hop no record names",
+    );
+    bad(
+        &through("__awaitee"),
+        "far end stream crosses a hop no record names",
+    );
 }
 
 /// A route that runs back on itself through matches alone, or through

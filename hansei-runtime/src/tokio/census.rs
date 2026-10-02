@@ -5450,59 +5450,106 @@ mod far_end_tests {
     use crate::tokio::observe::FarEnd;
 
     use hansei_bundle::{
-        BundleTypeId, BundleView, FarEndBinding, FarEndState, MemberRef, SemanticOrigin,
-        SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind, Step, StringInterner,
-        TypedPath,
+        Bundle, BundleType, BundleTypeId, BundleView, Continuation, FarEndBinding, FarEndState,
+        FutureTarget, MemberRef, PollAction, PollProgram, SemanticOrigin, SemanticOriginId,
+        SemanticRule, SemanticRuleId, SemanticRuleKind, Step, StringInterner, TypedPath,
     };
+    use proc::snapshot::Snapshot;
+
+    /// `set`'s `tls-conns` pair, its bundle bound as though `function`'s
+    /// coroutine were a sprockets-tls handshake — under sprockets-tls's
+    /// rule, on a git origin the copy is given — over the states
+    /// `states` picks, and validated whole; with the coroutine's type.
+    fn bound(
+        set: &str,
+        function: &str,
+        states: impl Fn(&Bundle, BundleType<'_>) -> Vec<FarEndState>,
+    ) -> (Bundle, Snapshot, BundleTypeId) {
+        let (mut bundle, snapshot) = testkit::load(set, "tls-conns");
+        let mut strings = StringInterner::new();
+        for s in bundle.strings.iter() {
+            strings.intern(s);
+        }
+        let [package, repository, revision, family, source] = [
+            "sprockets-tls",
+            "sprockets",
+            "a233079",
+            "sprockets-tls-server-d2b68e4",
+            "git/checkouts/sprockets-882d17aeeb0cb343/a233079/tls/src/server.rs",
+        ]
+        .map(|s| strings.intern(s));
+        bundle.strings = strings.finish();
+        bundle
+            .semantics
+            .origins
+            .push(SemanticOrigin::GitDelegation {
+                package,
+                repository,
+                revision,
+                family,
+                source,
+                files: Vec::new(),
+            });
+        let rule = SemanticRuleId(bundle.semantics.rules.len() as u32);
+        bundle.semantics.rules.push(SemanticRule {
+            kind: SemanticRuleKind::SprocketsHandshake,
+            revision: 1,
+            origin: SemanticOriginId(bundle.semantics.origins.len() as u32 - 1),
+        });
+        let (coroutine, states) = {
+            let view = BundleView::new(&bundle);
+            let suffix = format!("::{function}::{{async_fn_env#0}}");
+            let coroutine = (0..bundle.types.types.len() as u32)
+                .filter_map(|i| view.ty(BundleTypeId(i)))
+                .find(|ty| ty.name().ends_with(&suffix))
+                .unwrap_or_else(|| panic!("{set}: no {function} coroutine"));
+            (coroutine.id(), states(&bundle, coroutine))
+        };
+        assert!(!states.is_empty(), "{set}: no state holds the stream");
+        let record = bundle
+            .semantics
+            .types
+            .iter_mut()
+            .find(|record| record.ty == coroutine)
+            .unwrap_or_else(|| panic!("{set}: the coroutine has no record"));
+        record.far_end = Some(FarEndBinding { rule, states });
+        bundle.validate().unwrap();
+        (bundle, snapshot, coroutine)
+    }
+
+    /// The TLS stream the wait of the task running `function` reaches,
+    /// by its address.
+    fn waited_stream<T: Target>(ctx: &Context<'_, T>, list: &TaskList, function: &str) -> u64 {
+        let task = list
+            .tasks
+            .iter()
+            .find(|t| {
+                matches!(&t.future, FutureInfo::Known(k) if k.name(ctx.view).contains(function))
+            })
+            .unwrap_or_else(|| panic!("no {function} task"));
+        let inspection = ctx
+            .inspect_task(task, &ReadContext::none())
+            .expect("the task's root reads")
+            .expect("the task holds a resident future");
+        let Some(ResourceObservation::Io(io)) = &inspection.primitive.value else {
+            panic!("{function} waits on no io");
+        };
+        io.tls_stream
+            .unwrap_or_else(|| panic!("{function}'s route crosses no TLS stream"))
+            .addr
+    }
 
     /// A handshake's frame is indexed by the TLS stream it holds, at the
     /// address the wait on that stream's socket reaches it by: the
     /// `tls-conns` server that reads an exact length holds its stream
-    /// as a local across every await, so bound as a handshake — under
-    /// sprockets-tls's rule, on a git origin the copy of its bundle is
-    /// given — its frame names the stream its own read polls. It keeps
-    /// no address and no name, and the entry says so.
+    /// as a local across every await, so bound as a handshake its frame
+    /// names the stream its own read polls. It keeps no address and no
+    /// name, and the entry says so.
     #[test]
     fn test_a_handshake_frame_is_found_by_the_stream_its_wait_reaches() {
         for set in FIXTURE_SETS {
-            let (mut bundle, snapshot) = testkit::load(set, "tls-conns");
-            let mut strings = StringInterner::new();
-            for s in bundle.strings.iter() {
-                strings.intern(s);
-            }
-            let [package, repository, revision, family, source] = [
-                "sprockets-tls",
-                "sprockets",
-                "a233079",
-                "sprockets-tls-server-d2b68e4",
-                "git/checkouts/sprockets-882d17aeeb0cb343/a233079/tls/src/server.rs",
-            ]
-            .map(|s| strings.intern(s));
-            bundle.strings = strings.finish();
-            bundle
-                .semantics
-                .origins
-                .push(SemanticOrigin::GitDelegation {
-                    package,
-                    repository,
-                    revision,
-                    family,
-                    source,
-                    files: Vec::new(),
-                });
-            let rule = SemanticRuleId(bundle.semantics.rules.len() as u32);
-            bundle.semantics.rules.push(SemanticRule {
-                kind: SemanticRuleKind::SprocketsHandshake,
-                revision: 1,
-                origin: SemanticOriginId(bundle.semantics.origins.len() as u32 - 1),
-            });
-            let (server, states) = {
-                let view = BundleView::new(&bundle);
-                let server = (0..bundle.types.types.len() as u32)
-                    .filter_map(|i| view.ty(BundleTypeId(i)))
-                    .find(|ty| ty.name().ends_with("::exact_server::{async_fn_env#0}"))
-                    .unwrap_or_else(|| panic!("{set}: no exact_server coroutine"));
-                let states: Vec<FarEndState> = server
+            let (bundle, snapshot, server) = bound(set, "exact_server", |_, server| {
+                server
                     .variants()
                     .filter_map(|variant| {
                         let stream = variant.ty.member("stream")?;
@@ -5518,46 +5565,84 @@ mod far_end_tests {
                             name: None,
                         })
                     })
-                    .collect();
-                (server.id(), states)
-            };
-            assert!(!states.is_empty(), "{set}: no state holds the stream");
-            let record = bundle
-                .semantics
-                .types
-                .iter_mut()
-                .find(|record| record.ty == server)
-                .unwrap_or_else(|| panic!("{set}: the coroutine has no record"));
-            record.far_end = Some(FarEndBinding { rule, states });
-            bundle.validate().unwrap();
-
+                    .collect()
+            });
             let ctx = testkit::context(&bundle, &snapshot);
             let list = testkit::tasks(&ctx, &snapshot);
             let census = testkit::census(&ctx, &list);
-            let task = list
-                .tasks
-                .iter()
-                .find(|t| {
-                    matches!(&t.future, FutureInfo::Known(k) if k.name(ctx.view).contains("exact_server"))
-                })
-                .unwrap_or_else(|| panic!("{set}: no exact_server task"));
-            let inspection = ctx
-                .inspect_task(task, &ReadContext::none())
-                .expect("the task's root reads")
-                .expect("the task holds a resident future");
-            let Some(ResourceObservation::Io(io)) = &inspection.primitive.value else {
-                panic!("{set}: exact_server waits on no io");
-            };
-            let stream = io
-                .tls_stream
-                .unwrap_or_else(|| panic!("{set}: the read's route crosses no TLS stream"));
+            let stream = waited_stream(&ctx, &list, "exact_server");
             assert_eq!(
                 census.far_ends.0.keys().collect::<Vec<_>>(),
-                [&stream.addr],
+                [&stream],
                 "{set}"
             );
             assert_eq!(
-                census.far_ends.of(stream.addr),
+                census.far_ends.of(stream),
+                Some(&FarEnd {
+                    frame: server,
+                    addr: None,
+                    name: None,
+                }),
+                "{set}"
+            );
+        }
+    }
+
+    /// A frame still awaiting the TLS handshake holds no stream local:
+    /// the socket went into tokio-rustls's `Accept`. The `tls-conns`
+    /// server parked in its handshake awaits one, so bound through its
+    /// `__awaitee` by exactly the hops tokio-rustls's records take — the
+    /// `Accept`'s delegate to the `MidHandshake`, that handshake's io
+    /// operation to its stream — the binding validates, and the frame is
+    /// indexed by the stream the handshake's own wait reaches.
+    #[test]
+    fn test_a_frame_awaiting_its_handshake_is_found_by_the_handshakes_stream() {
+        for set in FIXTURE_SETS {
+            let (bundle, snapshot, server) = bound(set, "handshaking_server", |bundle, server| {
+                let record_of =
+                    |ty: BundleTypeId| bundle.semantics.types.iter().find(|record| record.ty == ty);
+                server
+                    .variants()
+                    .filter_map(|variant| {
+                        let awaitee = variant.ty.member("__awaitee")?;
+                        if !awaitee.ty().name().contains("Accept<") {
+                            return None;
+                        }
+                        let Continuation::Bound {
+                            program:
+                                PollProgram::Direct(PollAction::Delegate {
+                                    target: FutureTarget::Value(delegate),
+                                    ..
+                                }),
+                            ..
+                        } = &record_of(awaitee.ty().id())?.future.as_ref()?.continuation
+                        else {
+                            return None;
+                        };
+                        let handshake = record_of(delegate.target)?.io.as_ref()?;
+                        let mut steps = vec![
+                            Step::Variant(server.variant_name_ref(variant.name)?),
+                            Step::Member(MemberRef::Named(awaitee.name_ref())),
+                        ];
+                        steps.extend(delegate.steps.iter().copied());
+                        steps.extend(handshake.stream.steps.iter().copied());
+                        Some(FarEndState {
+                            stream: TypedPath {
+                                steps,
+                                target: handshake.stream.target,
+                            },
+                            addr: None,
+                            name: None,
+                        })
+                    })
+                    .collect()
+            });
+            let ctx = testkit::context(&bundle, &snapshot);
+            let list = testkit::tasks(&ctx, &snapshot);
+            let census = testkit::census(&ctx, &list);
+            let stream = waited_stream(&ctx, &list, "handshaking_server");
+            assert_eq!(
+                census.far_ends.of(stream),
                 Some(&FarEnd {
                     frame: server,
                     addr: None,

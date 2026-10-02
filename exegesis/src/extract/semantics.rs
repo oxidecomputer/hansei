@@ -957,6 +957,9 @@ pub(super) struct FarEndRule {
     name: &'static [&'static str],
 }
 
+/// The member rustc keeps a suspended coroutine's awaited future in.
+const AWAITEE: &str = "__awaitee";
+
 /// sprockets-tls's two handshakes (see each convention for the review):
 /// the client's keeps no address, the server's the accepted socket's.
 const FAR_END_RULES: [FarEndRule; 2] = [
@@ -2603,7 +2606,37 @@ pub(super) fn bind_semantics(
         {
             // The TLS streams the io plans keep are all routed ones.
             let tls_stream = |ty: BundleTypeId| io.tls_streams.contains_key(&ty);
-            match plan_far_end(ty, rule, source.as_ref(), &tls_stream, types, strings) {
+            // A handshake the state awaits: tokio-rustls's `Accept` or
+            // `Connect` at a reviewed release, polling its one member,
+            // whose handshake holds the stream as its io operation's.
+            let awaited = |awaitee: BundleTypeId| -> Option<(Vec<Step>, BundleTypeId)> {
+                let awaited_seed = seeds.get(&awaitee)?;
+                let Some(library @ LibrarySeed::TokioRustlsHandshake(member, inner)) =
+                    &awaited_seed.library
+                else {
+                    return None;
+                };
+                let (sources, declared_by) = library.origin_sources(awaited_seed);
+                delegation_origin(&sources, library.convention(), declared_by).ok()?;
+                let handshake = io
+                    .operations
+                    .get(inner)
+                    .filter(|op| op.kind == IoOperationKind::Handshake)?;
+                let (mut steps, landed) =
+                    hop_steps(types, strings, awaitee, &[Hop::Member(member)]).ok()?;
+                (landed == *inner).then_some(())?;
+                steps.extend(handshake.stream.steps.iter().copied());
+                Some((steps, handshake.stream.target))
+            };
+            match plan_far_end(
+                ty,
+                rule,
+                source.as_ref(),
+                &tls_stream,
+                &awaited,
+                types,
+                strings,
+            ) {
                 Ok(plan) => draft.far_end = Some(plan),
                 Err(decline) => draft.issues.push(decline),
             }
@@ -5121,15 +5154,20 @@ struct FarEndPlan {
 /// the coroutine that holds the stream local, landing on a routed TLS
 /// stream, with the rule's address and name beside it where the state
 /// keeps them: a path that ends early drops what nothing after it
-/// reads, and the name is held only from the certificates on. An
-/// address the state does keep that is no enum declines the whole, as
-/// a stream that is no routed TLS stream does: the layout is not the
-/// one reviewed.
+/// reads, and the name is held only from the certificates on. A state
+/// still awaiting the TLS handshake holds no stream local — the socket
+/// went into the handshake future — so its stream is the one that
+/// future holds: `awaited` gives the hops from the awaitee's type to
+/// it, where the awaitee is a handshake a review covers. An address
+/// the state does keep that is no enum declines the whole, as a stream
+/// that is no routed TLS stream does: the layout is not the one
+/// reviewed.
 fn plan_far_end(
     ty: BundleTypeId,
     rule: &FarEndRule,
     source: Option<&PollSource>,
     tls_stream: &impl Fn(BundleTypeId) -> bool,
+    awaited: &impl Fn(BundleTypeId) -> Option<(Vec<Step>, BundleTypeId)>,
     types: &TypeTable,
     strings: &StringInterner,
 ) -> Result<FarEndPlan, Decline> {
@@ -5151,9 +5189,21 @@ fn plan_far_end(
         let Some(state) = strings.get(variant.name) else {
             continue;
         };
-        let Ok(stream) = hop_landing(types, strings, ty, &[Variant(state), Member(rule.stream)])
-        else {
-            continue;
+        let stream = match hop_landing(types, strings, ty, &[Variant(state), Member(rule.stream)]) {
+            Ok(stream) => stream,
+            Err(_) => {
+                let Ok(awaitee) =
+                    hop_landing(types, strings, ty, &[Variant(state), Member(AWAITEE)])
+                else {
+                    continue;
+                };
+                let Some((hops, target)) = awaited(awaitee.target) else {
+                    continue;
+                };
+                let mut steps = awaitee.steps;
+                steps.extend(hops);
+                checked_path(types, ty, steps, target)?
+            }
         };
         if !tls_stream(stream.target) {
             return Err((
@@ -6440,7 +6490,7 @@ fn coroutine_plan(
     types: &TypeTable,
     strings: &mut StringInterner,
 ) -> Plan {
-    let awaitee = strings.intern("__awaitee");
+    let awaitee = strings.intern(AWAITEE);
     let Some(TypeDef::Enum { shape, .. }) = types.get(ty) else {
         unreachable!("a bound coroutine is an enum");
     };
@@ -10766,7 +10816,8 @@ mod tests {
         }
     }
 
-    /// A handshake's far end binds every state holding the stream, with
+    /// A handshake's far end binds every state holding the stream — as a
+    /// local, or inside the handshake future the state awaits — with
     /// the address and the name where the state keeps them, under the
     /// review of the file its body was declared in; a stream that is no
     /// routed TLS stream, an address that is no enum, or no state with
@@ -10886,10 +10937,80 @@ mod tests {
                 false => Vec::new(),
             };
             let early = state(&mut types, early);
+            // A handshake in flight — tokio-rustls's `Accept` over its
+            // `MidHandshake`, holding the stream in `Handshaking` — and
+            // a state awaiting it beside the address, then one awaiting
+            // something no handshake is.
+            let (zero, handshaking) = (strings.intern("__0"), strings.intern("Handshaking"));
+            let holding = push(
+                &mut types,
+                TypeDef::Struct {
+                    name: handshaking,
+                    size: 8,
+                    members: vec![MemberDef {
+                        name: zero,
+                        ty: stream,
+                        offset: 0,
+                    }],
+                },
+            );
+            let mid = push(
+                &mut types,
+                TypeDef::Enum {
+                    name: strings.intern("tokio_rustls::common::handshake::MidHandshake<T>"),
+                    size: 8,
+                    shape: VariantShape {
+                        discr: None,
+                        variants: vec![VariantDef {
+                            name: handshaking,
+                            discr_values: None,
+                            payload: MemberDef {
+                                name: handshaking,
+                                ty: holding,
+                                offset: 0,
+                            },
+                            decl: None,
+                            await_site: None,
+                        }],
+                    },
+                },
+            );
+            let accept = push(
+                &mut types,
+                TypeDef::Struct {
+                    name: strings.intern("tokio_rustls::server::Accept<T>"),
+                    size: 8,
+                    members: vec![MemberDef {
+                        name: zero,
+                        ty: mid,
+                        offset: 0,
+                    }],
+                },
+            );
+            let awaiting = match holds {
+                true => vec![
+                    local(&mut strings, "addr", addr, 8),
+                    local(&mut strings, "__awaitee", accept, 16),
+                ],
+                false => Vec::new(),
+            };
+            let awaiting = state(&mut types, awaiting);
+            let elsewhere = match holds {
+                true => vec![local(&mut strings, "__awaitee", u8_t, 16)],
+                false => Vec::new(),
+            };
+            let elsewhere = state(&mut types, elsewhere);
+            let into_stream = vec![
+                Step::Member(MemberRef::Named(zero)),
+                Step::Variant(handshaking),
+                Step::Member(MemberRef::Named(zero)),
+            ];
             let variants = [
                 ("Unresumed", unresumed),
                 ("Suspend0", full),
                 ("Suspend1", early),
+                ("Suspend2", awaiting),
+                ("Suspend3", elsewhere),
             ]
             .map(|(name, ty)| {
                 let name = strings.intern(name);
@@ -10923,6 +11044,7 @@ mod tests {
                 rule,
                 source,
                 &|ty| ty == stream,
+                &|ty| (ty == accept).then(|| (into_stream.clone(), stream)),
                 &types,
                 &strings,
             )
@@ -10968,6 +11090,11 @@ mod tests {
                     some("Suspend0.tq_platform_id.__0")
                 ),
                 ("Suspend1.stream".to_owned(), None, None),
+                (
+                    "Suspend2.__awaitee.__0.Handshaking.__0".to_owned(),
+                    some("Suspend2.addr"),
+                    None
+                ),
             ]
         );
         let declined = |result: Result<_, Decline>| result.unwrap_err();
