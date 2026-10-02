@@ -374,7 +374,9 @@ What varies by target, and so must never be pinned in a portable test:
   (the walk's truncation note says why); the frames the frame-pointer
   fallback
   bridges print like any other. Only supplying the named libraries
-  makes those frames exact.
+  makes those frames exact: `--sysroot DIR` reads each recorded path
+  under DIR and nowhere else, and uses a file only if its build id is
+  the one the core recorded.
 - **A timer's deadline spelling.** illumos lwps stamp a stop time and the
   deadline is reported relative to it; a Linux core records none, so the
   absolute point on the monotonic clock is printed instead. Both spellings are

@@ -136,8 +136,9 @@ pub struct Unwound {
 }
 
 /// A mapped object whose CFI could not be sourced, and why: its pages
-/// are not in the core and the backing file is not on this machine, or
-/// what is readable does not parse.
+/// are not in the core and its backing file is not in use — not on
+/// this machine, not in the sysroot, or a different build — or what is
+/// readable does not parse.
 #[derive(Clone, PartialEq, Debug)]
 pub struct MissingCfi {
     pub range: Range<u64>,
@@ -154,10 +155,18 @@ pub fn load_frames<T: Target>(target: &T) -> Result<Unwound> {
     for image in &images {
         match ObjectInfo::parse(&image.bytes, image.range.clone()) {
             Ok(object) => objects.push(object),
+            // The core's first page of an object whose file is not in
+            // use parses as far as its headers and no further; the
+            // reason the file is not there is the news, not that.
             Err(e) => missing.push(MissingCfi {
                 range: image.range.clone(),
                 path: image.path.clone(),
-                why: format!("{e:#}"),
+                why: match target.backing_file_problem(&image.path) {
+                    Some(problem) => {
+                        format!("{problem}; what the core holds of it does not parse: {e:#}")
+                    }
+                    None => format!("{e:#}"),
+                },
             }),
         }
     }
@@ -240,12 +249,13 @@ fn load_images<T: Target>(target: &T, mappings: &Mappings) -> (Vec<Image>, Vec<M
                 bytes,
             });
         } else {
+            let problem = target
+                .backing_file_problem(path)
+                .unwrap_or_else(|| "the backing file is not on this machine".to_string());
             missing.push(MissingCfi {
                 range: base..end,
                 path: path.to_string(),
-                why: "none of its pages are in the core, and the backing file \
-                      is not on this machine"
-                    .to_string(),
+                why: format!("none of its pages are in the core, and {problem}"),
             });
         }
     }
@@ -888,6 +898,45 @@ mod fallback_tests {
         let why = bt.truncated.expect("the walk explains its end");
         assert!(why.contains("/usr/lib64/libc.so.6"), "{why}");
         assert!(why.contains("none of its pages are in the core"), "{why}");
+    }
+
+    /// An object with nothing readable is missing for the reason the
+    /// target gives for its file, where it gives one — a sysroot that
+    /// lacks it, a different build — and for the old default where it
+    /// gives none, as a snapshot does.
+    #[test]
+    fn test_a_missing_object_takes_the_targets_reason() {
+        use super::load_images;
+        use proc::{LoadedObjectWithPath, MapFlags, Mappings};
+
+        let at = |path: &str| -> Mappings {
+            [LoadedObjectWithPath {
+                path: Some(path.to_string()),
+                vaddr: TEXT,
+                size: 0x1000,
+                flags: MapFlags(0x05),
+            }]
+            .into_iter()
+            .collect()
+        };
+        let mut t = target(&[]);
+        t.backing_problems = vec![(
+            "/lib/libfoo.so.1".to_string(),
+            "the sysroot has no /s/lib/libfoo.so.1".to_string(),
+        )];
+
+        let (images, missing) = load_images(&t, &at("/lib/libfoo.so.1"));
+        assert!(images.is_empty());
+        assert_eq!(
+            missing[0].why,
+            "none of its pages are in the core, and the sysroot has no /s/lib/libfoo.so.1"
+        );
+
+        let (_, missing) = load_images(&t, &at("/lib/libbar.so.1"));
+        assert_eq!(
+            missing[0].why,
+            "none of its pages are in the core, and the backing file is not on this machine"
+        );
     }
 
     /// A frame is named for the function its lookup pc is in: the

@@ -12,7 +12,7 @@ pub mod snapshot;
 mod target;
 #[cfg(test)]
 mod tests;
-pub use target::Proc;
+pub use target::{CoreFiles, Proc};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -264,6 +264,15 @@ pub trait Target: Sync {
     /// for the targets where the question arises — a Linux core
     /// beside the `--binary` standing in for its executable.
     fn build_ids(&self) -> Option<BuildIds> {
+        None
+    }
+
+    /// Why the file behind the mapped object at `path` is not being
+    /// read, as a clause ("the backing file is not on this machine"),
+    /// for a target that reads undumped object text from files beside
+    /// it — a Linux core. `None` when the file is in use, or when the
+    /// target reads no such files.
+    fn backing_file_problem(&self, _path: &str) -> Option<String> {
         None
     }
 

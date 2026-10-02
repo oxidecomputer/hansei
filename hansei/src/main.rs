@@ -10,7 +10,7 @@ use hansei_runtime::heap::{self, umem::UmemHeap, view::GateCounts, view::HeapVie
 use hansei_runtime::tokio::graph::{self as rt_graph, Analysis};
 use hansei_runtime::tokio::observe::ReadContext;
 use hansei_runtime::tokio::{attribution, bundle, census, contract, wakers};
-use proc::{Proc, Target};
+use proc::{CoreFiles, Proc, Target};
 
 #[cfg(not(target_os = "illumos"))]
 use mimalloc::MiMalloc;
@@ -151,6 +151,18 @@ struct SessionArgs {
     /// apart.
     #[arg(long, short, value_name = "PATH")]
     binary: Option<PathBuf>,
+
+    /// A directory holding the shared libraries a Linux core names, at
+    /// their recorded paths beneath it: /lib64/libc.so.6 is read from
+    /// DIR/lib64/libc.so.6, and from nowhere else.
+    ///
+    /// A Linux core carries none of its libraries' text, so their
+    /// unwind tables and symbols come from files; away from the host
+    /// that wrote the core, those are the files to supply. Each is held
+    /// to the build id the core recorded for it, and one that differs
+    /// is not read. An illumos core carries its libraries itself.
+    #[arg(long, value_name = "DIR")]
+    sysroot: Option<PathBuf>,
 
     /// Proceed even if the tokio info's symbols don't all resolve in
     /// the target, or `--binary` is not the binary the core was taken
@@ -2513,7 +2525,11 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
     // for the core: either file can be the one that failed, and the
     // cause says which.
     let open_core = || {
-        Proc::open_core_with_binary(&args.core, args.binary.as_deref())
+        let files = CoreFiles {
+            binary: args.binary.as_deref(),
+            sysroot: args.sysroot.as_deref(),
+        };
+        Proc::open_core_with(&args.core, files)
             .with_context(|| format!("failed to attach to {}", args.core.display()))
     };
     match args.bundle_source() {
@@ -2750,6 +2766,14 @@ fn check_binary(proc: &Proc, args: &SessionArgs, binary_extracted_from: bool) ->
                 "warning: ignoring --binary {}; this core carries its own \
                  symbol tables",
                 path.display()
+            )?;
+        }
+        if let Some(dir) = &args.sysroot {
+            writeln!(
+                io::stderr(),
+                "warning: ignoring --sysroot {}; this core carries its own \
+                 libraries",
+                dir.display()
             )?;
         }
         return Ok(());

@@ -27,22 +27,46 @@ pub enum Proc {
     IllumosCore(coredump::illumos::Core),
 }
 
+/// The files that stand in, on the machine reading a core, for the
+/// ones it names: the executable that ran, and a directory mirroring
+/// the libraries' recorded paths.
+///
+/// Only a Linux core reads either. An illumos core carries each mapped
+/// object's text and symbol table itself, so it ignores both.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CoreFiles<'a> {
+    /// The executable, read in place of the path the core recorded.
+    pub binary: Option<&'a Path>,
+    /// Where every other recorded path is looked up, as gdb's sysroot
+    /// is: `/lib64/libc.so.6` is read from `<sysroot>/lib64/libc.so.6`,
+    /// and never from the recorded path itself.
+    pub sysroot: Option<&'a Path>,
+}
+
 impl Proc {
     /// Open a core dump, whichever system wrote it.
     pub fn open_core(path: &Path) -> Result<Self> {
-        Self::open_core_with_binary(path, None)
+        Self::open_core_with(path, CoreFiles::default())
     }
 
     /// Open a core dump, reading the executable from `binary` rather
     /// than from the path the core recorded for it.
-    ///
-    /// Only a Linux core has anything to substitute. An illumos core
-    /// carries each mapped object's symbol table in its own section
-    /// headers, so it needs no companion binary and ignores one.
     pub fn open_core_with_binary(path: &Path, binary: Option<&Path>) -> Result<Self> {
+        Self::open_core_with(
+            path,
+            CoreFiles {
+                binary,
+                ..CoreFiles::default()
+            },
+        )
+    }
+
+    /// Open a core dump, reading what it names from `files` where they
+    /// say to.
+    pub fn open_core_with(path: &Path, files: CoreFiles<'_>) -> Result<Self> {
         match coredump::flavour(path)? {
-            Flavour::Linux => Ok(Proc::LinuxCore(coredump::linux::Core::open_with_binary(
-                path, binary,
+            Flavour::Linux => Ok(Proc::LinuxCore(coredump::linux::Core::open_with(
+                path, files,
             )?)),
             Flavour::Illumos => Ok(Proc::IllumosCore(coredump::illumos::Core::open(path)?)),
         }
@@ -130,6 +154,13 @@ impl Target for Proc {
         match self {
             Proc::LinuxCore(c) => Target::build_ids(c),
             Proc::IllumosCore(c) => Target::build_ids(c),
+        }
+    }
+
+    fn backing_file_problem(&self, path: &str) -> Option<String> {
+        match self {
+            Proc::LinuxCore(c) => Target::backing_file_problem(c, path),
+            Proc::IllumosCore(c) => Target::backing_file_problem(c, path),
         }
     }
 

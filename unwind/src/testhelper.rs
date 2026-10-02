@@ -15,9 +15,17 @@ pub(crate) struct FakeTarget {
     pub(crate) mem: Vec<(u64, Vec<u8>)>,
     pub(crate) mappings: Mappings,
     pub(crate) symbols: Vec<SymbolBuf>,
+    /// What the target says about a mapped object's file, by path.
+    pub(crate) backing_problems: Vec<(String, String)>,
 }
 
 impl Target for FakeTarget {
+    fn backing_file_problem(&self, path: &str) -> Option<String> {
+        self.backing_problems
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, why)| why.clone())
+    }
     fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
         for (base, bytes) in &self.mem {
             if addr >= *base && addr + len <= base + bytes.len() as u64 {
@@ -83,6 +91,7 @@ pub(crate) fn target(stack_words: &[(u64, u64)]) -> FakeTarget {
         mem,
         mappings,
         symbols: Vec::new(),
+        backing_problems: Vec::new(),
     }
 }
 

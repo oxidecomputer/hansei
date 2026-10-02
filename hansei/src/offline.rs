@@ -33,6 +33,7 @@ pub(crate) fn session_args(set: &str, program: &str) -> SessionArgs {
         tokio_info: Some(testkit::fixture(set, &format!("{program}.tinfo"))),
         debug_info: None,
         binary: None,
+        sysroot: None,
         force: false,
         best_effort: false,
         runtime: None,

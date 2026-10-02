@@ -20,8 +20,9 @@
 
 #![cfg(target_os = "linux")]
 
-use proc::{Proc, Target};
+use proc::{CoreFiles, Proc, Target};
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -314,6 +315,117 @@ fn test_a_kernel_shaped_core_unwinds() {
         "the 3 workers no longer reach {PARK_FN}; stacks were {:#?}",
         stacks.values().map(demangled).collect::<Vec<_>>()
     );
+}
+
+/// Every file a core names, copied into a fresh directory at its
+/// recorded path beneath it: the sysroot a core read on another
+/// machine would be handed.
+fn sysroot_of(p: &Proc) -> (tempfile::TempDir, BTreeSet<String>) {
+    let files: BTreeSet<String> = p
+        .mappings()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m.path.clone())
+        .filter(|path| Path::new(path).is_file())
+        .collect();
+    let dir = tempfile::tempdir().expect("failed to create a tempdir");
+    for file in &files {
+        let at = dir.path().join(file.trim_start_matches('/'));
+        std::fs::create_dir_all(at.parent().unwrap()).expect("failed to create a sysroot dir");
+        std::fs::copy(file, &at).expect("failed to copy into the sysroot");
+    }
+    (dir, files)
+}
+
+fn with_sysroot(core: &Path, sysroot: &Path) -> Proc {
+    let files = CoreFiles {
+        sysroot: Some(sysroot),
+        ..CoreFiles::default()
+    };
+    Proc::open_core_with(core, files).expect("failed to open the core with a sysroot")
+}
+
+fn every_stack(p: &Proc) -> Vec<Vec<String>> {
+    unwind::load_frames(p)
+        .expect("failed to unwind the core")
+        .stacks
+        .values()
+        .map(demangled)
+        .collect()
+}
+
+/// The libraries a core names, copied into a sysroot at their recorded
+/// paths, walk and resolve exactly as the files at those paths do —
+/// on the kernel-shaped core, where libc's unwind tables and every
+/// symbol table exist only in the files. A copy of another build put
+/// in libc's place is then refused for its build id, which is how this
+/// knows the copies were what got read and not the recorded paths.
+#[test]
+fn test_a_sysroot_supplies_the_libraries() {
+    let (_dir, doctored) = kernel_shaped(core());
+    let direct = Proc::open_core(&doctored).expect("failed to open the doctored core");
+    let (sysroot, files) = sysroot_of(&direct);
+
+    let through = with_sysroot(&doctored, sysroot.path());
+    for file in &files {
+        assert_eq!(
+            through.backing_file_problem(file),
+            None,
+            "{file} was not read from the sysroot"
+        );
+    }
+    assert_eq!(every_stack(&through), every_stack(&direct));
+
+    let libc = files
+        .iter()
+        .find(|f| {
+            f.rsplit('/')
+                .next()
+                .is_some_and(|n| n.starts_with("libc.so"))
+        })
+        .expect("libc is not mapped");
+    let other = files
+        .iter()
+        .find(|f| *f != libc && f.contains(".so"))
+        .expect("no other library is mapped");
+    std::fs::copy(other, sysroot.path().join(libc.trim_start_matches('/')))
+        .expect("failed to put another build in libc's place");
+
+    let swapped = with_sysroot(&doctored, sysroot.path());
+    let problem = swapped
+        .backing_file_problem(libc)
+        .expect("a library of another build was read");
+    assert!(problem.contains("the core recorded"), "{problem}");
+    let missing = unwind::load_frames(&swapped)
+        .expect("failed to unwind the core")
+        .missing;
+    let why = &missing
+        .iter()
+        .find(|m| m.path == *libc)
+        .unwrap_or_else(|| panic!("libc's CFI still loaded: {missing:#?}"))
+        .why;
+    assert!(why.starts_with(&problem), "{why}");
+
+    // Its symbols went with it: the threads stopped in libc resolve
+    // there through the sysroot's copy and not through the other build.
+    let in_libc: Vec<u64> = direct
+        .lwps()
+        .unwrap()
+        .iter()
+        .map(|l| l.regs.rip)
+        .filter(|&rip| {
+            direct
+                .mappings()
+                .unwrap()
+                .get(rip)
+                .is_some_and(|m| m.path.as_deref() == Some(libc.as_str()))
+        })
+        .collect();
+    assert!(!in_libc.is_empty(), "no thread stopped in libc");
+    for rip in in_libc {
+        assert!(through.lookup_symbol_by_addr(rip).is_some(), "{rip:#x}");
+        assert!(swapped.lookup_symbol_by_addr(rip).is_none(), "{rip:#x}");
+    }
 }
 
 /// A copy of the core doctored to look like `tid` called through a null

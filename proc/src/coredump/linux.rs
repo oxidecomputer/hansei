@@ -24,8 +24,8 @@
 
 use super::common::{Segment, Symbols, names_something};
 use crate::{
-    BuildIds, Error, FatalSignal, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings,
-    ProcessFacts, Regs, Result, Status, SymbolBuf, Target, Timespec, fault_code_name,
+    BuildIds, CoreFiles, Error, FatalSignal, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags,
+    Mappings, ProcessFacts, Regs, Result, Status, SymbolBuf, Target, Timespec, fault_code_name,
 };
 
 use goblin::elf::Elf;
@@ -230,12 +230,12 @@ struct BackingFile {
 }
 
 impl BackingFile {
-    fn open(path: impl AsRef<Path>) -> Option<Self> {
-        let file = File::open(path).ok()?;
+    fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        let file = File::open(path)?;
         // SAFETY: as everywhere else in this workspace, we assume the
         // file is not modified while mapped.
-        let map = unsafe { Mmap::map(&file) }.ok()?;
-        Some(BackingFile {
+        let map = unsafe { Mmap::map(&file) }?;
+        Ok(BackingFile {
             map,
             symbols: OnceLock::new(),
         })
@@ -248,10 +248,11 @@ pub struct Core {
     segments: Vec<Segment>,
     /// The `NT_FILE` table, sorted by address.
     files: Vec<FileMap>,
-    /// Backing files, keyed by path, opened lazily: a core routinely
-    /// names files that are no longer on this machine, and that is only
-    /// fatal for reads that actually land in one.
-    backing: BTreeMap<String, Option<BackingFile>>,
+    /// Backing files, keyed by the path the core recorded, or why one
+    /// is not in use: a core routinely names files that are no longer
+    /// on this machine, and that is only fatal for reads that actually
+    /// land in one.
+    backing: BTreeMap<String, std::result::Result<BackingFile, String>>,
     mappings: Mappings,
     lwps: Vec<LwpInfo>,
     /// The signal that killed the process, decoded from the first
@@ -292,11 +293,23 @@ impl Core {
     /// demand, so a core whose libraries have moved still yields
     /// everything that was actually dumped.
     pub fn open(core_path: &Path) -> Result<Self> {
-        Self::open_with_binary(core_path, None)
+        Self::open_with(core_path, CoreFiles::default())
     }
 
     /// Open a core dump, reading the executable from `binary` instead
     /// of from the path the core recorded for it.
+    pub fn open_with_binary(core_path: &Path, binary: Option<&Path>) -> Result<Self> {
+        Self::open_with(
+            core_path,
+            CoreFiles {
+                binary,
+                ..CoreFiles::default()
+            },
+        )
+    }
+
+    /// Open a core dump, reading the executable and the libraries from
+    /// where `files` says.
     ///
     /// A Linux core carries no symbol table of its own — `.symtab` is
     /// not `SHF_ALLOC`, so it is never in the address space there is to
@@ -304,8 +317,12 @@ impl Core {
     /// machine reading it. Substituting the executable is therefore how
     /// a core read anywhere but where it was written resolves symbols
     /// at all, and [`Core::build_ids`] is what holds the substitution
-    /// to the right file.
-    pub fn open_with_binary(core_path: &Path, binary: Option<&Path>) -> Result<Self> {
+    /// to the right file. The libraries' text, CFI and symbols come from
+    /// their files too; a sysroot is how those are supplied from
+    /// elsewhere, and each is held to the build id the core recorded
+    /// for it before it is used.
+    pub fn open_with(core_path: &Path, files: CoreFiles<'_>) -> Result<Self> {
+        let CoreFiles { binary, sysroot } = files;
         let file = File::open(core_path).map_err(Error::read)?;
         // SAFETY: as everywhere else in this workspace, we assume the
         // file is not modified while mapped.
@@ -400,7 +417,7 @@ impl Core {
             .copied()
             .and_then(|phdr| file_at(&files, phdr))
             .map(|f| f.path.clone());
-        let mut substitute = match binary {
+        let substitute = match binary {
             Some(path) => {
                 if exec_path.is_none() {
                     return Err(Error::bad_core(
@@ -408,9 +425,9 @@ impl Core {
                          which of its mapped files is the executable",
                     ));
                 }
-                Some(BackingFile::open(path).ok_or_else(|| {
+                Some(BackingFile::open(path).map_err(|e| {
                     Error::read(io::Error::new(
-                        io::ErrorKind::NotFound,
+                        e.kind(),
                         format!("failed to open {}", path.display()),
                     ))
                 })?)
@@ -418,33 +435,19 @@ impl Core {
             None => None,
         };
 
-        // Map every backing file up front: it is a handful of mmaps,
-        // and it lets reads and symbol lookups take &self. Parsing
-        // their symtabs stays lazy, which is where the real cost is.
-        let mut backing: BTreeMap<String, Option<BackingFile>> = BTreeMap::new();
-        for f in &files {
-            if backing.contains_key(&f.path) {
-                continue;
-            }
-            let opened = match exec_path.as_deref() == Some(f.path.as_str()) {
-                true if substitute.is_some() => substitute.take(),
-                _ => BackingFile::open(&f.path),
-            };
-            backing.insert(f.path.clone(), opened);
-        }
-
         let fatal = decode_fatal_signal(cursig, lwps[0].tid, siginfo);
         let mut core_file = Core {
             core,
             segments,
             files,
-            backing,
+            backing: BTreeMap::new(),
             mappings: Mappings { inner: Vec::new() },
             lwps,
             fatal,
             exec: None,
             facts: None,
         };
+        core_file.backing = core_file.open_backing(exec_path.as_deref(), substitute, sysroot);
         core_file.mappings = core_file.build_mappings();
         core_file.exec = core_file.find_exec(auxv.get(&AT_PHDR).copied());
         core_file.fill_stack_ranges();
@@ -452,6 +455,77 @@ impl Core {
             .as_deref()
             .map(|desc| core_file.process_facts_from(desc, auxv.get(&AT_EXECFN).copied()));
         Ok(core_file)
+    }
+
+    /// Map every backing file up front: it is a handful of mmaps, and
+    /// it lets reads and symbol lookups take &self. Parsing their
+    /// symtabs stays lazy, which is where the real cost is.
+    ///
+    /// The executable is `substitute` where one was given, held to the
+    /// core by [`Core::build_ids`] rather than here so that a caller
+    /// can still choose to proceed past a mismatch. Every other file is
+    /// [`Core::open_recorded`].
+    fn open_backing(
+        &self,
+        exec_path: Option<&str>,
+        mut substitute: Option<BackingFile>,
+        sysroot: Option<&Path>,
+    ) -> BTreeMap<String, std::result::Result<BackingFile, String>> {
+        let mut backing = BTreeMap::new();
+        for f in &self.files {
+            if backing.contains_key(&f.path) {
+                continue;
+            }
+            let opened = match substitute.take_if(|_| exec_path == Some(f.path.as_str())) {
+                Some(file) => Ok(file),
+                None => self.open_recorded(&f.path, sysroot),
+            };
+            backing.insert(f.path.clone(), opened);
+        }
+        backing
+    }
+
+    /// The file behind a recorded path: the path itself, or, given a
+    /// sysroot, the same path under it and nowhere else — a library the
+    /// sysroot lacks is missing, not quietly read from this machine's
+    /// own copy, which is a different build wherever the two machines
+    /// differ. Either way the file is used only if its build id is the
+    /// one the core recorded for that object, where both carry one: a
+    /// different build at the same path parses perfectly well and
+    /// describes none of the code that ran.
+    fn open_recorded(
+        &self,
+        path: &str,
+        sysroot: Option<&Path>,
+    ) -> std::result::Result<BackingFile, String> {
+        let (at, missing) = match sysroot {
+            Some(root) => {
+                let at = root.join(path.trim_start_matches('/'));
+                let missing = format!("the sysroot has no {}", at.display());
+                (at, missing)
+            }
+            None => (
+                PathBuf::from(path),
+                "the backing file is not on this machine".to_owned(),
+            ),
+        };
+        let file = match BackingFile::open(&at) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(missing),
+            Err(e) => return Err(format!("{} did not open: {e}", at.display())),
+        };
+        if let (Some(recorded), Some(found)) =
+            (self.dumped_build_id(path), file_build_id(&file.map))
+            && recorded != found
+        {
+            return Err(format!(
+                "{} has build id {}, not the {} the core recorded",
+                at.display(),
+                hex(&found),
+                hex(&recorded)
+            ));
+        }
+        Ok(file)
     }
 
     /// Join the `PT_LOAD` regions against `NT_FILE` to produce the
@@ -584,11 +658,11 @@ impl Core {
         }
     }
 
-    /// The mapped backing file for `path`, if it was there to open. A
-    /// core routinely names files that have moved off this machine;
-    /// that is only fatal for reads that actually land in one.
+    /// The mapped backing file for `path`, if one is in use. A core
+    /// routinely names files that have moved off this machine; that is
+    /// only fatal for reads that actually land in one.
     fn backing(&self, path: &str) -> Option<&BackingFile> {
-        self.backing.get(path)?.as_ref()
+        self.backing.get(path)?.as_ref().ok()
     }
 
     /// The bytes at `addr`, borrowed straight from a mapping — the core's
@@ -699,47 +773,63 @@ impl Core {
         }
     }
 
-    /// Walk the executable's ELF image as the core dumped it. The
-    /// header is parsed by hand rather than through goblin, which wants
-    /// a whole file: what is mapped here is the first page or two, and
-    /// the section headers a parser would look for are off the end.
     fn core_build_id(&self) -> Option<Vec<u8>> {
-        let exec = self.exec.as_ref()?;
+        self.dumped_build_id(&self.exec.as_ref()?.path)
+    }
+
+    fn binary_build_id(&self) -> Option<Vec<u8>> {
+        file_build_id(&self.backing(&self.exec.as_ref()?.path)?.map)
+    }
+
+    /// The build id of the object mapped from `path`, read from its ELF
+    /// image as the core dumped it and never from a file — which is
+    /// what makes it the thing a file is checked against. The header is
+    /// parsed by hand rather than through goblin, which wants a whole
+    /// file: what is mapped here is the first page or two, and the
+    /// section headers a parser would look for are off the end. `None`
+    /// when those pages are not in the core.
+    fn dumped_build_id(&self, path: &str) -> Option<Vec<u8>> {
         // The image starts where the mapping at file offset 0 landed.
         let base = self
             .files
             .iter()
-            .filter(|f| f.path == exec.path && f.offset == 0)
+            .filter(|f| f.path == path && f.offset == 0)
             .map(|f| f.range.start)
             .min()?;
 
         let header = self.dumped_slice(base, 64)?;
+        if header[..4] != *b"\x7fELF" {
+            return None;
+        }
         let phoff = u64::from_le_bytes(header[0x20..0x28].try_into().ok()?);
         let phentsize = u16::from_le_bytes(header[0x36..0x38].try_into().ok()?) as u64;
         let phnum = u16::from_le_bytes(header[0x38..0x3a].try_into().ok()?) as u64;
+        // (p_type, p_vaddr, p_filesz) for each program header.
+        let phdrs: Vec<(u32, u64, u64)> = (0..phnum)
+            .map(|i| {
+                let ph = self.dumped_slice(base + phoff + i * phentsize, 56)?;
+                Some((
+                    u32::from_le_bytes(ph[0..4].try_into().ok()?),
+                    u64::from_le_bytes(ph[16..24].try_into().ok()?),
+                    u64::from_le_bytes(ph[32..40].try_into().ok()?),
+                ))
+            })
+            .collect::<Option<_>>()?;
 
-        (0..phnum).find_map(|i| {
-            let ph = self.dumped_slice(base + phoff + i * phentsize, 56)?;
-            if u32::from_le_bytes(ph[0..4].try_into().ok()?) != PT_NOTE {
-                return None;
-            }
-            let vaddr = u64::from_le_bytes(ph[16..24].try_into().ok()?);
-            let filesz = u64::from_le_bytes(ph[32..40].try_into().ok()?);
-            build_id_in_notes(self.dumped_slice(vaddr.wrapping_add(exec.bias), filesz)?)
-        })
-    }
-
-    fn binary_build_id(&self) -> Option<Vec<u8>> {
-        let exec = self.exec.as_ref()?;
-        let backing = self.backing(&exec.path)?;
-        let elf = Elf::parse(&backing.map).ok()?;
-        elf.program_headers
+        // The load bias as `object_bias` takes it, from the dumped
+        // headers rather than a file's: where the image landed against
+        // its lowest `PT_LOAD`.
+        let lowest = phdrs
             .iter()
-            .filter(|ph| ph.p_type == PT_NOTE)
-            .find_map(|ph| {
-                let start = ph.p_offset as usize;
-                let notes = backing.map.get(start..start + ph.p_filesz as usize)?;
-                build_id_in_notes(notes)
+            .filter(|(p_type, _, _)| *p_type == PT_LOAD)
+            .map(|&(_, vaddr, _)| vaddr)
+            .min()?;
+        let bias = base.wrapping_sub(lowest);
+        phdrs
+            .iter()
+            .filter(|(p_type, _, _)| *p_type == PT_NOTE)
+            .find_map(|&(_, vaddr, filesz)| {
+                build_id_in_notes(self.dumped_slice(vaddr.wrapping_add(bias), filesz)?)
             })
     }
 
@@ -821,7 +911,7 @@ impl Core {
     /// raw `st_value`: it is an offset into a TLS block, not an
     /// address, and biasing it would be meaningless.
     fn symbols_of(&self, path: &str) -> Option<&Symbols> {
-        let backing = self.backing.get(path)?.as_ref()?;
+        let backing = self.backing(path)?;
         let symbols = backing.symbols.get_or_init(|| {
             let Ok(elf) = Elf::parse(&backing.map) else {
                 return Symbols::default();
@@ -1124,6 +1214,10 @@ impl Target for Core {
         Some(Core::build_ids(self))
     }
 
+    fn backing_file_problem(&self, path: &str) -> Option<String> {
+        self.backing.get(path)?.as_ref().err().cloned()
+    }
+
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
         Core::readable_len(self, addr, max)
     }
@@ -1170,6 +1264,22 @@ fn file_at(files: &[FileMap], addr: u64) -> Option<&FileMap> {
     let idx = files.partition_point(|f| f.range.start <= addr);
     let file = &files[idx.checked_sub(1)?];
     (addr < file.range.end).then_some(file)
+}
+
+/// The build id an ELF file carries in its `PT_NOTE` segments.
+fn file_build_id(file: &[u8]) -> Option<Vec<u8>> {
+    let elf = Elf::parse(file).ok()?;
+    elf.program_headers
+        .iter()
+        .filter(|ph| ph.p_type == PT_NOTE)
+        .find_map(|ph| {
+            let start = ph.p_offset as usize;
+            build_id_in_notes(file.get(start..start + ph.p_filesz as usize)?)
+        })
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The `NT_GNU_BUILD_ID` payload in a `PT_NOTE` segment, if it has one.
@@ -1779,11 +1889,16 @@ mod tests {
 
         assert!(p.read_bytes(0x40_0000, 8).is_err());
         assert_eq!(p.read_bytes(0x9000, 4).unwrap(), [0x11; 4]);
-        // It is still a mapping, with the name the core recorded.
+        // It is still a mapping, with the name the core recorded, and
+        // the reader says why its file is not behind it.
         let m = p.mappings().unwrap();
         assert_eq!(
             m.get(0x40_0000).unwrap().path.as_deref(),
             Some("/nonexistent/libfoo.so")
+        );
+        assert_eq!(
+            p.backing_file_problem("/nonexistent/libfoo.so").as_deref(),
+            Some("the backing file is not on this machine")
         );
     }
 
@@ -1912,6 +2027,175 @@ mod tests {
             err.to_string().contains("not-here"),
             "the error does not name the file: {err}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Libraries: from a sysroot, and held to the core's build ids
+    // -----------------------------------------------------------------------
+
+    const LIB_BASE: u64 = 0x7f00_0000_0000;
+    /// The library page past the one the dump keeps, which only its
+    /// file can serve.
+    const LIB_TEXT: u64 = LIB_BASE + PAGE;
+    /// What every library file holds in that page.
+    const LIB_BYTE: u8 = 0x5a;
+
+    /// Write a two-page library to `path`: an ELF image carrying build
+    /// id `id`, padded to a page, then a page of [`LIB_BYTE`]. Returns
+    /// the first page, which is what a core keeps of it.
+    fn library_with_build_id(path: &Path, id: &[u8]) -> Vec<u8> {
+        std::fs::create_dir_all(path.parent().expect("the library has a directory"))
+            .expect("failed to create the library's directory");
+        let mut first = program_with_build_id(path, id);
+        first.resize(PAGE as usize, 0);
+        let mut file = first.clone();
+        file.extend([LIB_BYTE; PAGE as usize]);
+        std::fs::write(path, &file).expect("failed to write the library");
+        first
+    }
+
+    /// A core of a process that mapped a library recorded at `recorded`
+    /// over two pages, the first dumped as `first_page`, the second left
+    /// to the file, the way the default dump filter writes one.
+    fn core_with_library(dir: &Path, recorded: &str, first_page: Vec<u8>) -> PathBuf {
+        CoreBuilder::default()
+            .thread(1, regs_at(LIB_TEXT, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0x11; PAGE as usize])
+            .dumped(LIB_BASE, PF_R, first_page)
+            .undumped(LIB_TEXT, PAGE, PF_R | PF_X)
+            .file(LIB_BASE..LIB_TEXT + PAGE, 0, recorded)
+            .write_into(dir)
+    }
+
+    fn with_sysroot(core: &Path, sysroot: &Path) -> Core {
+        Core::open_with(
+            core,
+            CoreFiles {
+                sysroot: Some(sysroot),
+                ..CoreFiles::default()
+            },
+        )
+        .expect("failed to open the core")
+    }
+
+    /// A sysroot serves a library from under it at the path the core
+    /// recorded, which need not exist on this machine at all — the case
+    /// it is for, a core read away from the host that wrote it.
+    #[test]
+    fn test_a_sysroot_serves_the_recorded_path_from_under_it() {
+        let dir = tempfile::tempdir().expect("failed to create a tempdir");
+        let recorded = "/opt/vendor/lib/libfoo.so.1";
+        let sysroot = dir.path().join("sysroot");
+        let first = library_with_build_id(&sysroot.join("opt/vendor/lib/libfoo.so.1"), &[0xab; 20]);
+        let core = core_with_library(dir.path(), recorded, first);
+
+        let p = with_sysroot(&core, &sysroot);
+        assert_eq!(p.read_bytes(LIB_TEXT, 4).unwrap(), [LIB_BYTE; 4]);
+        assert_eq!(p.backing_file_problem(recorded), None);
+
+        // Without it the recorded path is all there is, and it is not
+        // here.
+        let p = Core::open(&core).expect("failed to open the core");
+        assert!(p.read_bytes(LIB_TEXT, 4).is_err());
+        assert_eq!(
+            p.backing_file_problem(recorded).as_deref(),
+            Some("the backing file is not on this machine")
+        );
+
+        // The facade opens it the same way.
+        let p = crate::Proc::open_core_with(
+            &core,
+            CoreFiles {
+                sysroot: Some(&sysroot),
+                ..CoreFiles::default()
+            },
+        )
+        .expect("failed to open the core");
+        assert_eq!(p.read_bytes(LIB_TEXT, 4).unwrap(), [LIB_BYTE; 4]);
+        assert_eq!(Target::backing_file_problem(&p, recorded), None);
+    }
+
+    /// Given a sysroot, a library it lacks is missing even when the
+    /// recorded path is right there: this machine's own copy is a
+    /// different build wherever the two machines differ, and reading it
+    /// would hide an incomplete sysroot behind frames that look right.
+    #[test]
+    fn test_a_sysroot_is_the_only_place_a_library_is_looked_for() {
+        let dir = tempfile::tempdir().expect("failed to create a tempdir");
+        let at = dir.path().join("lib/libfoo.so.1");
+        let first = library_with_build_id(&at, &[0xab; 20]);
+        let recorded = at.to_str().expect("a utf-8 tempdir");
+        let core = core_with_library(dir.path(), recorded, first);
+
+        // The recorded path serves it when nothing says otherwise...
+        let p = Core::open(&core).expect("failed to open the core");
+        assert_eq!(p.read_bytes(LIB_TEXT, 4).unwrap(), [LIB_BYTE; 4]);
+
+        // ...and not once a sysroot is named.
+        let sysroot = dir.path().join("sysroot");
+        std::fs::create_dir(&sysroot).expect("failed to create the sysroot");
+        let p = with_sysroot(&core, &sysroot);
+        assert!(p.read_bytes(LIB_TEXT, 4).is_err());
+        let problem = p
+            .backing_file_problem(recorded)
+            .expect("a library the sysroot lacks is missing");
+        assert_eq!(
+            problem,
+            format!(
+                "the sysroot has no {}",
+                sysroot.join(recorded.trim_start_matches('/')).display()
+            )
+        );
+    }
+
+    /// A library whose build id is not the one the core recorded is not
+    /// used, wherever it was found: it parses perfectly well, and every
+    /// address in it is wrong. The reason names both ids.
+    #[test]
+    fn test_a_library_of_another_build_is_not_used() {
+        let dir = tempfile::tempdir().expect("failed to create a tempdir");
+        let recorded = "/lib/libfoo.so.1";
+        let sysroot = dir.path().join("sysroot");
+        let at = sysroot.join("lib/libfoo.so.1");
+        let first = library_with_build_id(&at, &[0xab; 20]);
+        let core = core_with_library(dir.path(), recorded, first);
+        library_with_build_id(&at, &[0xcd; 20]);
+
+        let p = with_sysroot(&core, &sysroot);
+        assert!(p.read_bytes(LIB_TEXT, 4).is_err());
+        assert_eq!(
+            p.backing_file_problem(recorded),
+            Some(format!(
+                "{} has build id {}, not the {} the core recorded",
+                at.display(),
+                "cd".repeat(20),
+                "ab".repeat(20)
+            ))
+        );
+        // What the core itself holds still reads.
+        assert_eq!(p.read_bytes(LIB_BASE, 4).unwrap(), b"\x7fELF");
+    }
+
+    /// A core that kept no part of a library has no build id to hold
+    /// its file to, so the file is used as found: nothing to check
+    /// against is not evidence of a mismatch.
+    #[test]
+    fn test_a_library_the_core_kept_nothing_of_is_used_unchecked() {
+        let dir = tempfile::tempdir().expect("failed to create a tempdir");
+        let recorded = "/lib/libfoo.so.1";
+        let sysroot = dir.path().join("sysroot");
+        library_with_build_id(&sysroot.join("lib/libfoo.so.1"), &[0xcd; 20]);
+        let core = CoreBuilder::default()
+            .thread(1, regs_at(LIB_TEXT, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0x11; PAGE as usize])
+            .undumped(LIB_BASE, 2 * PAGE, PF_R | PF_X)
+            .file(LIB_BASE..LIB_TEXT + PAGE, 0, recorded)
+            .write_into(dir.path());
+
+        let p = with_sysroot(&core, &sysroot);
+        assert_eq!(p.read_bytes(LIB_BASE, 4).unwrap(), b"\x7fELF");
+        assert_eq!(p.read_bytes(LIB_TEXT, 4).unwrap(), [LIB_BYTE; 4]);
+        assert_eq!(p.backing_file_problem(recorded), None);
     }
 
     // -----------------------------------------------------------------------
