@@ -86,7 +86,12 @@ mod tests {
     /// made before the neutral answer.
     #[test]
     fn test_a_snapshot_recording_no_index_is_not_asked() {
-        let (_, snapshot) = testkit::load("linux", "simple-await");
+        // Recorded here rather than read off a set, so the policy is
+        // the one under test whichever kind of target the run reads.
+        let (_, fixture) = testkit::load(testkit::set_or_any("linux"), "simple-await");
+        let snapshot = Recorder::new(&fixture)
+            .snapshot(RecordedHeapEvidence::Unavailable)
+            .unwrap();
         assert_eq!(snapshot.heap_evidence(), RecordedHeapEvidence::Unavailable);
         let recorder = Recorder::new(&snapshot);
         assert!(prepare(&recorder).unwrap().is_none());
@@ -98,7 +103,7 @@ mod tests {
     /// to reading ungated.
     #[test]
     fn test_a_claimed_index_that_cannot_be_rebuilt_is_refused() {
-        let (_, snapshot) = testkit::load("linux", "simple-await");
+        let (_, snapshot) = testkit::load(testkit::set_or_any("linux"), "simple-await");
         let claimed = Recorder::new(&snapshot)
             .snapshot(RecordedHeapEvidence::Available)
             .unwrap();

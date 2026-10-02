@@ -2349,13 +2349,13 @@ mod future_trace_tests {
     use crate::{TraceTarget, parse_trace_target};
     use hansei_bundle::names::ImplFold;
     use hansei_runtime::testkit;
+    use hansei_runtime::testkit::Fixture;
     use hansei_runtime::tokio::TaskState;
     use hansei_runtime::tokio::assess::ContinuationStatus;
     use hansei_runtime::tokio::bundle::{self, Context, TaskExtents, TaskList};
     use hansei_runtime::tokio::census::{self, FutureCensus};
     use hansei_runtime::tokio::chain::InspectionMode;
     use hansei_runtime::tokio::observe::ReadContext;
-    use proc::snapshot::Snapshot;
     use reify::Value;
 
     use std::collections::HashMap;
@@ -2365,13 +2365,13 @@ mod future_trace_tests {
 
     /// The names of a fixture's own types, as a session over it gives
     /// them.
-    fn fixture_names<'b>(ctx: &Context<'b, Snapshot>) -> TypeNames<'b> {
+    fn fixture_names<'b>(ctx: &Context<'b, Fixture>) -> TypeNames<'b> {
         TypeNames::over(ctx.view, &NO_IMPLS)
     }
 
     fn with_target(
         program: &str,
-        check: impl FnOnce(&Context<'_, Snapshot>, &TaskList, &TaskExtents, &FutureCensus),
+        check: impl FnOnce(&Context<'_, Fixture>, &TaskList, &TaskExtents, &FutureCensus),
     ) {
         let (bundle, snapshot) = testkit::load_any(program);
         let ctx = testkit::context(&bundle, &snapshot);
@@ -3114,9 +3114,9 @@ mod trace_render_tests {
     /// bindings, say.
     #[allow(clippy::too_many_arguments)]
     fn trace_ctx(
-        ctx: &hansei_runtime::tokio::bundle::Context<'_, proc::snapshot::Snapshot>,
+        ctx: &hansei_runtime::tokio::bundle::Context<'_, hansei_runtime::testkit::Fixture>,
         bundle: &hansei_bundle::Bundle,
-        snapshot: &proc::snapshot::Snapshot,
+        snapshot: &hansei_runtime::testkit::Fixture,
         future: &str,
         verbose: bool,
         theme: output::Theme,

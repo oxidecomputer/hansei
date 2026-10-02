@@ -643,6 +643,7 @@ dependencies = [
  "reify",
  "rustc-demangle",
  "semver",
+ "tempfile",
  "testrun",
 ]
 

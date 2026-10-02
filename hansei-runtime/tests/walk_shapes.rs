@@ -12,6 +12,7 @@
 use hansei_bundle::{
     Bundle, BundleType, BundleTypeId, BundleView, FutureTarget, SemanticIssueKind, WalkRole,
 };
+use hansei_runtime::testkit::Fixture;
 use hansei_runtime::testkit::{self, load_any, tasks as tasks_of};
 use hansei_runtime::tokio::assess::{ContinuationStatus, WaitAssessment};
 use hansei_runtime::tokio::bundle::{
@@ -21,10 +22,9 @@ use hansei_runtime::tokio::bundle::{
 use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::graph::{self, BarrierRelation};
 use hansei_runtime::tokio::observe::{ReadContext, ReferenceSource, ResourceObservation};
-use proc::snapshot::Snapshot;
 
 /// The fixture pair, attached the way every offline suite attaches.
-fn pair() -> (Bundle, Snapshot) {
+fn pair() -> (Bundle, Fixture) {
     load_any("walk-shapes")
 }
 
@@ -58,7 +58,7 @@ fn type_by_name<'a>(bundle: &'a Bundle, pred: impl Fn(&str) -> bool) -> BundleTy
 }
 
 /// A listed task's own chain, walked by its programs.
-fn chain_of<'a>(ctx: &Context<'a, Snapshot>, task: &Task) -> AwaitChain<'a> {
+fn chain_of<'a>(ctx: &Context<'a, Fixture>, task: &Task) -> AwaitChain<'a> {
     let TaskStage::Running(root) = ctx.task_root(task, &ReadContext::none()).unwrap() else {
         panic!("the task is parked");
     };

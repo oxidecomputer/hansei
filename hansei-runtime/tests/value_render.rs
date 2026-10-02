@@ -21,11 +21,11 @@
 //! hansei-runtime --test value_render` and review the diff.
 
 use hansei_bundle::Bundle;
+use hansei_runtime::testkit::Fixture;
 use hansei_runtime::testkit::load;
 use hansei_runtime::tokio::bundle::{Context, TaskStage};
 use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::observe::ReadContext;
-use proc::snapshot::Snapshot;
 use reify::Value;
 
 use std::fmt::Write as _;
@@ -43,8 +43,8 @@ fn mask(s: &str) -> String {
 /// Render the first source-level local named `local` in running task
 /// `task_id`'s outermost frame, pretty-printed and address-masked.
 fn render_local(
-    ctx: &Context<'_, Snapshot>,
-    snapshot: &Snapshot,
+    ctx: &Context<'_, Fixture>,
+    snapshot: &Fixture,
     list: &hansei_runtime::tokio::bundle::TaskList,
     task_id: u64,
     local: &str,
@@ -86,7 +86,7 @@ fn render_local(
 /// Render one local per formatter into a single golden-friendly summary.
 /// Task 4 is the holder parked owning every primitive; task 3 is the
 /// waiter parked in the shared `Notify`'s queue.
-fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
+fn interpret(bundle: &Bundle, snapshot: &Fixture) -> String {
     let ctx = hansei_runtime::testkit::context(bundle, snapshot);
     let list = hansei_runtime::testkit::tasks(&ctx, snapshot);
     assert!(
@@ -121,7 +121,7 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
 
 #[track_caller]
 fn assert_golden(program: &str) {
-    for set in hansei_runtime::testkit::FIXTURE_SETS {
+    for set in hansei_runtime::testkit::fixture_sets() {
         let (bundle, snapshot) = load(set, program);
         let actual = interpret(&bundle, &snapshot);
         let mut settings = insta::Settings::clone_current();

@@ -841,14 +841,14 @@ mod executor_tests {
     use crate::testkit;
     use crate::testkit::heap::FakeHeap;
 
+    use crate::testkit::Fixture;
     use hansei_bundle::{Bundle, BundleTypeId, TypeDef};
-    use proc::snapshot::Snapshot;
 
     /// A pointer-typed value at a fixed address whose bytes point at a
     /// task header of the pair: the one dereference every check below
     /// is about, built rather than found so the referent is known.
     struct Pointer<'a> {
-        ctx: Context<'a, Snapshot>,
+        ctx: Context<'a, Fixture>,
         ty: BundleTypeId,
         target: u64,
         size: u64,
@@ -856,7 +856,7 @@ mod executor_tests {
     }
 
     impl<'a> Pointer<'a> {
-        fn new(bundle: &'a Bundle, snapshot: &'a Snapshot) -> Self {
+        fn new(bundle: &'a Bundle, snapshot: &'a Fixture) -> Self {
             let ctx = testkit::context(bundle, snapshot);
             let header = bundle.infra.header;
             let ty = bundle
@@ -1135,17 +1135,17 @@ mod tests {
     // bytes — so the runtime outcomes (`Null`, `Inactive`) and every
     // refusal are pinned directly.
 
+    use crate::testkit::Fixture;
     use hansei_bundle::{Bundle, BundleTypeId, DiscrValue, StrRef, TypeDef};
-    use proc::snapshot::Snapshot;
 
     use std::sync::OnceLock;
 
-    fn fixture() -> &'static (Bundle, Snapshot) {
-        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
+    fn fixture() -> &'static (Bundle, Fixture) {
+        static PAIR: OnceLock<(Bundle, Fixture)> = OnceLock::new();
         PAIR.get_or_init(|| crate::testkit::load_any("futurelock"))
     }
 
-    fn walk_ctx() -> Context<'static, Snapshot> {
+    fn walk_ctx() -> Context<'static, Fixture> {
         let (bundle, snapshot) = fixture();
         Context::new(snapshot, BundleView::new(bundle)).expect("the fixture pair attaches")
     }
@@ -1153,7 +1153,7 @@ mod tests {
     /// The first bundle type satisfying `pred`, scanned in id order so
     /// one frozen fixture always yields the same type.
     fn find_ty<'b>(
-        ctx: &Context<'b, Snapshot>,
+        ctx: &Context<'b, Fixture>,
         mut pred: impl FnMut(BundleType<'b>) -> bool,
     ) -> BundleType<'b> {
         let count = fixture().0.types.types.len() as u32;
@@ -1163,14 +1163,14 @@ mod tests {
             .expect("the fixture bundle has such a type")
     }
 
-    fn header_ty<'b>(ctx: &Context<'b, Snapshot>) -> BundleType<'b> {
+    fn header_ty<'b>(ctx: &Context<'b, Fixture>) -> BundleType<'b> {
         ctx.view
             .ty(fixture().0.infra.header)
             .expect("the header infra type resolves")
     }
 
     /// A pointer to a small sized pointee, for the deref steps.
-    fn pointer_ty<'b>(ctx: &Context<'b, Snapshot>) -> BundleType<'b> {
+    fn pointer_ty<'b>(ctx: &Context<'b, Fixture>) -> BundleType<'b> {
         find_ty(ctx, |ty| {
             matches!(ty.def(), TypeDef::Pointer { .. })
                 && ty
@@ -1192,7 +1192,7 @@ mod tests {
         unclaimed: u128,
     }
 
-    fn plain_enum<'b>(ctx: &Context<'b, Snapshot>) -> PlainEnum<'b> {
+    fn plain_enum<'b>(ctx: &Context<'b, Fixture>) -> PlainEnum<'b> {
         let mut found = None;
         find_ty(ctx, |ty| {
             let Some(shape) = ty.variant_shape() else {
@@ -1248,7 +1248,7 @@ mod tests {
 
     /// The failure a walk was expected to produce, as its full chain.
     #[track_caller]
-    fn walk_err<'b>(ctx: &Context<'b, Snapshot>, root: Value<'b>, steps: &[Step]) -> String {
+    fn walk_err<'b>(ctx: &Context<'b, Fixture>, root: Value<'b>, steps: &[Step]) -> String {
         match walk_steps(ctx, root, steps) {
             Err(e) => format!("{e:#}"),
             Ok(_) => panic!("the walk was expected to fail"),
@@ -1355,8 +1355,8 @@ mod tests {
         ));
 
         // A pointer into recorded memory dereferences to its pointee.
-        let addr = snapshot
-            .segments()
+        let addr = crate::testkit::corrupt::runs(snapshot)
+            .into_iter()
             .find(|r| r.end - r.start >= target.size())
             .expect("the snapshot recorded memory")
             .start;

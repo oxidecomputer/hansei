@@ -54,17 +54,17 @@
 
 use exegesis::extract::{ExtractOptions, extract_file};
 use hansei_bundle::{Bundle, BundleView};
+use hansei_runtime::testkit::cores::{Parked, binary_args, gcore};
 use hansei_runtime::testkit::matrix::{Matrix, Recipe};
 use hansei_runtime::tokio::bundle::Context as BundleContext;
 use proc::Proc;
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
-use std::thread;
 
 const PROGRAMS: &[&str] = &[
     "simple-await",
@@ -252,98 +252,17 @@ fn fixtures() -> &'static Fixtures {
 }
 
 /// A fixture program from build A, running at its parked steady state.
-struct Parked {
-    child: Child,
-}
-
-impl Parked {
-    /// Launch the program and block on its stdout until the readiness
-    /// marker: from that line on, the state under inspection is stable.
-    fn spawn(program: &str) -> Self {
-        let marker = match program {
-            // Deadlocked for good once the background task drops the
-            // lock (RFD 609: the handoff goes to the never-again-polled
-            // future1).
-            "futurelock" => "background task: done (dropping lock)",
-            _ => "READY",
-        };
-        let path = fixtures().program(program);
-        let mut child = Command::new(&path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap_or_else(|e| panic!("failed to launch {}: {e}", path.display()));
-        let stdout = child.stdout.take().unwrap();
-        let mut lines = BufReader::new(stdout).lines();
-        loop {
-            match lines.next() {
-                Some(Ok(line)) if line == marker => break,
-                Some(Ok(_)) => continue,
-                Some(Err(e)) => panic!("failed to read {program} stdout: {e}"),
-                None => panic!("{program} exited before reaching its steady state"),
-            }
-        }
-        // Keep draining stdout so the child can never block on a full
-        // pipe.
-        thread::spawn(move || lines.for_each(drop));
-        Self { child }
-    }
-
-    fn pid(&self) -> u32 {
-        self.child.id()
-    }
-}
-
-impl Drop for Parked {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// Take a core of the parked process; it lives in the caller's tempdir
-/// and is cleaned up with it.
-fn gcore(pid: u32, dir: &Path) -> PathBuf {
-    let prefix = dir.join("core");
-    let out = Command::new("gcore")
-        .arg("-o")
-        .arg(&prefix)
-        .arg(pid.to_string())
-        .output()
-        .expect("failed to run gcore");
-    assert!(
-        out.status.success(),
-        "gcore of {pid} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let core = dir.join(format!("core.{pid}"));
-    assert!(core.exists(), "gcore left no {}", core.display());
-    core
+fn park(program: &str) -> Parked {
+    Parked::spawn(&fixtures().program(program), program)
 }
 
 /// Drive a program to its steady state and run `check` against a fresh
-/// core of it.
+/// core of it, which lives in a tempdir and is cleaned up with it.
 fn with_core(program: &str, check: impl Fn(&Path)) {
-    let parked = Parked::spawn(program);
+    let parked = park(program);
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let core = gcore(parked.pid(), dir.path());
     check(&core);
-}
-
-/// The `--binary` flags an attach to `core` needs, if any.
-///
-/// A Linux core carries no symbol table, so hansei requires the
-/// executable to be named; an illumos core carries its own and warns if
-/// one is passed. Every core in this suite is of a program still sitting
-/// where it was, so the path the core recorded is the right answer —
-/// which is the whole reason the flag can be filled in here rather than
-/// threaded through every caller.
-fn binary_args(core: &Path) -> Vec<PathBuf> {
-    let proc = Proc::open_core(core).expect("failed to open the core");
-    match proc.needs_binary() {
-        false => Vec::new(),
-        true => vec![proc.exec_name().expect("the core names no executable")],
-    }
 }
 
 /// Attach a session to `core` through `bundle` and ask it one command.
@@ -3723,7 +3642,7 @@ fn test_a_unique_prefix_names_a_command() {
 /// A same-recipe pair fingerprints at exactly 100%.
 #[test]
 fn test_fingerprint_complete_on_matched_pair() {
-    let parked = Parked::spawn("simple-await");
+    let parked = park("simple-await");
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let core = gcore(parked.pid(), dir.path());
 
@@ -3749,7 +3668,7 @@ fn test_fingerprint_complete_on_matched_pair() {
 /// default <100% policy refuses it with a pointed diagnostic.
 #[test]
 fn test_mismatched_bundle_refused() {
-    let parked = Parked::spawn("simple-await");
+    let parked = park("simple-await");
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let core = gcore(parked.pid(), dir.path());
     let wrong_bundle = fixtures().bundle("futurelock");

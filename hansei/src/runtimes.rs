@@ -842,7 +842,7 @@ mod runtimes_tests {
     #[test]
     fn test_owner_buckets_sum_to_the_population() {
         let mut set_owned = 0;
-        for set in testkit::FIXTURE_SETS {
+        for set in testkit::fixture_sets() {
             for program in testkit::PROGRAMS {
                 let (bundle, snapshot) = testkit::load(set, program);
                 let ctx = testkit::context(&bundle, &snapshot);

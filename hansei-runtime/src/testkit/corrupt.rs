@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! A captured snapshot with faults baked into memory of its own.
+//! A captured target with faults baked into memory of its own.
 //!
 //! A denied range is cut out of the segments, so every read touching
 //! it fails, a blanked range is kept and zeroed, and a patched word is
@@ -11,31 +11,30 @@
 //! serves, because the renderer reads by borrowing: a lent slice
 //! carries a corruption only if the storage behind it does.
 
-use proc::snapshot::Snapshot;
 use proc::{LwpInfo, Mappings, Regs, SymbolBuf, Target};
 
 use std::ops::Range;
 
-/// A snapshot whose memory has been damaged on purpose. Everything
-/// but the bytes — symbols, mappings, LWPs — is the healthy capture's.
-pub struct Corrupt<'a> {
-    inner: &'a Snapshot,
-    /// The snapshot's captured runs, copied so they can be damaged, each
+/// A target whose memory has been damaged on purpose. Everything but
+/// the bytes — symbols, mappings, LWPs — is the healthy capture's.
+pub struct Corrupt<'a, T> {
+    inner: &'a T,
+    /// The target's readable runs, copied so they can be damaged, each
     /// as `(address, bytes)` and in ascending address order.
     memory: Vec<(u64, Vec<u8>)>,
 }
 
-impl<'a> Corrupt<'a> {
-    pub fn new(inner: &'a Snapshot) -> Self {
-        let memory = inner
-            .segments()
-            .map(|seg| {
-                let bytes = inner
-                    .read_bytes(seg.start, seg.end - seg.start)
-                    .expect("a recorded segment")
-                    .to_vec();
-                (seg.start, bytes)
-            })
+/// The granule a target's readability is probed in where it has no
+/// captured runs to list.
+const PAGE: u64 = 0x1000;
+
+impl<'a, T: Target> Corrupt<'a, T> {
+    /// Copy every byte `inner` can read: a snapshot's captured runs,
+    /// or, for a core, every readable stretch of every mapping.
+    pub fn new(inner: &'a T) -> Self {
+        let memory = runs(inner)
+            .into_iter()
+            .flat_map(|run| copy_run(inner, run))
             .collect();
         Corrupt { inner, memory }
     }
@@ -151,7 +150,63 @@ impl<'a> Corrupt<'a> {
     }
 }
 
-impl Target for Corrupt<'_> {
+/// The memory `target` can serve, in address order: a snapshot's
+/// captured runs, or, for a core, every readable stretch of every
+/// mapping.
+pub fn runs<T: Target>(target: &T) -> Vec<Range<u64>> {
+    target
+        .captured_runs()
+        .unwrap_or_else(|| readable_runs(target))
+}
+
+/// Every stretch of `target`'s mappings it says it can read, probed a
+/// page at a time across what it cannot.
+fn readable_runs<T: Target>(target: &T) -> Vec<Range<u64>> {
+    let mappings = target.mappings().expect("the target lists its mappings");
+    let mut runs: Vec<Range<u64>> = Vec::new();
+    for mapping in mappings.iter() {
+        let range = mapping.range();
+        let mut at = range.start;
+        while at < range.end {
+            match target.readable_len(at, range.end - at) {
+                0 => at = (at + PAGE) & !(PAGE - 1),
+                len => {
+                    match runs.last_mut() {
+                        Some(last) if last.end == at => last.end = at + len,
+                        _ => runs.push(at..at + len),
+                    }
+                    at += len;
+                }
+            }
+        }
+    }
+    runs
+}
+
+/// The bytes of `run`, as one piece where the target lends it whole,
+/// and otherwise a page at a time, each page it cannot read left out.
+fn copy_run<T: Target>(target: &T, run: Range<u64>) -> Vec<(u64, Vec<u8>)> {
+    if let Ok(bytes) = target.read_bytes(run.start, run.end - run.start) {
+        return vec![(run.start, bytes.to_vec())];
+    }
+    let mut pieces: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut at = run.start;
+    while at < run.end {
+        let end = ((at + PAGE) & !(PAGE - 1)).min(run.end);
+        if let Ok(bytes) = target.read_bytes(at, end - at) {
+            match pieces.last_mut() {
+                Some((base, held)) if *base + held.len() as u64 == at => {
+                    held.extend_from_slice(bytes)
+                }
+                _ => pieces.push((at, bytes.to_vec())),
+            }
+        }
+        at = end;
+    }
+    pieces
+}
+
+impl<T: Target> Target for Corrupt<'_, T> {
     fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
         let lent = || {
             let end = addr.checked_add(len)?;
@@ -201,6 +256,34 @@ impl Target for Corrupt<'_> {
         self.inner.tls_var_addr(regs, sym)
     }
 
+    fn fatal_signal(&self) -> Option<proc::FatalSignal> {
+        self.inner.fatal_signal()
+    }
+
+    fn lwp_name(&self, tid: u32) -> Option<String> {
+        self.inner.lwp_name(tid)
+    }
+
+    fn process_facts(&self) -> Option<proc::ProcessFacts> {
+        self.inner.process_facts()
+    }
+
+    fn exec_path(&self) -> Option<std::path::PathBuf> {
+        self.inner.exec_path()
+    }
+
+    fn build_ids(&self) -> Option<proc::BuildIds> {
+        self.inner.build_ids()
+    }
+
+    fn backing_file_problem(&self, path: &str) -> Option<String> {
+        self.inner.backing_file_problem(path)
+    }
+
+    fn exec_bias(&self) -> Option<u64> {
+        self.inner.exec_bias()
+    }
+
     fn recorded_heap_evidence(&self) -> Option<proc::snapshot::RecordedHeapEvidence> {
         // The policy is the capture's, not the damage's: a snapshot
         // whose allocator metadata this double denies still claims the
@@ -214,11 +297,12 @@ mod tests {
     use super::*;
     use crate::testkit;
 
-    /// A captured run of at least 64 bytes, as `(base, length)`.
-    fn a_run(snapshot: &Snapshot) -> (u64, u64) {
-        snapshot
-            .segments()
-            .map(|s| (s.start, s.end - s.start))
+    /// A readable run of at least 64 bytes, as `(base, length)`.
+    fn a_run(target: &impl Target) -> (u64, u64) {
+        Corrupt::new(target)
+            .memory
+            .iter()
+            .map(|(base, bytes)| (*base, bytes.len() as u64))
             .find(|&(_, len)| len >= 64)
             .expect("a run of some size")
     }

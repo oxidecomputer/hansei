@@ -24,6 +24,7 @@
 
 use hansei_bundle::Bundle;
 use hansei_runtime::testkit;
+use hansei_runtime::testkit::Fixture;
 use proc::snapshot::Snapshot;
 
 #[test]
@@ -34,8 +35,9 @@ fn test_generated_pair_matches_its_registry() {
     };
 
     let bundle = Bundle::load(format!("{prefix}.tinfo").as_ref()).expect("the bundle loads");
-    let snapshot =
-        Snapshot::load(format!("{prefix}.snapshot").as_ref()).expect("the snapshot loads");
+    let snapshot = Fixture::from(
+        Snapshot::load(format!("{prefix}.snapshot").as_ref()).expect("the snapshot loads"),
+    );
     // The total audit runs (and panics) inside the pipeline.
     let r = testkit::run(&bundle, &snapshot);
     let (list, census) = (&r.list, &r.census);

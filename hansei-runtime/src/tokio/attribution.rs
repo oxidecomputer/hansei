@@ -2850,12 +2850,12 @@ mod tests {
     use crate::tokio::observe::ReadContext;
     use crate::tokio::wakers::Territory;
 
-    use proc::snapshot::Snapshot;
+    use crate::testkit::Fixture;
 
     /// Everything the attribution reads over one fixture pair, built
     /// the way a session builds it.
     struct Over<'b> {
-        ctx: Context<'b, Snapshot>,
+        ctx: Context<'b, Fixture>,
         e: testkit::Enumeration<'b>,
         census: FutureCensus,
         wakers: WakerSlots,
@@ -2864,7 +2864,7 @@ mod tests {
     }
 
     impl<'b> Over<'b> {
-        fn new(bundle: &'b hansei_bundle::Bundle, snapshot: &'b Snapshot) -> Self {
+        fn new(bundle: &'b hansei_bundle::Bundle, snapshot: &'b Fixture) -> Self {
             let ctx = testkit::context(bundle, snapshot);
             let mut e = testkit::enumerate(&ctx, snapshot);
             e.discover(&ctx, &[]);
@@ -4371,6 +4371,7 @@ mod synthetic_tests {
     use crate::tokio::semantics::SemanticIndex;
     use crate::tokio::wakers::{Class, VtableKind};
 
+    use crate::testkit::Fixture;
     use hansei_bundle::{
         Bundle, CoroutineLayout, CoroutinePhase, CoroutineState, DiscrDef, DiscrValue, DiscrValues,
         DynFutureTable, Encoding, FORMAT_VERSION, ImplTable, InfraTypes, MemberDef, MemberRef,
@@ -4378,7 +4379,6 @@ mod synthetic_tests {
         StoragePolicy, StringInterner, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
         WalkBinding, WalksTable,
     };
-    use proc::snapshot::Snapshot;
     use proc::{LoadedObjectWithPath, LwpInfo, MapFlags, Regs, SymbolBuf};
 
     use std::ops::Range;
@@ -4769,19 +4769,19 @@ mod synthetic_tests {
     /// A fixture snapshot with one anonymous, writable mapping planted
     /// beside it, holding the bytes a test lays down.
     pub(super) struct Planted<'a> {
-        inner: &'a Snapshot,
+        inner: &'a Fixture,
         base: u64,
         bytes: Vec<u8>,
     }
 
     impl<'a> Planted<'a> {
-        pub(super) fn new(inner: &'a Snapshot) -> Self {
+        pub(super) fn new(inner: &'a Fixture) -> Self {
             Self::at(inner, BASE)
         }
 
         /// The mapping planted at `base` instead: where a test wants
         /// its bytes inside an address range something else fixes.
-        fn at(inner: &'a Snapshot, base: u64) -> Self {
+        fn at(inner: &'a Fixture, base: u64) -> Self {
             Planted {
                 inner,
                 base,

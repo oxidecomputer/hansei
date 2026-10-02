@@ -283,8 +283,8 @@ mod tests {
         use crate::offline::session_args;
         use crate::{Session, TraceTarget};
         use hansei_runtime::testkit;
-        let (bundle, snapshot) = testkit::load("linux", "nested-await");
-        let args = session_args("linux", "nested-await");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "nested-await");
+        let args = session_args(testkit::set_or_any("linux"), "nested-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let render = || RenderOpts {
             depth: 3,
@@ -327,8 +327,8 @@ mod tests {
         use crate::offline::session_args;
         use crate::{Session, TraceTarget};
         use hansei_runtime::testkit;
-        let (bundle, snapshot) = testkit::load("linux", "nested-await");
-        let args = session_args("linux", "nested-await");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "nested-await");
+        let args = session_args(testkit::set_or_any("linux"), "nested-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let render = || RenderOpts {
             depth: 3,
@@ -373,8 +373,8 @@ mod tests {
         use crate::offline::session_args;
         use crate::{Session, TraceTarget};
         use hansei_runtime::testkit;
-        let (bundle, snapshot) = testkit::load("illumos", "simple-await");
-        let args = session_args("illumos", "simple-await");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("illumos"), "simple-await");
+        let args = session_args(testkit::set_or_any("illumos"), "simple-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let id = session.tasks.tasks[0]
             .task_id

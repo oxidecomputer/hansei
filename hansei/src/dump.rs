@@ -563,8 +563,8 @@ mod tests {
         use crate::offline::session_args;
         use crate::{TraceTarget, cursor};
         use hansei_runtime::testkit;
-        let (bundle, snapshot) = testkit::load("illumos", "simple-await");
-        let args = session_args("illumos", "simple-await");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("illumos"), "simple-await");
+        let args = session_args(testkit::set_or_any("illumos"), "simple-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let id = session.tasks.tasks[0]
             .task_id
@@ -633,8 +633,8 @@ mod tests {
         use crate::offline::session_args;
         use crate::{TraceTarget, cursor};
         use hansei_runtime::testkit;
-        let (bundle, snapshot) = testkit::load("illumos", "simple-await");
-        let args = session_args("illumos", "simple-await");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("illumos"), "simple-await");
+        let args = session_args(testkit::set_or_any("illumos"), "simple-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let id = session.tasks.tasks[0]
             .task_id

@@ -3889,9 +3889,9 @@ mod tests {
     /// the dedup tests below count is their own call's, not something
     /// a recursive scan of the find's chain happened to meet.
     fn shallow_walker<'a, 'b>(
-        ctx: &'a Context<'b, proc::snapshot::Snapshot>,
+        ctx: &'a Context<'b, crate::testkit::Fixture>,
         list: &'a TaskList,
-    ) -> Walker<'a, 'b, proc::snapshot::Snapshot> {
+    ) -> Walker<'a, 'b, crate::testkit::Fixture> {
         Walker {
             ctx,
             list,
@@ -5059,9 +5059,9 @@ mod fanout_tests {
     use crate::testkit::{self, load_any};
     use crate::tokio::bundle::{FutureInfo, Task};
 
-    use proc::snapshot::Snapshot;
+    use crate::testkit::Fixture;
 
-    fn mapper_map<'b>(ctx: &Context<'b, Snapshot>, list: &TaskList) -> Value<'b> {
+    fn mapper_map<'b>(ctx: &Context<'b, Fixture>, list: &TaskList) -> Value<'b> {
         let task: &Task = list
             .tasks
             .iter()
@@ -5190,10 +5190,10 @@ mod table_tests {
     use crate::tokio::bundle::{FutureInfo, Task};
     use crate::tokio::contract;
 
-    use proc::snapshot::Snapshot;
+    use crate::testkit::Fixture;
 
     /// `unordered`'s driver task, and the map it keeps two futures in.
-    fn keyed<'b>(ctx: &Context<'b, Snapshot>, list: &'b TaskList) -> (&'b Task, Value<'b>) {
+    fn keyed<'b>(ctx: &Context<'b, Fixture>, list: &'b TaskList) -> (&'b Task, Value<'b>) {
         let task: &Task = list
             .tasks
             .iter()
@@ -5205,7 +5205,7 @@ mod table_tests {
     }
 
     /// A word of the table, read by its binding's route.
-    fn word(ctx: &Context<'_, Snapshot>, map: Value<'_>, path: &hansei_bundle::TypedPath) -> u64 {
+    fn word(ctx: &Context<'_, Fixture>, map: Value<'_>, path: &hansei_bundle::TypedPath) -> u64 {
         contract::execute_steps(ctx, &ReadContext::none(), map, &path.steps)
             .unwrap()
             .optional()
@@ -5445,16 +5445,16 @@ mod table_tests {
 #[cfg(test)]
 mod far_end_tests {
     use super::*;
-    use crate::testkit::{self, FIXTURE_SETS};
+    use crate::testkit::{self, fixture_sets};
     use crate::tokio::bundle::FutureInfo;
     use crate::tokio::observe::FarEnd;
 
+    use crate::testkit::Fixture;
     use hansei_bundle::{
         Bundle, BundleType, BundleTypeId, BundleView, Continuation, FarEndBinding, FarEndState,
         FutureTarget, MemberRef, PollAction, PollProgram, SemanticOrigin, SemanticOriginId,
         SemanticRule, SemanticRuleId, SemanticRuleKind, Step, StringInterner, TypedPath,
     };
-    use proc::snapshot::Snapshot;
 
     /// `set`'s `tls-conns` pair, its bundle bound as though `function`'s
     /// coroutine were a sprockets-tls handshake — under sprockets-tls's
@@ -5464,7 +5464,7 @@ mod far_end_tests {
         set: &str,
         function: &str,
         states: impl Fn(&Bundle, BundleType<'_>) -> Vec<FarEndState>,
-    ) -> (Bundle, Snapshot, BundleTypeId) {
+    ) -> (Bundle, Fixture, BundleTypeId) {
         let (mut bundle, snapshot) = testkit::load(set, "tls-conns");
         let mut strings = StringInterner::new();
         for s in bundle.strings.iter() {
@@ -5547,7 +5547,7 @@ mod far_end_tests {
     /// name, and the entry says so.
     #[test]
     fn test_a_handshake_frame_is_found_by_the_stream_its_wait_reaches() {
-        for set in FIXTURE_SETS {
+        for set in fixture_sets() {
             let (bundle, snapshot, server) = bound(set, "exact_server", |_, server| {
                 server
                     .variants()
@@ -5597,7 +5597,7 @@ mod far_end_tests {
     /// indexed by the stream the handshake's own wait reaches.
     #[test]
     fn test_a_frame_awaiting_its_handshake_is_found_by_the_handshakes_stream() {
-        for set in FIXTURE_SETS {
+        for set in fixture_sets() {
             let (bundle, snapshot, server) = bound(set, "handshaking_server", |bundle, server| {
                 let record_of =
                     |ty: BundleTypeId| bundle.semantics.types.iter().find(|record| record.ty == ty);

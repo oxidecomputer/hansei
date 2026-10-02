@@ -710,12 +710,12 @@ impl<'b, T: Target> Context<'b, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::{self, FIXTURE_SETS, load, load_any};
+    use crate::testkit::{self, fixture_sets, load, load_any};
     use crate::tokio::bundle::TaskList;
     use crate::tokio::observe::ResourceObservation;
 
+    use crate::testkit::Fixture;
     use hansei_bundle::{Bundle, BundleView};
-    use proc::snapshot::Snapshot;
 
     const NOWHERE: u64 = 0xdead_beef_0000;
 
@@ -798,7 +798,7 @@ mod tests {
     #[test]
     fn test_the_engine_walks_the_delegation_cases_by_their_programs() {
         use crate::testkit::delegation::read_from;
-        for set in FIXTURE_SETS {
+        for set in fixture_sets() {
             let (bundle, snapshot) = load(set, "delegation-cases");
             let ctx = testkit::context(&bundle, &snapshot);
             let list = testkit::tasks(&ctx, &snapshot);
@@ -1043,7 +1043,7 @@ mod tests {
     /// The wide pointer of the dyn-future fixture's driver, and the
     /// vtable it names: what the dynamic resolver checks, one word at
     /// a time.
-    fn wide_pointer(ctx: &Context<'_, Snapshot>, list: &TaskList) -> (u64, u64, u64) {
+    fn wide_pointer(ctx: &Context<'_, Fixture>, list: &TaskList) -> (u64, u64, u64) {
         let driver = task_named(list, ctx.view, "driver");
         let inspection = inspect(ctx, driver);
         let dynamic = inspection
@@ -1072,7 +1072,7 @@ mod tests {
     /// The address in a task's own vtable poll slot — a monomorphized
     /// `raw::poll`, which joins the task table and not the dyn-future
     /// one, and so stands in for a leaf's poll under a patched vtable.
-    fn task_poll_fn(ctx: &Context<'_, Snapshot>, snapshot: &Snapshot, task: &Task) -> u64 {
+    fn task_poll_fn(ctx: &Context<'_, Fixture>, snapshot: &Fixture, task: &Task) -> u64 {
         let header_ty = ctx
             .infra_ty(ctx.view.bundle().infra.header, "task Header")
             .unwrap();
@@ -1088,9 +1088,11 @@ mod tests {
 
     fn corrupted<'a>(
         bundle: &'a Bundle,
-        snapshot: &'a Snapshot,
-        patch: impl FnOnce(crate::testkit::corrupt::Corrupt<'a>) -> crate::testkit::corrupt::Corrupt<'a>,
-    ) -> (crate::testkit::corrupt::Corrupt<'a>, TaskList) {
+        snapshot: &'a Fixture,
+        patch: impl FnOnce(
+            crate::testkit::corrupt::Corrupt<'a, Fixture>,
+        ) -> crate::testkit::corrupt::Corrupt<'a, Fixture>,
+    ) -> (crate::testkit::corrupt::Corrupt<'a, Fixture>, TaskList) {
         let corrupt = patch(crate::testkit::corrupt::Corrupt::new(snapshot));
         let ctx = Context::new(&corrupt, BundleView::new(bundle)).unwrap();
         let list = testkit::tasks(&ctx, &corrupt);
@@ -1126,7 +1128,7 @@ mod tests {
         assert!(healthy.chain.all_exclusive());
         let (data_at, vtable_at, vtable) = wide_pointer(&ctx, &list);
         let slot = |n: u64| vtable + n * 8;
-        let end_of = |corrupt: &crate::testkit::corrupt::Corrupt<'_>, list: &TaskList| {
+        let end_of = |corrupt: &crate::testkit::corrupt::Corrupt<'_, Fixture>, list: &TaskList| {
             let ctx = Context::new(corrupt, BundleView::new(&bundle)).unwrap();
             let inspection = inspect(&ctx, task_named(list, ctx.view, "driver"));
             match inspection.chain.end {

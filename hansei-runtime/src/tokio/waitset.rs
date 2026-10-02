@@ -1476,9 +1476,9 @@ mod tests {
     use crate::tokio::bundle::{FutureInfo, IoResourceInfo, IoWaiterInfo, Task, TimerEntryInfo};
     use crate::tokio::observe::Consistency;
 
+    use crate::testkit::Fixture;
     use hansei_bundle::BundleView;
     use hansei_bundle::tokio::timer;
-    use proc::snapshot::Snapshot;
 
     fn task_named<'a>(list: &'a TaskList, view: BundleView<'_>, name: &str) -> &'a Task {
         let hits: Vec<&Task> = list
@@ -1492,7 +1492,7 @@ mod tests {
 
     /// The wait set of `task` under `registries`, over a healthy pair.
     fn branches_of(
-        ctx: &Context<'_, Snapshot>,
+        ctx: &Context<'_, Fixture>,
         list: &TaskList,
         task: &Task,
         registries: &Registries,
@@ -1621,7 +1621,7 @@ mod tests {
         assert_eq!(set.at.unwrap().ty, inspection_stop(&ctx, task));
     }
 
-    fn inspection_stop(ctx: &Context<'_, Snapshot>, task: &Task) -> BundleTypeId {
+    fn inspection_stop(ctx: &Context<'_, Fixture>, task: &Task) -> BundleTypeId {
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
             .unwrap()

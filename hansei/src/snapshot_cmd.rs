@@ -372,8 +372,8 @@ mod tests {
     /// policy, since this capture builds no index.
     #[test]
     fn test_a_capture_past_its_limit_publishes_nothing() {
-        let (bundle, snapshot) = testkit::load("linux", "simple-await");
-        let args = session_args("linux", "simple-await");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "simple-await");
+        let args = session_args(testkit::set_or_any("linux"), "simple-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("recapture.snapshot");
@@ -422,8 +422,15 @@ mod tests {
     /// session then gates by it is the census the capture gated.
     #[test]
     fn test_a_recapture_carries_its_allocator_index() {
+        // The illumos captures are the ones under libumem; a run that
+        // does not read that set has no index to recapture.
+        if !testkit::reads("illumos") {
+            return;
+        }
         let (bundle, snapshot) = testkit::load("illumos", "joinset");
-        assert_eq!(snapshot.heap_evidence(), RecordedHeapEvidence::Available);
+        if let testkit::Fixture::Snapshot(recorded) = &snapshot {
+            assert_eq!(recorded.heap_evidence(), RecordedHeapEvidence::Available);
+        }
         let args = session_args("illumos", "joinset");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         assert!(session.umem().is_some());
@@ -438,7 +445,7 @@ mod tests {
         let replay = Session::attach(&recaptured, &bundle, &args).expect("the recapture attaches");
         let index = replay.umem().expect("the recapture rebuilds its index");
         assert_eq!(index.stats().slabs, session.umem().unwrap().stats().slabs);
-        let population = |s: &Session<'_, Snapshot>| {
+        fn population<T: proc::Target>(s: &Session<'_, T>) -> (usize, usize, usize, usize, usize) {
             let census = s.census();
             (
                 census.held.len(),
@@ -447,7 +454,7 @@ mod tests {
                 census.refused,
                 s.tasks.tasks.len(),
             )
-        };
+        }
         assert_eq!(population(&replay), population(&session));
     }
 }

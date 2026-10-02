@@ -884,8 +884,8 @@ mod planted_tests {
     use super::*;
     use crate::testkit::{self, load_any};
 
+    use crate::testkit::Fixture;
     use hansei_bundle::BundleView;
-    use proc::snapshot::Snapshot;
     use proc::{LoadedObjectWithPath, LwpInfo, MapFlags, Regs, SymbolBuf};
 
     use std::ops::Range;
@@ -901,7 +901,7 @@ mod planted_tests {
     /// it, holding whatever bytes a test lays down, and four function
     /// symbols named as futures-util's set-waker entries.
     struct Planted<'a> {
-        inner: &'a Snapshot,
+        inner: &'a Fixture,
         bytes: Vec<u8>,
         anon: Vec<u8>,
         symbols: Vec<SymbolBuf>,
@@ -935,7 +935,7 @@ mod planted_tests {
     const ON_DECOY: u64 = BASE + 0x240;
 
     impl<'a> Planted<'a> {
-        fn new(inner: &'a Snapshot) -> Self {
+        fn new(inner: &'a Fixture) -> Self {
             Planted {
                 inner,
                 bytes: vec![0; SIZE as usize],
@@ -1115,7 +1115,7 @@ mod planted_tests {
 
     /// A snapshot whose symtab has no copy of tokio's static: the sweep
     /// admits nothing and says why, and the audit says it did not run.
-    struct Nameless<'a>(&'a Snapshot);
+    struct Nameless<'a>(&'a Fixture);
 
     impl proc::Target for Nameless<'_> {
         fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
@@ -1205,7 +1205,8 @@ mod planted_tests {
     #[test]
     fn test_the_recorder_passes_the_captured_runs_through() {
         use proc::Target as _;
-        let (_, snapshot) = load_any("sleep-join");
+        let (bundle, fixture) = load_any("sleep-join");
+        let snapshot = crate::testkit::record(&bundle, &fixture);
         let recorder = proc::snapshot::Recorder::new(&snapshot);
         let runs = recorder.captured_runs().expect("a snapshot's runs");
         assert!(!runs.is_empty());

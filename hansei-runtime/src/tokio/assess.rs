@@ -2180,9 +2180,9 @@ mod tests {
     use crate::tokio::bundle::{FutureInfo, Registries, WaitKind};
     use crate::tokio::graph::{self, TaskWait};
 
+    use crate::testkit::Fixture;
     use hansei_bundle::tokio::timer;
     use hansei_bundle::{BundleView, WalkRole};
-    use proc::snapshot::Snapshot;
     use reify::Value;
 
     const RUNNING: u64 = 0b0001;
@@ -2832,11 +2832,11 @@ mod tests {
     /// A target where `task`'s state word carries `bits` in place of
     /// its lifecycle bits, the reference count kept.
     fn with_state<'a>(
-        snapshot: &'a Snapshot,
-        ctx: &Context<'_, Snapshot>,
+        snapshot: &'a Fixture,
+        ctx: &Context<'_, Fixture>,
         task: &Task,
         bits: u64,
-    ) -> Corrupt<'a> {
+    ) -> Corrupt<'a, Fixture> {
         Corrupt::new(snapshot).patch(state_word(ctx, task), (task.state.0 & !STATE_BITS) | bits)
     }
 
@@ -3041,7 +3041,7 @@ mod tests {
 
     /// The queue's guard byte and its head word, for freezing the
     /// critical-section and empty-queue states.
-    fn queue_words(ctx: &Context<'_, Snapshot>, semaphore: ValueKey) -> (u64, u64, u64) {
+    fn queue_words(ctx: &Context<'_, Fixture>, semaphore: ValueKey) -> (u64, u64, u64) {
         let sem = ctx.read_keyed(semaphore, &ReadContext::none()).unwrap();
         let lock = ctx.walk(WalkRole::SemaphoreLock).walk_at(sem).unwrap();
         let permits = ctx.walk(WalkRole::SemaphorePermits).walk_at(sem).unwrap();
@@ -3129,7 +3129,7 @@ mod tests {
         let needed = ctx.walk(WalkRole::AcquireNeeded).walk_at(acquire).unwrap();
         let queued = ctx.walk(WalkRole::AcquireQueued).walk_at(acquire).unwrap();
         let (lock, permits, head) = queue_words(&ctx, op2.semaphore);
-        let cases: Vec<(&str, Corrupt<'_>, &str)> = vec![
+        let cases: Vec<(&str, Corrupt<'_, Fixture>, &str)> = vec![
             (
                 "granted before the wake is consumed",
                 Corrupt::new(&snapshot).patch(needed.addr, 0),
@@ -3200,7 +3200,7 @@ mod tests {
 
     /// The address of the `Some` word a head route enters: the option
     /// itself, whose zero is an empty list.
-    fn option_word(ctx: &Context<'_, Snapshot>, role: WalkRole, root: Value<'_>) -> u64 {
+    fn option_word(ctx: &Context<'_, Fixture>, role: WalkRole, root: Value<'_>) -> u64 {
         let steps = &ctx.view.bundle().walks.entries[&role].steps;
         let option = steps
             .iter()
@@ -3220,7 +3220,7 @@ mod tests {
 
     /// The `RawWaker` a registered waker walk lands on: its data and
     /// vtable words.
-    fn raw_waker_words(ctx: &Context<'_, Snapshot>, role: WalkRole, root: Value<'_>) -> (u64, u64) {
+    fn raw_waker_words(ctx: &Context<'_, Fixture>, role: WalkRole, root: Value<'_>) -> (u64, u64) {
         let raw = ctx
             .walk(role)
             .walk(root)
@@ -3325,7 +3325,7 @@ mod tests {
         // The windows move the read index off zero where its slot's
         // bit or the unread count would otherwise be indistinguishable
         // from a zero.
-        let cases: Vec<(&str, Corrupt<'_>, &str, &str)> = vec![
+        let cases: Vec<(&str, Corrupt<'_, Fixture>, &str, &str)> = vec![
             (
                 "a message at the read index",
                 Corrupt::new(&snapshot)
@@ -3522,7 +3522,7 @@ mod tests {
         assert_eq!(word, state.word);
         let (data, _) = raw_waker_words(&ctx, WalkRole::OneshotRxTask, arc);
         let selector = task_named(&list, ctx.view, "armed_select::selector");
-        let cases: Vec<(&str, Corrupt<'_>, &str)> = vec![
+        let cases: Vec<(&str, Corrupt<'_, Fixture>, &str)> = vec![
             (
                 "the sender completed",
                 Corrupt::new(&snapshot).patch(state_at.addr, word | oneshot::VALUE_SENT),
@@ -3655,7 +3655,7 @@ mod tests {
             .addr;
         let head = option_word(&ctx, WalkRole::NotifyQueueHead, notify_value);
         let holder = task_named(&list, ctx.view, "channels::hold");
-        let cases: Vec<(&str, Corrupt<'_>, &str)> = vec![
+        let cases: Vec<(&str, Corrupt<'_, Fixture>, &str)> = vec![
             (
                 "done",
                 Corrupt::new(&snapshot).patch_byte(state, 2),
@@ -3823,7 +3823,7 @@ mod tests {
             .expect("the reader slot is armed");
         let data = ctx.walk(WalkRole::WakerData).walk_at(raw).unwrap();
         let other = task_named(&list, ctx.view, "local_writer").addr.0;
-        let cases: Vec<(&str, Corrupt<'_>, &str)> = vec![
+        let cases: Vec<(&str, Corrupt<'_, Fixture>, &str)> = vec![
             (
                 "readable delivered",
                 Corrupt::new(&snapshot).patch(readiness.addr, ready::READABLE),

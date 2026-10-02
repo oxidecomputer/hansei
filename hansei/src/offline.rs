@@ -20,7 +20,7 @@
 use crate::output::Theme;
 use crate::{Session, SessionArgs, dispatch, repl};
 
-use hansei_runtime::testkit::{self, FIXTURE_SETS, PROGRAMS, mask};
+use hansei_runtime::testkit::{self, PROGRAMS, fixture_sets, mask};
 use hansei_runtime::tokio::{bundle, census};
 
 use std::path::Path;
@@ -28,12 +28,13 @@ use std::path::Path;
 /// The session flags an offline pair is opened under: the pair's two
 /// files and every default a command line would fill in.
 pub(crate) fn session_args(set: &str, program: &str) -> SessionArgs {
+    let paths = testkit::paths(set, program);
     SessionArgs {
-        core: testkit::fixture(set, &format!("{program}.snapshot")),
-        tokio_info: Some(testkit::fixture(set, &format!("{program}.tinfo"))),
+        core: paths.core,
+        tokio_info: Some(paths.tokio_info),
         debug_info: None,
-        binary: None,
-        sysroot: None,
+        binary: paths.binary,
+        sysroot: paths.sysroot,
         force: false,
         allow_unsupported: false,
         best_effort: false,
@@ -48,10 +49,7 @@ pub(crate) fn session_args(set: &str, program: &str) -> SessionArgs {
 /// aim at the first task — the listing is sorted by id, so the target
 /// is as stable as the fixture — and each entry carries the label its
 /// golden file is named with.
-fn commands(
-    session: &Session<'_, proc::snapshot::Snapshot>,
-    program: &str,
-) -> Vec<(&'static str, String)> {
+fn commands(session: &Session<'_, testkit::Fixture>, program: &str) -> Vec<(&'static str, String)> {
     let mut list = vec![
         ("tasks", "tasks".to_owned()),
         // The filter path over a stable field, the grouping path over
@@ -452,7 +450,7 @@ fn commands(
 /// whatever its futures hold. Any member will do, a zero-sized one
 /// included: the golden pins that the step lands, not what it finds.
 fn first_frame_member(
-    session: &Session<'_, proc::snapshot::Snapshot>,
+    session: &Session<'_, testkit::Fixture>,
     task: &hansei_runtime::tokio::bundle::Task,
 ) -> Option<String> {
     let chain = session.task_chain(task)?;
@@ -467,7 +465,7 @@ fn first_frame_member(
 /// Attach a session over one pair and golden every command's output,
 /// one snapshot per (program, set, command).
 fn golden(program: &str) {
-    for set in FIXTURE_SETS {
+    for set in fixture_sets() {
         let (bundle, snapshot) = testkit::load(set, program);
         let args = session_args(set, program);
         let session = Session::attach(&snapshot, &bundle, &args)
@@ -582,8 +580,8 @@ fn test_every_program_has_a_command_golden() {
 /// the sweep over the same pair admits every one of them.
 #[test]
 fn test_registered_wakers_name_the_registries_and_the_joins() {
-    let (bundle, snapshot) = testkit::load("illumos", "sleep-join");
-    let args = session_args("illumos", "sleep-join");
+    let (bundle, snapshot) = testkit::load(testkit::set_or_any("illumos"), "sleep-join");
+    let args = session_args(testkit::set_or_any("illumos"), "sleep-join");
     let session = Session::attach(&snapshot, &bundle, &args).unwrap();
     let registered: Vec<(&str, u64, u64)> = crate::registered_wakers(&session).collect();
     let of = |what: &str| registered.iter().filter(|r| r.0 == what).count();
@@ -617,7 +615,7 @@ fn test_a_snapshot_claiming_an_index_it_cannot_rebuild_does_not_attach() {
     use hansei_bundle::BundleView;
     use proc::snapshot::{RecordedHeapEvidence, Recorder};
 
-    let (bundle, snapshot) = testkit::load("linux", "simple-await");
+    let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "simple-await");
     // Everything the attach reads, recorded — except an allocator walk,
     // which this capture never made — under the claim that one was.
     let recorder = Recorder::new(&snapshot);
@@ -626,7 +624,7 @@ fn test_a_snapshot_claiming_an_index_it_cannot_rebuild_does_not_attach() {
     let _ = testkit::census(&ctx, &list);
     let claimed = recorder.snapshot(RecordedHeapEvidence::Available).unwrap();
 
-    let args = session_args("linux", "simple-await");
+    let args = session_args(testkit::set_or_any("linux"), "simple-await");
     let err = match Session::attach(&claimed, &bundle, &args) {
         Ok(_) => panic!("the claim is not honored"),
         Err(e) => e,

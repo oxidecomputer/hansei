@@ -21,13 +21,15 @@ machine-specific belongs here.
 Only exegesis reads DWARF, so only exegesis depends on the DWARF stack
 (gimli, object, memmap2, regex). **hansei-runtime and reify never depend on
 exegesis** — reify not at all, hansei-runtime as a **dev**-dependency only,
-because its matrix goldens build bundles from fixture binaries. The `hansei`
-bin crate does depend on it, because `hansei tokio-info` produces and inspects
-tokio-info files, but the DWARF stack reaches no further than the entry points
-arg handling calls (`hansei/src/bundle_cmd.rs`). exegesis builds no
-binary of its own: `hansei` is the only one the workspace produces. No
-session, runtime or render code imports exegesis types; if read-side code
-seems to need something from it, it wants `hansei-bundle`.
+because its matrix goldens build bundles from fixture binaries.
+However, hansei-runtime takes exegesis as an optional dependency behind its
+`testkit` feature. The `hansei` bin crate does depend on it, because
+`hansei tokio-info` produces and inspects tokio-info files, but the DWARF
+stack reaches no further than the entry points arg handling calls
+(`hansei/src/bundle_cmd.rs`). exegesis builds no binary of its own:
+`hansei` is the only one the workspace produces. No session, runtime or
+render code imports exegesis types; if read-side code seems to need
+something from it, it wants `hansei-bundle`.
 
 **Naming:** the tool as a whole, and the repository, are **`hansei`**.
 `durin` was the repository's earlier name and survives only in old history

@@ -1146,6 +1146,9 @@ mod tests {
         use hansei_bundle::BundleView;
 
         // The Linux set: std's futex mutex exists only there.
+        if !testkit::reads("linux") {
+            return;
+        }
         let (bundle, _) = testkit::load("linux", "futurelock");
         let view = BundleView::new(&bundle);
         let raw_mutex = view

@@ -5621,8 +5621,8 @@ mod tests {
     use crate::tokio::bundle::Registries;
     use crate::tokio::chain::FutureInspection;
 
+    use crate::testkit::Fixture;
     use hansei_bundle::Bundle;
-    use proc::snapshot::Snapshot;
 
     use std::sync::OnceLock;
 
@@ -5651,12 +5651,12 @@ mod tests {
     /// The `unordered` fixture pair: coroutines held plain and behind
     /// `Pin<Box<dyn Future>>`, a `FuturesUnordered`, and the tokio
     /// plumbing the predicates below pick from.
-    fn unordered() -> &'static (Bundle, Snapshot) {
-        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
+    fn unordered() -> &'static (Bundle, Fixture) {
+        static PAIR: OnceLock<(Bundle, Fixture)> = OnceLock::new();
         PAIR.get_or_init(|| testkit::load_any("unordered"))
     }
 
-    fn unordered_ctx() -> Context<'static, Snapshot> {
+    fn unordered_ctx() -> Context<'static, Fixture> {
         let (bundle, snapshot) = unordered();
         testkit::context(bundle, snapshot)
     }
@@ -5782,13 +5782,13 @@ mod tests {
 
     /// The `local-set-io` fixture pair: a `LocalSet` parked on I/O,
     /// anchored both in the discovery statics and in its thread's TLS.
-    fn local_set_io() -> &'static (Bundle, Snapshot) {
-        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
+    fn local_set_io() -> &'static (Bundle, Fixture) {
+        static PAIR: OnceLock<(Bundle, Fixture)> = OnceLock::new();
         PAIR.get_or_init(|| testkit::load_any("local-set-io"))
     }
 
-    fn sleep_join() -> &'static (Bundle, Snapshot) {
-        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
+    fn sleep_join() -> &'static (Bundle, Fixture) {
+        static PAIR: OnceLock<(Bundle, Fixture)> = OnceLock::new();
         PAIR.get_or_init(|| testkit::load_any("sleep-join"))
     }
 
@@ -5954,8 +5954,8 @@ mod tests {
     /// reaches.
     const NOWHERE: u64 = 0xdead_beef_0000;
 
-    fn futurelock() -> &'static (Bundle, Snapshot) {
-        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
+    fn futurelock() -> &'static (Bundle, Fixture) {
+        static PAIR: OnceLock<(Bundle, Fixture)> = OnceLock::new();
         PAIR.get_or_init(|| testkit::load_any("futurelock"))
     }
 
@@ -6230,7 +6230,7 @@ mod tests {
     /// The queue's guard byte and the word linking its first node —
     /// the `Option<NonNull<Waiter>>` inside the node's pointers, at
     /// whatever it holds — for damaging them.
-    fn queue_words<'a>(ctx: &Context<'a, Snapshot>, semaphore: ValueKey) -> (u64, u64, u64) {
+    fn queue_words<'a>(ctx: &Context<'a, Fixture>, semaphore: ValueKey) -> (u64, u64, u64) {
         let sem = ctx.read_keyed(semaphore, &ReadContext::none()).unwrap();
         let lock = ctx.walk(WalkRole::SemaphoreLock).walk_at(sem).unwrap();
         assert_eq!(lock.ty.name(), "parking_lot::raw_mutex::RawMutex");
@@ -6720,8 +6720,8 @@ mod tests {
         assert!(sym.name.contains("3raw4poll"), "{}", sym.name);
     }
 
-    fn armed_select() -> &'static (Bundle, Snapshot) {
-        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
+    fn armed_select() -> &'static (Bundle, Fixture) {
+        static PAIR: OnceLock<(Bundle, Fixture)> = OnceLock::new();
         PAIR.get_or_init(|| testkit::load_any("armed-select"))
     }
 
@@ -6816,7 +6816,7 @@ mod discovery_scan_tests {
     /// reference nothing outside the list.
     #[test]
     fn test_the_scan_offers_the_referenced_owner() {
-        for set in testkit::FIXTURE_SETS {
+        for set in testkit::fixture_sets() {
             let (bundle, snapshot) = testkit::load(set, "foreign-runtime");
             let ctx = testkit::context(&bundle, &snapshot);
             let mut e = testkit::enumerate(&ctx, &snapshot);

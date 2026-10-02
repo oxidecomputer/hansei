@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Snapshot-based two-binary offline tests.
+//! Fixture-based two-binary offline tests.
 //!
 //! Each fixture pair was produced by `test-programs/capture-snapshots.sh`:
 //! the `.snapshot` is everything the analysis read from a live run of
@@ -40,7 +40,8 @@
 //! here would notice the programs moving on without them.
 
 use hansei_bundle::{Bundle, BundleView};
-use hansei_runtime::testkit::{FIXTURE_SETS, PROGRAMS, load, load_any, mask, matrix};
+use hansei_runtime::testkit::Fixture;
+use hansei_runtime::testkit::{FIXTURE_SETS, PROGRAMS, fixture_sets, load, load_any, mask, matrix};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
     AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, OwnerResolution, Registries,
@@ -51,7 +52,6 @@ use hansei_runtime::tokio::discovery::{OwnerEvidence, TaskSource};
 use hansei_runtime::tokio::observe::{ReadContext, ReferenceSource};
 use hansei_runtime::tokio::{census, graph};
 use proc::Target;
-use proc::snapshot::Snapshot;
 
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write;
@@ -236,7 +236,7 @@ fn test_every_fixture_pair_is_in_the_program_list() {
 /// Run the full offline pipeline — fingerprint, discovery, enumeration,
 /// stage decode, await chains, and the dependency analysis — and render
 /// it as a golden-friendly summary.
-fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
+fn interpret(bundle: &Bundle, snapshot: &Fixture) -> String {
     let view = BundleView::new(bundle);
     let ctx = Context::new(snapshot, view).expect("snapshot has mappings");
 
@@ -434,7 +434,7 @@ fn render_chain(out: &mut String, view: BundleView<'_>, chain: &AwaitChain<'_>) 
 /// header for both.
 #[track_caller]
 fn assert_summary(program: &str) {
-    for set in FIXTURE_SETS {
+    for set in fixture_sets() {
         let (bundle, snapshot) = load(set, program);
         let actual = interpret(&bundle, &snapshot);
         let mut settings = insta::Settings::clone_current();
@@ -505,7 +505,7 @@ fn test_blocking_pool_offline() {
 /// filed under no runtime.
 #[test]
 fn test_blocking_pool_records_reconcile_handle_and_queue() {
-    for set in FIXTURE_SETS {
+    for set in fixture_sets() {
         let (bundle, snapshot) = load(set, "blocking-pool");
         let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
         let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
@@ -583,7 +583,7 @@ fn test_blocking_pool_records_reconcile_handle_and_queue() {
 
 #[test]
 fn test_delegation_cases_offline() {
-    for set in FIXTURE_SETS {
+    for set in fixture_sets() {
         let (bundle, snapshot) = load(set, "delegation-cases");
         let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
         let tasks = hansei_runtime::testkit::tasks(&ctx, &snapshot);
@@ -907,7 +907,7 @@ fn test_futurelock_census_offline() {
 #[test]
 fn test_the_census_matches_what_the_fixtures_registered() {
     for program in PROGRAMS {
-        for set in FIXTURE_SETS {
+        for set in fixture_sets() {
             let (bundle, snapshot) = load(set, program);
             let r = hansei_runtime::testkit::run(&bundle, &snapshot);
             let healthy = r.healthy_problems();
@@ -946,7 +946,7 @@ const OUTCOMES_ELSEWHERE: &[&str] = &["a timer wait"];
 fn test_the_corpus_still_exercises_every_census_outcome() {
     let mut hit_by: std::collections::BTreeMap<&'static str, bool> = Default::default();
     for program in PROGRAMS {
-        for set in FIXTURE_SETS {
+        for set in fixture_sets() {
             let (bundle, snapshot) = load(set, program);
             let (_ctx, _list, census) = census_of(&bundle, &snapshot);
             for (name, hit) in hansei_runtime::testkit::outcomes(&census) {
@@ -1013,7 +1013,7 @@ fn test_joinset_offline() {
 /// `Notified` was never polled and carries no waker.
 #[test]
 fn test_armed_select_offline() {
-    for set in FIXTURE_SETS {
+    for set in fixture_sets() {
         let (bundle, snapshot) = load(set, "armed-select");
         let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
         let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
@@ -1207,7 +1207,7 @@ fn test_the_census_accounting_is_exact_per_program() {
     ];
     let named: Vec<&str> = ACCOUNTING.iter().map(|row| row.0).collect();
     assert_eq!(named, PROGRAMS, "every program is accounted for");
-    for set in FIXTURE_SETS {
+    for set in fixture_sets() {
         for &(program, uncertain, chain_hits, descend_finds, enum_finds, dedup_hits) in ACCOUNTING {
             let (bundle, snapshot) = load(set, program);
             let (_ctx, _list, census) = census_of(&bundle, &snapshot);
@@ -1240,9 +1240,9 @@ fn test_the_census_accounting_is_exact_per_program() {
 /// (the total audit panics inside `run`; the rest reports here).
 fn census_of<'a>(
     bundle: &'a Bundle,
-    snapshot: &'a Snapshot,
+    snapshot: &'a Fixture,
 ) -> (
-    Context<'a, Snapshot>,
+    Context<'a, Fixture>,
     hansei_runtime::tokio::bundle::TaskList,
     census::FutureCensus,
 ) {

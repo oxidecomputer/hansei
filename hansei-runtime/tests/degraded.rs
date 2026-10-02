@@ -21,7 +21,7 @@
 
 use hansei_bundle::{Bundle, BundleType, BundleTypeId, BundleView, DiscrValue, WalkRole};
 use hansei_runtime::testkit::corrupt::Corrupt;
-use hansei_runtime::testkit::{self, load_any, tasks as tasks_of};
+use hansei_runtime::testkit::{self, Fixture, load_any, tasks as tasks_of};
 use hansei_runtime::tokio::assess::{
     ContinuationStatus, IncompleteReason, WaitAssessment, WaitUnknownReason,
 };
@@ -30,7 +30,7 @@ use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::observe::ReadContext;
 use hansei_runtime::tokio::{census, graph};
 use proc::Target;
-use proc::snapshot::{RecordedHeapEvidence, Recorder, Snapshot};
+use proc::snapshot::{RecordedHeapEvidence, Recorder};
 
 use std::ops::Range;
 
@@ -39,7 +39,7 @@ const NOWHERE: u64 = 0xdead_beef_0000;
 
 /// The healthy pipeline, run first to learn the addresses a corruption
 /// should land on.
-fn healthy<'a>(bundle: &'a Bundle, snapshot: &'a Snapshot) -> (Context<'a, Snapshot>, TaskList) {
+fn healthy<'a>(bundle: &'a Bundle, snapshot: &'a Fixture) -> (Context<'a, Fixture>, TaskList) {
     let ctx = Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings");
     let list = tasks_of(&ctx, snapshot);
     assert!(list.errors.is_empty(), "{:?}", list.errors);
@@ -333,7 +333,7 @@ fn test_an_unreadable_set_node_keeps_the_walked_prefix() {
 /// in the frame the census found it in, and the address the census
 /// recorded for it — the same place for a future held by value, the
 /// slot and the boxed future behind it for a `Pin<Box<dyn Future>>`.
-fn held_slot(bundle: &Bundle, snapshot: &Snapshot, local: &str) -> (u64, u64) {
+fn held_slot(bundle: &Bundle, snapshot: &Fixture, local: &str) -> (u64, u64) {
     let ctx = Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings");
     let list = tasks_of(&ctx, snapshot);
     let census = testkit::census(&ctx, &list);
@@ -517,7 +517,7 @@ fn joined_set(census: &census::FutureCensus) -> &census::JoinSet {
 /// The join set's entry list, walked healthy, so a corruption can be
 /// aimed at one of its entries: the entry addresses in walk order and
 /// the length the set keeps for itself.
-fn join_set_entries(bundle: &Bundle, snapshot: &Snapshot) -> (Vec<u64>, u64) {
+fn join_set_entries(bundle: &Bundle, snapshot: &Fixture) -> (Vec<u64>, u64) {
     let ctx = Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings");
     let list = tasks_of(&ctx, snapshot);
     let census = testkit::census(&ctx, &list);
@@ -851,7 +851,7 @@ impl Drop for SeedGuard {
 /// Every extent the healthy pipeline reads, learned by replaying it
 /// through the production [`Recorder`] — the same wrapper snapshot
 /// capture uses. Faults aimed anywhere else would never be seen.
-fn healthy_read_set(bundle: &Bundle, snapshot: &Snapshot) -> Vec<Range<u64>> {
+fn healthy_read_set(bundle: &Bundle, snapshot: &Fixture) -> Vec<Range<u64>> {
     let recorder = Recorder::new(snapshot);
     let ctx = Context::new(&recorder, BundleView::new(bundle)).expect("snapshot has mappings");
     let list = tasks_of(&ctx, &recorder);
@@ -886,7 +886,7 @@ fn pick_word(rng: &mut Rng, reads: &[Range<u64>]) -> Option<u64> {
 fn campaign_run(
     program: &'static str,
     bundle: &Bundle,
-    snapshot: &Snapshot,
+    snapshot: &Fixture,
     reads: &[Range<u64>],
     seed: u64,
 ) -> bool {

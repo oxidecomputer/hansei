@@ -11,7 +11,7 @@
 
 use hansei_runtime::heap;
 use hansei_runtime::testkit::corrupt::Corrupt;
-use hansei_runtime::testkit::{self, FIXTURE_SETS, PROGRAMS};
+use hansei_runtime::testkit::{self, Fixture, PROGRAMS, fixture_sets};
 use hansei_runtime::tokio::bundle::Context;
 use hansei_runtime::tokio::census::FutureCensus;
 
@@ -36,14 +36,17 @@ fn population(census: &FutureCensus) -> (Vec<u64>, Vec<u64>, Vec<u64>, usize) {
 /// set's alone.
 #[test]
 fn test_each_set_replays_the_allocator_evidence_it_recorded() {
-    for set in FIXTURE_SETS {
+    for set in fixture_sets() {
         let expected = match *set {
             "illumos" => RecordedHeapEvidence::Available,
             _ => RecordedHeapEvidence::Unavailable,
         };
         for program in PROGRAMS {
             let (bundle, snapshot) = testkit::load(set, program);
-            assert_eq!(snapshot.heap_evidence(), expected, "[{set}] {program}");
+            // A core records no policy: it reads the allocator itself.
+            if let Fixture::Snapshot(recorded) = &snapshot {
+                assert_eq!(recorded.heap_evidence(), expected, "[{set}] {program}");
+            }
             let run = testkit::run(&bundle, &snapshot);
             assert_eq!(
                 run.heap.is_some(),
@@ -67,6 +70,11 @@ fn test_each_set_replays_the_allocator_evidence_it_recorded() {
 /// list. That is the whole claim the label makes.
 #[test]
 fn test_a_recapture_replays_the_same_gated_population() {
+    // The illumos captures are the ones under libumem; a run that does
+    // not read that set has no index to recapture.
+    if !testkit::reads("illumos") {
+        return;
+    }
     for program in PROGRAMS {
         let (bundle, snapshot) = testkit::load("illumos", program);
         let first = testkit::run(&bundle, &snapshot);
@@ -86,9 +94,11 @@ fn test_a_recapture_replays_the_same_gated_population() {
         let census = e.with_read(&recorder, |read| testkit::census_with(&ctx, &e.list, read));
         assert_eq!(population(&census), population(&first.census), "{program}");
         assert_eq!(recorder.failure(), None);
-        let recaptured = recorder
-            .snapshot(RecordedHeapEvidence::Available)
-            .expect("the recorder assembles a snapshot");
+        let recaptured = Fixture::from(
+            recorder
+                .snapshot(RecordedHeapEvidence::Available)
+                .expect("the recorder assembles a snapshot"),
+        );
 
         let replay = testkit::run(&bundle, &recaptured);
         let rebuilt = replay
@@ -112,6 +122,10 @@ fn test_a_recapture_replays_the_same_gated_population() {
 /// reading the pair ungated, and says which claim it could not honor.
 #[test]
 fn test_a_claimed_index_whose_metadata_is_denied_does_not_attach() {
+    // Only an illumos capture maps libumem.
+    if !testkit::reads("illumos") {
+        return;
+    }
     let (bundle, snapshot) = testkit::load("illumos", "simple-await");
     let ready = snapshot
         .lookup_symbol_by_name("libumem.so.1`umem_ready")

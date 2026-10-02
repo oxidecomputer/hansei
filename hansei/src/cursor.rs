@@ -873,8 +873,8 @@ mod tests {
     /// it. A listing moves nothing.
     #[test]
     fn test_the_selectors_move_the_cursor() {
-        let (bundle, snapshot) = testkit::load("linux", "nested-await");
-        let args = session_args("linux", "nested-await");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "nested-await");
+        let args = session_args(testkit::set_or_any("linux"), "nested-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let task = session
             .tasks
@@ -1002,8 +1002,8 @@ mod tests {
     /// refuses at the root, and an index past the chain names it.
     #[test]
     fn test_frame_moves_within_the_chain() {
-        let (bundle, snapshot) = testkit::load("linux", "nested-await");
-        let args = session_args("linux", "nested-await");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "nested-await");
+        let args = session_args(testkit::set_or_any("linux"), "nested-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let id = session.tasks.tasks[0].task_id.expect("ids are recorded");
         exec_task(&session, Some(TraceTarget::Task(id)), None, &mut Vec::new())
@@ -1054,8 +1054,8 @@ mod tests {
     /// than crossing into the holder's chain.
     #[test]
     fn test_a_held_future_roots_the_cursor() {
-        let (bundle, snapshot) = testkit::load("linux", "futurelock");
-        let args = session_args("linux", "futurelock");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "futurelock");
+        let args = session_args(testkit::set_or_any("linux"), "futurelock");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let theme = crate::output::Theme::plain();
         let (addr, owner, frame, local) = {
@@ -1139,8 +1139,8 @@ mod tests {
     /// still answers with the task holding it.
     #[test]
     fn test_bare_task_names_the_holder_of_a_boxed_future() {
-        let (bundle, snapshot) = testkit::load("linux", "watch-stream");
-        let args = session_args("linux", "watch-stream");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "watch-stream");
+        let args = session_args(testkit::set_or_any("linux"), "watch-stream");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let (addr, owner) = {
             let census = session.census();
@@ -1174,8 +1174,8 @@ mod tests {
     /// the shell half of a line is never substituted.
     #[test]
     fn test_a_scoped_prefix_does_not_move_the_cursor() {
-        let (bundle, snapshot) = testkit::load("linux", "sleep-join");
-        let args = session_args("linux", "sleep-join");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "sleep-join");
+        let args = session_args(testkit::set_or_any("linux"), "sleep-join");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let ids: Vec<u64> = session
             .tasks
@@ -1229,8 +1229,8 @@ mod tests {
     /// an omitted target — not just trace — answers per task.
     #[test]
     fn test_exec_scopes_every_omitted_target() {
-        let (bundle, snapshot) = testkit::load("linux", "sleep-join");
-        let args = session_args("linux", "sleep-join");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "sleep-join");
+        let args = session_args(testkit::set_or_any("linux"), "sleep-join");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let command = repl::parse_line("tasks --exec whatis").expect("the exec line parses");
         let mut out = Vec::new();
@@ -1247,8 +1247,8 @@ mod tests {
     /// inner frame's span has ended before belongs to the outer one.
     #[test]
     fn test_an_interior_address_lands_on_the_claiming_frame() {
-        let (bundle, snapshot) = testkit::load("linux", "nested-await");
-        let args = session_args("linux", "nested-await");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "nested-await");
+        let args = session_args(testkit::set_or_any("linux"), "nested-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let task = &session.tasks.tasks[0];
         let chain = session
@@ -1306,8 +1306,8 @@ mod tests {
     /// one was selected, not a fixed row.
     #[test]
     fn test_bare_task_prints_the_cursor_task() {
-        let (bundle, snapshot) = testkit::load("linux", "sleep-join");
-        let args = session_args("linux", "sleep-join");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "sleep-join");
+        let args = session_args(testkit::set_or_any("linux"), "sleep-join");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let ids: Vec<u64> = session
             .tasks
@@ -1365,8 +1365,8 @@ mod tests {
     /// selected`.
     #[test]
     fn test_bare_future_prints_only_a_lone_root() {
-        let (bundle, snapshot) = testkit::load("linux", "unordered");
-        let args = session_args("linux", "unordered");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "unordered");
+        let args = session_args(testkit::set_or_any("linux"), "unordered");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let theme = crate::output::Theme::plain();
         let addr = {
@@ -1444,8 +1444,8 @@ mod tests {
     /// at, the task's finds; and with no cursor it refuses.
     #[test]
     fn test_children_follows_the_cursor_root() {
-        let (bundle, snapshot) = testkit::load("linux", "unordered");
-        let args = session_args("linux", "unordered");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "unordered");
+        let args = session_args(testkit::set_or_any("linux"), "unordered");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let theme = crate::output::Theme::plain();
 
@@ -1545,8 +1545,8 @@ mod tests {
     /// `$_` is exactly its stack pointer.
     #[test]
     fn test_thread_blocks_spell_the_selected_lwp() {
-        let (bundle, snapshot) = testkit::load("linux", "nested-await");
-        let args = session_args("linux", "nested-await");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "nested-await");
+        let args = session_args(testkit::set_or_any("linux"), "nested-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let lwp = session.lwps.first().expect("the fixture has lwps");
         let (tid, rsp) = (lwp.tid, lwp.regs.rsp);
@@ -1574,8 +1574,8 @@ mod tests {
     /// wait target, with no locals block below it.
     #[test]
     fn test_frame_prints_the_bare_frame_line() {
-        let (bundle, snapshot) = testkit::load("linux", "sleep-join");
-        let args = session_args("linux", "sleep-join");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "sleep-join");
+        let args = session_args(testkit::set_or_any("linux"), "sleep-join");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let theme = crate::output::Theme::plain();
         // A task whose chain nests and bottoms out in a decoded wait.
@@ -1612,8 +1612,8 @@ mod tests {
     /// flat at the margin, with no frame line and no heading.
     #[test]
     fn test_locals_lists_the_cursor_frames_variables() {
-        let (bundle, snapshot) = testkit::load("linux", "simple-await");
-        let args = session_args("linux", "simple-await");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "simple-await");
+        let args = session_args(testkit::set_or_any("linux"), "simple-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let theme = crate::output::Theme::plain();
 
@@ -1655,8 +1655,8 @@ mod tests {
     /// silently running it under whatever cursor stood before.
     #[test]
     fn test_a_scope_that_does_not_select_fails_the_command() {
-        let (bundle, snapshot) = testkit::load("linux", "sleep-join");
-        let args = session_args("linux", "sleep-join");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "sleep-join");
+        let args = session_args(testkit::set_or_any("linux"), "sleep-join");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let id = session
             .tasks
@@ -1681,8 +1681,8 @@ mod tests {
     /// although the address alone resolves to the inner one.
     #[test]
     fn test_a_scoped_future_is_not_resolved_again_by_address() {
-        let (bundle, snapshot) = testkit::load("linux", "unordered");
-        let args = session_args("linux", "unordered");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "unordered");
+        let args = session_args(testkit::set_or_any("linux"), "unordered");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let theme = crate::output::Theme::plain();
         let census = session.census();
@@ -1729,8 +1729,8 @@ mod tests {
     /// address does.
     #[test]
     fn test_a_moves_carried_command_reads_the_new_frame() {
-        let (bundle, snapshot) = testkit::load("linux", "futurelock");
-        let args = session_args("linux", "futurelock");
+        let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "futurelock");
+        let args = session_args(testkit::set_or_any("linux"), "futurelock");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let theme = crate::output::Theme::plain();
         let run = |line: &str| {

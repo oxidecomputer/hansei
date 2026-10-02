@@ -27,6 +27,7 @@
 
 use hansei_bundle::Bundle;
 use hansei_runtime::testkit;
+use hansei_runtime::testkit::Fixture;
 use proc::snapshot::Snapshot;
 
 #[test]
@@ -37,8 +38,9 @@ fn test_churn_capture_walks_safely() {
     };
 
     let bundle = Bundle::load(format!("{prefix}.tinfo").as_ref()).expect("the bundle loads");
-    let snapshot =
-        Snapshot::load(format!("{prefix}.snapshot").as_ref()).expect("the snapshot loads");
+    let snapshot = Fixture::from(
+        Snapshot::load(format!("{prefix}.snapshot").as_ref()).expect("the snapshot loads"),
+    );
     // The capture-time pipeline ran to completion to produce this pair,
     // and a snapshot replays the same bytes, so discovery succeeding
     // here is part of the determinism claim — a panic in the pipeline

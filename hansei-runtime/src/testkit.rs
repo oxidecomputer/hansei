@@ -20,10 +20,15 @@ use proc::snapshot::Snapshot;
 use proc::{LwpInfo, Target};
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
+pub mod cores;
 pub mod corrupt;
 pub mod delegation;
+pub mod fixture;
 pub mod heap;
+
+pub use fixture::Fixture;
 
 /// Record each of `kinds` on `bundle`'s type as the coroutine kind a
 /// rule of that kind names — what extraction records for a coroutine
@@ -389,29 +394,103 @@ pub fn mask(s: &str) -> String {
     overdue.replace_all(&s, "overdue by TS").into_owned()
 }
 
+/// The sets this run reads, in [`FIXTURE_SETS`] order: every one over
+/// the checked-in snapshots, and over fresh cores ([`cores::CORES`]) the
+/// ones this system captures plus any other copied in beside them — on
+/// a system that captures none, all of them, each of which must be
+/// there. A test walking the sets walks these.
+pub fn fixture_sets() -> &'static [&'static str] {
+    static SETS: OnceLock<Vec<&'static str>> = OnceLock::new();
+    SETS.get_or_init(|| match cores::dir() {
+        None => FIXTURE_SETS.to_vec(),
+        Some(dir) => cores::sets(&dir),
+    })
+}
+
+/// Whether this run reads `set`: always over the snapshots and on a
+/// system that captures none, and over fresh cores elsewhere only for
+/// the host's own sets and copies beside them. A test whose subject is
+/// one system's capture — the illumos allocator, say — runs only where
+/// the run reads that set, which every system that cannot core does.
+pub fn reads(set: &str) -> bool {
+    fixture_sets().contains(&set)
+}
+
+/// `set` where this run reads it, and otherwise the first set it does:
+/// for a test written against one set whose choice of it is arbitrary,
+/// so that the run over the snapshots reads exactly what it always did
+/// and a capturing host still runs it over a set of its own.
+pub fn set_or_any(set: &'static str) -> &'static str {
+    match reads(set) {
+        true => set,
+        false => fixture_sets()[0],
+    }
+}
+
 /// Load a program's pair from whichever set, for a test that wants
 /// some real capture to work with rather than every capture there is.
 ///
-/// The choice is arbitrary and fixed — not the host's, which is the
-/// point: a test reading this is testing what it does with a pair, and
-/// two sets would only run it twice. A test whose subject *is* the
-/// capture walks [`FIXTURE_SETS`] instead.
-pub fn load_any(program: &str) -> (Bundle, Snapshot) {
-    load(FIXTURE_SETS[0], program)
+/// The choice is arbitrary and fixed for a given run: the first set
+/// the run reads ([`fixture_sets`]), so illumos's over the snapshots
+/// and on a Mac, the host's own on a capturing host. A test reading
+/// this is testing what it does with a pair, and two sets would only
+/// run it twice. A test whose subject *is* the capture walks
+/// [`fixture_sets`] instead.
+pub fn load_any(program: &str) -> (Bundle, Fixture) {
+    load(fixture_sets()[0], program)
 }
 
-/// Load a program's fixture pair from `set`.
-pub fn load(set: &str, program: &str) -> (Bundle, Snapshot) {
+/// Load a program's fixture pair from `set`: its snapshot, or under
+/// [`cores::CORES`] a fresh core opened through the production reader
+/// with the bundle extracted from its build B.
+pub fn load(set: &str, program: &str) -> (Bundle, Fixture) {
+    if let Some(dir) = cores::dir() {
+        let (bundle, proc) = cores::load(&dir, set, program);
+        return (bundle, Fixture::Core(Box::new(proc)));
+    }
     let bundle = Bundle::load(&fixture(set, &format!("{program}.tinfo")))
         .expect("fixture tokio info loads; regenerate with capture-snapshots.sh");
     let snapshot = Snapshot::load(&fixture(set, &format!("{program}.snapshot")))
         .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
-    (bundle, snapshot)
+    (bundle, Fixture::from(snapshot))
+}
+
+/// The files a session over a program's pair in `set` is opened from,
+/// as a command line names them.
+pub struct Paths {
+    /// The snapshot, or the core.
+    pub core: PathBuf,
+    /// The tokio-info file.
+    pub tokio_info: PathBuf,
+    /// The executable a Linux core is read with.
+    pub binary: Option<PathBuf>,
+    /// Where a Linux core's libraries are.
+    pub sysroot: Option<PathBuf>,
+}
+
+/// The files [`load`] reads `program`'s pair in `set` from.
+pub fn paths(set: &str, program: &str) -> Paths {
+    if let Some(dir) = cores::dir() {
+        let capture = cores::capture(&dir, set, program);
+        let tokio_info = cores::bundle_path(&dir, set, program, &capture);
+        return Paths {
+            core: capture.core,
+            tokio_info,
+            binary: capture.sysroot.is_some().then_some(capture.binary),
+            sysroot: capture.sysroot,
+        };
+    }
+    Paths {
+        core: fixture(set, &format!("{program}.snapshot")),
+        tokio_info: fixture(set, &format!("{program}.tinfo")),
+        binary: None,
+        sysroot: None,
+    }
 }
 
 /// Attach a loaded pair the way a session does.
-pub fn context<'a>(bundle: &'a Bundle, snapshot: &'a Snapshot) -> Context<'a, Snapshot> {
-    Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings")
+pub fn context<'a>(bundle: &'a Bundle, fixture: &'a Fixture) -> Context<'a, Fixture> {
+    Context::new(fixture, BundleView::new(bundle)).expect("the fixture has mappings")
 }
 
 /// The state a session is in after enumerating what the runtimes own,
@@ -528,7 +607,7 @@ impl<'b> Enumeration<'b> {
 /// [`Run::registry_problems`], which a suite calls or does not — its
 /// strictness is visible at its call site.
 pub struct Run<'a> {
-    pub ctx: Context<'a, Snapshot>,
+    pub ctx: Context<'a, Fixture>,
     pub list: TaskList,
     pub census: FutureCensus,
     /// The allocator evidence the census was gated by, prepared under
@@ -540,17 +619,36 @@ pub struct Run<'a> {
 /// Run the pipeline over a loaded pair, gated the way a session gates
 /// it: discovery and the census read under the pair's prepared
 /// allocator evidence.
-pub fn run<'a>(bundle: &'a Bundle, snapshot: &'a Snapshot) -> Run<'a> {
-    let ctx = context(bundle, snapshot);
-    let mut e = enumerate(&ctx, snapshot);
+pub fn run<'a>(bundle: &'a Bundle, fixture: &'a Fixture) -> Run<'a> {
+    let ctx = context(bundle, fixture);
+    let mut e = enumerate(&ctx, fixture);
     e.discover(&ctx, &[]);
-    let census = e.with_read(snapshot, |read| census_with(&ctx, &e.list, read));
+    let census = e.with_read(fixture, |read| census_with(&ctx, &e.list, read));
     Run {
         ctx,
         list: e.list,
         census,
         heap: e.heap,
     }
+}
+
+/// What [`run`] reads of `fixture`, recorded as a snapshot through the
+/// production [`Recorder`](proc::snapshot::Recorder): for a test whose
+/// subject is a snapshot, whichever kind of target the run reads.
+pub fn record(bundle: &Bundle, fixture: &Fixture) -> Snapshot {
+    use proc::snapshot::{RecordedHeapEvidence, Recorder};
+    let recorder = Recorder::new(fixture);
+    let ctx = Context::new(&recorder, BundleView::new(bundle)).expect("the fixture has mappings");
+    let mut e = enumerate(&ctx, &recorder);
+    e.discover(&ctx, &[]);
+    let _ = e.with_read(&recorder, |read| census_with(&ctx, &e.list, read));
+    let evidence = match e.heap {
+        Some(_) => RecordedHeapEvidence::Available,
+        None => RecordedHeapEvidence::Unavailable,
+    };
+    recorder
+        .snapshot(evidence)
+        .expect("the recorder assembles a snapshot")
 }
 
 impl Run<'_> {
@@ -1100,8 +1198,8 @@ pub mod expect {
 /// fixture's set produces dedups to that one set — so discovery's own
 /// output cannot tell the three apart, and only counting what the
 /// harvest yielded says whether all three were read.
-pub fn io_candidates<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> Vec<u64> {
-    let lwps = snapshot.lwps().unwrap();
+pub fn io_candidates<T: Target>(ctx: &Context<'_, T>, target: &T) -> Vec<u64> {
+    let lwps = target.lwps().unwrap();
     let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
     let runtimes = ctx.find_runtimes(&workers).expect("a tokio runtime");
     let list = ctx

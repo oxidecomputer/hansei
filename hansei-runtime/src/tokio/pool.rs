@@ -242,7 +242,7 @@ fn idle_entries(
 #[cfg(test)]
 mod tests {
     use super::{MAX_IDLE_PER_KEY, idle_entries};
-    use crate::testkit::{self, FIXTURE_SETS};
+    use crate::testkit::{self, fixture_sets};
     use crate::tokio::census::{NodeStop, census};
 
     /// An idle list's entries sit `stride` apart from its base, and the
@@ -277,7 +277,7 @@ mod tests {
     /// and has nothing checked out is named by nothing.
     #[test]
     fn test_the_census_names_idle_and_checked_out_connections() {
-        for set in FIXTURE_SETS {
+        for set in fixture_sets() {
             let (bundle, snapshot) = testkit::load(set, "http-conns");
             let ctx = testkit::context(&bundle, &snapshot);
             let list = testkit::tasks(&ctx, &snapshot);
@@ -307,7 +307,7 @@ mod tests {
     /// reads, whichever of the extras' two shapes the connector built.
     #[test]
     fn test_the_census_reads_each_pooled_connections_info() {
-        for set in FIXTURE_SETS {
+        for set in fixture_sets() {
             let (bundle, snapshot) = testkit::load(set, "http-conns");
             let ctx = testkit::context(&bundle, &snapshot);
             let list = testkit::tasks(&ctx, &snapshot);
