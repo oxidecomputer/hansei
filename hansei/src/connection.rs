@@ -858,9 +858,9 @@ mod tests {
             ("the socket's stream", 0x30),
             ("the socket's registration", 0x6500),
         ];
-        let read = ResourceObservation::Io(io(Some(IoSocket::TcpStream)));
+        let read = ResourceObservation::Io(Box::new(io(Some(IoSocket::TcpStream))));
         assert_eq!(named(layers(&read)), route);
-        let readiness = ResourceObservation::Io(io(None));
+        let readiness = ResourceObservation::Io(Box::new(io(None)));
         assert_eq!(named(layers(&readiness)), []);
 
         let socket = SocketReading {

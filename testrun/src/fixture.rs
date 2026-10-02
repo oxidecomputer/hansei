@@ -156,6 +156,32 @@ impl Recipe {
 mod tests {
     use super::*;
 
+    /// The workspace's toolchain file names the matrix's primary, so
+    /// hansei and the fixtures it is tested against build on one
+    /// release.
+    #[test]
+    fn test_workspace_toolchain_is_the_matrix_primary() {
+        #[derive(Deserialize)]
+        struct ToolchainFile {
+            toolchain: Channel,
+        }
+        #[derive(Deserialize)]
+        struct Channel {
+            channel: String,
+        }
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let text = std::fs::read_to_string(root.join("rust-toolchain.toml"))
+            .expect("read rust-toolchain.toml");
+        let file: ToolchainFile = toml::from_str(&text).expect("parse rust-toolchain.toml");
+        let matrix = Matrix::read(&root.join("test-programs"));
+        assert_eq!(
+            file.toolchain.channel, matrix.primary.toolchain,
+            "rust-toolchain.toml and test-programs/matrix.toml name different \
+             primary toolchains; advance both in one commit"
+        );
+    }
+
     #[test]
     fn test_target_recipe_drops_every_bundle_only_setting() {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test-programs");

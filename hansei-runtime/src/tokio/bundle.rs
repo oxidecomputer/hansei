@@ -3290,7 +3290,7 @@ impl<'b, T: Target> Context<'b, T> {
             ResourceKind::Sleep => return self.observe_timer(value, read),
             ResourceKind::IoOperation(operation) => self
                 .observe_io(value, operation, read)
-                .map(ResourceObservation::Io),
+                .map(|io| ResourceObservation::Io(Box::new(io))),
             ResourceKind::MpscRecv => self
                 .observe_recv(value, read)
                 .map(ResourceObservation::Recv),

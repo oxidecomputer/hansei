@@ -1,0 +1,7 @@
+# The workspace builds with the fixtures' primary toolchain
+# (test-programs/matrix.toml), so hansei and the programs it is tested
+# against come from one compiler. Advancing one means advancing both in
+# the same commit; a testrun test fails while they differ.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]

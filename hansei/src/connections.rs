@@ -1785,7 +1785,7 @@ mod tests {
             peer_certificates: None,
         };
         let io = |socket, tls, peer| {
-            ResourceObservation::Io(IoObservation {
+            ResourceObservation::Io(Box::new(IoObservation {
                 future: key(0x1),
                 operation: hansei_bundle::IoOperationKind::ReadExact,
                 scheduled_io: key(0x6500),
@@ -1804,7 +1804,7 @@ mod tests {
                 socket,
                 peer,
                 peer_stream: Some(key(0x2)),
-            })
+            }))
         };
         let fill = |observation: ResourceObservation| {
             conn_row(

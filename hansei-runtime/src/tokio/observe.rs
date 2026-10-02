@@ -647,7 +647,9 @@ pub enum ResourceObservation {
     Join(JoinObservation),
     Acquire(AcquireObservation),
     Timer(TimerObservation),
-    Io(IoObservation),
+    /// Boxed, like `HttpConn`: the route's TLS and peer readings make
+    /// it several times any other variant here.
+    Io(Box<IoObservation>),
     Recv(RecvObservation),
     Notified(NotifiedObservation),
     Oneshot(OneshotObservation),

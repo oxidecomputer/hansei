@@ -2154,7 +2154,9 @@ enum Target {
         /// Whether the reviewed ABI settles where the poll sits, which
         /// it does for a bare `dyn Future` and no other trait.
         future_trait: bool,
-        abi: RuleKey,
+        /// Boxed: the key is several times the size of the paths, and
+        /// most targets are values.
+        abi: Box<RuleKey>,
     },
 }
 
@@ -3497,11 +3499,11 @@ fn dynamic_target(
         )?,
         trait_ty: d.trait_ty,
         future_trait: d.future_trait,
-        abi: RuleKey::Rustc {
+        abi: Box::new(RuleKey::Rustc {
             kind: SemanticRuleKind::DynFutureAbi,
             producer: abi_producer.to_owned(),
             family: abi.family,
-        },
+        }),
     })
 }
 
@@ -5778,7 +5780,7 @@ fn delegated_route(
                 pointer,
                 data,
                 vtable,
-                abi,
+                abi: *abi,
                 read_slot,
                 cases: Vec::new(),
             }
@@ -6201,7 +6203,7 @@ fn plan_connected(
         extra,
         data,
         vtable,
-        abi,
+        abi: *abi,
         cases,
     })
 }
@@ -7727,7 +7729,7 @@ mod tests {
             assert_eq!(access_target, target);
             if let Target::Dynamic { abi, .. } = target {
                 assert!(
-                    matches!(abi, RuleKey::Rustc { kind: SemanticRuleKind::DynFutureAbi, family, .. }
+                    matches!(abi.as_ref(), RuleKey::Rustc { kind: SemanticRuleKind::DynFutureAbi, family, .. }
                     if *family == "rustc-dyn-future-abi-1.97")
                 );
             }

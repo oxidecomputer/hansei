@@ -25,6 +25,9 @@ test-programs/matrix.sh add tokio-<ver>   # or add rust-<ver>
 edit orphans (the "latest" role slides), blesses the new cells, then runs
 the whole matrix un-blessed to prove no existing cell moved. It refuses to
 touch the floor and primary pins — those advance by hand, deliberately.
+Advancing the primary toolchain edits `rust-toolchain.toml` at the
+repository root in the same commit, since the workspace builds on the
+primary too; a `testrun` test fails while the two differ.
 Toolchains must be installed (`rustup toolchain install <ver>`); missing
 ones make cells *skip*, and a skipped cell proves nothing.
 

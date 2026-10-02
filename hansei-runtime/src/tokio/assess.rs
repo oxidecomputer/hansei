@@ -4063,7 +4063,7 @@ mod tests {
         ] {
             let io = IoObservation {
                 readiness_state: state,
-                ..io.clone()
+                ..(*io).clone()
             };
             let mut pass = AssessmentPass::new();
             let chain = AwaitChain {
