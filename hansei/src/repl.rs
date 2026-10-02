@@ -464,7 +464,9 @@ fn command_frame(count: usize, command: &str) -> Option<String> {
 /// before clap sees it: a leading `task X` / `future X` / `thread X`
 /// with more words after it scopes the rest to that cursor without
 /// moving the session's, and a `$_` token becomes the (scoped)
-/// cursor's current-frame address.
+/// cursor's current-frame address — in the command's own words; a
+/// command it carries (`frame 1 whatis $_`) substitutes its own when
+/// it runs, under the cursor it moved to.
 fn execute_one<T: proc::Target>(session: &Session<'_, T>, mode: Mode, line: &str) -> Result<Flow> {
     // Everything after the first `!` is a shell command to pipe into,
     // so `tasks ! grep foo` filters the listing.
@@ -505,7 +507,7 @@ fn answer_words<T: proc::Target>(
     words: &[String],
     shell: Option<&str>,
 ) -> Result<Flow> {
-    let words = substitute_last_addr(words, session.cursor.borrow().last_addr)?;
+    let words = substitute_head(words, session.cursor.borrow().last_addr)?;
     let parsed = match parse_words(&words)? {
         Some(parsed) => parsed,
         None => return Ok(Flow::Continue),
@@ -734,11 +736,54 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
 }
 
 /// Parse the words a frame move carries after it (`up locals`), for
-/// dispatch at the new frame. The words arrive already tokenized by
-/// the line they came in on; `None` means they were answered in print
-/// (`help`) rather than parsed into something to dispatch.
-pub(crate) fn parse_trailing(words: &[String]) -> Result<Option<crate::Command>> {
-    Ok(parse_words(words)?.map(|line| line.command))
+/// dispatch at the new frame, with `$_` the new frame's address
+/// (`last`). The words arrive already tokenized by the line they came
+/// in on; `None` means they were answered in print (`help`) rather
+/// than parsed into something to dispatch.
+pub(crate) fn parse_trailing(
+    words: &[String],
+    last: Option<u64>,
+) -> Result<Option<crate::Command>> {
+    Ok(parse_words(&substitute_head(words, last)?)?.map(|line| line.command))
+}
+
+/// Substitute `$_` in a command's own words, leaving the command it
+/// carries for later — a frame move's (`frame 1 whatis $_`) or an
+/// `--exec`'s (`tasks --exec whatis $_`). That one runs under a cursor
+/// that has moved by then, so its `$_` is substituted when it runs:
+/// the address of the frame the move landed on, or of each row the
+/// loop scopes to, and not of whatever the cursor held before.
+fn substitute_head(words: &[String], last: Option<u64>) -> Result<Vec<String>> {
+    let carried = carried_len(words);
+    let (head, carried) = words.split_at(words.len() - carried);
+    let mut words = substitute_last_addr(head, last)?;
+    words.extend_from_slice(carried);
+    Ok(words)
+}
+
+/// How many of `words`, at the end, are a command the parsed one
+/// carries to run later: a trailing variable argument, so always a
+/// suffix. A probe parse measures it, with every `$_` a placeholder
+/// address so that a head reading one parses whether or not the
+/// cursor stands; a line that does not parse carries nothing.
+fn carried_len(words: &[String]) -> usize {
+    let probe: Vec<&str> = words
+        .iter()
+        .map(|word| match word == "$_" {
+            true => "0x0",
+            false => word.as_str(),
+        })
+        .collect();
+    let Ok(line) = Line::try_parse_from(probe) else {
+        return 0;
+    };
+    match line.command {
+        Command::Frame { then, .. } | Command::Up { then } | Command::Down { then } => then.len(),
+        Command::Tasks { exec, .. }
+        | Command::Futures { exec, .. }
+        | Command::Threads { exec, .. } => exec.len(),
+        _ => 0,
+    }
 }
 
 /// What a scoped prefix selects: `task 129 trace -v` runs `trace -v`
@@ -1452,6 +1497,10 @@ fn history_lines(text: &str, last: Option<usize>) -> Vec<String> {
         .collect()
 }
 
+/// What `$_` stands for while an `--exec` command is checked before
+/// its loop runs: a placeholder, since no row is scoped yet.
+pub(crate) const EXEC_CHECK_ADDR: Option<u64> = Some(0);
+
 /// Parse one command from the words `tasks --exec` carries, for
 /// running it under a per-task scope. The words usually arrive
 /// already split — `--exec` takes the rest of its line — but a
@@ -1466,7 +1515,12 @@ fn history_lines(text: &str, last: Option<usize>) -> Vec<String> {
 /// refused here in the rule's own words, whether the command was
 /// quoted (so the listing's flag follows a whitespace-holding word)
 /// or not (so the exec command's parse trips over it).
-pub(crate) fn parse_exec_command(words: &[String]) -> Result<Command> {
+///
+/// `last` is what `$_` stands for in the command: the address the
+/// row's scope set, substituted only once the loop has scoped to the
+/// row. The check before the loop passes [`EXEC_CHECK_ADDR`], since any
+/// address parses as well as the one each run will put there.
+pub(crate) fn parse_exec_command(words: &[String], last: Option<u64>) -> Result<Command> {
     let resplit;
     let words = match words {
         [one] if one.chars().any(char::is_whitespace) => {
@@ -1483,6 +1537,7 @@ pub(crate) fn parse_exec_command(words: &[String]) -> Result<Command> {
         }
         words => words,
     };
+    let words = &substitute_head(words, last)?;
     match Line::try_parse_from(words) {
         Ok(line) => Ok(line.command),
         Err(e) => {
@@ -3054,20 +3109,20 @@ mod tests {
     fn test_exec_command_resplits_a_quoted_word() {
         let w = |words: &[&str]| words.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert!(matches!(
-            parse_exec_command(&w(&["trace -v"])).expect("resplits"),
+            parse_exec_command(&w(&["trace -v"]), None).expect("resplits"),
             Command::Trace { .. }
         ));
         assert!(matches!(
-            parse_exec_command(&w(&["trace", "-v"])).expect("parses"),
+            parse_exec_command(&w(&["trace", "-v"]), None).expect("parses"),
             Command::Trace { .. }
         ));
         // A single word without whitespace is not re-split — quote
         // characters inside one are somebody's name, not grouping.
         assert!(matches!(
-            parse_exec_command(&w(&["census"])).expect("parses"),
+            parse_exec_command(&w(&["census"]), None).expect("parses"),
             Command::Census { .. }
         ));
-        assert!(parse_exec_command(&w(&["cen\"sus\""])).is_err());
+        assert!(parse_exec_command(&w(&["cen\"sus\""]), None).is_err());
     }
 
     /// `--exec` takes the rest of the line, so a listing flag typed
@@ -3078,7 +3133,7 @@ mod tests {
     #[test]
     fn test_exec_command_refuses_a_listing_flag_after_it() {
         let w = |words: &[&str]| words.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let refusal = |words: &[&str]| match parse_exec_command(&w(words)) {
+        let refusal = |words: &[&str]| match parse_exec_command(&w(words), None) {
             Ok(_) => panic!("{words:?} parsed"),
             Err(e) => e.to_string(),
         };
@@ -3123,6 +3178,41 @@ mod tests {
         );
         let err = substitute_last_addr(&w("whatis $_"), None).unwrap_err();
         assert!(err.to_string().contains("no cursor"), "{err}");
+    }
+
+    /// `$_` is substituted in a command's own words, and left for the
+    /// command it carries — a move's or an `--exec`'s — to substitute
+    /// when it runs under the cursor it moved to, so no cursor need
+    /// stand for the carried one's to be accepted now.
+    #[test]
+    fn test_a_carried_command_keeps_its_last_addr() {
+        let w = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        let head = |s: &str, last| substitute_head(&w(s), last).expect("substitutes");
+        assert_eq!(
+            head("frame 1 whatis $_", Some(0x1f)),
+            ["frame", "1", "whatis", "$_"]
+        );
+        assert_eq!(head("up whatis $_", None), ["up", "whatis", "$_"]);
+        assert_eq!(
+            head("tasks --limit 3 --exec whatis $_", None),
+            ["tasks", "--limit", "3", "--exec", "whatis", "$_"]
+        );
+        assert_eq!(
+            head("futures --exec frame 1 whatis $_", None),
+            ["futures", "--exec", "frame", "1", "whatis", "$_"]
+        );
+        // The command's own words are substituted as before.
+        assert_eq!(head("whatis $_", Some(0x1f)), ["whatis", "0x1f"]);
+        assert!(substitute_head(&w("whatis $_"), None).is_err());
+        // The carried command substitutes when it is parsed to run.
+        assert!(matches!(
+            parse_trailing(&w("whatis $_"), Some(0x1f)),
+            Ok(Some(Command::Whatis { addr: Some(0x1f) }))
+        ));
+        assert!(matches!(
+            parse_exec_command(&["whatis $_".to_string()], Some(0x1f)),
+            Ok(Command::Whatis { addr: Some(0x1f) })
+        ));
     }
 
     /// The singular selectors are exact spellings beside their

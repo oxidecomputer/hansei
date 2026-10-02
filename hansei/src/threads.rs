@@ -653,7 +653,7 @@ fn exec_exec<T: proc::Target>(
     // Parse once up front: a command that does not parse is the
     // command line's mistake, not any thread's, and fails before the
     // loop prints a heading.
-    let parsed = repl::parse_exec_command(&cmd.exec).context("--exec")?;
+    let parsed = repl::parse_exec_command(&cmd.exec, repl::EXEC_CHECK_ADDR).context("--exec")?;
     let headed = !matches!(parsed, crate::Command::Thread { lwp: None });
     let rows = rows(session);
     let mut failed = 0usize;
@@ -664,11 +664,14 @@ fn exec_exec<T: proc::Target>(
     for (n, &index) in survivors.iter().enumerate() {
         let label = format!("thread {}", rows[index].lwp);
         write!(out, "{}", exec_heading(n, headed.then_some(&label)))?;
-        let command = repl::parse_exec_command(&cmd.exec).expect("parsed above");
         // `quit` is not a per-thread answer, so a Quit flow is ignored
-        // and the loop runs on.
-        let run = crate::cursor::select_thread(session, rows[index].lwp)
-            .and_then(|()| crate::dispatch(session, command, theme, out));
+        // and the loop runs on. The command is parsed under the scope,
+        // so its `$_` is the thread's.
+        let run = crate::cursor::select_thread(session, rows[index].lwp).and_then(|()| {
+            let last = session.cursor.borrow().last_addr;
+            let command = repl::parse_exec_command(&cmd.exec, last).expect("parsed above");
+            crate::dispatch(session, command, theme, out)
+        });
         if let Err(e) = run {
             failed += 1;
             writeln!(out, "error: {e:#}")?;

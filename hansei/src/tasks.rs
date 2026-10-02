@@ -3038,7 +3038,7 @@ fn exec_exec<T: proc::Target>(
     // Parse once up front: a command that does not parse is the
     // command line's mistake, not any task's, and fails before the
     // loop prints a heading.
-    let parsed = repl::parse_exec_command(&cmd.exec).context("--exec")?;
+    let parsed = repl::parse_exec_command(&cmd.exec, repl::EXEC_CHECK_ADDR).context("--exec")?;
     let headed = !matches!(parsed, crate::Command::Task { target: None, .. });
     print_warnings(&session.analysis().errors)?;
     let rows = rows(session);
@@ -3052,8 +3052,10 @@ fn exec_exec<T: proc::Target>(
     for (n, &index) in survivors[..shown].iter().enumerate() {
         let label = format!("task {}", rows[index].id);
         write!(out, "{}", exec_heading(n, headed.then_some(&label)))?;
-        let command = repl::parse_exec_command(&cmd.exec).expect("parsed above");
         crate::cursor::scope_to(session, index);
+        // Parsed under the scope, so its `$_` is the task's.
+        let last = session.cursor.borrow().last_addr;
+        let command = repl::parse_exec_command(&cmd.exec, last).expect("parsed above");
         // `quit` is not a per-task answer, so a Quit flow is ignored
         // and the loop runs on.
         if let Err(e) = crate::dispatch(session, command, theme, out) {

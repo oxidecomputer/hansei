@@ -1614,7 +1614,9 @@ fn after_move<T: Target>(
     if then.is_empty() {
         return Ok(Flow::Continue);
     }
-    match repl::parse_trailing(then)? {
+    // `$_` is the frame the move landed on.
+    let last = session.cursor.borrow().last_addr;
+    match repl::parse_trailing(then, last)? {
         // `history` belongs to the repl loop, which answers it before
         // dispatch ever sees it; refuse it rather than panic in the
         // unreachable dispatch arm.

@@ -1334,7 +1334,7 @@ fn exec_exec<T: proc::Target>(
     // Parse once up front: a command that does not parse is the
     // command line's mistake, not any future's, and fails before the
     // loop prints a heading.
-    let parsed = repl::parse_exec_command(&cmd.exec).context("--exec")?;
+    let parsed = repl::parse_exec_command(&cmd.exec, repl::EXEC_CHECK_ADDR).context("--exec")?;
     let headed = !matches!(parsed, crate::Command::Future { addr: None, .. });
     let rows = rows(session);
     let shown = cmd.limit.unwrap_or(survivors.len()).min(survivors.len());
@@ -1353,8 +1353,10 @@ fn exec_exec<T: proc::Target>(
             false => format!("future {:#x}", row.addr),
         };
         write!(out, "{}", exec_heading(n, headed.then_some(&label)))?;
-        let command = repl::parse_exec_command(&cmd.exec).expect("parsed above");
         crate::cursor::scope_to_future(session, row.at);
+        // Parsed under the scope, so its `$_` is the future's.
+        let last = session.cursor.borrow().last_addr;
+        let command = repl::parse_exec_command(&cmd.exec, last).expect("parsed above");
         // `quit` is not a per-future answer, so a Quit flow is ignored
         // and the loop runs on.
         if let Err(e) = crate::dispatch(session, command, theme, out) {

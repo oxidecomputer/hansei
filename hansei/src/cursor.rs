@@ -1722,4 +1722,43 @@ mod tests {
             .expect("the typed address selects");
         assert_eq!(cursor_future(&session), Some(trace::FutureAt::Held(inner)));
     }
+
+    /// The command a move carries reads `$_` at the frame the move
+    /// landed on, not the one the cursor stood on when the line was
+    /// typed: `frame 1 whatis $_` answers what `whatis` of frame #1's
+    /// address does.
+    #[test]
+    fn test_a_moves_carried_command_reads_the_new_frame() {
+        let (bundle, snapshot) = testkit::load("linux", "futurelock");
+        let args = session_args("linux", "futurelock");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let theme = crate::output::Theme::plain();
+        let run = |line: &str| {
+            let command = repl::parse_line(line).expect("the line parses");
+            let mut out = Vec::new();
+            dispatch(&session, command, theme, &mut out).expect("the line answers");
+            String::from_utf8(out).expect("the output is UTF-8")
+        };
+        let (id, frames) = session
+            .tasks
+            .tasks
+            .iter()
+            .find_map(|task| {
+                let frames: Vec<u64> = session
+                    .task_chain(task)?
+                    .frames
+                    .iter()
+                    .rev()
+                    .map(|f| f.future.addr)
+                    .collect();
+                (frames.len() > 1 && frames[0] != frames[1]).then_some((task.task_id?, frames))
+            })
+            .expect("futurelock has a task two frames deep");
+
+        run(&format!("task {id}"));
+        let carried = run("frame 1 whatis $_");
+        let direct = run(&format!("whatis {:#x}", frames[1]));
+        assert!(carried.ends_with(&direct), "{carried}\n---\n{direct}");
+        assert_ne!(direct, run(&format!("whatis {:#x}", frames[0])));
+    }
 }
