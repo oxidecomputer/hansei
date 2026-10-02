@@ -10,23 +10,21 @@ Held by: task 4 — async fn http_conns::serve (frame 0, `conn`)
       waiting on timer (deadline TS)
 [2 frames, 1 shown]
 
-future 0xADDR
+future 0xADDR: future reqwest::async_impl::client::PendingRequest
+future 0xADDR: future reqwest::async_impl::client::PendingRequest
+Held by: task 10 — async fn http_conns::reqwest_requester (frame 0, `inner`)
+
+#0  future        reqwest::async_impl::client::PendingRequest
+      defined at reqwest-0.13.2/src/async_impl/client.rs:3039 (<no_state>, 8 locals; holds 1 pending future)
+
+future 0xADDR: future tower_http::follow_redirect::ResponseFuture<reqwest::cookie::service::CookieService<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>>, reqwest::async_impl::body::Body, reqwest::redirect::TowerRedirectPolicy>
+future 0xADDR: future tower_http::follow_redirect::ResponseFuture<reqwest::cookie::service::CookieService<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>>, reqwest::async_impl::body::Body, reqwest::redirect::TowerRedirectPolicy>
+Held by: task 10 — async fn http_conns::reqwest_requester (frame 0, `in_flight`, via held future at 0xADDR)
+
+#0  future        tower_http::follow_redirect::ResponseFuture<reqwest::cookie::service::CookieService<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>>, reqwest::async_impl::body::Body, reqwest::redirect::TowerRedirectPolicy>
+      defined at tower-http-0.6.11/src/follow_redirect/mod.rs:257 (<no_state>, 8 locals; holds 1 pending future)
+
 future 0xADDR: future futures_util::future::either::Either<reqwest::cookie::service::ResponseFuture<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, reqwest::async_impl::body::Body>, tower::util::oneshot::Oneshot<reqwest::cookie::service::CookieService<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>>, http::request::Request<reqwest::async_impl::body::Body>>>
-Held by: task 10 — async fn http_conns::reqwest_requester (frame 0, `future`, via held future at 0xADDR)
-
-#0  future        tokio::sync::oneshot::Receiver<Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<reqwest::async_impl::body::Body>>>>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
-[12 frames, 1 shown]
-
-future 0xADDR
-future 0xADDR: future futures_util::future::either::Either<reqwest::cookie::service::ResponseFuture<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, reqwest::async_impl::body::Body>, tower::util::oneshot::Oneshot<reqwest::cookie::service::CookieService<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>>, http::request::Request<reqwest::async_impl::body::Body>>>
-Held by: task 10 — async fn http_conns::reqwest_requester (frame 0, `future`, via held future at 0xADDR)
-
-#0  future        tokio::sync::oneshot::Receiver<Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<reqwest::async_impl::body::Body>>>>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
-[12 frames, 1 shown]
-
-future 0xADDR
 future 0xADDR: future futures_util::future::either::Either<reqwest::cookie::service::ResponseFuture<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, reqwest::async_impl::body::Body>, tower::util::oneshot::Oneshot<reqwest::cookie::service::CookieService<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>>, http::request::Request<reqwest::async_impl::body::Body>>>
 Held by: task 10 — async fn http_conns::reqwest_requester (frame 0, `future`, via held future at 0xADDR)
 

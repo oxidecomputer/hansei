@@ -11,3 +11,4 @@ ADDR       TASK  HELD IN                                         STATE      WAIT
 0xADDR  7     frame 1, `v0`                                   Unresumed  —           no     async fn gen_0007::holder_08<gen_0007::leaf_09>
 0xADDR  7     frame 0, `inner`, via held future at 0xADDR  Unresumed  —           no     async fn gen_0007::leaf_09
 [7 futures]
+note: 4 rows print an address another find prints too; there, `future 0x…` and `trace 0x…` select the innermost, and `--exec` runs against each row's own

@@ -20,3 +20,4 @@ ADDR      TASK  HELD IN                                        STATE            
 0xADDR  3     set 0xADDR, via set child at 0xADDR        Unresumed                           —                   no     async fn unordered::leaf
 0xADDR  3     set 0xADDR, via set child at 0xADDR        Unresumed                           —                   no     async fn unordered::leaf
 [16 futures]
+note: 2 rows print an address another find prints too; there, `future 0x…` and `trace 0x…` select the innermost, and `--exec` runs against each row's own

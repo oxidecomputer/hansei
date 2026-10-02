@@ -384,7 +384,10 @@ pub enum Command {
 
     /// Select a future as the cursor, by the hex address the listings
     /// print: one a task holds in a frame's local, or a chain no task
-    /// contains, such as a FuturesUnordered child in its heap node. The
+    /// contains, such as a FuturesUnordered child in its heap node. An
+    /// address several finds print — a future held as another's first
+    /// member starts where its holder does — selects the innermost;
+    /// `futures --exec` reaches each of them. The
     /// cursor roots at the future itself, frame #0 of its own chain, so
     /// `trace`, `frame` and `locals` follow that chain and `$_` is its
     /// address; the holder stays one explicit `task` away — bare `task`
@@ -425,7 +428,10 @@ pub enum Command {
     /// child a FuturesUnordered polls, in its heap node. A JoinSet's
     /// members are tasks, with rows in `tasks`, so they are not here.
     /// Each address is what `trace <0xaddr>` follows, `whatis
-    /// <0xaddr>` locates, and `future <0xaddr>` selects. The listing
+    /// <0xaddr>` locates, and `future <0xaddr>` selects — save where
+    /// several rows print one address, as a future held as another's
+    /// first member does: the address then names the innermost, and a
+    /// note under the table counts the rows that share one. The listing
     /// is a lower bound for the reasons `help tasks` gives: a future
     /// behind an unrecognized pointer is not found, and a stopped scan
     /// says so on stderr.
@@ -456,9 +462,11 @@ pub enum Command {
     /// command and runs it once per surviving future, the command's
     /// omitted target filled with that future — `futures --with type
     /// acquire --exec trace -v` traces every match, each run under a
-    /// `future 0x…` heading. The target is the future itself, even one a
-    /// task holds, as `future 0x…` selects it: `trace` follows its own
-    /// chain, `print` and `locals` its own frames. One future's failure
+    /// `future 0x…` heading — `future 0x…: TYPE` where another row
+    /// prints the same address. The target is the row's own future,
+    /// even one a task holds or one sharing its address: `trace`
+    /// follows its own chain, `print` and `locals` its own frames, and
+    /// a bare `future` or `children` names it. One future's failure
     /// never stops the loop, the
     /// listing closes with `[Executed against N futures, M failed]`, and
     /// the command itself fails after the loop when M is not zero.
@@ -2364,6 +2372,7 @@ pub fn dispatch<T: Target>(
             session.note_version_ceiling();
             let render = RenderOpts::from_settings(&session.settings.borrow());
             let limit = limit.or(session.settings.borrow().limit);
+            let omitted = target.is_none();
             let Some(target) = target.or(session.cursor.borrow().root) else {
                 // A thread cursor has a stack worth walking: trace
                 // answers with the native backtrace rather than
@@ -2387,7 +2396,13 @@ pub fn dispatch<T: Target>(
                 fit: session.fit_width(theme),
                 heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
             };
-            trace::exec_trace(session, target, &opts, out)?
+            // The cursor's root is the future it was scoped to, which
+            // its address alone may not name; a typed one resolves
+            // afresh.
+            match omitted {
+                true => cursor::exec_trace_root(session, target, &opts, out)?,
+                false => trace::exec_trace(session, target, &opts, out)?,
+            }
         }
         Command::Type {
             name,

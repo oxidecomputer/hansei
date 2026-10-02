@@ -34,15 +34,15 @@ the chain ends in a future that has never been polled
 #0  async fn      unordered::leaf
       state Unresumed
 
-future 0xADDR
-future 0xADDR: async fn unordered::leaf
-Held by: task 3 — async fn unordered::driver (frame 0, `inner`, via held future at 0xADDR)
+future 0xADDR: async fn unordered::holder<unordered::leaf>
+future 0xADDR: async fn unordered::holder<unordered::leaf>
+Held by: task 3 — async fn unordered::driver (frame 2, `nested_hold`)
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::leaf
-      state Unresumed
+#0  async fn      unordered::holder<unordered::leaf>
+      state Unresumed (holds 1 pending future)
 
-future 0xADDR
+future 0xADDR: async fn unordered::leaf
 future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 0, `inner`, via held future at 0xADDR)
 

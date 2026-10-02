@@ -23,7 +23,7 @@ use hansei_runtime::tokio::observe::ResourceObservation;
 use hansei_runtime::tokio::{Lifecycle, RawInstant, attribution, bundle, census};
 
 use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use std::io;
 
@@ -1225,8 +1225,45 @@ pub(crate) fn exec_futures<T: proc::Target>(
         theme,
         out,
     )?;
+    let shown = cmd.limit.unwrap_or(selected.len()).min(selected.len());
+    if let Some(note) = shared_note(&selected[..shown], &shared_addrs(rows)) {
+        writeln!(out, "{note}")?;
+    }
     print_warnings(&session.tasks.errors)?;
     Ok(())
+}
+
+/// The addresses more than one row prints. A future held as another's
+/// first member starts where its holder starts, so the two print one
+/// address, and an address alone names the innermost of them.
+fn shared_addrs(rows: &[FutureRow]) -> HashSet<u64> {
+    let mut seen = HashSet::new();
+    rows.iter()
+        .filter(|row| !seen.insert(row.addr))
+        .map(|row| row.addr)
+        .collect()
+}
+
+/// The line under the table saying which of `shown` print an address
+/// some other find prints too — counted against every find, not only
+/// the survivors, since `future 0x…` resolves against every one — and
+/// what that address selects; `None` when no row does.
+fn shared_note(shown: &[&FutureRow], shared: &HashSet<u64>) -> Option<String> {
+    let rows = shown
+        .iter()
+        .filter(|row| shared.contains(&row.addr))
+        .count();
+    (rows > 0).then(|| {
+        format!(
+            "note: {} an address another find prints too; there, `future 0x…` \
+             and `trace 0x…` select the innermost, and `--exec` runs against \
+             each row's own",
+            match rows {
+                1 => "1 row prints".to_string(),
+                n => format!("{n} rows print"),
+            }
+        )
+    })
 }
 
 /// `--group FIELD`: bucket the surviving rows by the field's spelled
@@ -1306,11 +1343,18 @@ fn exec_exec<T: proc::Target>(
     // command's omitted target and `$_` are that future's — and the
     // session's own cursor comes back once the loop is done.
     let saved = *session.cursor.borrow();
+    // An address several rows print does not tell their runs apart, so
+    // those headings name the type too, as `trace` heads a future.
+    let shared = shared_addrs(rows);
     for (n, &index) in survivors[..shown].iter().enumerate() {
-        let label = format!("future {:#x}", rows[index].addr);
+        let row = &rows[index];
+        let label = match shared.contains(&row.addr) {
+            true => format!("future {:#x}: {}", row.addr, row.future),
+            false => format!("future {:#x}", row.addr),
+        };
         write!(out, "{}", exec_heading(n, headed.then_some(&label)))?;
         let command = repl::parse_exec_command(&cmd.exec).expect("parsed above");
-        crate::cursor::scope_to_future(session, rows[index].at);
+        crate::cursor::scope_to_future(session, row.at);
         // `quit` is not a per-future answer, so a Quit flow is ignored
         // and the loop runs on.
         if let Err(e) = crate::dispatch(session, command, theme, out) {

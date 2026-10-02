@@ -35,6 +35,14 @@ pub struct Cursor {
     pub lwp: Option<u32>,
     /// The chain root: the task, or the lone future no task contains.
     pub root: Option<TraceTarget>,
+    /// The census future a `Future` root was selected as. An address
+    /// alone does not always name one: a future held as another's
+    /// first member starts where its holder starts, so several finds
+    /// print the same address, and resolving it again picks the
+    /// innermost. Every command that falls back to the root asks this
+    /// instead; `None` for a task root, and for a `Future` root at a
+    /// task's header.
+    pub future: Option<trace::FutureAt>,
     /// The frame within the root's await chain, numbered the way the
     /// listings display frames: #0 the most recently polled, counting
     /// outward to the root.
@@ -88,7 +96,7 @@ pub(crate) fn exec_children<T: proc::Target>(
     let root = session.cursor.borrow().root;
     match root {
         Some(TraceTarget::Future(addr)) if !task_rooted(session, addr) => {
-            futures::print_children(session, future_at(session, addr)?, fit, out)
+            futures::print_children(session, root_future(session, addr)?, fit, out)
         }
         _ => {
             let index =
@@ -111,7 +119,7 @@ pub(crate) fn cursor_task<T: proc::Target>(session: &Session<'_, T>) -> Option<u
             Some((index, _)) => Some(index),
             None => {
                 let census = session.census();
-                match future_at(session, addr).ok()? {
+                match root_future(session, addr).ok()? {
                     trace::FutureAt::Held(i) => Some(census.held[i].owner),
                     trace::FutureAt::Child { set, .. } => Some(census.sets[set].owner),
                 }
@@ -185,6 +193,7 @@ pub(crate) fn select_task<T: proc::Target>(
     *session.cursor.borrow_mut() = Cursor {
         lwp: polling_worker(&session.workers, task),
         root: Some(root),
+        future: None,
         frame,
         last_addr: Some(last_addr),
     };
@@ -248,7 +257,7 @@ pub(crate) fn exec_future<T: proc::Target>(
                 Some(TraceTarget::Future(addr)) if !task_rooted(session, addr) => addr,
                 _ => return Err(anyhow!("no future selected")),
             };
-            future_at(session, addr)?
+            root_future(session, addr)?
         }
     };
     futures::print_future(session, at, session.fit_width(theme), out)?;
@@ -268,6 +277,31 @@ fn future_at<T: proc::Target>(session: &Session<'_, T>, addr: u64) -> Result<tra
         &session.impl_fold,
         addr,
     )
+}
+
+/// The census future a `Future` root at `addr` stands for: the one the
+/// cursor was scoped to, where it was scoped to one there, else what
+/// the address resolves to. Only an omitted target is the root's — an
+/// address typed out resolves afresh.
+fn root_future<T: proc::Target>(session: &Session<'_, T>, addr: u64) -> Result<trace::FutureAt> {
+    let pinned = session.cursor.borrow().future;
+    match pinned {
+        Some(at) if at.addr(session.census()) == addr => Ok(at),
+        _ => future_at(session, addr),
+    }
+}
+
+/// The cursor's pinned census future, when the root is one — what an
+/// omitted `trace` target follows instead of resolving the root's
+/// address again.
+pub(crate) fn cursor_future<T: proc::Target>(session: &Session<'_, T>) -> Option<trace::FutureAt> {
+    let cursor = *session.cursor.borrow();
+    match (cursor.root, cursor.future) {
+        (Some(TraceTarget::Future(addr)), Some(at)) if at.addr(session.census()) == addr => {
+            Some(at)
+        }
+        _ => None,
+    }
 }
 
 /// Move the cursor to the future at `addr`, answering what the census
@@ -310,6 +344,7 @@ pub(crate) fn scope_to<T: proc::Target>(session: &Session<'_, T>, index: usize) 
     *session.cursor.borrow_mut() = Cursor {
         lwp: polling_worker(&session.workers, task),
         root: Some(task_root(task)),
+        future: None,
         frame: 0,
         last_addr: Some(last_addr),
     };
@@ -336,6 +371,7 @@ pub(crate) fn scope_to_future<T: proc::Target>(session: &Session<'_, T>, at: tra
     *session.cursor.borrow_mut() = Cursor {
         lwp,
         root: Some(TraceTarget::Future(addr)),
+        future: Some(at),
         frame: 0,
         last_addr: Some(addr),
     };
@@ -373,7 +409,22 @@ fn print_root_chain<T: proc::Target>(
         fit: session.fit_width(theme),
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
     };
-    trace::exec_trace(session, root, &opts, out)
+    exec_trace_root(session, root, &opts, out)
+}
+
+/// Trace the cursor's `root`: the census future the cursor was scoped
+/// to, where it was scoped to one, rather than whatever its address
+/// resolves to afresh.
+pub(crate) fn exec_trace_root<T: proc::Target>(
+    session: &Session<'_, T>,
+    root: TraceTarget,
+    opts: &TraceOpts<'_>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    match cursor_future(session) {
+        Some(at) => trace::exec_trace_at(session, at, opts, out),
+        None => trace::exec_trace(session, root, opts, out),
+    }
 }
 
 /// `thread`: select an lwp, or print the cursor's — either way the
@@ -411,6 +462,7 @@ pub(crate) fn select_thread<T: proc::Target>(session: &Session<'_, T>, tid: u32)
     *session.cursor.borrow_mut() = Cursor {
         lwp: Some(tid),
         root: None,
+        future: None,
         frame: 0,
         last_addr: Some(lwp.regs.rsp),
     };
@@ -590,7 +642,8 @@ pub(crate) struct ResolvedChain<'b> {
 
 /// Resolve the cursor root to its await chain. A `Future` root at a
 /// task's header address is that task's chain (an id-less task roots
-/// there); any other is asked of the census the way `trace 0x…` asks
+/// there); any other is the census future the cursor was scoped to,
+/// else what the census says the address is, the way `trace 0x…` asks
 /// — a held future's own chain, inside its task's allocation or not.
 pub(crate) fn chain_of<'b, T: proc::Target>(
     session: &Session<'b, T>,
@@ -615,15 +668,7 @@ pub(crate) fn chain_of<'b, T: proc::Target>(
                 return task_chain(index);
             }
             let census = session.census();
-            let found = trace::future_at(
-                &session.ctx.view,
-                &session.tasks,
-                session.extents(),
-                census,
-                &session.impl_fold,
-                addr,
-            )?;
-            let (root, owner, origin) = match found {
+            let (root, owner, origin) = match root_future(session, addr)? {
                 trace::FutureAt::Held(i) => {
                     let h = &census.held[i];
                     (
@@ -773,6 +818,7 @@ mod tests {
         let c = |lwp, root, frame| Cursor {
             lwp,
             root,
+            future: None,
             frame,
             last_addr: None,
         };
@@ -1607,5 +1653,53 @@ mod tests {
         )
         .expect_err("a bad scope fails the command");
         assert!(err.to_string().contains("no task 999999"), "{err}");
+    }
+
+    /// A cursor scoped to a future that shares its address with the
+    /// future it holds — held as its first member — stays on that
+    /// future: bare `future`, `children` and the chain are its own,
+    /// although the address alone resolves to the inner one.
+    #[test]
+    fn test_a_scoped_future_is_not_resolved_again_by_address() {
+        let (bundle, snapshot) = testkit::load("linux", "unordered");
+        let args = session_args("linux", "unordered");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let theme = crate::output::Theme::plain();
+        let census = session.census();
+        let size = |i: usize| session.ctx.view.ty(census.held[i].ty).map(|ty| ty.size());
+        let (outer, inner) = (0..census.held.len())
+            .flat_map(|o| (0..census.held.len()).map(move |i| (o, i)))
+            .find(|&(o, i)| {
+                o != i && census.held[o].addr == census.held[i].addr && size(o) > size(i)
+            })
+            .expect("unordered holds a future as another's first member");
+        let addr = census.held[outer].addr;
+        assert_eq!(
+            future_at(&session, addr).expect("the address resolves"),
+            trace::FutureAt::Held(inner),
+            "the address alone names the inner future"
+        );
+
+        scope_to_future(&session, trace::FutureAt::Held(outer));
+        assert_eq!(cursor_future(&session), Some(trace::FutureAt::Held(outer)));
+        let chain = chain_of(&session, TraceTarget::Future(addr)).expect("the chain resolves");
+        assert_eq!(
+            chain.chain.frames[0].future.ty.id(),
+            census.held[outer].ty,
+            "the chain is the outer future's"
+        );
+        let mut out = Vec::new();
+        exec_future(&session, None, false, theme, &mut out).expect("bare future prints");
+        let block = String::from_utf8(out).expect("the block is UTF-8");
+        assert!(block.contains("    held futures: 1\n"), "{block}");
+        let mut out = Vec::new();
+        exec_children(&session, None, &mut out).expect("children lists");
+        let listing = String::from_utf8(out).expect("the listing is UTF-8");
+        assert!(listing.starts_with("held futures: 1\n"), "{listing}");
+
+        // A typed address resolves afresh, to the inner future.
+        exec_future(&session, Some(addr), false, theme, &mut Vec::new())
+            .expect("the typed address selects");
+        assert_eq!(cursor_future(&session), Some(trace::FutureAt::Held(inner)));
     }
 }

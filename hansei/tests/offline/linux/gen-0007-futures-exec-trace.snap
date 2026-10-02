@@ -26,7 +26,15 @@ the chain ends in a future that has never been polled
 #0  async fn      gen_0007::leaf_01
       state Unresumed
 
-future 0xADDR
+future 0xADDR: async fn gen_0007::holder_04<gen_0007::leaf_05>
+future 0xADDR: async fn gen_0007::holder_04<gen_0007::leaf_05>
+Held by: task 5 — async fn gen_0007::member_03 (frame 1, `v0`)
+
+the chain ends in a future that has never been polled
+#0  async fn      gen_0007::holder_04<gen_0007::leaf_05>
+      state Unresumed (holds 1 pending future)
+
+future 0xADDR: async fn gen_0007::leaf_05
 future 0xADDR: async fn gen_0007::leaf_05
 Held by: task 5 — async fn gen_0007::member_03 (frame 0, `inner`, via held future at 0xADDR)
 
@@ -34,23 +42,15 @@ the chain ends in a future that has never been polled
 #0  async fn      gen_0007::leaf_05
       state Unresumed
 
-future 0xADDR
-future 0xADDR: async fn gen_0007::leaf_05
-Held by: task 5 — async fn gen_0007::member_03 (frame 0, `inner`, via held future at 0xADDR)
+future 0xADDR: async fn gen_0007::holder_08<gen_0007::leaf_09>
+future 0xADDR: async fn gen_0007::holder_08<gen_0007::leaf_09>
+Held by: task 7 — async fn gen_0007::member_07 (frame 1, `v0`)
 
 the chain ends in a future that has never been polled
-#0  async fn      gen_0007::leaf_05
-      state Unresumed
+#0  async fn      gen_0007::holder_08<gen_0007::leaf_09>
+      state Unresumed (holds 1 pending future)
 
-future 0xADDR
 future 0xADDR: async fn gen_0007::leaf_09
-Held by: task 7 — async fn gen_0007::member_07 (frame 0, `inner`, via held future at 0xADDR)
-
-the chain ends in a future that has never been polled
-#0  async fn      gen_0007::leaf_09
-      state Unresumed
-
-future 0xADDR
 future 0xADDR: async fn gen_0007::leaf_09
 Held by: task 7 — async fn gen_0007::member_07 (frame 0, `inner`, via held future at 0xADDR)
 

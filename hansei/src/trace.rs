@@ -177,11 +177,30 @@ fn exec_trace_task<T: proc::Target>(
 }
 
 /// Trace one future by address: resolve the address against the census
-/// (`futures` prints the addresses this accepts), say where the
-/// future lives, and render its await chain the way a task's is rendered.
+/// (`futures` prints the addresses this accepts) and trace what it
+/// names.
 fn exec_trace_future<T: proc::Target>(
     session: &Session<'_, T>,
     addr: u64,
+    opts: &TraceOpts<'_>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let found = future_at(
+        &session.ctx.view,
+        &session.tasks,
+        session.extents(),
+        session.census(),
+        &session.impl_fold,
+        addr,
+    )?;
+    exec_trace_at(session, found, opts, out)
+}
+
+/// Trace one census future: say where it lives, and render its await
+/// chain the way a task's is rendered.
+pub(crate) fn exec_trace_at<T: proc::Target>(
+    session: &Session<'_, T>,
+    found: FutureAt,
     opts: &TraceOpts<'_>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -190,14 +209,6 @@ fn exec_trace_future<T: proc::Target>(
     let census = session.census();
     let type_names = TypeNames::of(session);
 
-    let found = future_at(
-        &ctx.view,
-        list,
-        session.extents(),
-        census,
-        &session.impl_fold,
-        addr,
-    )?;
     let (root, owner, origin) = match found {
         FutureAt::Held(index) => {
             let h = &census.held[index];
@@ -301,6 +312,17 @@ pub(crate) enum FutureAt {
     /// Indices into [`census::FutureCensus::sets`] and that set's
     /// children.
     Child { set: usize, child: usize },
+}
+
+impl FutureAt {
+    /// The address the listings print for it: a held future's own, a
+    /// set child's node.
+    pub(crate) fn addr(self, census: &census::FutureCensus) -> u64 {
+        match self {
+            FutureAt::Held(i) => census.held[i].addr,
+            FutureAt::Child { set, child } => census.sets[set].children[child].node,
+        }
+    }
 }
 
 /// Resolve `addr` to the census future it names: a held future's
