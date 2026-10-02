@@ -331,25 +331,38 @@ pub const TRACING_INSTRUMENTED_V0_1_40: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// parking_lot's `raw_mutex::RawMutex` as 0.12.1 through 0.12.5 — the
-/// newest release at the review — implement it, `src/raw_mutex.rs`
-/// byte-identical across the range: `RawMutex { state: AtomicU8 }`,
-/// whose `LOCKED_BIT` (`0b01`) is set exactly while a thread holds the
-/// lock — `is_locked` reads it alone — and whose `PARKED_BIT` (`0b10`)
-/// says only that a thread waits for it. The origin is the type's own
-/// method declarations, which name that file.
-pub const PARKING_LOT_RAW_MUTEX_V0_12_1: LibraryConvention = LibraryConvention {
+/// parking_lot's `raw_mutex::RawMutex` as 0.11.0 through 0.12.5 — the
+/// newest release at the review — implement it: `RawMutex { state:
+/// AtomicU8 }`, whose `LOCKED_BIT` (`0b01`) is set exactly while a
+/// thread holds the lock — `is_locked` reads it alone — and whose
+/// `PARKED_BIT` (`0b10`) says only that a thread waits for it. The
+/// origin is the type's own method declarations, which name
+/// `src/raw_mutex.rs`, byte-identical within each minor; 0.11's differs
+/// from 0.12's only in taking `Instant` (used for timed locks alone)
+/// from the `instant` crate rather than `std::time`.
+pub const PARKING_LOT_RAW_MUTEX_V0_11_0: LibraryConvention = LibraryConvention {
     package: "parking_lot",
-    family: "parking_lot-raw-mutex-0.12.1",
-    floor: (0, 12, 1),
+    family: "parking_lot-raw-mutex-0.11.0",
+    floor: (0, 11, 0),
     ceiling: (0, 12, 5),
-    checksums: &[(
-        "src/raw_mutex.rs",
-        [
-            0xc6, 0x3f, 0xda, 0xbc, 0x3c, 0x51, 0xef, 0x4b, 0x58, 0x5a, 0x91, 0xdb, 0xef, 0xbe,
-            0x8c, 0x52,
-        ],
-    )],
+    checksums: &[
+        // 0.11.0 through 0.11.2.
+        (
+            "src/raw_mutex.rs",
+            [
+                0x59, 0x48, 0xba, 0x45, 0x74, 0xa0, 0x23, 0xc1, 0xf3, 0xb2, 0x9c, 0x4c, 0x16, 0x10,
+                0xd5, 0xbf,
+            ],
+        ),
+        // 0.12.0 through 0.12.5.
+        (
+            "src/raw_mutex.rs",
+            [
+                0xc6, 0x3f, 0xda, 0xbc, 0x3c, 0x51, 0xef, 0x4b, 0x58, 0x5a, 0x91, 0xdb, 0xef, 0xbe,
+                0x8c, 0x52,
+            ],
+        ),
+    ],
 };
 
 /// futures-util's `map`, `map_err` and `into_future` combinators as
@@ -2695,13 +2708,16 @@ impl GitConvention {
 }
 
 /// sprockets-tls's `Stream<T>` (`tls/src/lib.rs` in oxidecomputer's
-/// sprockets repository) at the three revisions omicron has pinned —
+/// sprockets repository) at the four revisions omicron has pinned —
 /// byte-identical in the struct and both impls: the struct is `{ inner:
 /// TlsStream<T>, platform_id, corpus_appraisal_success }`, `TlsStream`
 /// being tokio-rustls's enum, and every `AsyncRead`/`AsyncWrite` method
-/// calls the same method on `inner` and does nothing else. Each new
-/// revision is reviewed before it joins the list; until then its
-/// streams decline.
+/// calls the same method on `inner` and does nothing else. The newest,
+/// `02c7e54`, puts the IPCC module and its error variants behind the
+/// `ipcc` feature and has the message-sending helper flush after it
+/// writes; neither touches the struct or its impls. Each new revision
+/// is reviewed before it joins the list; until then its streams
+/// decline.
 pub const SPROCKETS_TLS_STREAM_D2B68E4: GitConvention = GitConvention {
     package: "sprockets-tls",
     repository: "sprockets",
@@ -2729,10 +2745,17 @@ pub const SPROCKETS_TLS_STREAM_D2B68E4: GitConvention = GitConvention {
                 0xb1, 0xd6,
             ],
         ),
+        (
+            "02c7e5414d97c0c85d629cb76d1f6beab73d960e",
+            [
+                0xe7, 0x82, 0x0a, 0xc3, 0x52, 0xcf, 0xdd, 0x54, 0xab, 0x36, 0xab, 0x1c, 0x6d, 0xb5,
+                0x48, 0x4c,
+            ],
+        ),
     ],
 };
 
-/// sprockets-tls's client handshake (`tls/src/client.rs`) at the three
+/// sprockets-tls's client handshake (`tls/src/client.rs`) at the four
 /// revisions omicron has pinned: `Client::connect_with_config` dials
 /// its `addr` and keeps nothing of it once `TcpStream::connect`
 /// returns, so while it awaits the TLS handshake — `connector.connect`,
@@ -2740,8 +2763,9 @@ pub const SPROCKETS_TLS_STREAM_D2B68E4: GitConvention = GitConvention {
 /// the far end; from the handshake on, it holds the TLS stream in the
 /// local `stream`, and from the certificates on, the server's
 /// platform id in `tq_platform_id`, a `dice_mfg_msgs::PlatformId`
-/// newtype over its bytes. The later revision changes only how the
-/// nonce is drawn and that the attestation is awaited.
+/// newtype over its bytes. `a233079` changes only how the nonce is
+/// drawn and that the attestation is awaited; `02c7e54` only puts the
+/// IPCC configuration behind the `ipcc` feature.
 pub const SPROCKETS_TLS_CLIENT_D2B68E4: GitConvention = GitConvention {
     package: "sprockets-tls",
     repository: "sprockets",
@@ -2769,11 +2793,18 @@ pub const SPROCKETS_TLS_CLIENT_D2B68E4: GitConvention = GitConvention {
                 0xf6, 0xee,
             ],
         ),
+        (
+            "02c7e5414d97c0c85d629cb76d1f6beab73d960e",
+            [
+                0x50, 0x0d, 0x77, 0x30, 0x83, 0x92, 0x09, 0x2f, 0x90, 0x26, 0x58, 0xdd, 0xc4, 0x8b,
+                0x59, 0xdd,
+            ],
+        ),
     ],
 };
 
 /// sprockets-tls's server handshake (`tls/src/server.rs`) at the same
-/// three revisions: `SprocketsAcceptor::handshake` takes the acceptor
+/// four revisions: `SprocketsAcceptor::handshake` takes the acceptor
 /// apart into locals, `addr` among them — the `SocketAddr` the
 /// listener's `accept` returned beside the socket, which it returns
 /// with the finished stream, and so holds across every await of the
@@ -2783,7 +2814,7 @@ pub const SPROCKETS_TLS_CLIENT_D2B68E4: GitConvention = GitConvention {
 /// `Accept` over that socket; from the handshake on, its frame holds
 /// the TLS stream in `stream`, and from the certificates on, the
 /// client's platform id in `tq_platform_id`.
-/// The later revision differs from the earlier as the client's does.
+/// The later revisions differ from the earlier as the client's do.
 pub const SPROCKETS_TLS_SERVER_D2B68E4: GitConvention = GitConvention {
     package: "sprockets-tls",
     repository: "sprockets",
@@ -2809,6 +2840,13 @@ pub const SPROCKETS_TLS_SERVER_D2B68E4: GitConvention = GitConvention {
             [
                 0x38, 0xbc, 0x84, 0x55, 0x3b, 0x8f, 0x2c, 0xd6, 0xbd, 0xc9, 0x10, 0x3a, 0xcd, 0x18,
                 0xd6, 0x17,
+            ],
+        ),
+        (
+            "02c7e5414d97c0c85d629cb76d1f6beab73d960e",
+            [
+                0x94, 0xfa, 0xc0, 0x4a, 0xb0, 0xae, 0xa0, 0x73, 0x13, 0xba, 0x0a, 0x50, 0xcb, 0x97,
+                0x6d, 0xf0,
             ],
         ),
     ],

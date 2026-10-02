@@ -54,7 +54,7 @@ use crate::detect::semantics::{
     HYPER_H1_CONN_V1_6_0, HYPER_RUSTLS_STREAM_V0_27_0, HYPER_UTIL_AUTO_CONN_V0_1_10,
     HYPER_UTIL_CONNECTED_V0_1_10, HYPER_UTIL_IO_V0_1_10, HYPER_UTIL_POOL_V0_1_16,
     HYPER_UTIL_RESPONSE_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
-    PARKING_LOT_RAW_MUTEX_V0_12_1, REQWEST_CONN_READ_SLOT, REQWEST_CONN_V0_12_14,
+    PARKING_LOT_RAW_MUTEX_V0_11_0, REQWEST_CONN_READ_SLOT, REQWEST_CONN_V0_12_14,
     REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0, RUSTLS_SESSION_V0_23_23,
     RustcConvention, SPROCKETS_TLS_CLIENT_D2B68E4, SPROCKETS_TLS_SERVER_D2B68E4,
     SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_INTERVAL_TICK_V1_47, TOKIO_RUSTLS_HANDSHAKE_V0_26_0,
@@ -6824,7 +6824,7 @@ fn plan_lock(
             (rule, "futex", None)
         }
         LockSeed::ParkingLot(sources) => {
-            let origin = delegation_origin(sources, &PARKING_LOT_RAW_MUTEX_V0_12_1, "method")?;
+            let origin = delegation_origin(sources, &PARKING_LOT_RAW_MUTEX_V0_11_0, "method")?;
             let rule = RuleKey::Delegation {
                 kind: SemanticRuleKind::ParkingLotRawMutex,
                 origin,
@@ -10228,15 +10228,15 @@ mod tests {
                     .to_owned()
             )]
         );
-        let mut both = registry("parking_lot-0.11.2", "src/raw_mutex.rs");
+        let mut both = registry("parking_lot-0.10.2", "src/raw_mutex.rs");
         both.extend(registry("parking_lot-0.12.5", "src/raw_mutex.rs"));
         assert_eq!(
             refused(
-                &|| delegation_origin(&both, &PARKING_LOT_RAW_MUTEX_V0_12_1, "method").is_err()
+                &|| delegation_origin(&both, &PARKING_LOT_RAW_MUTEX_V0_11_0, "method").is_err()
             ),
             [(
-                PARKING_LOT_RAW_MUTEX_V0_12_1.family,
-                "parking_lot 0.11.2 is older than the supported version range: 0.12.1-0.12.5"
+                PARKING_LOT_RAW_MUTEX_V0_11_0.family,
+                "parking_lot 0.10.2 is older than the supported version range: 0.11.0-0.12.5"
                     .to_owned()
             )]
         );

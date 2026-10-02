@@ -990,7 +990,7 @@ mod tests {
                 .is_empty()
         );
 
-        let unsupported = vec!["parking_lot 0.11.2 is older".to_owned(), "tokio".to_owned()];
+        let unsupported = vec!["parking_lot 0.10.2 is older".to_owned(), "tokio".to_owned()];
         let refusal = admit(
             unsupported.clone(),
             false,
@@ -1003,14 +1003,14 @@ mod tests {
             refusal,
             "refusing to write x.tinfo: parts of this binary do not have \
              extraction rules, and may show incomplete, raw, or wrong data:\n  \
-             parking_lot 0.11.2 is older\n  \
+             parking_lot 0.10.2 is older\n  \
              tokio\n\
              (--allow-unsupported to write it anyway)"
         );
 
         assert_eq!(
             admit(unsupported, true, "refusing", "go").unwrap(),
-            ["warning: parking_lot 0.11.2 is older", "warning: tokio"]
+            ["warning: parking_lot 0.10.2 is older", "warning: tokio"]
         );
     }
 
@@ -1023,7 +1023,7 @@ mod tests {
     fn test_extract_writes_nothing_it_refuses() {
         let tinfo = testkit::fixture(FIXTURE_SETS[0], &format!("{}.tinfo", PROGRAMS[0]));
         let mut bundle = Bundle::load(&tinfo).expect("the fixture bundle should load");
-        bundle.meta.unsupported = vec!["parking_lot 0.11.2 is older".to_owned()];
+        bundle.meta.unsupported = vec!["parking_lot 0.10.2 is older".to_owned()];
         let dir = tempfile::tempdir().expect("tempdir");
         let output = dir.path().join("x.tinfo");
 
@@ -1218,12 +1218,12 @@ mod tests {
     #[test]
     fn test_a_release_outside_names_each_range_once() {
         let found = lock_findings(&[
-            ("parking_lot", "0.11.2", REGISTRY),
+            ("parking_lot", "0.10.2", REGISTRY),
             ("hyper-util", "99.0.0", REGISTRY),
         ]);
         assert_eq!(found.len(), 2, "{found:#?}");
         assert!(
-            found[0].starts_with("parking_lot 0.11.2: below 0.12.1-"),
+            found[0].starts_with("parking_lot 0.10.2: below 0.11.0-"),
             "{found:#?}"
         );
         assert!(

@@ -3022,7 +3022,7 @@ mod unsupported_warning_tests {
 
         let meta = Meta {
             unsupported: vec![
-                "parking_lot 0.11.2 is older than the supported version range: 0.12.1-0.12.5"
+                "parking_lot 0.10.2 is older than the supported version range: 0.11.0-0.12.5"
                     .to_owned(),
                 "rustc 1.96.0 is older than the supported version range: 1.97-1.98".to_owned(),
             ],
@@ -3033,8 +3033,8 @@ mod unsupported_warning_tests {
             Some(
                 "warning: parts of this target's binary do not have extraction rules, \
                  and may show incomplete, raw, or wrong data:\n  \
-                 parking_lot 0.11.2 is older than the supported version range: \
-                 0.12.1-0.12.5\n  \
+                 parking_lot 0.10.2 is older than the supported version range: \
+                 0.11.0-0.12.5\n  \
                  rustc 1.96.0 is older than the supported version range: 1.97-1.98"
             )
         );

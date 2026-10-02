@@ -2860,17 +2860,17 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 // tokio's wait lists are guarded by parking_lot's raw
                 // mutex in every fixture, read off the type's own file.
                 "parking_lot" => {
-                    use exegesis::detect::semantics::PARKING_LOT_RAW_MUTEX_V0_12_1;
+                    use exegesis::detect::semantics::PARKING_LOT_RAW_MUTEX_V0_11_0;
                     let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
                         unreachable!()
                     };
                     assert_eq!(
                         s(*family),
-                        PARKING_LOT_RAW_MUTEX_V0_12_1.family,
+                        PARKING_LOT_RAW_MUTEX_V0_11_0.family,
                         "{program}"
                     );
                     assert_eq!(
-                        PARKING_LOT_RAW_MUTEX_V0_12_1.select(&s(*version).parse().unwrap()),
+                        PARKING_LOT_RAW_MUTEX_V0_11_0.select(&s(*version).parse().unwrap()),
                         LayoutSelection::ReviewedRange,
                         "{program}: parking_lot {} is outside the reviewed range",
                         s(*version)

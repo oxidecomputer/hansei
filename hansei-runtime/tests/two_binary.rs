@@ -738,7 +738,7 @@ fn exegesis_free_origin_check(bundle: &Bundle) {
     let [(_, _, _, lock_family, lock_source, _)] = lock.as_slice() else {
         panic!("expected one parking_lot delegation origin: {lock:?}");
     };
-    assert_eq!(*lock_family, "parking_lot-raw-mutex-0.12.1");
+    assert_eq!(*lock_family, "parking_lot-raw-mutex-0.11.0");
     assert!(lock_source.ends_with("/src/raw_mutex.rs"), "{lock_source}");
     let [(index, package, version, family, source, checksums)] = delegations.as_slice() else {
         panic!("expected the tracing delegation origin beside it: {delegations:?}");
