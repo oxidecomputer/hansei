@@ -8007,9 +8007,9 @@ mod tests {
         assert!(!plan.delegate_is_future);
         assert!(plan.static_children().is_empty());
         let (kind, detail) =
-            plan_pending(&CompilerVerdict::Declined("rustc 1.99".into())).unwrap_err();
+            plan_pending(&CompilerVerdict::Declined("rustc 2.999".into())).unwrap_err();
         assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
-        assert_eq!(detail, "rustc 1.99");
+        assert_eq!(detail, "rustc 2.999");
     }
 
     /// A route that the final table does not bear out declines with the
@@ -8051,13 +8051,13 @@ mod tests {
         );
         // Outside the reviewed toolchains, on either review.
         let mut s = seed(AdapterKind::Box, None, PointeeSeed::Sized(FUT));
-        s.compiler = CompilerVerdict::Declined("rustc 1.99".into());
+        s.compiler = CompilerVerdict::Declined("rustc 2.999".into());
         assert_eq!(
             kind_of(plan_adapter(BOX, &s, &a.types, &mut a.strings)),
             SemanticIssueKind::UnsupportedOrigin
         );
         let mut d = dyn_seed();
-        d.abi = CompilerVerdict::Declined("rustc 1.99".into());
+        d.abi = CompilerVerdict::Declined("rustc 2.999".into());
         let s = seed(AdapterKind::Box, None, PointeeSeed::Dyn(d));
         assert_eq!(
             kind_of(plan_adapter(WIDE, &s, &a.types, &mut a.strings)),

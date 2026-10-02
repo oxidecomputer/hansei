@@ -3206,7 +3206,7 @@ mod tests {
         }
         for producer in [
             "rustc version 1.96.0 (aabb 2026-05-01)",
-            "rustc version 1.99.0 (aabb 2026-10-01)",
+            "rustc version 2.999.0 (aabb 2026-10-01)",
             "rustc version 2.0.0 (aabb 2027-01-01)",
             "GNU C17 14.2.0 -mtune=generic -g",
             "clang version 19.1.0",
@@ -3258,13 +3258,13 @@ mod tests {
     #[test]
     fn test_rustc_conventions_outgrown_by_a_newer_compiler_only() {
         let (version, outgrown) =
-            rustc_conventions_outgrown("clang LLVM (rustc version 1.99.0 (aabb 2026-10-01))")
-                .expect("1.99 outgrows the reviews");
-        assert_eq!(version, semver::Version::new(1, 99, 0));
+            rustc_conventions_outgrown("clang LLVM (rustc version 2.999.0 (aabb 2026-10-01))")
+                .expect("2.999 outgrows the reviews");
+        assert_eq!(version, semver::Version::new(2, 999, 0));
         assert_eq!(
             outgrown.iter().map(|c| c.family).collect::<Vec<_>>(),
             RUSTC_CONVENTIONS.map(|c| c.family),
-            "1.99 is newer than every review"
+            "2.999 is newer than every review"
         );
         for producer in [
             "rustc version 1.98.3-nightly (eeff 2026-09-01)",
@@ -3284,19 +3284,19 @@ mod tests {
     }
 
     /// A later review of one subject keeps that subject covered, and
-    /// only that one: beside a coroutine review reaching 1.99, a 1.99
-    /// compiler outgrows the adapter review alone, and a 2.0 compiler
+    /// only that one: beside a coroutine review reaching 2.999, a 2.999
+    /// compiler outgrows the adapter review alone, and a 3.0 compiler
     /// outgrows both coroutine reviews as well.
     #[test]
     fn test_a_later_review_covers_its_own_subject_only() {
-        const COROUTINE_V1_99: RustcConvention = RustcConvention {
-            family: "rustc-coroutine-1.99",
-            floor: (1, 99),
-            ceiling: (1, 99),
+        const COROUTINE_V2_999: RustcConvention = RustcConvention {
+            family: "rustc-coroutine-2.999",
+            floor: (2, 999),
+            ceiling: (2, 999),
         };
         let reviewed = [
             &RUSTC_COROUTINE_V1_97,
-            &COROUTINE_V1_99,
+            &COROUTINE_V2_999,
             &RUSTC_STD_ADAPTERS_V1_97,
         ];
         let families = |producer: &str| {
@@ -3304,14 +3304,14 @@ mod tests {
                 .map(|(_, outgrown)| outgrown.iter().map(|c| c.family).collect::<Vec<_>>())
         };
         assert_eq!(
-            families("rustc version 1.99.0 (aabb 2026-10-01)"),
+            families("rustc version 2.999.0 (aabb 2026-10-01)"),
             Some(vec!["rustc-std-adapters-1.97"])
         );
         assert_eq!(
-            families("rustc version 2.0.0 (aabb 2027-01-01)"),
+            families("rustc version 3.0.0 (aabb 2027-01-01)"),
             Some(vec![
                 "rustc-coroutine-1.97",
-                "rustc-coroutine-1.99",
+                "rustc-coroutine-2.999",
                 "rustc-std-adapters-1.97"
             ])
         );

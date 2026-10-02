@@ -1592,7 +1592,7 @@ mod tests {
         assert_eq!(Family::select(Some(&v("1.52.4"))), Family::V1_49);
         assert_eq!(Family::select(Some(&v("1.53.0"))), Family::V1_53);
         assert_eq!(Family::select(Some(&v("1.53.1"))), Family::V1_53);
-        assert_eq!(Family::select(Some(&v("1.99.0"))), newest);
+        assert_eq!(Family::select(Some(&v("1.999.0"))), newest);
         assert_eq!(Family::select(Some(&v("1.46.9"))), Family::ALL[0]);
         assert_eq!(Family::describe(Some(&v("1.50.0"))), "v1_49 (tokio 1.50.0)");
         assert_eq!(Family::describe(Some(&v("1.53.1"))), "v1_53 (tokio 1.53.1)");

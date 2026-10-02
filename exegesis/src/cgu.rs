@@ -1504,7 +1504,7 @@ mod tests {
                     );
                     add(
                         units[2],
-                        Some("rustc version 1.99.0 (cccc 2026-09-01)"),
+                        Some("rustc version 2.999.0 (cccc 2026-09-01)"),
                         "Unrelated",
                         8,
                         false,
@@ -1603,7 +1603,7 @@ mod tests {
                             ("Unrelated", _) => {
                                 assert_eq!(
                                     producers,
-                                    [Some("rustc version 1.99.0 (cccc 2026-09-01)")]
+                                    [Some("rustc version 2.999.0 (cccc 2026-09-01)")]
                                 );
                                 assert!(matches!(
                                     convention,
