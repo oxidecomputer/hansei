@@ -177,6 +177,9 @@ fn warnings(stats: &ExtractStats) -> Vec<String> {
              assumed the newest supported family ({family})"
         ));
     }
+    for warning in stats.review_warnings() {
+        out.push(format!("warning: {warning}"));
+    }
     out
 }
 
@@ -743,6 +746,30 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(warnings(&stats).len(), 2);
+    }
+
+    /// What the reviews could not vouch for is said once per subject:
+    /// one sentence for every compiler convention a newer rustc outgrew
+    /// over one range, naming each of them.
+    #[test]
+    fn test_warnings_name_what_the_reviews_do_not_cover() {
+        use exegesis::detect::semantics::{RUSTC_COROUTINE_V1_97, RUSTC_STD_ADAPTERS_V1_97};
+
+        let stats = ExtractStats {
+            rustc_outgrown: Some((
+                "1.99.0".to_owned(),
+                vec![&RUSTC_COROUTINE_V1_97, &RUSTC_STD_ADAPTERS_V1_97],
+            )),
+            ..Default::default()
+        };
+        assert_eq!(
+            warnings(&stats),
+            [
+                "warning: rustc 1.99.0 is newer than the reviewed range 1.97–1.98 of \
+              rustc-coroutine-1.97 and rustc-std-adapters-1.97, whose rules decline \
+              over it"
+            ]
+        );
     }
 
     /// The verb runs a real extraction and leaves behind a bundle that

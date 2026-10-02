@@ -52,6 +52,7 @@ use crate::bundle::{
     Meta, Provenance, ProvenanceTable, SourceLoc, StaticsTable, TaskEntryId, TaskFutureEntry,
     TaskTable, VtableDataSource,
 };
+use crate::detect::semantics::{RustcConvention, rustc_conventions_outgrown};
 use crate::detect::{Family, FormatExplanation, struct_of};
 use crate::raw_types::{NsId, RawType};
 use crate::symbols::{normalized_candidate_index, symbol_candidate_index};
@@ -242,6 +243,45 @@ pub struct ExtractStats {
     /// family, a guess worth a warning. `None` when the version was
     /// recovered or no versioned detector was consulted.
     pub tokio_family_guessed: Option<String>,
+    /// The producer's rustc version when it is newer than the review of
+    /// some compiler convention, with each convention it outgrew: those
+    /// bind nothing the compiler emitted.
+    pub rustc_outgrown: Option<(String, Vec<&'static RustcConvention>)>,
+}
+
+impl ExtractStats {
+    /// What the reviews could not vouch for, one sentence per subject:
+    /// the compiler conventions a newer rustc outgrew, by range. The
+    /// `--stats` form and the extract verb's warnings both say these.
+    pub fn review_warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some((version, outgrown)) = &self.rustc_outgrown {
+            let mut by_range: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+            for convention in outgrown {
+                by_range
+                    .entry(convention.range())
+                    .or_default()
+                    .push(convention.family);
+            }
+            for (range, families) in by_range {
+                out.push(format!(
+                    "rustc {version} is newer than the reviewed range {range} of {}, \
+                     whose rules decline over it",
+                    conjoin(&families)
+                ));
+            }
+        }
+        out
+    }
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn conjoin(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 /// The oldest rustc whose output the extraction contracts are held
@@ -363,6 +403,9 @@ impl fmt::Display for ExtractStats {
                 "  WARNING: no tokio version recovered; version-dependent \
                  formatters assumed the newest family ({family})"
             )?;
+        }
+        for warning in self.review_warnings() {
+            writeln!(f, "  WARNING: {warning}")?;
         }
         Ok(())
     }
@@ -1317,6 +1360,8 @@ fn extract_from_view(
         .unwrap_or_default();
     let rustc_version = rustc_version_of(producer);
     stats.rustc_below_floor = rustc_below_floor(&rustc_version);
+    stats.rustc_outgrown = rustc_conventions_outgrown(producer)
+        .map(|(version, outgrown)| (version.to_string(), outgrown));
 
     let newest = *Family::ALL.last().expect("at least one family");
     let (newest_major, newest_minor) = newest.floor();

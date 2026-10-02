@@ -31,6 +31,22 @@ impl RustcConvention {
     fn covers(&self, version: (u64, u64)) -> bool {
         version >= self.floor && version <= self.ceiling
     }
+
+    /// What the convention is about, its family name without the
+    /// version its review starts at: `rustc-coroutine` for
+    /// `rustc-coroutine-1.97`. Two reviews of one subject share it.
+    fn subject(&self) -> &'static str {
+        self.family
+            .rsplit_once('-')
+            .map_or(self.family, |(subject, _)| subject)
+    }
+
+    /// The range as a warning names it: `1.97–1.98`.
+    pub fn range(&self) -> String {
+        let (a, b) = self.floor;
+        let (x, y) = self.ceiling;
+        format!("{a}.{b}–{x}.{y}")
+    }
 }
 
 /// The coroutine state-machine convention rustc 1.97 and 1.98 emit,
@@ -169,6 +185,49 @@ pub const RUSTC_STD_FUTEX_MUTEX_V1_97: RustcConvention = RustcConvention {
 /// [`rustc_coroutine_convention`].
 pub fn rustc_std_futex_mutex_convention(producer: &str) -> Option<&'static RustcConvention> {
     rustc_convention(producer, &[&RUSTC_STD_FUTEX_MUTEX_V1_97])
+}
+
+/// Every reviewed rustc convention.
+pub const RUSTC_CONVENTIONS: [&RustcConvention; 6] = [
+    &RUSTC_COROUTINE_V1_97,
+    &RUSTC_STD_ADAPTERS_V1_97,
+    &RUSTC_DYN_FUTURE_ABI_V1_97,
+    &RUSTC_CORE_PENDING_V1_97,
+    &RUSTC_STD_REFCOUNT_V1_97,
+    &RUSTC_STD_FUTEX_MUTEX_V1_97,
+];
+
+/// The producer's rustc version and the conventions it is newer than
+/// every review of: each binds nothing the compiler emitted, however
+/// familiar its output looks, and an extraction says so. `None` where
+/// it outgrows none, including a producer with no parseable rustc
+/// version.
+pub fn rustc_conventions_outgrown(
+    producer: &str,
+) -> Option<(semver::Version, Vec<&'static RustcConvention>)> {
+    outgrown(producer, &RUSTC_CONVENTIONS)
+}
+
+/// The reviews in `reviewed` of every subject the producer's rustc is
+/// newer than each review of. A subject a later review covers the
+/// version of is not outgrown.
+fn outgrown(
+    producer: &str,
+    reviewed: &[&'static RustcConvention],
+) -> Option<(semver::Version, Vec<&'static RustcConvention>)> {
+    let version = rustc_version(producer)?;
+    let minor = (version.major, version.minor);
+    let outgrown: Vec<&'static RustcConvention> = reviewed
+        .iter()
+        .copied()
+        .filter(|c| {
+            reviewed
+                .iter()
+                .filter(|other| other.subject() == c.subject())
+                .all(|other| minor > other.ceiling)
+        })
+        .collect();
+    (!outgrown.is_empty()).then_some((version, outgrown))
 }
 
 /// One reviewed third-party implementation: the crate, the family name
@@ -3099,6 +3158,72 @@ mod tests {
         assert!(rustc_std_adapter_convention(producer).is_some());
         assert!(rustc_dyn_future_abi_convention(producer).is_some());
         assert!(rustc_core_pending_convention(producer).is_some());
+    }
+
+    /// Only a compiler newer than a convention's review outgrows it —
+    /// one older is the floor warning's to name — and the subject a
+    /// later review would share is the family name less its version.
+    #[test]
+    fn test_rustc_conventions_outgrown_by_a_newer_compiler_only() {
+        let (version, outgrown) =
+            rustc_conventions_outgrown("clang LLVM (rustc version 1.99.0 (aabb 2026-10-01))")
+                .expect("1.99 outgrows the reviews");
+        assert_eq!(version, semver::Version::new(1, 99, 0));
+        assert_eq!(
+            outgrown.iter().map(|c| c.family).collect::<Vec<_>>(),
+            RUSTC_CONVENTIONS.map(|c| c.family),
+            "1.99 is newer than every review"
+        );
+        for producer in [
+            "rustc version 1.98.3-nightly (eeff 2026-09-01)",
+            "rustc version 1.97.0 (2d8144b78 2026-07-07)",
+            "rustc version 1.96.0 (aabb 2026-05-01)",
+            "GNU C17 14.2.0 -mtune=generic -g",
+            "rustc version 1.98",
+        ] {
+            assert_eq!(rustc_conventions_outgrown(producer), None, "{producer}");
+        }
+        assert_eq!(RUSTC_COROUTINE_V1_97.subject(), "rustc-coroutine");
+        assert_eq!(
+            RUSTC_STD_FUTEX_MUTEX_V1_97.subject(),
+            "rustc-std-futex-mutex"
+        );
+        assert_eq!(RUSTC_COROUTINE_V1_97.range(), "1.97–1.98");
+    }
+
+    /// A later review of one subject keeps that subject covered, and
+    /// only that one: beside a coroutine review reaching 1.99, a 1.99
+    /// compiler outgrows the adapter review alone, and a 2.0 compiler
+    /// outgrows both coroutine reviews as well.
+    #[test]
+    fn test_a_later_review_covers_its_own_subject_only() {
+        const COROUTINE_V1_99: RustcConvention = RustcConvention {
+            family: "rustc-coroutine-1.99",
+            floor: (1, 99),
+            ceiling: (1, 99),
+        };
+        let reviewed = [
+            &RUSTC_COROUTINE_V1_97,
+            &COROUTINE_V1_99,
+            &RUSTC_STD_ADAPTERS_V1_97,
+        ];
+        let families = |producer: &str| {
+            outgrown(producer, &reviewed)
+                .map(|(_, outgrown)| outgrown.iter().map(|c| c.family).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            families("rustc version 1.99.0 (aabb 2026-10-01)"),
+            Some(vec!["rustc-std-adapters-1.97"])
+        );
+        assert_eq!(
+            families("rustc version 2.0.0 (aabb 2027-01-01)"),
+            Some(vec![
+                "rustc-coroutine-1.97",
+                "rustc-coroutine-1.99",
+                "rustc-std-adapters-1.97"
+            ])
+        );
+        assert_eq!(families("rustc version 1.98.0 (aabb 2026-08-18)"), None);
     }
 
     /// Every delegation family binds at both edges of its range
