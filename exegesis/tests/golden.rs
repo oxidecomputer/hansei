@@ -7,8 +7,8 @@
 //! expectations.
 //!
 //! Fixtures are never checked in: missing ones are built on demand by
-//! `test-programs/regen.sh` with the pinned bundle-compatible toolchain;
-//! when that toolchain is unavailable the tests skip with a message.
+//! `test-programs/regen.sh` with the pinned bundle-compatible toolchain,
+//! the workspace's own (`rust-toolchain.toml`).
 //! Because fixtures are always freshly built, these tests double as the
 //! canary for DWARF-shape and mangling drift across toolchain bumps.
 //!
@@ -26,10 +26,14 @@ use exegesis::bundle::{
 use exegesis::describe::describe_debug_format;
 use exegesis::extract::{DebugSources, ExtractOptions, ExtractStats, extract_sources};
 use exegesis::summary::{portable_summary, walk_entry_line};
+use testrun::fixture::Matrix;
 
-use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "macos"))]
 use std::process::Command;
+#[cfg(target_os = "linux")]
 use std::sync::Mutex;
 
 const TOOLCHAIN: &str = "1.98.0";
@@ -68,47 +72,34 @@ fn dwp_binary(program: &str) -> PathBuf {
 /// once per run by `regen.sh --dwp` into its own bin dir, stamped and
 /// digested separately from the unsplit build of the same sources.
 #[cfg(target_os = "linux")]
-fn ensure_dwp_fixture(program: &str) -> bool {
-    static BUILT: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
+fn ensure_dwp_fixture(program: &str) {
+    static BUILT: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
     let mut built = BUILT.lock().unwrap();
-    if let Some(&usable) = built.get(program) {
-        return usable;
+    if built.contains(program) {
+        return;
     }
-    let usable = if !toolchain_installed() {
-        if dwp_binary(program).exists() {
-            eprintln!(
-                "warning: toolchain {TOOLCHAIN} not installed; testing against \
-                 the {program} dwp fixture already built"
-            );
-            true
-        } else {
-            eprintln!(
-                "SKIP: dwp fixture {program} missing and toolchain {TOOLCHAIN} \
-                 not installed (rustup toolchain install {TOOLCHAIN})"
-            );
-            false
-        }
-    } else {
-        testrun::once_per_run(
-            &built_stamp(&format!("dwp-{program}")),
-            || format!("dwp-{}", built_from(program)),
-            || {
-                let status = Command::new(test_programs_dir().join("regen.sh"))
-                    .arg("--dwp")
-                    .arg(program)
-                    .status()
-                    .expect("failed to run regen.sh");
-                assert!(status.success(), "regen.sh --dwp failed for {program}");
-            },
-        );
-        assert!(
-            dwp_binary(program).exists(),
-            "regen.sh --dwp succeeded but the {program} binary is still missing"
-        );
-        true
-    };
-    built.insert(program.to_string(), usable);
-    usable
+    let matrix = Matrix::load();
+    let mut recipe = matrix.primary_recipe();
+    recipe.dwp = true;
+    testrun::once_per_run(
+        &test_programs_dir()
+            .join("fixtures/.built")
+            .join(format!("dwp-{program}")),
+        || recipe.inputs(&test_programs_dir(), &matrix, program),
+        || {
+            let status = Command::new(test_programs_dir().join("regen.sh"))
+                .arg("--dwp")
+                .arg(program)
+                .status()
+                .expect("failed to run regen.sh");
+            assert!(status.success(), "regen.sh --dwp failed for {program}");
+        },
+    );
+    assert!(
+        dwp_binary(program).exists(),
+        "regen.sh --dwp succeeded but the {program} binary is still missing"
+    );
+    built.insert(program.to_string());
 }
 
 /// Extract a fixture the way an operator would: the binary as the
@@ -126,9 +117,11 @@ fn extract_fixture(program: &str, opts: &ExtractOptions) -> (Bundle, ExtractStat
     extract_sources(&sources, opts).unwrap_or_else(|e| panic!("extract failed for {program}: {e}"))
 }
 
-/// Put the fixture in the state its sources describe. Returns `false`
-/// (skip) when the pinned toolchain is not installed; panics on real
-/// build failures.
+/// Put the fixture in the state its sources describe: build B of the
+/// primary cell, which `testrun` builds for every suite reading it.
+/// Panics on a build failure, a missing toolchain among them: the
+/// primary is the workspace's own (`rust-toolchain.toml`), so a test
+/// running at all has it installed.
 ///
 /// The fixture is rebuilt every run rather than kept if it happens to
 /// exist. `test-programs/fixtures/` is gitignored, so a checkout that
@@ -147,85 +140,12 @@ fn extract_fixture(program: &str, opts: &ExtractOptions) -> (Bundle, ExtractStat
 /// program at most once keeps the anti-staleness property — a run still
 /// rebuilds everything it reads — without rewriting a file some other
 /// test is holding open.
-fn ensure_fixture(program: &str) -> bool {
-    // Also serializes the builds themselves, which would otherwise
-    // contend on the fixture target dir.
-    static BUILT: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
-    let mut built = BUILT.lock().unwrap();
-    if let Some(&usable) = built.get(program) {
-        return usable;
-    }
-    let usable = build_fixture(program);
-    built.insert(program.to_string(), usable);
-    usable
-}
-
-/// Build one fixture, reporting whether it can be tested against. Call
-/// [`ensure_fixture`] instead, which does this once per program.
-fn build_fixture(program: &str) -> bool {
-    if !toolchain_installed() {
-        // Nothing can be built, so whatever is on disk is all there is.
-        // It may be stale, which is still better than no coverage — the
-        // failure it can cause is a loud golden diff, not a wrong pass.
-        if dwarf_path(program).exists() {
-            eprintln!(
-                "warning: toolchain {TOOLCHAIN} not installed; testing against \
-                 the {program} fixture already built"
-            );
-            return true;
-        }
-        eprintln!(
-            "SKIP: fixture {program} missing and toolchain {TOOLCHAIN} not installed \
-             (rustup toolchain install {TOOLCHAIN})"
-        );
-        return false;
-    }
-
-    // Once per run rather than once per process: under nextest each test
-    // is its own process, and a rebuild landing in the middle of another
-    // test's parse is exactly what the `Mutex` above was for.
-    testrun::once_per_run(
-        &built_stamp(program),
-        || built_from(program),
-        || {
-            let status = Command::new(test_programs_dir().join("regen.sh"))
-                .arg(program)
-                .status()
-                .expect("failed to run regen.sh");
-            assert!(status.success(), "regen.sh failed for {program}");
-        },
-    );
+fn ensure_fixture(program: &str) {
+    testrun::fixture::build_b(&Matrix::load().primary_recipe(), &[program]);
     assert!(
         dwarf_path(program).exists(),
         "regen.sh succeeded but {program} fixture is still missing"
     );
-    true
-}
-
-/// Where a run records that it has built `program` already.
-fn built_stamp(program: &str) -> PathBuf {
-    test_programs_dir().join("fixtures/.built").join(program)
-}
-
-/// What one fixture binary is built from, for a run reusing what an
-/// earlier one left behind (`testrun::REUSE`): the program's own source
-/// and the crate it calls into, the manifest and lock that pin what it
-/// links, the script that drives the build, and the toolchain that
-/// script pins.
-fn built_from(program: &str) -> String {
-    let dir = test_programs_dir();
-    let matrix = testrun::fixture::Matrix::read(&dir);
-    matrix.primary_recipe().inputs(&dir, &matrix, program)
-}
-
-fn toolchain_installed() -> bool {
-    Command::new("rustup")
-        .args(["toolchain", "list"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
-        .lines()
-        .any(|l| l.starts_with(TOOLCHAIN))
 }
 
 /// Assert no display program reaches a member by its position.
@@ -5541,9 +5461,7 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
 }
 
 fn run_golden(program: &str) {
-    if !ensure_fixture(program) {
-        return;
-    }
+    ensure_fixture(program);
 
     let opts = ExtractOptions {
         extract_args: format!("golden-test {program}"),
@@ -6091,9 +6009,7 @@ fn test_golden_enum_reprs() {
 #[test]
 fn test_extraction_is_reproducible() {
     let program = "select-combinator";
-    if !ensure_fixture(program) {
-        return;
-    }
+    ensure_fixture(program);
 
     let opts = ExtractOptions {
         extract_args: format!("golden-test {program}"),
@@ -6131,9 +6047,7 @@ fn test_extraction_is_reproducible() {
 #[test]
 fn test_a_companion_alone_records_no_vtable_source() {
     let program = "select-combinator";
-    if !ensure_fixture(program) {
-        return;
-    }
+    ensure_fixture(program);
     let (bundle, _) =
         exegesis::extract::extract_file(&fixture_dsym(program), &ExtractOptions::default())
             .expect("companion-alone library extraction");
@@ -6155,9 +6069,7 @@ fn test_a_companion_alone_records_no_vtable_source() {
 #[test]
 fn test_a_split_pair_extracts_the_same_bundle() {
     let program = "select-combinator";
-    if !ensure_fixture(program) {
-        return;
-    }
+    ensure_fixture(program);
     // GNU spelling on Linux, the g-prefixed binutils elsewhere.
     let Some(objcopy) = ["objcopy", "gobjcopy"].iter().find(|cmd| {
         Command::new(cmd)
@@ -6233,20 +6145,19 @@ fn test_a_split_pair_extracts_the_same_bundle() {
     // by build id where the platform stamps one, by the allocated
     // sections having moved where it does not.
     let other = "simple-await";
-    if ensure_fixture(other) {
-        let err = extract_sources(
-            &DebugSources {
-                binary: &fixture_binary(other),
-                debug_info: Some(&dbg),
-            },
-            &opts,
-        )
-        .expect_err("a sibling from another link is refused");
-        assert!(
-            matches!(err, exegesis::extract::Error::SiblingMismatch { .. }),
-            "{err}"
-        );
-    }
+    ensure_fixture(other);
+    let err = extract_sources(
+        &DebugSources {
+            binary: &fixture_binary(other),
+            debug_info: Some(&dbg),
+        },
+        &opts,
+    )
+    .expect_err("a sibling from another link is refused");
+    assert!(
+        matches!(err, exegesis::extract::Error::SiblingMismatch { .. }),
+        "{err}"
+    );
 }
 
 /// The packed Linux split — skeleton DWARF in the binary, every unit's
@@ -6262,9 +6173,8 @@ fn test_a_split_pair_extracts_the_same_bundle() {
 #[test]
 fn test_a_packed_dwp_pair_extracts_the_same_bundle() {
     let program = "select-combinator";
-    if !ensure_fixture(program) || !ensure_dwp_fixture(program) {
-        return;
-    }
+    ensure_fixture(program);
+    ensure_dwp_fixture(program);
 
     let opts = ExtractOptions::default();
     let (mut unsplit, _) = extract_sources(
@@ -6387,9 +6297,7 @@ fn test_a_packed_dwp_pair_extracts_the_same_bundle() {
 #[test]
 fn test_explain_traces_report_the_verdict() {
     let program = "simple-await";
-    if !ensure_fixture(program) {
-        return;
-    }
+    ensure_fixture(program);
 
     let opts = ExtractOptions {
         extract_args: format!("golden-test {program} --explain"),
@@ -6465,9 +6373,7 @@ fn test_explain_traces_report_the_verdict() {
 #[test]
 fn test_include_types_resolve_or_are_reported_missing() {
     let program = "simple-await";
-    if !ensure_fixture(program) {
-        return;
-    }
+    ensure_fixture(program);
 
     let opts = ExtractOptions {
         extract_args: format!("golden-test {program} --include-type"),

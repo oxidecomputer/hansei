@@ -47,8 +47,10 @@
 
 pub mod fixture;
 
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// Set this to stamp fixture work with the digest of its inputs rather
 /// than with the run it was built in, reusing what an earlier run left
@@ -94,6 +96,85 @@ fn once_stamped(stamp: &Path, value: Option<String>, work: impl FnOnce()) {
     }
     work();
     fs::write(stamp, &value).expect("failed to write the fixture stamp");
+}
+
+/// [`once_per_run`] over several pieces of work that one call does
+/// together: a fixture build compiles every program it is asked for in
+/// one `cargo build`, while a caller asking for one program still
+/// builds only that one.
+///
+/// Each of `keys` is stamped on its own, as `dir/<key>`, under one lock
+/// for the whole directory, and `work` is handed the keys whose stamps
+/// are not this run's (under [`REUSE`], whose `inputs` moved): a key
+/// another process of the run already did is left out.
+///
+/// Under `cargo test` there is no run to name, so a key is done once
+/// per process instead, as [`once_per_run`]'s callers arrange with a
+/// `OnceLock`.
+pub fn once_per_run_each(
+    dir: &Path,
+    keys: &[&str],
+    inputs: impl Fn(&str) -> String,
+    work: impl FnOnce(&[&str]),
+) {
+    let reuse = std::env::var_os(REUSE).is_some();
+    let run = std::env::var("NEXTEST_RUN_ID").ok();
+    once_each_stamped(
+        dir,
+        keys,
+        |key| stamp_value(run.clone(), reuse, || inputs(key)),
+        work,
+    );
+}
+
+/// [`once_per_run_each`], once the run has decided what each key's
+/// stamp is: `None` is nothing to compare against, so the key is done
+/// once per process.
+fn once_each_stamped(
+    dir: &Path,
+    keys: &[&str],
+    value: impl Fn(&str) -> Option<String>,
+    work: impl FnOnce(&[&str]),
+) {
+    /// The unstamped keys this process has done.
+    static DONE: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+    fs::create_dir_all(dir).expect("failed to create the fixture stamp directory");
+    let lock = File::create(dir.join(".lock")).expect("failed to open the fixture lock");
+    lock.lock().expect("failed to take the fixture lock");
+    // The file lock is what serializes this directory, between threads
+    // as between processes; this one only records, and is not held
+    // across the work.
+    let done = || DONE.lock().unwrap_or_else(|e| e.into_inner());
+
+    let mut stale: Vec<(&str, Option<String>)> = Vec::new();
+    for &key in keys {
+        if stale.iter().any(|(k, _)| *k == key) {
+            continue;
+        }
+        let value = value(key);
+        let current = match &value {
+            None => done().contains(&dir.join(key)),
+            Some(value) => fs::read_to_string(dir.join(key)).is_ok_and(|s| s == *value),
+        };
+        if !current {
+            stale.push((key, value));
+        }
+    }
+    if stale.is_empty() {
+        return;
+    }
+    work(&stale.iter().map(|(key, _)| *key).collect::<Vec<_>>());
+    for (key, value) in stale {
+        match value {
+            None => {
+                done().insert(dir.join(key));
+            }
+            Some(value) => {
+                fs::write(dir.join(key), value).expect("failed to write the fixture stamp");
+            }
+        }
+    }
 }
 
 /// What this run stamps its fixture work with, or `None` when there is
@@ -288,6 +369,45 @@ mod tests {
             runs.get(),
             4,
             "an unstamped run skipped work nobody claimed"
+        );
+    }
+
+    /// Only the keys not done yet reach the work, all of them in one
+    /// call and each once however often it is asked for; a key whose
+    /// stamp moved is done again alone; and with no stamp at all a key
+    /// is done once per process.
+    #[test]
+    fn test_each_key_is_done_once_per_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = std::cell::RefCell::new(Vec::<Vec<String>>::new());
+        let each = |keys: &[&str], stamp: Option<&str>| {
+            once_each_stamped(
+                dir.path(),
+                keys,
+                |_| stamp.map(str::to_string),
+                |stale| {
+                    calls
+                        .borrow_mut()
+                        .push(stale.iter().map(|k| k.to_string()).collect())
+                },
+            );
+            calls.take()
+        };
+        assert_eq!(each(&["a"], Some("r1")), [["a"]]);
+        assert_eq!(each(&["b", "a", "c", "b"], Some("r1")), [["b", "c"]]);
+        assert_eq!(
+            each(&["a", "b", "c"], Some("r1")),
+            Vec::<Vec<String>>::new()
+        );
+        assert_eq!(each(&["c", "a"], Some("r2")), [["c", "a"]]);
+        assert_eq!(fs::read_to_string(dir.path().join("b")).unwrap(), "r1");
+        assert_eq!(fs::read_to_string(dir.path().join("c")).unwrap(), "r2");
+
+        assert_eq!(each(&["x", "y"], None), [["x", "y"]]);
+        assert_eq!(each(&["y", "z"], None), [["z"]]);
+        assert!(
+            !dir.path().join("x").exists(),
+            "an unstamped key wrote a stamp"
         );
     }
 

@@ -150,6 +150,168 @@ impl Recipe {
             self.inputs(dir, matrix, program)
         )
     }
+
+    /// The cell `regen.sh` names this recipe's build after,
+    /// `rust-<toolchain>-tokio-<version>-{unstable,stable,ctonly}`.
+    pub fn cell(&self) -> String {
+        format!(
+            "rust-{}-tokio-{}-{}",
+            self.toolchain,
+            self.tokio,
+            self.cfg()
+        )
+    }
+
+    /// Whether `regen.sh` builds this recipe in its everyday dirs, in
+    /// place, rather than as a matrix cell from a scratch copy.
+    pub fn is_primary(&self, matrix: &Matrix) -> bool {
+        self.toolchain == matrix.primary.toolchain
+            && self.tokio == matrix.primary.tokio
+            && self.unstable
+            && !self.ct_only
+    }
+
+    fn cfg(&self) -> &'static str {
+        if self.ct_only {
+            "ctonly"
+        } else if self.unstable {
+            "unstable"
+        } else {
+            "stable"
+        }
+    }
+
+    /// The `regen.sh` flags that build exactly this recipe.
+    fn regen_args(&self) -> Vec<String> {
+        assert!(!self.dwp, "the two-binary builds never split their DWARF");
+        let mut args = vec![
+            "--tokio".to_owned(),
+            self.tokio.clone(),
+            "--toolchain".to_owned(),
+            self.toolchain.clone(),
+        ];
+        if self.ct_only {
+            args.push("--ct-only".to_owned());
+        } else if !self.unstable {
+            args.push("--no-unstable".to_owned());
+        }
+        if !self.debug_info {
+            args.push("--no-debug-info".to_owned());
+        }
+        args
+    }
+}
+
+/// `test-programs`: the fixture sources, `regen.sh`, and under
+/// `fixtures/` (gitignored) everything built from them.
+pub fn test_programs_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test-programs")
+}
+
+/// Build B of `programs` under `recipe`, once per run, and return the
+/// directory holding them: the compilation carrying DWARF, which
+/// bundles are extracted from and which nothing runs. It is the
+/// standard fixture build, in `regen.sh`'s own dirs, so the extraction
+/// goldens, the matrix and everything here share one.
+///
+/// Each program is stamped on its own, so a caller asking for one
+/// builds one, and a caller asking for every program builds whichever
+/// of them no one has built this run, in one compilation.
+pub fn build_b(recipe: &Recipe, programs: &[&str]) -> PathBuf {
+    assert!(recipe.debug_info, "build B carries debug info");
+    build(recipe, programs)
+}
+
+/// Build A of `programs` under `recipe` (the bundle's recipe; A's own
+/// drops its debug info), once per run, and return the directory
+/// holding them: the compilation that runs and is cored.
+///
+/// It carries no debug info, the shape of a production binary a core
+/// comes from, and is a compilation of its own rather than a stripped
+/// copy of B. That is the two-binary constraint: a bundle from B joined
+/// against memory from A proves the join holds across separate
+/// compilations, which one build serving both would not.
+pub fn build_a(recipe: &Recipe, programs: &[&str]) -> PathBuf {
+    build(&recipe.target_recipe(), programs)
+}
+
+/// Build `programs` exactly as `recipe` says, once per run each, and
+/// hold every one of them to it: `regen.sh` records the settings it
+/// actually built with beside each binary, and a binary whose record
+/// differs from `recipe` panics here, whoever built it.
+fn build(recipe: &Recipe, programs: &[&str]) -> PathBuf {
+    let dir = test_programs_dir();
+    let fixtures = dir.join("fixtures");
+    let matrix = Matrix::read(&dir);
+    let cell = recipe.cell();
+    let primary = recipe.is_primary(&matrix);
+    let a = !recipe.debug_info;
+    // B lands where `regen.sh` puts it unasked. A gets dirs of its own
+    // beside B's: the everyday ones for the primary cell, and for every
+    // other, a bin dir under the primary's and a target dir beside the
+    // cell's (toolchain, cfg) pair's.
+    let (bin, target) = match (a, primary) {
+        (false, true) => (fixtures.join("bin"), None),
+        (false, false) => (fixtures.join("bin").join(&cell), None),
+        (true, true) => (fixtures.join("bin-a"), Some(fixtures.join("target-a"))),
+        (true, false) => (
+            fixtures.join("bin-a").join(&cell),
+            Some(
+                fixtures
+                    .join("cells")
+                    .join(format!("rust-{}-{}", recipe.toolchain, recipe.cfg()))
+                    .join("target-a"),
+            ),
+        ),
+    };
+    let stamps = fixtures
+        .join(".built")
+        .join(format!("{cell}-{}", if a { "a" } else { "b" }));
+    crate::once_per_run_each(
+        &stamps,
+        programs,
+        |program| recipe.inputs(&dir, &matrix, program),
+        |stale| {
+            // Every cell of one (toolchain, cfg) pair compiles from the
+            // same scratch copy of the crate, which `regen.sh` rewrites
+            // with that cell's lockfile; two cells building at once
+            // would each compile the other's.
+            let _pair = (!primary).then(|| {
+                let lock = fixtures.join(".built").join(format!(
+                    "rust-{}-{}.lock",
+                    recipe.toolchain,
+                    recipe.cfg()
+                ));
+                let lock = std::fs::File::create(lock).expect("failed to open the cell lock");
+                lock.lock().expect("failed to take the cell lock");
+                lock
+            });
+            let mut command = std::process::Command::new(dir.join("regen.sh"));
+            command.args(recipe.regen_args()).args(stale);
+            command.env("REGEN_BIN_DIR", &bin);
+            if let Some(target) = &target {
+                command.env("REGEN_TARGET_DIR", target);
+            }
+            let status = command.status().expect("failed to run regen.sh");
+            assert!(
+                status.success(),
+                "regen.sh failed building {cell}: {stale:?}"
+            );
+        },
+    );
+    let expected = recipe.text();
+    for program in programs {
+        let record = bin.join(format!("{program}.recipe"));
+        let actual = std::fs::read_to_string(&record)
+            .unwrap_or_else(|e| panic!("{} was not written: {e}", record.display()));
+        assert_eq!(
+            actual,
+            expected,
+            "{} was built with other settings than its recipe",
+            bin.join(program).display()
+        );
+    }
+    bin
 }
 
 #[cfg(test)]
@@ -180,6 +342,60 @@ mod tests {
             "rust-toolchain.toml and test-programs/matrix.toml name different \
              primary toolchains; advance both in one commit"
         );
+    }
+
+    /// A recipe names the cell `regen.sh` builds it as and passes the
+    /// flags that build exactly it, and only the primary recipe is the
+    /// one `regen.sh` builds in place.
+    #[test]
+    fn test_a_recipe_names_its_cell_and_flags() {
+        let matrix = Matrix::read(&test_programs_dir());
+        let primary = matrix.primary_recipe();
+        let (toolchain, tokio) = (&matrix.primary.toolchain, &matrix.primary.tokio);
+        assert!(primary.is_primary(&matrix));
+        assert_eq!(
+            primary.cell(),
+            format!("rust-{toolchain}-tokio-{tokio}-unstable")
+        );
+        assert_eq!(
+            primary.regen_args(),
+            ["--tokio", tokio, "--toolchain", toolchain]
+        );
+        assert_eq!(
+            primary.target_recipe().regen_args(),
+            [
+                "--tokio",
+                tokio,
+                "--toolchain",
+                toolchain,
+                "--no-debug-info"
+            ]
+        );
+        assert!(primary.target_recipe().is_primary(&matrix));
+
+        let floor = Recipe {
+            tokio: matrix.tokio.floor.clone(),
+            ..primary.clone()
+        };
+        assert!(!floor.is_primary(&matrix));
+        let stable = Recipe {
+            unstable: false,
+            ..primary.clone()
+        };
+        assert!(!stable.is_primary(&matrix));
+        assert_eq!(
+            stable.cell(),
+            format!("rust-{toolchain}-tokio-{tokio}-stable")
+        );
+        assert_eq!(stable.regen_args().last().unwrap(), "--no-unstable");
+        let ct = Recipe {
+            unstable: false,
+            ct_only: true,
+            ..primary
+        };
+        assert!(!ct.is_primary(&matrix));
+        assert_eq!(ct.cell(), format!("rust-{toolchain}-tokio-{tokio}-ctonly"));
+        assert_eq!(ct.regen_args().last().unwrap(), "--ct-only");
     }
 
     #[test]

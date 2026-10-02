@@ -54,7 +54,7 @@
 
 use exegesis::extract::{ExtractOptions, extract_file};
 use hansei_bundle::{Bundle, BundleView};
-use hansei_runtime::testkit::matrix::Matrix;
+use hansei_runtime::testkit::matrix::{Matrix, Recipe};
 use hansei_runtime::tokio::bundle::Context as BundleContext;
 use proc::Proc;
 
@@ -97,49 +97,18 @@ fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
 }
 
-/// What this cell's fixture binaries are compiled from, for a run
-/// reusing what an earlier one left behind (`testrun::REUSE`): the
-/// programs and the crate they call into, the manifests and lockfiles
-/// pinning what they link, the script that builds them and the manifest
-/// naming the cells, and the cell's own flags.
-fn compiled_from(cell: &Cell) -> String {
-    let dir = workspace_root().join("test-programs");
-    let mut inputs = testrun::Inputs::new();
-    inputs
-        .text(&cell.flags.join(" "))
-        .text(&PROGRAMS.join(" "))
-        .tree(&dir.join("src"), ".rs")
-        .tree(&dir.join("locks"), ".lock")
-        .file(&dir.join("Cargo.toml"))
-        .file(&dir.join("Cargo.lock"))
-        .file(&dir.join("matrix.toml"))
-        .file(&dir.join("regen.sh"))
-        .file(&dir.join("capture-snapshots.sh"));
-    let matrix = Matrix::read(&dir);
-    let mut recipe = matrix.primary_recipe();
-    recipe.unstable = cell.unstable;
-    for pair in cell.flags.windows(2) {
-        match pair[0].as_str() {
-            "--tokio" => recipe.tokio.clone_from(&pair[1]),
-            "--toolchain" => recipe.toolchain.clone_from(&pair[1]),
-            _ => {}
-        }
-    }
-    for program in PROGRAMS {
-        inputs
-            .text(&recipe.inputs(&dir, &matrix, program))
-            .text(&recipe.target_recipe().inputs(&dir, &matrix, program));
-    }
-    inputs.finish()
-}
-
-/// What this cell's bundles are extracted from: the binaries above, and
-/// the code that reads and writes them.
+/// What this cell's bundles are extracted from, for a run reusing what
+/// an earlier one left behind (`testrun::REUSE`): build B of every
+/// program, and the code that reads and writes the bundles.
 fn extracted_from(cell: &Cell) -> String {
     let root = workspace_root();
+    let dir = root.join("test-programs");
+    let matrix = Matrix::read(&dir);
     let mut inputs = testrun::Inputs::new();
+    for program in PROGRAMS {
+        inputs.text(&cell.recipe.inputs(&dir, &matrix, program));
+    }
     inputs
-        .text(&compiled_from(cell))
         .tree(&root.join("exegesis/src"), ".rs")
         .tree(&root.join("hansei-bundle/src"), ".rs")
         .file(&root.join("Cargo.lock"));
@@ -148,33 +117,21 @@ fn extracted_from(cell: &Cell) -> String {
 
 /// The matrix cell the suite is running against.
 struct Cell {
-    /// The fixture-dir name, `None` for the primary cell.
-    name: Option<String>,
-    /// Whether this is the primary cell, named or not: `regen.sh`
-    /// builds that one in the everyday dirs whatever it was asked for
-    /// by, so where its binaries land is decided by what it *is*,
-    /// not by whether `HANSEI_CELL` spelled it out.
-    primary: bool,
-    /// `--tokio`/`--toolchain`/`--no-unstable` for `regen.sh`; empty
-    /// for the primary cell, whose defaults are exactly that recipe.
-    flags: Vec<String>,
+    /// The recipe build B is built with; build A's is the same, without
+    /// debug info.
+    recipe: Recipe,
     /// Whether the cell builds with `--cfg tokio_unstable`.
     unstable: bool,
-    /// The (toolchain, cfg) pair key: cells of one pair share target
-    /// dirs, so switching tokio versions re-resolves only tokio.
-    pair: String,
 }
 
 fn cell() -> &'static Cell {
     static CELL: OnceLock<Cell> = OnceLock::new();
     CELL.get_or_init(|| {
+        let m = Matrix::load();
         let Ok(name) = std::env::var("HANSEI_CELL") else {
             return Cell {
-                name: None,
-                primary: true,
-                flags: Vec::new(),
+                recipe: m.primary_recipe(),
                 unstable: true,
-                pair: String::new(),
             };
         };
         let parse = || {
@@ -193,23 +150,13 @@ fn cell() -> &'static Cell {
                 "HANSEI_CELL={name} is not rust-<toolchain>-tokio-<version>-{{unstable,stable}}"
             );
         };
-        let m = Matrix::load();
-        let primary = unstable && tokio == m.primary.tokio && toolchain == m.primary.toolchain;
-        let mut flags = vec![
-            "--tokio".to_owned(),
-            tokio,
-            "--toolchain".to_owned(),
-            toolchain.clone(),
-        ];
-        if !unstable {
-            flags.push("--no-unstable".to_owned());
-        }
-        let cfg = if unstable { "unstable" } else { "stable" };
         Cell {
-            pair: format!("rust-{toolchain}-{cfg}"),
-            name: Some(name),
-            primary,
-            flags,
+            recipe: Recipe {
+                toolchain,
+                tokio,
+                unstable,
+                ..m.primary_recipe()
+            },
             unstable,
         }
     })
@@ -255,78 +202,29 @@ fn fixtures() -> &'static Fixtures {
     static FIXTURES: OnceLock<Fixtures> = OnceLock::new();
     FIXTURES.get_or_init(|| {
         let cell = cell();
-        let test_programs = workspace_root().join("test-programs");
-        let fixture_dir = test_programs.join("fixtures");
-        // Build A's dirs: the primary cell keeps the classic ones (the
-        // same capture-snapshots.sh uses); a matrix cell gets its own
-        // bin dir, with target dirs shared per (toolchain, cfg) pair
-        // the way regen.sh shares its cell target dirs.
-        let (base, target_a) = match &cell.name {
-            None => (fixture_dir.clone(), fixture_dir.join("target-a")),
-            Some(name) => (
-                fixture_dir.join("accept").join(name),
-                fixture_dir
-                    .join("accept-target")
-                    .join(format!("{}-a", cell.pair)),
-            ),
-        };
-        // Build B lands wherever regen.sh lands the cell: the everyday
-        // bin dir for the primary cell, named or not, and a per-cell
-        // dir for every other. Deciding this by the name alone would
-        // send the named primary cell to a dir regen.sh never writes.
-        let bin_b = match &cell.name {
-            Some(name) if !cell.primary => fixture_dir.join("bin").join(name),
-            _ => fixture_dir.join("bin"),
-        };
-        let bundles = base.join("integration");
+        // Both compilations, once per run and each held to its recipe:
+        // build B is the standard fixture build the extraction goldens
+        // share, build A one of its own without debug info.
+        let bin_a = testrun::fixture::build_a(&cell.recipe, PROGRAMS);
+        let bin_b = testrun::fixture::build_b(&cell.recipe, PROGRAMS);
+        let bundles = workspace_root()
+            .join("test-programs/fixtures/accept")
+            .join(cell.recipe.cell());
         fs::create_dir_all(&bundles).expect("failed to create the bundle dir");
 
         // Once per run rather than once per process. Under nextest every
         // test is its own process, so without this each of them would
-        // run both compilations and re-extract every bundle — while the
-        // others read the bundles being written.
+        // re-extract every bundle while the others read the bundles
+        // being written.
         //
-        // The two halves stamp separately because they are built from
-        // different things, which only matters to a run reusing what an
-        // earlier one left behind (`testrun::REUSE`): a change to the
-        // extraction side must re-extract without recompiling the
-        // fixtures, and — the case that makes it necessary rather than
-        // tidy — a `cargo mutants` sweep of hansei-bundle mutates what
-        // the bundles are written by, so those must be rebuilt per
-        // mutant while these compilations need not be.
-        testrun::once_per_run(
-            &base.join(".fixtures"),
-            || compiled_from(cell),
-            || {
-                // Build A runs and is cored, so it is built the way a
-                // production binary is — no debug info, as a compilation of its
-                // own rather than a stripped copy of B.
-                let status = Command::new(test_programs.join("regen.sh"))
-                    .arg("--no-debug-info")
-                    .args(&cell.flags)
-                    .args(PROGRAMS)
-                    .env("REGEN_BIN_DIR", base.join("bin-a"))
-                    .env("REGEN_TARGET_DIR", &target_a)
-                    .status()
-                    .expect("failed to run regen.sh");
-                assert!(
-                    status.success(),
-                    "regen.sh failed; is the cell's toolchain installed?"
-                );
-                // Build B is the standard fixture build in regen.sh's own dirs
-                // — an incremental no-op on a host whose extraction goldens
-                // already built this cell.
-                let status = Command::new(test_programs.join("regen.sh"))
-                    .args(&cell.flags)
-                    .args(PROGRAMS)
-                    .status()
-                    .expect("failed to run regen.sh");
-                assert!(
-                    status.success(),
-                    "regen.sh failed; is the cell's toolchain installed?"
-                );
-            },
-        );
+        // The bundles stamp apart from the builds because they are made
+        // from different things, which only matters to a run reusing
+        // what an earlier one left behind (`testrun::REUSE`): a change
+        // to the extraction side must re-extract without recompiling
+        // the fixtures, and — the case that makes it necessary rather
+        // than tidy — a `cargo mutants` sweep of hansei-bundle mutates
+        // what the bundles are written by, so those must be rebuilt per
+        // mutant while the compilations need not be.
         testrun::once_per_run(
             &bundles.join(".bundles"),
             || extracted_from(cell),
@@ -346,7 +244,7 @@ fn fixtures() -> &'static Fixtures {
         );
 
         Fixtures {
-            bin_a: base.join("bin-a"),
+            bin_a,
             bin_b,
             bundles,
         }
