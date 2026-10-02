@@ -24,6 +24,7 @@
 
 pub(crate) mod adapters;
 mod crates;
+pub mod reviewed;
 pub mod semantics;
 mod std;
 mod tokio;

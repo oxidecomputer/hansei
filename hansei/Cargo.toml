@@ -24,9 +24,6 @@ snapshot = ["hansei-runtime/testkit"]
 # (outside the `snapshot` feature, which enables this itself).
 hansei-runtime = { workspace = true, features = ["testkit"] }
 insta = { workspace = true }
-# The ceiling-notice tests build `Meta.tokio_version` values; the
-# non-test code only reads the ones bundles carry.
-semver = { workspace = true }
 tempfile = { workspace = true }
 testrun = { workspace = true }
 
@@ -52,6 +49,10 @@ reedline = { workspace = true }
 regex = { workspace = true }
 reify = { workspace = true }
 rustc-demangle = { workspace = true }
+# `tokio-info reviewed` reads a lockfile and a toolchain file as TOML
+# and places their releases against the reviews; the ceiling-notice
+# tests build `Meta.tokio_version` values with it too.
+semver = { workspace = true }
 # The listing rows derive Serialize so the JSON printer is a printer,
 # not a second model.
 serde = { workspace = true }
@@ -59,6 +60,7 @@ subprocess = { workspace = true }
 # The listings cut their name columns to the terminal's width; this
 # is what says how wide it is.
 terminal_size = { workspace = true }
+toml = { workspace = true }
 # `RUST_LOG` selects among extraction's (and the session's) tracing
 # events; with no subscriber installed they go nowhere.
 tracing-subscriber = { workspace = true }

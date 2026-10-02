@@ -603,6 +603,7 @@ dependencies = [
  "tempfile",
  "terminal_size",
  "testrun",
+ "toml",
  "tracing-subscriber",
  "unwind",
 ]
