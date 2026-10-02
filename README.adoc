@@ -350,6 +350,56 @@ TASK                             STATE    WAITING ON
 └─ 2887 [its handle held above]  idle     future *const alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<oxide_update_engine_types::events::Event<nexus_types::deployment::execution::spec::ReconfiguratorExecutionSpec>, toki…
 ----
 
+The `connections` command gives a list of in-flight HTTP1 requests that use the `hyper` library.
+The same `--group` and `--with` options can be used here.
+
+----
+hansei> conns
+ADDR        TASK   CALLER  PROTO  ROLE    PHASE              DEADLINE  PEER                            SERVER  METHOD  REQUEST
+0x11216010  1130   621     http1  client  awaiting response  —         [fd00:1122:3344:10b::2]:12225   —       GET     http://[fd00:1122:3344:10b::2]:12225/sp/sled/29
+0xff8c3d0   1135   —       http1  client  idle               —         [fd00:1122:3344:10b::2]:4676    —       —       —
+0xff03710   1143   —       http1  client  idle               —         [fd00:1122:3344:108::2]:4676    —       —       —
+0xff72610   1162   —       http1  client  idle               —         [fd00:1122:3344:10b::2]:12225   —       —       —
+0x101bc910  1203   —       http1  client  idle               —         [fd00:1122:3344:10b::2]:12225   —       —       —
+0xfb719d0   1207   —       http1  client  idle               —         [fd00:1122:3344:10b::2]:12225   —       —       —
+0x117f6050  1223   1200    http1  client  awaiting response  —         [fd00:1122:3344:10b::1]:12345   —       GET     http://[fd00:1122:3344:10b::1]:12345/vmms/9e6bf7ba-a4c7-421c-9481-ff148ebda1d5/state
+0x1015ec90  1227   1186    http1  client  awaiting response  —         [fd00:1122:3344:103::1]:12345   —       GET     http://[fd00:1122:3344:103::1]:12345/vmms/c4f4552f-a0a6-4136-b195-3eafbf022fce/state
+0x1223aa10  1535   1498    http1  client  awaiting response  —         [fd00:1122:3344:108::1]:12345   —       GET     http://[fd00:1122:3344:108::1]:12345/vmms/70d9bfc0-d088-4f30-b7d6-564bbbe52493/state
+0x1186da10  1541   1491    http1  client  awaiting response  —         [fd00:1122:3344:101::1]:12345   —       GET     http://[fd00:1122:3344:101::1]:12345/vmms/fd87e0a0-5e6b-4179-a4ee-e810bd4e98de/state
+----
+
+Use the `connection` command to view the details of a single connection:
+
+----
+hansei> conn 0x11216010
+connection 0x11216010
+    proto: http1
+    driven by: task 1130
+    http: client, awaiting response
+        dispatcher: 0x11216010 hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<reqwest::async_impl::body::Body>, reqwest::async_impl::body::Body, reqwest::connect::sealed::Conn, hyper::proto::h1::role::Client>
+        conn: 0x11216010
+        keep-alive: busy
+        reading: init
+        writing: keep-alive
+        method: GET
+        caller: task 621
+        request: GET http://[fd00:1122:3344:10b::2]:12225/sp/sled/29
+        alpn: none
+        proxied: no
+    tcp: fd 52
+        stream: 0x111d9218 tokio::net::tcp::stream::TcpStream
+        registration: 0xff7a780
+        ready: writable
+        waker: the reader slot, task 1130
+        local address: [fd00:1122:3344:127::a3]:46148
+    peer: [fd00:1122:3344:10b::2]:12225
+    route:
+        0x11216088 reqwest::connect::sealed::Conn
+        0x111d9210 hyper_rustls::stream::MaybeHttpsStream<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
+        0x111d9218 hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>
+        0x111d9218 tokio::net::tcp::stream::TcpStream
+---
+
 == Trying it out
 
 `example/` is a small `tokio` program to explore with `hansei`. It runs a number of tasks with
@@ -453,17 +503,6 @@ hansei_example::Config {
 ----
 
 `census`, `graph`, and `futures` may be interesting to view as well.
-
-// WILLTODO: Add documentation for the `connections` listing (one row per
-// HTTP connection: task, role, phase, method, peer, read buffer,
-// header-read deadline, running handler, request), and for the
-// `request:` line under a connection's `caller:` in the task block
-// (the method and URL the caller sent, read off reqwest's in-flight
-// request) and under a server connection's verdict (the method and
-// path its handler is running for). Also the listing's `ADDR` column,
-// the `connection ADDR` view it selects (the HTTP, TLS and socket
-// layers in turn, every peer by its source, the route), and the
-// `Connection` block `whatis` prints for an address inside one.
 
 == Development
 
