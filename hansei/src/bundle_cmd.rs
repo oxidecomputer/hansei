@@ -13,8 +13,8 @@
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
 use exegesis::extract::{
-    DebugSources, ExtractOptions, ExtractStats, ParsedDwarf, RUSTC_FLOOR, classify_file,
-    dwarf_summary, extract_sources_with,
+    DebugSources, ExtractOptions, ExtractStats, ParsedDwarf, classify_file, dwarf_summary,
+    extract_sources_with,
 };
 use hansei_bundle::{Bundle, BundleTypeId, MemberRef, StaticRole, Step, TypeDef, VtableDataSource};
 
@@ -45,6 +45,13 @@ pub enum BundleCmd {
         /// missing (placeholders are emitted instead).
         #[arg(long)]
         allow_missing_infra: bool,
+        /// Write the tokio info even where parts of the binary have no
+        /// extraction rules: a crate, tokio or rustc version outside the
+        /// supported range, or a tokio whose version could not be
+        /// recovered. Those parts may show incomplete, raw or wrong
+        /// data; by default extraction refuses, naming each.
+        #[arg(long)]
+        allow_unsupported: bool,
         /// Report why a formatter did or did not attach, for every emitted
         /// type whose fully-qualified name contains this substring.
         #[arg(long, value_name = "FQN")]
@@ -87,6 +94,7 @@ pub fn exec(cmd: BundleCmd) -> Result<()> {
             stats,
             include_types,
             allow_missing_infra,
+            allow_unsupported,
             explain_format,
             explain_walk,
             explain_future,
@@ -97,6 +105,7 @@ pub fn exec(cmd: BundleCmd) -> Result<()> {
             stats,
             include_types,
             allow_missing_infra,
+            allow_unsupported,
             explain_format,
             explain_walk,
             explain_future,
@@ -129,10 +138,13 @@ fn load(path: &Path) -> Result<Bundle> {
 ///
 /// The warnings come back as text for the caller to print when it
 /// suits; nothing here writes to stderr, because this runs on the
-/// thread overlapping the attach.
+/// thread overlapping the attach. A binary with parts no extraction
+/// rule supports is refused, as the extract verb refuses it, unless
+/// `allow_unsupported` says to attach anyway.
 pub fn extract_for_session_with<R>(
     debug_info: &Path,
     binary: Option<&Path>,
+    allow_unsupported: bool,
     then: impl FnOnce(Bundle, Vec<String>, bool) -> R,
 ) -> Result<R> {
     let flavor = classify_file(debug_info)
@@ -156,31 +168,45 @@ pub fn extract_for_session_with<R>(
         &sources,
         &ExtractOptions::default(),
         ParsedDwarf::Free,
-        |bundle, stats| then(bundle, warnings(&stats), flavor.is_split()),
+        |bundle, stats| {
+            let warnings = admit(
+                stats.unsupported(),
+                allow_unsupported,
+                "refusing to attach",
+                "attach",
+            )?;
+            Ok(then(bundle, warnings, flavor.is_split()))
+        },
     )
-    .with_context(|| format!("failed to extract from {}", debug_info.display()))
+    .with_context(|| format!("failed to extract from {}", debug_info.display()))?
 }
 
-fn warnings(stats: &ExtractStats) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Some(v) = &stats.rustc_below_floor {
-        out.push(format!(
-            "warning: this binary was produced by rustc {v}, older than the \
-             supported floor {RUSTC_FLOOR}; extraction proceeds but is \
-             untested against older toolchains"
-        ));
+/// The warnings to print over what [`ExtractStats::unsupported`] found when
+/// `--allow-unsupported` admits it, or the refusal naming all of it
+/// when nothing does. `refusing` says what is refused and `proceed`
+/// what the flag lets the operator do instead.
+fn admit(
+    unsupported: Vec<String>,
+    allow_unsupported: bool,
+    refusing: &str,
+    proceed: &str,
+) -> Result<Vec<String>> {
+    if unsupported.is_empty() || allow_unsupported {
+        return Ok(unsupported
+            .into_iter()
+            .map(|s| format!("warning: {s}"))
+            .collect());
     }
-    if let Some(family) = &stats.tokio_family_guessed {
-        out.push(format!(
-            "warning: no tokio version could be recovered from this binary \
-             (vendored or forked tokio?); version-dependent formatters \
-             assumed the newest supported family ({family})"
-        ));
+    let mut message = format!(
+        "{refusing}: parts of this binary do not have extraction rules, and \
+         may show incomplete, raw, or wrong data:"
+    );
+    for s in &unsupported {
+        message.push_str("\n  ");
+        message.push_str(s);
     }
-    for warning in stats.review_warnings() {
-        out.push(format!("warning: {warning}"));
-    }
-    out
+    message.push_str(&format!("\n(--allow-unsupported to {proceed} anyway)"));
+    Err(anyhow::anyhow!(message))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -191,6 +217,7 @@ fn extract(
     print_stats: bool,
     include_types: Vec<String>,
     allow_missing_infra: bool,
+    allow_unsupported: bool,
     explain_format: Option<String>,
     explain_walk: Option<String>,
     explain_future: Option<String>,
@@ -213,6 +240,7 @@ fn extract(
             stats,
             output,
             print_stats,
+            allow_unsupported,
             explaining,
             explaining_walk,
             explain_future,
@@ -265,31 +293,46 @@ fn provenance(
     words.join(" ")
 }
 
-/// The extract verb's second half: report, write, and say what was written.
+/// The extract verb's second half: report, write, and say what was
+/// written — or, for a binary with parts no extraction rule supports,
+/// refuse to write. A refused bundle still answers the
+/// `--explain-*` and `--stats` reports, which are how to see what the
+/// refusal is about.
+#[allow(clippy::too_many_arguments)]
 fn write_extracted(
     bundle: Bundle,
     stats: ExtractStats,
     output: &Path,
     print_stats: bool,
+    allow_unsupported: bool,
     explaining: Option<String>,
     explaining_walk: Option<String>,
     explain_future: Option<String>,
 ) -> Result<()> {
-    for warning in warnings(&stats) {
-        eprintln!("{warning}");
-    }
-    // Extraction validated the bundle before handing it over; `save`
-    // would only validate it again.
-    bundle
-        .write_file(output)
-        .with_context(|| format!("failed to write {}", output.display()))?;
-    println!(
-        "wrote {} ({} types, {} task entries, {} dyn futures)",
-        output.display(),
-        bundle.types.types.len(),
-        bundle.tasks.entries.len(),
-        bundle.dyn_futures.by_symbol.len(),
+    let refusing = format!("refusing to write {}", output.display());
+    let admitted = admit(
+        stats.unsupported(),
+        allow_unsupported,
+        &refusing,
+        "write it",
     );
+    if let Ok(warnings) = &admitted {
+        for warning in warnings {
+            eprintln!("{warning}");
+        }
+        // Extraction validated the bundle before handing it over;
+        // `save` would only validate it again.
+        bundle
+            .write_file(output)
+            .with_context(|| format!("failed to write {}", output.display()))?;
+        println!(
+            "wrote {} ({} types, {} task entries, {} dyn futures)",
+            output.display(),
+            bundle.types.types.len(),
+            bundle.tasks.entries.len(),
+            bundle.dyn_futures.by_symbol.len(),
+        );
+    }
     if let Some(wanted) = explaining {
         if stats.format_explanations.is_empty() {
             println!(
@@ -327,7 +370,7 @@ fn write_extracted(
     if print_stats {
         print!("{stats}");
     }
-    Ok(())
+    admitted.map(drop)
 }
 
 fn stats(path: &Path) -> Result<()> {
@@ -695,12 +738,12 @@ fn dump_dwarf(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BundleCmd, ExtractStats, RUSTC_FLOOR, exec, provenance, warnings};
+    use super::{BundleCmd, ExtractStats, admit, exec, provenance, write_extracted};
+
+    use hansei_bundle::Bundle;
+    use hansei_runtime::testkit::{self, FIXTURE_SETS, PROGRAMS};
 
     use std::path::Path;
-
-    #[cfg(not(target_os = "macos"))]
-    use hansei_bundle::Bundle;
 
     fn extract_cmd(binary: std::path::PathBuf, output: std::path::PathBuf) -> BundleCmd {
         BundleCmd::Extract {
@@ -710,118 +753,86 @@ mod tests {
             stats: false,
             include_types: Vec::new(),
             allow_missing_infra: true,
+            allow_unsupported: false,
             explain_format: None,
             explain_walk: None,
             explain_future: None,
         }
     }
 
-    /// The two facts extraction can be unsure of each get said, and a
-    /// binary it was sure of draws nothing. Both callers — the verb and
-    /// a session extracting at launch — print whatever comes back, so
-    /// what is worth pinning is that the text names the version and the
-    /// family the operator has to judge the bundle by.
+    /// Nothing unsupported passes untouched; something unsupported is
+    /// refused with every sentence and the flag named, or, with the
+    /// flag, comes back as one warning each for the caller to print.
     #[test]
-    fn test_warnings_name_what_extraction_had_to_assume() {
-        assert!(warnings(&ExtractStats::default()).is_empty());
+    fn test_unsupported_refuses_unless_allowed() {
+        assert!(
+            admit(Vec::new(), false, "refusing", "go")
+                .unwrap()
+                .is_empty()
+        );
 
-        let stats = ExtractStats {
-            rustc_below_floor: Some("1.70.0".to_owned()),
-            ..Default::default()
-        };
-        let [line] = warnings(&stats).try_into().expect("one warning");
-        assert!(line.contains("1.70.0"), "{line}");
-        assert!(line.contains(RUSTC_FLOOR), "{line}");
+        let unsupported = vec!["parking_lot 0.11.2 is older".to_owned(), "tokio".to_owned()];
+        let refusal = admit(
+            unsupported.clone(),
+            false,
+            "refusing to write x.tinfo",
+            "write it",
+        )
+        .expect_err("unsupported refuses by default")
+        .to_string();
+        assert_eq!(
+            refusal,
+            "refusing to write x.tinfo: parts of this binary do not have \
+             extraction rules, and may show incomplete, raw, or wrong data:\n  \
+             parking_lot 0.11.2 is older\n  \
+             tokio\n\
+             (--allow-unsupported to write it anyway)"
+        );
 
-        let stats = ExtractStats {
-            tokio_family_guessed: Some("v1_53".to_owned()),
-            ..Default::default()
-        };
-        let [line] = warnings(&stats).try_into().expect("one warning");
-        assert!(line.contains("v1_53"), "{line}");
-
-        let stats = ExtractStats {
-            rustc_below_floor: Some("1.70.0".to_owned()),
-            tokio_family_guessed: Some("v1_53".to_owned()),
-            ..Default::default()
-        };
-        assert_eq!(warnings(&stats).len(), 2);
+        assert_eq!(
+            admit(unsupported, true, "refusing", "go").unwrap(),
+            ["warning: parking_lot 0.11.2 is older", "warning: tokio"]
+        );
     }
 
-    /// What the reviews could not vouch for is said once per subject:
-    /// one sentence for every compiler convention a newer rustc outgrew
-    /// over one range, and for every tokio protocol a tokio version is
-    /// outside over one, naming each of them, and one per unreviewed
-    /// crate release, naming every family that declined over it.
+    /// The verb writes nothing it refuses: an unsupported extraction
+    /// fails naming the flag and leaves no file behind, and the flag
+    /// writes the same bundle out. Any checked-in bundle stands in for
+    /// the extraction's, since what is refused is the stats' doing.
     #[test]
-    fn test_warnings_name_what_the_reviews_do_not_cover() {
-        use exegesis::detect::semantics::{
-            RUSTC_COROUTINE_V1_97, RUSTC_STD_ADAPTERS_V1_97, RUSTLS_SESSION_V0_23_23,
-            SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_RUSTLS_HANDSHAKE_V0_26_0,
-            TOKIO_RUSTLS_STREAM_V0_26_0, tokio_protocols_outside,
-        };
-        use exegesis::extract::{UnreviewedRelease, UnreviewedReleases};
-
-        let tokio_rustls = UnreviewedRelease::Version {
-            package: "tokio-rustls",
-            version: semver::Version::new(0, 27, 0),
-            newer: true,
-            range: "0.26.0–0.26.6".to_owned(),
-        };
-        let rustls = UnreviewedRelease::Version {
-            package: "rustls",
-            version: semver::Version::new(0, 23, 22),
-            newer: false,
-            range: "0.23.23–0.23.45".to_owned(),
-        };
-        let sprockets = UnreviewedRelease::Revision {
-            package: "sprockets-tls",
-            revision: "0123abc".to_owned(),
-        };
-        let stats = ExtractStats {
-            rustc_outgrown: Some((
-                "1.99.0".to_owned(),
-                vec![&RUSTC_COROUTINE_V1_97, &RUSTC_STD_ADAPTERS_V1_97],
-            )),
-            tokio_protocols_outside: Some((
-                "1.54.0".to_owned(),
-                tokio_protocols_outside(&semver::Version::new(1, 54, 0))
-                    .expect("1.54 is past every protocol review"),
-            )),
-            unreviewed_releases: UnreviewedReleases::from([
-                (
-                    tokio_rustls,
-                    [
-                        TOKIO_RUSTLS_STREAM_V0_26_0.family,
-                        TOKIO_RUSTLS_HANDSHAKE_V0_26_0.family,
-                    ]
-                    .into(),
-                ),
-                (rustls, [RUSTLS_SESSION_V0_23_23.family].into()),
-                (sprockets, [SPROCKETS_TLS_STREAM_D2B68E4.family].into()),
-            ]),
+    fn test_extract_writes_nothing_it_refuses() {
+        let tinfo = testkit::fixture(FIXTURE_SETS[0], &format!("{}.tinfo", PROGRAMS[0]));
+        let bundle = Bundle::load(&tinfo).expect("the fixture bundle should load");
+        let stats = || ExtractStats {
+            tokio_family_guessed: Some("v1_53".to_owned()),
             ..Default::default()
         };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output = dir.path().join("x.tinfo");
+
+        let write = |allow_unsupported| {
+            write_extracted(
+                bundle.clone(),
+                stats(),
+                &output,
+                false,
+                allow_unsupported,
+                None,
+                None,
+                None,
+            )
+        };
+        let refusal = write(false).expect_err("unsupported refuses by default");
+        assert!(
+            refusal.to_string().contains("--allow-unsupported"),
+            "{refusal}"
+        );
+        assert!(!output.exists(), "a refused bundle was written");
+
+        write(true).expect("the flag admits it");
         assert_eq!(
-            warnings(&stats),
-            [
-                "warning: rustc 1.99.0 is newer than the reviewed range 1.97–1.98 of \
-                 rustc-coroutine-1.97 and rustc-std-adapters-1.97, whose rules decline \
-                 over it",
-                "warning: tokio 1.54.0 is newer than the reviewed range 1.47–1.53 of \
-                 tokio-acquire-state-1.47, tokio-join-handle-state-1.47, \
-                 tokio-sleep-state-1.47, tokio-io-state-1.47, \
-                 tokio-mpsc-recv-state-1.47, tokio-notified-state-1.47, \
-                 tokio-oneshot-recv-state-1.47 and tokio-acquire-owners-1.47, whose \
-                 rules decline over it",
-                "warning: rustls 0.23.22 is older than the reviewed range 0.23.23–0.23.45 \
-                 of rustls-session-0.23.23, whose rules decline over it",
-                "warning: tokio-rustls 0.27.0 is newer than the reviewed range \
-                 0.26.0–0.26.6 of tokio-rustls-handshake-0.26.0 and \
-                 tokio-rustls-stream-0.26.0, whose rules decline over it",
-                "warning: sprockets-tls revision 0123abc is not a reviewed revision of \
-                 sprockets-tls-stream-d2b68e4, whose rules decline over it",
-            ]
+            Bundle::load(&output).expect("the bundle it wrote should load"),
+            bundle
         );
     }
 

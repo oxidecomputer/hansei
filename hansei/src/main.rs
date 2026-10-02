@@ -170,6 +170,14 @@ struct SessionArgs {
     #[arg(long, short)]
     force: bool,
 
+    /// With --debug-info, attach even where parts of the binary have no
+    /// extraction rules: a crate, tokio or rustc version outside the
+    /// supported range, or a tokio whose version could not be
+    /// recovered. Those parts may show incomplete, raw or wrong data;
+    /// by default extraction refuses the attach, naming each.
+    #[arg(long, conflicts_with = "tokio_info")]
+    allow_unsupported: bool,
+
     /// Attach even if non-essential walk paths are broken against this
     /// tokio's layouts, degrading whatever reads them. By default any
     /// broken path refuses the attach with a report of what moved.
@@ -2553,6 +2561,7 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
             bundle_cmd::extract_for_session_with(
                 path,
                 args.binary.as_deref(),
+                args.allow_unsupported,
                 |bundle, warnings, binary_extracted_from| {
                     let proc = proc.join().expect("core opener panicked")?;
                     session(proc, bundle, warnings, binary_extracted_from, args, exec)
@@ -3199,6 +3208,7 @@ mod cli_tests {
             "core::net::IpAddr",
             "--explain-format",
             "Notify",
+            "--allow-unsupported",
         ]);
         assert!(cli.session.is_none());
         let Some(Cmd::TokioInfo {
@@ -3210,6 +3220,7 @@ mod cli_tests {
                     stats,
                     include_types,
                     allow_missing_infra,
+                    allow_unsupported,
                     explain_format,
                     explain_walk,
                     explain_future,
@@ -3227,9 +3238,37 @@ mod cli_tests {
         assert!(stats);
         assert_eq!(include_types, ["core::net::IpAddr"]);
         assert!(!allow_missing_infra);
+        assert!(allow_unsupported);
         assert_eq!(explain_format.as_deref(), Some("Notify"));
         assert_eq!(explain_walk, None);
         assert_eq!(explain_future, None);
+    }
+
+    /// A session's `--allow-unsupported` admits what an extraction at
+    /// launch would refuse; a tokio-info file was extracted already,
+    /// so naming the flag with one is a mistake worth naming.
+    #[test]
+    fn test_allow_unsupported_needs_debug_info() {
+        let cli = parse(&[
+            "hansei",
+            "-c",
+            "core.app",
+            "-d",
+            "app.debug",
+            "--allow-unsupported",
+        ]);
+        assert!(cli.session.expect("session args").allow_unsupported);
+        assert!(
+            Cli::try_parse_from([
+                "hansei",
+                "-c",
+                "core.app",
+                "-t",
+                "app.tinfo",
+                "--allow-unsupported"
+            ])
+            .is_err()
+        );
     }
 
     /// The two sides are alternatives, not layers: a session's flags

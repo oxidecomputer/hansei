@@ -260,12 +260,16 @@ host. Extract a tokio-info file that includes the type, then dump it:
 
 ```
 hansei tokio-info extract <debug-binary> -o /tmp/x.tinfo \
-    --include-type "tokio::sync::mpsc::bounded::Semaphore" --allow-missing-infra
+    --include-type "tokio::sync::mpsc::bounded::Semaphore" --allow-missing-infra \
+    --allow-unsupported
 hansei tokio-info dump /tmp/x.tinfo | grep -n "struct <Name> "  # read its members
 ```
 
 `--include-type <fqn>` forces an otherwise-unreached type to be emitted;
-`--allow-missing-infra` lets extraction proceed on a non-target binary. The
+`--allow-missing-infra` lets extraction proceed on a non-target binary, and
+`--allow-unsupported` writes the file even when the binary carries a version
+outside the supported ranges (without it the `--explain-*` reports still print, but
+nothing is written for `dump` to read). The
 dump prints each aggregate's `+offset name : [type-id]` members and, for
 types your detector claimed, a `debug: <DisplayNode>` line showing the
 emitted node tree. A production-scale binary carries the full tokio/std

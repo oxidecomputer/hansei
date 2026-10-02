@@ -239,11 +239,11 @@ pub struct ExtractStats {
     /// The producer's rustc version when it predates [`RUSTC_FLOOR`].
     /// Extraction proceeds — the layouts may well still line up — but
     /// nothing has ever been verified against an older toolchain, so
-    /// the caller is warned rather than left to find out downstream.
+    /// the caller is told rather than left to find out downstream.
     pub rustc_below_floor: Option<String>,
     /// The family name version-dependent formatters ran as when no tokio
     /// version could be recovered from the target — the newest supported
-    /// family, a guess worth a warning. `None` when the version was
+    /// family, a guess no review covers. `None` when the version was
     /// recovered or no versioned detector was consulted.
     pub tokio_family_guessed: Option<String>,
     /// The producer's rustc version when it is newer than the review of
@@ -260,52 +260,76 @@ pub struct ExtractStats {
 }
 
 impl ExtractStats {
-    /// What the reviews could not vouch for, one sentence per subject:
-    /// the compiler conventions a newer rustc outgrew and the tokio
-    /// protocols the recovered tokio falls outside, each by range, and
-    /// each crate release a rule declined over. The `--stats` form and
-    /// the extract verb's warnings both say these.
-    pub fn review_warnings(&self) -> Vec<String> {
+    /// What no extraction rule supports, one sentence each: a producer
+    /// older than any toolchain it was checked against, a tokio version
+    /// it had to guess at, and every subject the reviews do not cover
+    /// ([`Self::review_warnings`]). A layout read on a guess or a rule
+    /// declined outright leaves a bundle that reads as complete all the
+    /// same — a resource never waited on, a TLS stream shown as a bare
+    /// socket — so the caller is to refuse it unless told otherwise.
+    pub fn unsupported(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(v) = &self.rustc_below_floor {
+            out.push(format!(
+                "rustc {v} is older than the supported version range: {}",
+                crate::detect::semantics::rustc_reviewed_range()
+            ));
+        }
+        if let Some(family) = &self.tokio_family_guessed {
+            out.push(format!(
+                "no tokio version could be recovered from this binary (vendored \
+                 or forked tokio?); version-dependent formatters assumed the \
+                 newest supported family ({family})"
+            ));
+        }
+        out.extend(self.review_warnings());
+        out
+    }
+
+    /// What the reviews could not vouch for, one sentence per subject
+    /// and range: the rustc a compiler convention was outgrown by and
+    /// the tokio a protocol review falls short of, each against the
+    /// range it missed, each crate release against its range, and each
+    /// git revision against what was reviewed at another one. The
+    /// families declining are left to `--explain-future`: a range says
+    /// what the operator can act on, and a family name only names the
+    /// review. [`Self::unsupported`] says these with the rest.
+    fn review_warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some((version, outgrown)) = &self.rustc_outgrown {
-            let mut by_range: BTreeMap<String, Vec<&str>> = BTreeMap::new();
-            for convention in outgrown {
-                by_range
-                    .entry(convention.range())
-                    .or_default()
-                    .push(convention.family);
-            }
-            for (range, families) in by_range {
+            let ranges: BTreeSet<String> = outgrown.iter().map(|c| c.range()).collect();
+            for range in ranges {
                 out.push(format!(
-                    "rustc {version} is newer than the reviewed range {range} of {}, \
-                     whose rules decline over it",
-                    conjoin(&families)
+                    "rustc {version} is newer than the supported version range: {range}"
                 ));
             }
         }
         if let Some((version, outside)) = &self.tokio_protocols_outside {
-            let mut by_range: BTreeMap<(bool, &str), Vec<&str>> = BTreeMap::new();
-            for protocol in outside {
-                by_range
-                    .entry((protocol.newer, &protocol.range))
-                    .or_default()
-                    .push(protocol.family);
-            }
-            for ((newer, range), families) in by_range {
+            let ranges: BTreeSet<(bool, &str)> = outside
+                .iter()
+                .map(|p| (p.newer, p.range.as_str()))
+                .collect();
+            for (newer, range) in ranges {
                 let side = if newer { "newer" } else { "older" };
                 out.push(format!(
-                    "tokio {version} is {side} than the reviewed range {range} of {}, \
-                     whose rules decline over it",
-                    conjoin(&families)
+                    "tokio {version} is {side} than the supported version range: {range}"
                 ));
             }
         }
         for (release, families) in &self.unreviewed_releases {
-            let families: Vec<&str> = families.iter().copied().collect();
-            out.push(format!(
-                "{release} of {}, whose rules decline over it",
-                conjoin(&families)
-            ));
+            match release {
+                UnreviewedRelease::Version { .. } => out.push(release.to_string()),
+                // A revision has no range to name, so the sentence names
+                // what was reviewed at another one instead.
+                UnreviewedRelease::Revision { .. } => {
+                    let subjects: BTreeSet<&str> = families
+                        .iter()
+                        .map(|&family| crate::detect::semantics::subject(family))
+                        .collect();
+                    let subjects: Vec<&str> = subjects.into_iter().collect();
+                    out.push(format!("{release} of {}", conjoin(&subjects)));
+                }
+            }
         }
         out
     }
@@ -321,8 +345,9 @@ fn conjoin(items: &[&str]) -> String {
 }
 
 /// The oldest rustc whose output the extraction contracts are held
-/// against. Binaries from older toolchains extract with a warning, not
-/// a refusal.
+/// against. Extraction itself proceeds over an older one; whether that
+/// bundle is handed on is the caller's call, through
+/// [`ExtractStats::rustc_below_floor`].
 pub const RUSTC_FLOOR: &str = "1.97.0";
 
 impl fmt::Display for ExtractStats {
@@ -427,20 +452,7 @@ impl fmt::Display for ExtractStats {
         for name in &self.statics_missing {
             writeln!(f, "  MISSING static:         {name}")?;
         }
-        if let Some(v) = &self.rustc_below_floor {
-            writeln!(
-                f,
-                "  WARNING: producer rustc {v} predates the supported floor {RUSTC_FLOOR}"
-            )?;
-        }
-        if let Some(family) = &self.tokio_family_guessed {
-            writeln!(
-                f,
-                "  WARNING: no tokio version recovered; version-dependent \
-                 formatters assumed the newest family ({family})"
-            )?;
-        }
-        for warning in self.review_warnings() {
+        for warning in self.unsupported() {
             writeln!(f, "  WARNING: {warning}")?;
         }
         Ok(())
@@ -2030,6 +2042,108 @@ mod tests {
 
     fn func_id(offset: usize) -> FuncId {
         FuncId(UnitSectionOffset(offset))
+    }
+
+    /// The two facts extraction can be unsure of each get said, and a
+    /// binary it was sure of draws nothing. What is worth pinning is
+    /// that the text names the version and the range or family the
+    /// operator has to judge the bundle by.
+    #[test]
+    fn test_unsupported_names_what_extraction_had_to_assume() {
+        assert!(ExtractStats::default().unsupported().is_empty());
+
+        let stats = ExtractStats {
+            rustc_below_floor: Some("1.70.0".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            stats.unsupported(),
+            ["rustc 1.70.0 is older than the supported version range: 1.97-1.98"]
+        );
+
+        let stats = ExtractStats {
+            tokio_family_guessed: Some("v1_53".to_owned()),
+            ..Default::default()
+        };
+        let [line] = stats.unsupported().try_into().expect("one sentence");
+        assert!(line.contains("v1_53"), "{line}");
+
+        let stats = ExtractStats {
+            rustc_below_floor: Some("1.70.0".to_owned()),
+            tokio_family_guessed: Some("v1_53".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(stats.unsupported().len(), 2);
+    }
+
+    /// What the reviews could not vouch for is said once per subject
+    /// and range: one sentence for a newer rustc however many compiler
+    /// conventions it outgrew over one range, one for a tokio however
+    /// many protocols it is outside of, one per crate release against
+    /// its range, and one per git revision naming what was reviewed at
+    /// another — by subject, without the revision its family is named
+    /// for.
+    #[test]
+    fn test_unsupported_names_what_the_reviews_do_not_cover() {
+        use crate::detect::semantics::{
+            RUSTC_COROUTINE_V1_97, RUSTC_STD_ADAPTERS_V1_97, RUSTLS_SESSION_V0_23_23,
+            SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_RUSTLS_HANDSHAKE_V0_26_0,
+            TOKIO_RUSTLS_STREAM_V0_26_0, tokio_protocols_outside,
+        };
+
+        let tokio_rustls = UnreviewedRelease::Version {
+            package: "tokio-rustls",
+            version: semver::Version::new(0, 27, 0),
+            newer: true,
+            range: "0.26.0-0.26.6".to_owned(),
+        };
+        let rustls = UnreviewedRelease::Version {
+            package: "rustls",
+            version: semver::Version::new(0, 23, 22),
+            newer: false,
+            range: "0.23.23-0.23.45".to_owned(),
+        };
+        let sprockets = UnreviewedRelease::Revision {
+            package: "sprockets-tls",
+            revision: "0123abc".to_owned(),
+        };
+        let stats = ExtractStats {
+            rustc_outgrown: Some((
+                "2.999.0".to_owned(),
+                vec![&RUSTC_COROUTINE_V1_97, &RUSTC_STD_ADAPTERS_V1_97],
+            )),
+            tokio_protocols_outside: Some((
+                "1.999.0".to_owned(),
+                tokio_protocols_outside(&semver::Version::new(1, 999, 0))
+                    .expect("1.999 is past every protocol review"),
+            )),
+            unreviewed_releases: UnreviewedReleases::from([
+                (
+                    tokio_rustls,
+                    [
+                        TOKIO_RUSTLS_STREAM_V0_26_0.family,
+                        TOKIO_RUSTLS_HANDSHAKE_V0_26_0.family,
+                    ]
+                    .into(),
+                ),
+                (rustls, [RUSTLS_SESSION_V0_23_23.family].into()),
+                (sprockets, [SPROCKETS_TLS_STREAM_D2B68E4.family].into()),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(
+            stats.unsupported(),
+            [
+                "rustc 2.999.0 is newer than the supported version range: 1.97-1.98",
+                "tokio 1.999.0 is newer than the supported version range: 1.47-1.53",
+                "rustls 0.23.22 is older than the supported version range: \
+                 0.23.23-0.23.45",
+                "tokio-rustls 0.27.0 is newer than the supported version range: \
+                 0.26.0-0.26.6",
+                "sprockets-tls revision 0123abc is not a reviewed revision of \
+                 sprockets-tls-stream",
+            ]
+        );
     }
 
     /// A poll declaration in a registry crate, at `line`.

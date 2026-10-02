@@ -35,6 +35,7 @@ pub(crate) fn session_args(set: &str, program: &str) -> SessionArgs {
         binary: None,
         sysroot: None,
         force: false,
+        allow_unsupported: false,
         best_effort: false,
         runtime: None,
         search_depth: census::Bounds::default().scan_depth,

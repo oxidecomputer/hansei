@@ -4648,7 +4648,7 @@ impl std::fmt::Display for UnreviewedRelease {
                 let side = if *newer { "newer" } else { "older" };
                 write!(
                     f,
-                    "{package} {version} is {side} than the reviewed range {range}"
+                    "{package} {version} is {side} than the supported version range: {range}"
                 )
             }
             UnreviewedRelease::Revision { package, revision } => {
@@ -8260,14 +8260,14 @@ mod tests {
                 "/home/u/.cargo/registry/src/idx/tracing-0.1.39/src/instrument.rs",
                 None
             )])
-            .contains("0.1.39 is below the reviewed range 0.1.40–0.1.44")
+            .contains("0.1.39 is below the reviewed range 0.1.40-0.1.44")
         );
         assert!(
             declined(&[source(
                 "/home/u/.cargo/registry/src/idx/tracing-0.1.45/src/instrument.rs",
                 None
             )])
-            .contains("0.1.45 is above the reviewed range 0.1.40–0.1.44")
+            .contains("0.1.45 is above the reviewed range 0.1.40-0.1.44")
         );
         // Two releases declaring the type, both reviewed, agree on the
         // newest: a target linking both has one type for their one
@@ -8294,7 +8294,7 @@ mod tests {
                     None
                 ),
             ])
-            .contains("0.1.45 is outside the reviewed range 0.1.40–0.1.44")
+            .contains("0.1.45 is outside the reviewed range 0.1.40-0.1.44")
         );
         let mismatch = declined(&[source(REGISTRY, Some([0xab; 16]))]);
         assert!(
@@ -10167,7 +10167,7 @@ mod tests {
         };
         assert_eq!(
             strings.get(issue.detail.unwrap()),
-            Some("tokio-stream 0.1.20 is above the reviewed range 0.1.14–0.1.19")
+            Some("tokio-stream 0.1.20 is above the reviewed range 0.1.14-0.1.19")
         );
         let reported: Vec<(String, Vec<&str>)> = releases
             .iter()
@@ -10176,7 +10176,8 @@ mod tests {
         assert_eq!(
             reported,
             [(
-                "tokio-stream 0.1.20 is newer than the reviewed range 0.1.14–0.1.19".to_owned(),
+                "tokio-stream 0.1.20 is newer than the supported version range: 0.1.14-0.1.19"
+                    .to_owned(),
                 vec![TOKIO_STREAM_MAP_V0_1_14.family]
             )]
         );
@@ -10210,7 +10211,8 @@ mod tests {
             .is_err()),
             [(
                 RUSTLS_SESSION_V0_23_23.family,
-                "rustls 0.23.22 is older than the reviewed range 0.23.23–0.23.45".to_owned()
+                "rustls 0.23.22 is older than the supported version range: 0.23.23-0.23.45"
+                    .to_owned()
             )]
         );
         assert_eq!(
@@ -10222,7 +10224,8 @@ mod tests {
             .is_err()),
             [(
                 TRACING_INSTRUMENTED_V0_1_40.family,
-                "tracing 0.1.45 is newer than the reviewed range 0.1.40–0.1.44".to_owned()
+                "tracing 0.1.45 is newer than the supported version range: 0.1.40-0.1.44"
+                    .to_owned()
             )]
         );
         let mut both = registry("parking_lot-0.11.2", "src/raw_mutex.rs");
@@ -10233,7 +10236,8 @@ mod tests {
             ),
             [(
                 PARKING_LOT_RAW_MUTEX_V0_12_1.family,
-                "parking_lot 0.11.2 is older than the reviewed range 0.12.1–0.12.5".to_owned()
+                "parking_lot 0.11.2 is older than the supported version range: 0.12.1-0.12.5"
+                    .to_owned()
             )]
         );
         assert_eq!(

@@ -122,8 +122,9 @@ module's builders, as `tokio_v1_49.rs` does), and the dispatch row lists
 one detector per family. The tokio version recovered from the target's
 DWARF selects the family once per target: the highest floor at or below
 it, the oldest family for anything below every floor, and the newest for
-anything newer or unrecovered (with a warning when unrecovered and a
-versioned row actually ran). Ordered alternatives inside a detector are
+anything newer or unrecovered (refused without `--allow-unsupported`
+when unrecovered and a versioned row actually ran, as is a version
+outside any supported range). Ordered alternatives inside a detector are
 reserved for divergence a version cannot select — a spelling that varies
 with build features or cfg within one release. Selection is versioned, but
 safety stays structural: the selected

@@ -36,7 +36,7 @@ impl RustcConvention {
         subject(self.family)
     }
 
-    /// The range as a warning names it: `1.97–1.98`.
+    /// The range as a warning names it: `1.97-1.98`.
     pub fn range(&self) -> String {
         minor_range(self.floor, self.ceiling)
     }
@@ -44,16 +44,18 @@ impl RustcConvention {
 
 /// What a review is about, its family name without the version the
 /// review starts at: `rustc-coroutine` for `rustc-coroutine-1.97`.
-/// Two reviews of one subject share it.
-fn subject(family: &'static str) -> &'static str {
+/// Two reviews of one subject share it, and a git review's subject is
+/// its family without the revision it was named for:
+/// `sprockets-tls-stream` for `sprockets-tls-stream-d2b68e4`.
+pub(crate) fn subject(family: &'static str) -> &'static str {
     family
         .rsplit_once('-')
         .map_or(family, |(subject, _)| subject)
 }
 
-/// A `(major, minor)` range as a warning names it: `1.97–1.98`.
+/// A `(major, minor)` range as a warning names it: `1.97-1.98`.
 fn minor_range((a, b): (u64, u64), (x, y): (u64, u64)) -> String {
-    format!("{a}.{b}–{x}.{y}")
+    format!("{a}.{b}-{x}.{y}")
 }
 
 /// The coroutine state-machine convention rustc 1.97 and 1.98 emit,
@@ -215,6 +217,17 @@ pub fn rustc_conventions_outgrown(
     outgrown(producer, &RUSTC_CONVENTIONS)
 }
 
+/// The rustc versions the compiler convention reviews span between
+/// them, as a warning names it: `1.97-1.98`.
+pub fn rustc_reviewed_range() -> String {
+    let floor = RUSTC_CONVENTIONS.iter().map(|c| c.floor).min();
+    let ceiling = RUSTC_CONVENTIONS.iter().map(|c| c.ceiling).max();
+    minor_range(
+        floor.expect("at least one convention"),
+        ceiling.expect("at least one convention"),
+    )
+}
+
 /// The reviews in `reviewed` of every subject the producer's rustc is
 /// newer than each review of. A subject a later review covers the
 /// version of is not outgrown.
@@ -273,11 +286,11 @@ impl LibraryConvention {
         self.checksums.iter().any(|(_, reviewed)| reviewed == md5)
     }
 
-    /// The range as a decline reason spells it: `0.1.40–0.1.44`.
+    /// The range as a decline reason writes it: `0.1.40-0.1.44`.
     pub fn range(&self) -> String {
         let (a, b, c) = self.floor;
         let (x, y, z) = self.ceiling;
-        format!("{a}.{b}.{c}–{x}.{y}.{z}")
+        format!("{a}.{b}.{c}-{x}.{y}.{z}")
     }
 }
 
@@ -3267,7 +3280,7 @@ mod tests {
             RUSTC_STD_FUTEX_MUTEX_V1_97.subject(),
             "rustc-std-futex-mutex"
         );
-        assert_eq!(RUSTC_COROUTINE_V1_97.range(), "1.97–1.98");
+        assert_eq!(RUSTC_COROUTINE_V1_97.range(), "1.97-1.98");
     }
 
     /// A later review of one subject keeps that subject covered, and
@@ -3323,7 +3336,7 @@ mod tests {
                         .clone()
                         .map(|family| ProtocolOutside {
                             family,
-                            range: "1.47–1.53".to_owned(),
+                            range: "1.47-1.53".to_owned(),
                             newer,
                         })
                         .collect()
@@ -3542,27 +3555,27 @@ mod tests {
             }
             assert!(!family.reviewed_checksum(&[0; 16]));
         }
-        assert_eq!(TRACING_INSTRUMENTED_V0_1_40.range(), "0.1.40–0.1.44");
-        assert_eq!(FUTURES_UTIL_ADAPTERS_V0_3_30.range(), "0.3.30–0.3.34");
-        assert_eq!(HYPER_UTIL_TOKIO_SLEEP_V0_1_10.range(), "0.1.10–0.1.20");
-        assert_eq!(TOKIO_STREAM_WATCH_V0_1_14.range(), "0.1.14–0.1.19");
-        assert_eq!(TOKIO_UTIL_REUSABLE_BOX_V0_7_11.range(), "0.7.11–0.7.19");
-        assert_eq!(TOKIO_INTERVAL_TICK_V1_47.range(), "1.47.0–1.53.1");
+        assert_eq!(TRACING_INSTRUMENTED_V0_1_40.range(), "0.1.40-0.1.44");
+        assert_eq!(FUTURES_UTIL_ADAPTERS_V0_3_30.range(), "0.3.30-0.3.34");
+        assert_eq!(HYPER_UTIL_TOKIO_SLEEP_V0_1_10.range(), "0.1.10-0.1.20");
+        assert_eq!(TOKIO_STREAM_WATCH_V0_1_14.range(), "0.1.14-0.1.19");
+        assert_eq!(TOKIO_UTIL_REUSABLE_BOX_V0_7_11.range(), "0.7.11-0.7.19");
+        assert_eq!(TOKIO_INTERVAL_TICK_V1_47.range(), "1.47.0-1.53.1");
         // Seven files reviewed at seven releases: every revision of
         // each is listed once.
-        assert_eq!(HYPER_H1_CONN_V1_6_0.range(), "1.6.0–1.10.1");
+        assert_eq!(HYPER_H1_CONN_V1_6_0.range(), "1.6.0-1.10.1");
         assert_eq!(HYPER_H1_CONN_V1_6_0.checksums.len(), 29);
         // Six revisions of the auto module and two of the rewind across
         // eleven releases, none shared with the sleep's file.
-        assert_eq!(HYPER_UTIL_AUTO_CONN_V0_1_10.range(), "0.1.10–0.1.20");
+        assert_eq!(HYPER_UTIL_AUTO_CONN_V0_1_10.range(), "0.1.10-0.1.20");
         assert_eq!(HYPER_UTIL_AUTO_CONN_V0_1_10.checksums.len(), 8);
-        assert_eq!(DROPSHOT_SERVER_V0_17_0.range(), "0.17.0–0.17.1");
+        assert_eq!(DROPSHOT_SERVER_V0_17_0.range(), "0.17.0-0.17.1");
         assert_eq!(DROPSHOT_SERVER_V0_17_0.checksums.len(), 2);
-        assert_eq!(REQWEST_PENDING_REQUEST_V0_12_0.range(), "0.12.0–0.13.2");
+        assert_eq!(REQWEST_PENDING_REQUEST_V0_12_0.range(), "0.12.0-0.13.2");
         assert_eq!(REQWEST_PENDING_REQUEST_V0_12_0.checksums.len(), 24);
-        assert_eq!(HTTP_REQUEST_V1_0_0.range(), "1.0.0–1.4.2");
+        assert_eq!(HTTP_REQUEST_V1_0_0.range(), "1.0.0-1.4.2");
         assert_eq!(HTTP_REQUEST_V1_0_0.checksums.len(), 27);
-        assert_eq!(DROPSHOT_HANDLER_V0_17_0.range(), "0.17.0–0.17.1");
+        assert_eq!(DROPSHOT_HANDLER_V0_17_0.range(), "0.17.0-0.17.1");
         assert_eq!(DROPSHOT_HANDLER_V0_17_0.checksums.len(), 2);
         for (_, checksum) in HYPER_UTIL_TOKIO_SLEEP_V0_1_10.checksums {
             assert!(!HYPER_UTIL_AUTO_CONN_V0_1_10.reviewed_checksum(checksum));
