@@ -32,21 +32,28 @@ impl RustcConvention {
         version >= self.floor && version <= self.ceiling
     }
 
-    /// What the convention is about, its family name without the
-    /// version its review starts at: `rustc-coroutine` for
-    /// `rustc-coroutine-1.97`. Two reviews of one subject share it.
     fn subject(&self) -> &'static str {
-        self.family
-            .rsplit_once('-')
-            .map_or(self.family, |(subject, _)| subject)
+        subject(self.family)
     }
 
     /// The range as a warning names it: `1.97–1.98`.
     pub fn range(&self) -> String {
-        let (a, b) = self.floor;
-        let (x, y) = self.ceiling;
-        format!("{a}.{b}–{x}.{y}")
+        minor_range(self.floor, self.ceiling)
     }
+}
+
+/// What a review is about, its family name without the version the
+/// review starts at: `rustc-coroutine` for `rustc-coroutine-1.97`.
+/// Two reviews of one subject share it.
+fn subject(family: &'static str) -> &'static str {
+    family
+        .rsplit_once('-')
+        .map_or(family, |(subject, _)| subject)
+}
+
+/// A `(major, minor)` range as a warning names it: `1.97–1.98`.
+fn minor_range((a, b): (u64, u64), (x, y): (u64, u64)) -> String {
+    format!("{a}.{b}–{x}.{y}")
 }
 
 /// The coroutine state-machine convention rustc 1.97 and 1.98 emit,
@@ -2843,6 +2850,8 @@ pub fn library_convention(
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct StateProtocol {
     pub kind: SemanticRuleKind,
+    /// The review's name, as a warning that it declines names it.
+    pub family: &'static str,
     pub floor: (u64, u64),
     pub ceiling: (u64, u64),
 }
@@ -2876,6 +2885,7 @@ impl StateProtocol {
 /// never produces.
 pub const TOKIO_ACQUIRE_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioAcquireState,
+    family: "tokio-acquire-state-1.47",
     floor: (1, 47),
     ceiling: (1, 53),
 };
@@ -2890,6 +2900,7 @@ pub const TOKIO_ACQUIRE_STATE_V1_47: StateProtocol = StateProtocol {
 /// nothing stored and a deferred wake pending.
 pub const TOKIO_JOIN_HANDLE_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioJoinHandleState,
+    family: "tokio-join-handle-state-1.47",
     floor: (1, 47),
     ceiling: (1, 53),
 };
@@ -2906,6 +2917,7 @@ pub const TOKIO_JOIN_HANDLE_STATE_V1_47: StateProtocol = StateProtocol {
 /// sentinels is the tick the entry sits in the wheel for.
 pub const TOKIO_SLEEP_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioSleepState,
+    family: "tokio-sleep-state-1.47",
     floor: (1, 47),
     ceiling: (1, 53),
 };
@@ -2940,6 +2952,7 @@ pub const TOKIO_SLEEP_STATE_V1_47: StateProtocol = StateProtocol {
 /// interest the event satisfies. Shutdown wakes every node.
 pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioIoState,
+    family: "tokio-io-state-1.47",
     floor: (1, 47),
     ceiling: (1, 53),
 };
@@ -2966,6 +2979,7 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
 /// `TX_CLOSED` set on its block, and wakes the receiver.
 pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioMpscRecvState,
+    family: "tokio-mpsc-recv-state-1.47",
     floor: (1, 47),
     ceiling: (1, 53),
 };
@@ -2989,6 +3003,7 @@ pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
 /// `Ready`.
 pub const TOKIO_NOTIFIED_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioNotifiedState,
+    family: "tokio-notified-state-1.47",
     floor: (1, 47),
     ceiling: (1, 53),
 };
@@ -3011,6 +3026,7 @@ pub const TOKIO_NOTIFIED_STATE_V1_47: StateProtocol = StateProtocol {
 /// is a wakeup owed and not yet polled.
 pub const TOKIO_ONESHOT_RECV_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioOneshotRecvState,
+    family: "tokio-oneshot-recv-state-1.47",
     floor: (1, 47),
     ceiling: (1, 53),
 };
@@ -3027,6 +3043,7 @@ pub const TOKIO_ONESHOT_RECV_STATE_V1_47: StateProtocol = StateProtocol {
 /// Every such async fn lies in its primitive's module, so the module's
 /// path is the key; the primitive is named as a listing names it.
 pub const TOKIO_ACQUIRE_OWNERS_V1_47: AcquireOwners = AcquireOwners {
+    family: "tokio-acquire-owners-1.47",
     floor: (1, 47),
     ceiling: (1, 53),
     owners: &[
@@ -3045,6 +3062,8 @@ pub const TOKIO_ACQUIRE_OWNERS_V1_47: AcquireOwners = AcquireOwners {
 /// range of tokio versions.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct AcquireOwners {
+    /// The review's name, as a warning that it declines names it.
+    pub family: &'static str,
     pub floor: (u64, u64),
     pub ceiling: (u64, u64),
     pub owners: &'static [(&'static str, &'static str)],
@@ -3092,6 +3111,66 @@ pub fn tokio_state_protocol(
         ResourceKind::HttpConn => return None,
     };
     protocol.covers(version?).then_some(protocol)
+}
+
+/// Every reviewed tokio state protocol.
+pub const TOKIO_STATE_PROTOCOLS: [&StateProtocol; 7] = [
+    &TOKIO_ACQUIRE_STATE_V1_47,
+    &TOKIO_JOIN_HANDLE_STATE_V1_47,
+    &TOKIO_SLEEP_STATE_V1_47,
+    &TOKIO_IO_STATE_V1_47,
+    &TOKIO_MPSC_RECV_STATE_V1_47,
+    &TOKIO_NOTIFIED_STATE_V1_47,
+    &TOKIO_ONESHOT_RECV_STATE_V1_47,
+];
+
+/// A tokio protocol review a recovered version falls outside: the
+/// review's name, its range as a warning names it, and whether the
+/// version is newer than the range rather than older.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ProtocolOutside {
+    pub family: &'static str,
+    pub range: String,
+    pub newer: bool,
+}
+
+/// The tokio protocol reviews — every state protocol, and the map of
+/// which primitive a batch-semaphore acquire is for — that a recovered
+/// version falls outside of. Each binds nothing at that version, though
+/// a layout family is selected for it all the same, and an extraction
+/// says so. `None` for a version a review of every subject covers.
+pub fn tokio_protocols_outside(version: &semver::Version) -> Option<Vec<ProtocolOutside>> {
+    let owners = &TOKIO_ACQUIRE_OWNERS_V1_47;
+    let reviewed: Vec<Review> = TOKIO_STATE_PROTOCOLS
+        .iter()
+        .map(|p| (p.family, p.floor, p.ceiling))
+        .chain([(owners.family, owners.floor, owners.ceiling)])
+        .collect();
+    let outside = outside(version, &reviewed);
+    (!outside.is_empty()).then_some(outside)
+}
+
+/// A review as [`outside`] weighs it: its family, floor and ceiling.
+type Review = (&'static str, (u64, u64), (u64, u64));
+
+/// The reviews in `reviewed` of every subject no review covers the
+/// version of. A subject a later review covers is not outside.
+fn outside(version: &semver::Version, reviewed: &[Review]) -> Vec<ProtocolOutside> {
+    let minor = (version.major, version.minor);
+    let covers = |&(_, floor, ceiling): &Review| minor >= floor && minor <= ceiling;
+    reviewed
+        .iter()
+        .filter(|(family, ..)| {
+            !reviewed
+                .iter()
+                .any(|other| subject(other.0) == subject(family) && covers(other))
+        })
+        .map(|&(family, floor, ceiling)| ProtocolOutside {
+            family,
+            range: minor_range(floor, ceiling),
+            newer: minor.cmp(&ceiling).is_gt(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -3224,6 +3303,64 @@ mod tests {
             ])
         );
         assert_eq!(families("rustc version 1.98.0 (aabb 2026-08-18)"), None);
+    }
+
+    /// Every tokio protocol review is outside a version past either
+    /// edge of its range, on the side the version falls, and none is
+    /// at either edge.
+    #[test]
+    fn test_tokio_protocols_are_outside_a_version_past_their_range() {
+        let v = |s: &str| semver::Version::parse(s).unwrap();
+        let every = TOKIO_STATE_PROTOCOLS
+            .iter()
+            .map(|p| p.family)
+            .chain([TOKIO_ACQUIRE_OWNERS_V1_47.family]);
+        for (version, newer) in [("1.54.0", true), ("1.46.3", false)] {
+            assert_eq!(
+                tokio_protocols_outside(&v(version)),
+                Some(
+                    every
+                        .clone()
+                        .map(|family| ProtocolOutside {
+                            family,
+                            range: "1.47–1.53".to_owned(),
+                            newer,
+                        })
+                        .collect()
+                ),
+                "{version}"
+            );
+        }
+        for version in ["1.47.0", "1.53.9"] {
+            assert_eq!(tokio_protocols_outside(&v(version)), None, "{version}");
+        }
+    }
+
+    /// A later review of one tokio protocol keeps that protocol inside
+    /// and only that one: beside a sleep review reaching 1.54, a 1.54
+    /// version is outside the io review alone.
+    #[test]
+    fn test_a_later_protocol_review_covers_its_own_subject_only() {
+        let reviewed: [Review; 3] = [
+            ("tokio-sleep-state-1.47", (1, 47), (1, 53)),
+            ("tokio-sleep-state-1.54", (1, 54), (1, 55)),
+            ("tokio-io-state-1.47", (1, 47), (1, 53)),
+        ];
+        let families = |version: &str| -> Vec<&str> {
+            outside(&semver::Version::parse(version).unwrap(), &reviewed)
+                .iter()
+                .map(|o| o.family)
+                .collect()
+        };
+        assert_eq!(families("1.54.0"), ["tokio-io-state-1.47"]);
+        assert_eq!(
+            families("1.56.0"),
+            [
+                "tokio-sleep-state-1.47",
+                "tokio-sleep-state-1.54",
+                "tokio-io-state-1.47"
+            ]
+        );
     }
 
     /// Every delegation family binds at both edges of its range

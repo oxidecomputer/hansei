@@ -53,7 +53,9 @@ use crate::bundle::{
     Meta, Provenance, ProvenanceTable, SourceLoc, StaticsTable, TaskEntryId, TaskFutureEntry,
     TaskTable, VtableDataSource,
 };
-use crate::detect::semantics::{RustcConvention, rustc_conventions_outgrown};
+use crate::detect::semantics::{
+    ProtocolOutside, RustcConvention, rustc_conventions_outgrown, tokio_protocols_outside,
+};
 use crate::detect::{Family, FormatExplanation, struct_of};
 use crate::raw_types::{NsId, RawType};
 use crate::symbols::{normalized_candidate_index, symbol_candidate_index};
@@ -248,6 +250,10 @@ pub struct ExtractStats {
     /// some compiler convention, with each convention it outgrew: those
     /// bind nothing the compiler emitted.
     pub rustc_outgrown: Option<(String, Vec<&'static RustcConvention>)>,
+    /// The recovered tokio version when it falls outside the review of
+    /// some tokio protocol, with each protocol it is outside: those say
+    /// nothing of whether a resource is ready or waited on.
+    pub tokio_protocols_outside: Option<(String, Vec<ProtocolOutside>)>,
     /// The crate releases no review covers that some record names a
     /// rule declining over, each with the families that declined.
     pub unreviewed_releases: UnreviewedReleases,
@@ -255,7 +261,8 @@ pub struct ExtractStats {
 
 impl ExtractStats {
     /// What the reviews could not vouch for, one sentence per subject:
-    /// the compiler conventions a newer rustc outgrew, by range, and
+    /// the compiler conventions a newer rustc outgrew and the tokio
+    /// protocols the recovered tokio falls outside, each by range, and
     /// each crate release a rule declined over. The `--stats` form and
     /// the extract verb's warnings both say these.
     pub fn review_warnings(&self) -> Vec<String> {
@@ -271,6 +278,23 @@ impl ExtractStats {
             for (range, families) in by_range {
                 out.push(format!(
                     "rustc {version} is newer than the reviewed range {range} of {}, \
+                     whose rules decline over it",
+                    conjoin(&families)
+                ));
+            }
+        }
+        if let Some((version, outside)) = &self.tokio_protocols_outside {
+            let mut by_range: BTreeMap<(bool, &str), Vec<&str>> = BTreeMap::new();
+            for protocol in outside {
+                by_range
+                    .entry((protocol.newer, &protocol.range))
+                    .or_default()
+                    .push(protocol.family);
+            }
+            for ((newer, range), families) in by_range {
+                let side = if newer { "newer" } else { "older" };
+                out.push(format!(
+                    "tokio {version} is {side} than the reviewed range {range} of {}, \
                      whose rules decline over it",
                     conjoin(&families)
                 ));
@@ -1399,6 +1423,9 @@ fn extract_from_view(
     stats.format_explanations = std::mem::take(&mut em.explanations);
     stats.tokio_family_guessed = (em.versioned_dispatch && em.tokio_version.is_none())
         .then(|| Family::select(None).name().to_owned());
+    stats.tokio_protocols_outside = em.tokio_version.as_ref().and_then(|version| {
+        tokio_protocols_outside(version).map(|outside| (version.to_string(), outside))
+    });
     // Declaration sites for every emitted closure/coroutine environment
     // type — the anchor behind a coroutine's `type defined at` line.
     // `env_decl_site` is the rule task provenance uses too, so a task's

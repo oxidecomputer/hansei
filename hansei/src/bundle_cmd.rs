@@ -750,14 +750,15 @@ mod tests {
 
     /// What the reviews could not vouch for is said once per subject:
     /// one sentence for every compiler convention a newer rustc outgrew
-    /// over one range, naming each of them, and one per unreviewed
+    /// over one range, and for every tokio protocol a tokio version is
+    /// outside over one, naming each of them, and one per unreviewed
     /// crate release, naming every family that declined over it.
     #[test]
     fn test_warnings_name_what_the_reviews_do_not_cover() {
         use exegesis::detect::semantics::{
             RUSTC_COROUTINE_V1_97, RUSTC_STD_ADAPTERS_V1_97, RUSTLS_SESSION_V0_23_23,
             SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_RUSTLS_HANDSHAKE_V0_26_0,
-            TOKIO_RUSTLS_STREAM_V0_26_0,
+            TOKIO_RUSTLS_STREAM_V0_26_0, tokio_protocols_outside,
         };
         use exegesis::extract::{UnreviewedRelease, UnreviewedReleases};
 
@@ -782,6 +783,11 @@ mod tests {
                 "1.99.0".to_owned(),
                 vec![&RUSTC_COROUTINE_V1_97, &RUSTC_STD_ADAPTERS_V1_97],
             )),
+            tokio_protocols_outside: Some((
+                "1.54.0".to_owned(),
+                tokio_protocols_outside(&semver::Version::new(1, 54, 0))
+                    .expect("1.54 is past every protocol review"),
+            )),
             unreviewed_releases: UnreviewedReleases::from([
                 (
                     tokio_rustls,
@@ -802,6 +808,12 @@ mod tests {
                 "warning: rustc 1.99.0 is newer than the reviewed range 1.97–1.98 of \
                  rustc-coroutine-1.97 and rustc-std-adapters-1.97, whose rules decline \
                  over it",
+                "warning: tokio 1.54.0 is newer than the reviewed range 1.47–1.53 of \
+                 tokio-acquire-state-1.47, tokio-join-handle-state-1.47, \
+                 tokio-sleep-state-1.47, tokio-io-state-1.47, \
+                 tokio-mpsc-recv-state-1.47, tokio-notified-state-1.47, \
+                 tokio-oneshot-recv-state-1.47 and tokio-acquire-owners-1.47, whose \
+                 rules decline over it",
                 "warning: rustls 0.23.22 is older than the reviewed range 0.23.23–0.23.45 \
                  of rustls-session-0.23.23, whose rules decline over it",
                 "warning: tokio-rustls 0.27.0 is newer than the reviewed range \
