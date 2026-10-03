@@ -276,11 +276,14 @@ fn place(from: &Path, to: &Path) {
 /// that tree's exegesis's work. A mutation sweep runs one tree per
 /// job over one cores directory, and a bundle written there by a
 /// mutated exegesis would be read by every other job.
+///
+/// Each program stamps under a lock of its own, so processes wanting
+/// different programs extract them at once rather than in turn.
 pub fn bundle_path(set: &str, program: &str, capture: &Capture) -> PathBuf {
     let bundles = test_programs_dir().join("fixtures/bundles").join(set);
     let path = bundles.join(format!("{program}.tinfo"));
     testrun::once_per_run_each(
-        &bundles.join(".stamps"),
+        &bundles.join(".stamps").join(program),
         &[program],
         |_| {
             let root = test_programs_dir().join("..");

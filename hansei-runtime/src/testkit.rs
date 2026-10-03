@@ -594,6 +594,8 @@ pub fn bundle(program: &str) -> Bundle {
 /// build B of `program` in the primary cell, once per run, written to a
 /// file whose path is returned. The build is the one the extraction
 /// goldens read, so on a Mac it is the Mach-O binary with its dSYM.
+/// Each program stamps under a lock of its own, as
+/// [`cores::bundle_path`]'s do.
 pub fn bundle_path(program: &str) -> PathBuf {
     assert!(
         PROGRAMS.contains(&program),
@@ -609,7 +611,7 @@ pub fn bundle_path(program: &str) -> PathBuf {
     let bundles = matrix::test_programs_dir().join("fixtures/bundles/native");
     let path = bundles.join(format!("{program}.tinfo"));
     testrun::once_per_run_each(
-        &bundles.join(".stamps"),
+        &bundles.join(".stamps").join(program),
         &[program],
         |_| {
             let root = matrix::test_programs_dir().join("..");
