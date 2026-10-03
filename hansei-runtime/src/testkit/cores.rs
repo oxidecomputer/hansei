@@ -322,7 +322,11 @@ impl Parked {
     /// inspection is stable. There are no timing sleeps anywhere.
     pub fn spawn(binary: &Path, program: &str) -> Self {
         let marker = marker(program);
+        // An empty environment: the target's is in its core, and the
+        // test runner's own (`NEXTEST_TEST_GLOBAL_SLOT` among it) is not
+        // the fixture's to vary by.
         let mut child = Command::new(binary)
+            .env_clear()
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()

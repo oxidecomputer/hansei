@@ -20,7 +20,7 @@
 use crate::output::Theme;
 use crate::{Session, SessionArgs, dispatch, repl};
 
-use hansei_runtime::testkit::{self, PROGRAMS, fixture_sets, mask};
+use hansei_runtime::testkit::{self, PROGRAMS, fixture_sets};
 use hansei_runtime::tokio::{bundle, census};
 
 use std::path::Path;
@@ -49,7 +49,10 @@ pub(crate) fn session_args(set: &str, program: &str) -> SessionArgs {
 /// aim at the first task — the listing is sorted by id, so the target
 /// is as stable as the fixture — and each entry carries the label its
 /// golden file is named with.
-fn commands(session: &Session<'_, testkit::Fixture>, program: &str) -> Vec<(&'static str, String)> {
+fn commands<T: proc::Target>(
+    session: &Session<'_, T>,
+    program: &str,
+) -> Vec<(&'static str, String)> {
     let mut list = vec![
         ("tasks", "tasks".to_owned()),
         // The filter path over a stable field, the grouping path over
@@ -58,8 +61,15 @@ fn commands(session: &Session<'_, testkit::Fixture>, program: &str) -> Vec<(&'st
         // has an lwp).
         ("tasks-with-state", "tasks --with state idle".to_owned()),
         // A clause whose argument lists alternatives: either id keeps
-        // its row.
-        ("tasks-with-ids", "tasks --with id 3,6".to_owned()),
+        // its row. A fresh core's ids are canonical ones, from
+        // `TASK_BASE` up, so it names the same two places in them.
+        ("tasks-with-ids", {
+            use hansei_runtime::testkit::canonical::TASK_BASE;
+            match testkit::cores::dir() {
+                None => "tasks --with id 3,6".to_owned(),
+                Some(_) => format!("tasks --with id {},{}", TASK_BASE + 2, TASK_BASE + 5),
+            }
+        }),
         ("tasks-group-waiting", "tasks --group waiting-on".to_owned()),
         ("tasks-group-lwp", "tasks --group lwp".to_owned()),
         // The waker field: the wakeup overview, with the slot
@@ -449,8 +459,8 @@ fn commands(session: &Session<'_, testkit::Fixture>, program: &str) -> Vec<(&'st
 /// where a fresh task cursor stands — a path target every fixture has,
 /// whatever its futures hold. Any member will do, a zero-sized one
 /// included: the golden pins that the step lands, not what it finds.
-fn first_frame_member(
-    session: &Session<'_, testkit::Fixture>,
+fn first_frame_member<T: proc::Target>(
+    session: &Session<'_, T>,
     task: &hansei_runtime::tokio::bundle::Task,
 ) -> Option<String> {
     let chain = session.task_chain(task)?;
@@ -496,9 +506,17 @@ fn golden(program: &str) {
                     &args.tokio_info.as_deref().unwrap().display().to_string(),
                     "<tokio info>",
                 );
-            settings.set_description(format!("`{line}` over {set}/{program}"));
+            // A command naming an address names one of this capture's.
+            let description = format!("`{line}` over {set}/{program}");
+            settings.set_description(match testkit::cores::dir() {
+                Some(_) => testkit::mask_core(&description),
+                None => description,
+            });
             settings.bind(|| {
-                insta::assert_snapshot!(format!("{program}-{label}"), mask(text.trim_end()));
+                insta::assert_snapshot!(
+                    format!("{program}-{label}"),
+                    testkit::mask_for(set, text.trim_end())
+                );
             });
         }
     }
@@ -540,6 +558,165 @@ offline_commands! {
     test_http_conns_commands: "http-conns",
     test_two_releases_commands: "two-releases",
     test_tls_conns_commands: "tls-conns",
+}
+
+/// Whether `line` lists a whole population — every task, future,
+/// thread or connection, every join between them — rather than one
+/// member the listing's order picks out ("the first task", `-l 1`) or
+/// ids its argument names. Only those mean the same over a target and
+/// its renaming: a renaming reorders by id on purpose, so an
+/// order-picked member is another one on the other side.
+fn whole_population(line: &str) -> bool {
+    const LISTINGS: &[&str] = &[
+        "tasks",
+        "futures",
+        "threads",
+        "graph",
+        "sync",
+        "channels",
+        "census",
+        "runtimes",
+        "connections",
+        "info",
+    ];
+    let listing = line.split("--exec").next().unwrap_or_default();
+    let verb = listing.split_whitespace().next().unwrap_or_default();
+    // `sync` alone reports on the cursor's task, the first one.
+    let cursor = verb == "sync" && !listing.contains("--kind");
+    LISTINGS.contains(&verb)
+        && !cursor
+        && !listing.contains(" -l ")
+        && !listing.contains("--with id")
+}
+
+/// Every command's output over `target`, by label.
+fn outputs<T: proc::Target>(
+    bundle: &hansei_bundle::Bundle,
+    target: &T,
+    set: &str,
+    program: &str,
+) -> Vec<(String, String)> {
+    let args = session_args(set, program);
+    let session = Session::attach(target, bundle, &args)
+        .unwrap_or_else(|e| panic!("[{set}] {program}: attach failed: {e:#}"));
+    commands(&session, program)
+        .into_iter()
+        .map(|(_, line)| {
+            let command = repl::parse_line(&line).unwrap();
+            let mut out = Vec::new();
+            let error = dispatch(&session, command, Theme::plain(), &mut out).err();
+            let mut text = String::from_utf8(out).expect("command output is UTF-8");
+            if let Some(e) = error {
+                text.push_str(&format!("error: {e:#}\n"));
+            }
+            (line, text)
+        })
+        .collect()
+}
+
+/// The canonical renaming renames and does nothing else. Over the
+/// programs whose captures race most — spawns inside hyper and reqwest,
+/// a second runtime, a blocking pool, a semaphore's queue — every
+/// command's output over a [`testkit::Canonical`] target, with its lwp
+/// and task ids mapped back to the real ones, is the output over the
+/// target underneath, word for word. The comparison ignores the order
+/// of lines and of the words in a line, which a renaming moves (every
+/// listing and every list inside a line is in id order, and a column is
+/// as wide as its widest id), and a truncated list's numbers, which are
+/// the first few of that order; every id and every word must otherwise
+/// agree. A truncated list shows the first few of that order, so of a
+/// line holding one only its length is compared. A read the overlay
+/// misses — a task id held somewhere the renaming did not reach,
+/// joined against one it did — shows here as a join that holds on one
+/// side only.
+#[test]
+fn test_the_canonical_renaming_changes_only_names() {
+    use hansei_runtime::testkit::{Canonical, Fixture};
+
+    let number = regex::Regex::new(r"(^|[^:.\w])(\d+)\b").unwrap();
+    // The process's own facts name no lwp and no task, and may hold a
+    // number a canonical id also is (a uid of 1001).
+    let facts = regex::Regex::new(r"^(pid|ppid|uid|gid|euid|egid):").unwrap();
+    let normal = |text: &str| -> Vec<String> {
+        let mut lines: Vec<String> = text
+            .lines()
+            .map(|l| {
+                if l.contains('…') {
+                    return format!(
+                        "<a truncated line of {} words>",
+                        l.split_whitespace().count()
+                    );
+                }
+                let mut words: Vec<&str> =
+                    l.split(|c: char| c.is_whitespace() || c == ',').collect();
+                words.retain(|w| !w.is_empty());
+                words.sort_unstable();
+                words.join(" ")
+            })
+            .collect();
+        lines.sort();
+        lines
+    };
+    for set in fixture_sets() {
+        for program in [
+            "http-conns",
+            "foreign-runtime",
+            "futurelock",
+            "blocking-pool",
+            "walk-shapes",
+        ] {
+            let (bundle, fixture) = testkit::load(set, program);
+            let (raw, renamed, tids, tasks) = match &fixture {
+                Fixture::Core(core) => (
+                    outputs(&bundle, core.inner(), set, program),
+                    outputs(&bundle, &**core, set, program),
+                    core.tid_renaming().to_vec(),
+                    core.task_renaming().to_vec(),
+                ),
+                Fixture::Snapshot(_) => {
+                    let (_, again) = testkit::load(set, program);
+                    let core = Canonical::new(again, &bundle);
+                    (
+                        outputs(&bundle, &fixture, set, program),
+                        outputs(&bundle, &core, set, program),
+                        core.tid_renaming().to_vec(),
+                        core.task_renaming().to_vec(),
+                    )
+                }
+            };
+            assert!(!tasks.is_empty(), "[{set}] {program}: no task was renamed");
+            let undo_line = |text: &str| {
+                if facts.is_match(text) {
+                    return text.to_owned();
+                }
+                number
+                    .replace_all(text, |caps: &regex::Captures<'_>| {
+                        let n: u64 = caps[2].parse().unwrap_or(u64::MAX);
+                        let real = tids
+                            .iter()
+                            .find(|(_, c)| u64::from(*c) == n)
+                            .map(|(r, _)| u64::from(*r))
+                            .or_else(|| tasks.iter().find(|(_, c)| *c == n).map(|(r, _)| *r));
+                        match real {
+                            Some(real) => format!("{}{real}", &caps[1]),
+                            None => caps[0].to_owned(),
+                        }
+                    })
+                    .into_owned()
+            };
+            let undo = |text: &str| text.lines().map(undo_line).collect::<Vec<_>>().join("\n");
+            for ((line, raw), (_, renamed)) in raw.iter().zip(&renamed) {
+                if !whole_population(line) {
+                    continue;
+                }
+                assert_eq!(
+                    normal(&undo(renamed)),
+                    normal(raw),
+                    "[{set}] {program}: `{line}` differs beyond the renaming"
+                );
+            }
+        }
+    }
 }
 
 /// The macro above and [`testkit::PROGRAMS`] name the same population:

@@ -22,12 +22,14 @@ use proc::{LwpInfo, Target};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+pub mod canonical;
 pub mod cores;
 pub mod corrupt;
 pub mod delegation;
 pub mod fixture;
 pub mod heap;
 
+pub use canonical::Canonical;
 pub use fixture::Fixture;
 
 /// Record each of `kinds` on `bundle`'s type as the coroutine kind a
@@ -381,17 +383,117 @@ pub const PROGRAMS: &[&str] = &[
 /// pairs compare exactly. A deadline is masked with the word before it
 /// and without: the `connections` column prints it bare, `+29.981s`,
 /// under a header that already says what it is.
+///
+/// Over fresh cores ([`cores::CORES`]) the mask is [`mask_core`]'s
+/// instead, which a core needs and a snapshot never did.
 pub fn mask(s: &str) -> String {
-    let addrs = regex::Regex::new(r"0x[0-9a-f]+").unwrap();
+    match cores::dir() {
+        None => mask_times(
+            &regex::Regex::new(r"0x[0-9a-f]+")
+                .unwrap()
+                .replace_all(s, "0xADDR"),
+        ),
+        Some(_) => mask_core(s),
+    }
+}
+
+/// [`mask`], for output read from `set`, which over a Linux set's
+/// fresh cores also leaves out the waker slots attribution could only
+/// call unknown: the `unknown @ 0x…` line of a task's slot list and
+/// the `unknown` entry of a slot cell.
+///
+/// glibc keeps a freed chunk's old bytes past its first two words, so
+/// a waker the chunk held before it was freed reads as a hit, and
+/// whether one is there depends on what the allocator reused before
+/// the core was taken. hansei has no model of glibc's heap to tell
+/// such a chunk from a live one (an illumos core's allocator index
+/// does exactly that, so the illumos set keeps its unknown slots).
+pub fn mask_for(set: &str, s: &str) -> String {
+    if cores::dir().is_none() || !set.starts_with("linux") {
+        return mask(s);
+    }
+    let re = |pattern: &str| regex::Regex::new(pattern).unwrap();
+    // Before the addresses are numbered, so the ones after a slot
+    // present in one capture and absent in the next keep their names.
+    let s = re(r"(?m)^[ \t]*unknown @ 0x[0-9a-f]+\n").replace_all(s, "");
+    let s = re(r"(?m), unknown([ \t]{2}|,|$)").replace_all(&s, "$1");
+    mask_core(&s)
+}
+
+/// The timer readings either mask hides: how far the capture sat from
+/// each deadline.
+fn mask_times(s: &str) -> String {
     let deadlines = regex::Regex::new(r"deadline \+?\d+\.\d{3}s").unwrap();
     let relative = regex::Regex::new(r"\+\d+\.\d{3}s").unwrap();
     let monotonic = regex::Regex::new(r"\d+\.\d{3}s on the target's monotonic clock").unwrap();
     let overdue = regex::Regex::new(r"overdue by \d+\.\d{3}s").unwrap();
-    let s = addrs.replace_all(s, "0xADDR");
-    let s = deadlines.replace_all(&s, "deadline TS");
+    let s = deadlines.replace_all(s, "deadline TS");
     let s = relative.replace_all(&s, "+TS");
     let s = monotonic.replace_all(&s, "TS on the target's monotonic clock");
     overdue.replace_all(&s, "overdue by TS").into_owned()
+}
+
+/// Mask what two fresh cores of one program differ in that a
+/// [`Canonical`] core cannot rename away, so goldens over cores compare
+/// exactly from one capture to the next:
+///
+/// - every address, numbered by first appearance (`0xA1`, `0xA2`, …),
+///   so that two mentions of one address still agree;
+/// - the timer readings [`mask`] hides, and elapsed times (`idle
+///   (2ms)`);
+/// - the process's own facts: its pid and parent, start time, the
+///   checkout its binary ran from (truncated at a length that moves
+///   with that path, in `psargs`), and the build ids, which follow the
+///   path the build was compiled at;
+/// - the worker index: which worker held the driver is a race no
+///   readiness wait controls, so the state is kept and the number not;
+/// - what scheduling and stale stack contents decide: the runtime's
+///   metric counters, the waker sweep's extent and hit counts, the
+///   allocator's cache and slab counts;
+/// - ephemeral ports, and file descriptor numbers, which the kernel
+///   hands out in the order threads opening sockets at once reach it;
+/// - runs of spaces inside a line, which move with the width of a
+///   value beside them.
+pub fn mask_core(s: &str) -> String {
+    let re = |pattern: &str| regex::Regex::new(pattern).unwrap();
+    let s = re(r"\b[0-9a-f]{40}\b").replace_all(s, "BUILDID");
+    let s = re(r"(?m)^(psargs:\s+).*$").replace_all(&s, "${1}PSARGS");
+    let s = re(r"\S*/test-programs/").replace_all(&s, "<test-programs>/");
+    let s = first_seen(&s);
+    let s = mask_times(&s);
+    let s = re(r"\(\d+(\.\d+)?(ns|µs|ms|s)\)").replace_all(&s, "(T)");
+    let s = re(r"(?m)^(pid:\s+)\d+").replace_all(&s, "${1}PID");
+    let s = re(r"(?m)^(ppid:\s+)\d+").replace_all(&s, "${1}PID");
+    let s = re(r"(?m)^(start:\s+).*$").replace_all(&s, "${1}TIME");
+    let s = re(r"\bworker \d+\b").replace_all(&s, "worker N");
+    let s = re(r"(MetricAtomic\w+ \{\n\s*value: )\d+").replace_all(&s, "${1}N");
+    let s = re(r"\b(busy_duration_total|tick|park_count|park_unpark_count|noop_count): \d+")
+        .replace_all(&s, "$1: N");
+    let s = re(r"[\d.]+ [KMG]?i?B swept in \d+ chunks").replace_all(&s, "N swept in N chunks");
+    let s = re(r"(?m)^(\s*(hits|by class|attributed):).*$").replace_all(&s, "$1 N");
+    let s = re(r"\(\d+ caches, \d+ slabs\)").replace_all(&s, "(N caches, N slabs)");
+    let s = re(r"\b(\d{1,3}(\.\d{1,3}){3}):\d+\b").replace_all(&s, "$1:PORT");
+    let s = re(r"\bfd(:?) \d+\b").replace_all(&s, "fd$1 N");
+    re(r"(\S) {2,}").replace_all(&s, "$1  ").into_owned()
+}
+
+/// Every `0x` address in `s`, numbered by first appearance.
+fn first_seen(s: &str) -> String {
+    let mut seen: Vec<String> = Vec::new();
+    regex::Regex::new(r"0x[0-9a-f]+")
+        .unwrap()
+        .replace_all(s, |caps: &regex::Captures<'_>| {
+            let addr = &caps[0];
+            let n = match seen.iter().position(|a| a == addr) {
+                Some(i) => i + 1,
+                None => {
+                    seen.push(addr.to_owned());
+                    seen.len()
+                }
+            };
+            format!("0xA{n}")
+        })
+        .into_owned()
 }
 
 /// The sets this run reads, in [`FIXTURE_SETS`] order: every one over
@@ -446,7 +548,8 @@ pub fn load_any(program: &str) -> (Bundle, Fixture) {
 pub fn load(set: &str, program: &str) -> (Bundle, Fixture) {
     if let Some(dir) = cores::dir() {
         let (bundle, proc) = cores::load(&dir, set, program);
-        return (bundle, Fixture::Core(Box::new(proc)));
+        let core = Canonical::new(proc, &bundle);
+        return (bundle, Fixture::Core(Box::new(core)));
     }
     let bundle = Bundle::load(&fixture(set, &format!("{program}.tinfo")))
         .expect("fixture tokio info loads; regenerate with capture-snapshots.sh");

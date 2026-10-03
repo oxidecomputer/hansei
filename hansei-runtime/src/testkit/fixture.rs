@@ -10,6 +10,8 @@ use proc::{
     BuildIds, FatalSignal, LwpInfo, Mappings, Proc, ProcessFacts, Regs, Result, SymbolBuf, Target,
 };
 
+use super::canonical::Canonical;
+
 use std::ops::Range;
 use std::path::PathBuf;
 
@@ -19,8 +21,8 @@ use std::path::PathBuf;
 pub enum Fixture {
     /// The checked-in snapshot.
     Snapshot(Box<Snapshot>),
-    /// A fresh core, through the production reader.
-    Core(Box<Proc>),
+    /// A fresh core, through the production reader, renamed canonically.
+    Core(Box<Canonical<Proc>>),
 }
 
 impl From<Snapshot> for Fixture {
