@@ -26,7 +26,17 @@
 //!    pointee be walked the same way — and only then: the pointee is
 //!    decoded because a hit naming the same task already sits in it,
 //!    never because a pointer merely points there.
-//! 4. **Unknown.** What the allocator index says about the buffer, and
+//! 4. **The holding task.** A hit none of its owner's values reach,
+//!    lying inside another listed task's allocation, is walked down to
+//!    from that task's values the same way. Where the walk proves the
+//!    bytes dead — an inactive variant, a local the active state does
+//!    not initialize, bytes between a value's known members (padding,
+//!    or another variant's storage in the active variant's own
+//!    struct), reached without crossing a union or a local the
+//!    tokio info cannot vouch for — the hit is demoted as stale: no
+//!    value of either task is there. A task mid-poll proves nothing,
+//!    since its state may be half written.
+//! 5. **Unknown.** What the allocator index says about the buffer, and
 //!    nothing else.
 //!
 //! The owner-name table then gives a slot located in a `oneshot::Inner`,
@@ -37,11 +47,12 @@
 //! pointer members are collected once, sorted, and searched per hit.
 //! Nothing here scans a mapping.
 
+use super::Lifecycle;
 use super::RawInstant;
 use super::bundle::{
     Context, HttpRole, HttpVersion, IoResourceInfo, IoSlot, IoWaiterInfo, OneshotSide,
-    OneshotState, Readiness, Registries, TaskList, TimerEntryInfo, WaitTarget, WheelState,
-    channel_words, contains, deadline_text, http_kind_word, notify_words, watch_words,
+    OneshotState, Readiness, Registries, TaskExtents, TaskList, TimerEntryInfo, WaitTarget,
+    WheelState, channel_words, contains, deadline_text, http_kind_word, notify_words, watch_words,
     watch_words_of,
 };
 use super::census::{FutureCensus, Via};
@@ -721,6 +732,11 @@ pub enum StaleReason {
     /// The offset lies in a coroutine local the active state does not
     /// initialize.
     DeadLocal,
+    /// The offset lies between the members of a value whose members
+    /// are all known: padding, or the storage another variant than the
+    /// active one would use, which a variant's own struct leaves
+    /// unoccupied.
+    Unoccupied,
     /// The walk landed on something that is not a `Waker`.
     NotAWaker,
     /// The slot lies under a state word whose bit for it is clear: a
@@ -733,6 +749,7 @@ impl StaleReason {
         match self {
             StaleReason::InactiveVariant => "in an inactive variant",
             StaleReason::DeadLocal => "in a local the active state does not initialize",
+            StaleReason::Unoccupied => "in bytes no member of the value there occupies",
             StaleReason::NotAWaker => "not at a Waker",
             StaleReason::GateClear => "under a state word that says no waker is set",
         }
@@ -839,20 +856,33 @@ impl Attributed {
     /// typed value must have located to a slot. One line per
     /// demotion; empty is clean.
     pub fn audit(&self, list: &TaskList) -> Vec<String> {
+        let task = |index: usize| match list.tasks[index].task_id {
+            Some(id) => format!("task {id}"),
+            None => format!("the task at {:#x}", list.tasks[index].addr.0),
+        };
         self.stale
             .iter()
             .map(|s| {
                 let owner = match s.owner {
-                    Owner::Task { index, .. } => match list.tasks[index].task_id {
-                        Some(id) => format!("task {id}"),
-                        None => format!("the task at {:#x}", list.tasks[index].addr.0),
-                    },
+                    Owner::Task { index, .. } => task(index),
                     Owner::Child { set, child } => format!("child {child} of set {set}"),
                 };
+                // A frame of another task than the one named is that
+                // task's, and says so.
+                let within = match (s.root, s.owner) {
+                    (SlotRoot::Frame { task: holder, .. }, Owner::Task { index, .. })
+                        if holder != index =>
+                    {
+                        format!("{}'s {}", task(holder), s.root)
+                    }
+                    (SlotRoot::Frame { task: holder, .. }, Owner::Child { .. }) => {
+                        format!("{}'s {}", task(holder), s.root)
+                    }
+                    _ => s.root.to_string(),
+                };
                 format!(
-                    "the hit at {:#x} names {owner} and sits in {} but is {}",
+                    "the hit at {:#x} names {owner} and sits in {within} but is {}",
                     s.slot,
-                    s.root,
                     s.reason.text()
                 )
             })
@@ -915,6 +945,9 @@ impl Attributed {
 /// and the addresses attribution is checked against.
 pub struct Sources<'a> {
     pub list: &'a TaskList,
+    /// Every listed task's allocation, for the hit that lies in a task
+    /// other than the one it names.
+    pub extents: &'a TaskExtents,
     pub census: &'a FutureCensus,
     pub registries: &'a Registries,
     pub analysis: &'a Analysis,
@@ -952,6 +985,16 @@ enum Terminal {
     Waker,
     /// A pointer at the offset: the member a hop followed.
     Pointer,
+}
+
+/// Where an offset walk stopped short of its terminal: why, and
+/// whether it had crossed a union or a local of uncertain
+/// initialization on the way — past which its verdict rests on
+/// storage the bundle cannot vouch for.
+#[derive(Copy, Clone)]
+struct Stop {
+    reason: StaleReason,
+    uncertain: bool,
 }
 
 /// An offset walk's trail and what it crossed.
@@ -1303,7 +1346,14 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                         placed = attribution.path().map(|path| (path.root, spine));
                         attribution
                     }
-                    None => Attribution::Unknown,
+                    None => match self.dead_in_holder(hit, owner) {
+                        Some(mut demoted) => {
+                            demoted.hit = i;
+                            stale.push(demoted);
+                            continue;
+                        }
+                        None => Attribution::Unknown,
+                    },
                 }
             };
             // The readers' roles refine an owner slot: the oneshot's
@@ -1742,6 +1792,64 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
         None
     }
 
+    /// Rule 4: a hit none of `owner`'s values reached, lying inside
+    /// another listed task's allocation, demoted as stale where that
+    /// task's own values prove the bytes dead ([`Self::proven_dead`]).
+    ///
+    /// A future is built where it is spawned and moved into its cell
+    /// whole, so the bytes of a state it has never been in are the
+    /// spawning thread's leftovers — a waker the thread held for
+    /// whatever it polled last among them. Nothing is decided for a
+    /// task mid-poll, whose state may be half written, nor where the
+    /// holding task's values do not reach the hit: those stay unknown.
+    fn dead_in_holder(&self, hit: &Hit, owner: Owner) -> Option<Stale> {
+        let (holder, _) = self.sources.extents.locate(hit.slot)?;
+        // The owner's own values were walked already.
+        if matches!(owner, Owner::Task { index, .. } if index == holder) {
+            return None;
+        }
+        let task = self.sources.list.tasks.get(holder)?;
+        if task.state.lifecycle() == Lifecycle::Running {
+            return None;
+        }
+        let roots = self.roots_of(Owner::Task {
+            header: task.addr.0,
+            index: holder,
+        });
+        // The roots come innermost first.
+        let root = roots.iter().find(|r| contains(r.value, hit.slot))?;
+        let reason = self.proven_dead(root.value, hit.slot - root.value.addr)?;
+        Some(Stale {
+            // Filled in by the caller, which knows the index.
+            hit: 0,
+            slot: hit.slot,
+            owner,
+            root: root.at,
+            reason,
+        })
+    }
+
+    /// Whether the walk from `value` to `offset` proves the bytes there
+    /// belong to no current value: an inactive variant, a local the
+    /// active state does not initialize, or bytes between the known
+    /// members of a value, reached by facts the bundle
+    /// states outright — no union crossed, no local whose
+    /// initialization the tokio info cannot vouch for. Landing on
+    /// something that is not a `Waker`, or failing to read the way
+    /// down, proves nothing.
+    fn proven_dead(&self, value: Value<'b>, offset: u64) -> Option<StaleReason> {
+        match self.descend(value, offset, Terminal::Waker) {
+            Err(Stop {
+                reason:
+                    reason @ (StaleReason::InactiveVariant
+                    | StaleReason::DeadLocal
+                    | StaleReason::Unoccupied),
+                uncertain: false,
+            }) => Some(reason),
+            _ => None,
+        }
+    }
+
     /// Whether the task's current await reaches a slot placed under
     /// `at`, with `steps` the path's steps from it and `spine` the
     /// values from the root down to the slot ([`spine`]).
@@ -2057,7 +2165,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                     Validity::Raw
                 },
             },
-            Err(reason) => Located::Stale(reason),
+            Err(stop) => Located::Stale(stop.reason),
         }
     }
 
@@ -2122,7 +2230,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
         value: Value<'b>,
         offset: u64,
         terminal: Terminal,
-    ) -> Result<Descent<'b>, StaleReason> {
+    ) -> Result<Descent<'b>, Stop> {
         let mut cur = value;
         let mut offset = offset;
         let mut descent = Descent {
@@ -2130,7 +2238,12 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
             crossed_option: false,
             crossed_union: false,
         };
-        let not_a_waker = Err(StaleReason::NotAWaker);
+        // Never proof of anything ([`Self::proven_dead`]), so whatever
+        // the walk crossed does not matter to it.
+        let not_a_waker = Err(Stop {
+            reason: StaleReason::NotAWaker,
+            uncertain: true,
+        });
         for _ in 0..MAX_DEPTH {
             let ty = cur.ty;
             let at_terminal = match terminal {
@@ -2152,7 +2265,22 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                         let size = m.ty().size();
                         size > 0 && m.offset() <= offset && offset < m.offset() + size
                     }) else {
-                        return not_a_waker;
+                        // Between members: padding, or another variant's
+                        // storage in the active variant's own struct — no
+                        // value, so long as the offset is inside this
+                        // one and every member's extent is known. Past
+                        // the end is nothing the walk can speak for.
+                        let known = offset < ty.size()
+                            && ty
+                                .members()
+                                .all(|m| !matches!(m.ty().classify(), TypeClass::Opaque));
+                        return match known {
+                            true => Err(Stop {
+                                reason: StaleReason::Unoccupied,
+                                uncertain: descent.crossed_union,
+                            }),
+                            false => not_a_waker,
+                        };
                     };
                     let Some(next) = sub(cur, m.offset(), m.ty()) else {
                         return not_a_waker;
@@ -2193,7 +2321,10 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                     if !in_active {
                         // The discriminant itself, or another variant's
                         // storage: either way no current value.
-                        return Err(StaleReason::InactiveVariant);
+                        return Err(Stop {
+                            reason: StaleReason::InactiveVariant,
+                            uncertain: descent.crossed_union,
+                        });
                     }
                     let Some(next) = sub(cur, active.offset, payload) else {
                         return not_a_waker;
@@ -2208,7 +2339,12 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                         match self.local_liveness(ty, active.name, payload, inner) {
                             LocalLiveness::Live => {}
                             LocalLiveness::Uncertain => descent.crossed_union = true,
-                            LocalLiveness::Dead => return Err(StaleReason::DeadLocal),
+                            LocalLiveness::Dead => {
+                                return Err(Stop {
+                                    reason: StaleReason::DeadLocal,
+                                    uncertain: descent.crossed_union,
+                                });
+                            }
                         }
                     }
                     step(
@@ -2861,6 +2997,7 @@ mod tests {
         wakers: WakerSlots,
         analysis: Analysis,
         impls: ImplFold,
+        extents: TaskExtents,
     }
 
     impl<'b> Over<'b> {
@@ -2885,6 +3022,7 @@ mod tests {
                 wakers,
                 analysis,
                 impls: ImplFold::default(),
+                extents,
             }
         }
 
@@ -2893,6 +3031,7 @@ mod tests {
                 &self.wakers,
                 &Sources {
                     list: &self.e.list,
+                    extents: &self.extents,
                     census: &self.census,
                     registries: &self.e.registries,
                     analysis: &self.analysis,
@@ -4170,6 +4309,7 @@ mod join_tests {
         let reasons = [
             StaleReason::InactiveVariant,
             StaleReason::DeadLocal,
+            StaleReason::Unoccupied,
             StaleReason::NotAWaker,
             StaleReason::GateClear,
         ];
@@ -4400,7 +4540,7 @@ mod synthetic_tests {
     const PTR_HOLDER: u32 = 9;
     pub(super) const FRAME: u32 = 10;
     const PADDED: u32 = 11;
-    const CHANLIKE: u32 = 12;
+    pub(super) const CHANLIKE: u32 = 12;
     const NOTIFY_ARR: u32 = 13;
     const SHARED: u32 = 14;
     const ARC_SHARED: u32 = 15;
@@ -4411,6 +4551,7 @@ mod synthetic_tests {
     const PTR_UNIT: u32 = 20;
     const UNIT_FRAME: u32 = 21;
     const TWO_PTR: u32 = 22;
+    pub(super) const MAYBE_OPT: u32 = 23;
 
     pub(super) fn id(i: u32) -> BundleTypeId {
         BundleTypeId(i)
@@ -4476,6 +4617,7 @@ mod synthetic_tests {
             n("z"),
         );
         let (two_ptrn, firstn, secondn) = (n("x::TwoPtr"), n("first"), n("second"));
+        let maybe_optn = n("core::mem::MaybeUninit<core::option::Option<core::task::wake::Waker>>");
         let (sharedn, arcn, notify_rxn, staten, rxn, txn, strongn, weakn) = (
             n("tokio::sync::watch::Shared<u32>"),
             n("alloc::sync::ArcInner<tokio::sync::watch::Shared<u32>>"),
@@ -4661,6 +4803,16 @@ mod synthetic_tests {
                     member(secondn, id(PTR_HOLDER), 8),
                 ],
             ),
+            // An enum behind the union the walk enters: whatever it
+            // finds past the union rests on storage nothing vouches for.
+            TypeDef::Union {
+                name: maybe_optn,
+                size: 24,
+                members: vec![
+                    member(uninitn, id(UNIT), 0),
+                    member(valuen, id(OPT_WAKER), 8),
+                ],
+            },
         ];
         let semantics = SemanticTable {
             types: vec![hansei_bundle::TypeSemantics {
@@ -4864,6 +5016,7 @@ mod synthetic_tests {
     /// not the target or the bundle: empty sources.
     struct Empty {
         list: TaskList,
+        extents: TaskExtents,
         census: FutureCensus,
         registries: Registries,
         analysis: Analysis,
@@ -4875,6 +5028,7 @@ mod synthetic_tests {
         pub(super) fn new(bundle: &Bundle) -> Self {
             Empty {
                 list: TaskList::new(Vec::new()),
+                extents: TaskExtents { spans: Vec::new() },
                 census: FutureCensus::from_finds(Vec::new(), Vec::new(), Vec::new()),
                 registries: Registries::default(),
                 analysis: Analysis {
@@ -4892,6 +5046,7 @@ mod synthetic_tests {
         fn sources(&self) -> Sources<'_> {
             Sources {
                 list: &self.list,
+                extents: &self.extents,
                 census: &self.census,
                 registries: &self.registries,
                 analysis: &self.analysis,
@@ -5717,7 +5872,9 @@ mod reach_tests {
     //! may not borrow it in the frame inside, and the same holder as
     //! a find of the frame's.
 
-    use super::synthetic_tests::{BASE, CORO, FRAME, HOLDER, OPT_WAKER, Planted, bundle, hit, id};
+    use super::synthetic_tests::{
+        BASE, CHANLIKE, CORO, FRAME, HOLDER, MAYBE_OPT, OPT_WAKER, Planted, bundle, hit, id,
+    };
     use super::*;
     use crate::tokio::assess::{ContinuationStatus, IncompleteReason, WaitAssessment};
     use crate::tokio::bundle::{FutureInfo, OwnerResolution, Registries, Task, TaskKind, TaskList};
@@ -5739,6 +5896,7 @@ mod reach_tests {
     /// finds the census lists under it.
     struct Owned {
         list: TaskList,
+        extents: TaskExtents,
         census: FutureCensus,
         registries: Registries,
         analysis: Analysis,
@@ -5781,6 +5939,7 @@ mod reach_tests {
             };
             Owned {
                 list: TaskList::new(vec![task]),
+                extents: TaskExtents { spans: Vec::new() },
                 census: FutureCensus::from_finds(held, Vec::new(), Vec::new()),
                 registries: Registries::default(),
                 analysis: Analysis {
@@ -5798,6 +5957,7 @@ mod reach_tests {
         fn sources(&self) -> Sources<'_> {
             Sources {
                 list: &self.list,
+                extents: &self.extents,
                 census: &self.census,
                 registries: &self.registries,
                 analysis: &self.analysis,
@@ -5864,6 +6024,189 @@ mod reach_tests {
             frame,
             local: local.map(str::to_string),
         }
+    }
+
+    /// The owner of [`OWNER`] and nothing reaching the hit, beside a
+    /// second task whose one frame is `frame`, its allocation spanning
+    /// the frame, in task state `state`.
+    fn beside_holder(bundle: &Bundle, frame: ValueKey, state: TaskState) -> Owned {
+        let mut owned = Owned::new(bundle, Vec::new(), Vec::new());
+        let header = frame.addr - 0x40;
+        let holder = Task {
+            addr: TaskAddr(header),
+            state,
+            owner_id: Some(1),
+            task_id: Some(2),
+            spawn_location: None,
+            future: FutureInfo::Unknown { poll_symbol: None },
+            kind: TaskKind::Async,
+            owner: OwnerResolution::Unknown,
+        };
+        let mut tasks = owned.list.tasks.clone();
+        tasks.push(holder);
+        owned.list = TaskList::new(tasks);
+        let index = owned
+            .list
+            .tasks
+            .iter()
+            .position(|t| t.addr.0 == header)
+            .expect("the holder is listed");
+        assert_eq!(index, 1, "the owner keeps index 0");
+        let mut wait = Owned::new(bundle, vec![frame], Vec::new())
+            .analysis
+            .waits
+            .remove(0);
+        wait.task = TaskRef {
+            addr: TaskAddr(header),
+            task_id: Some(2),
+        };
+        owned.analysis.waits.push(wait);
+        owned.extents = TaskExtents {
+            spans: vec![(header, frame.addr + 0x100, 1)],
+        };
+        owned
+    }
+
+    /// Attribute the one hit at `slot` through the owner walk over
+    /// `owned`.
+    fn attribute_one(
+        planted: &Planted<'_>,
+        bundle: &Bundle,
+        owned: &Owned,
+        slot: u64,
+    ) -> (Vec<AttributedSlot>, Vec<Stale>) {
+        let sources = owned.sources();
+        let at = Attributor {
+            proc: planted,
+            types: Types {
+                view: BundleView::new(bundle),
+                semantics: &owned.semantics,
+                test_bindings: &[],
+            },
+            sources: &sources,
+            registry: HashMap::default(),
+            finds: finds_by_owner(&owned.census),
+        };
+        let (mut slots, mut stale) = (Vec::new(), Vec::new());
+        at.owner(OWNER, &[0], &[hit(slot)], &mut slots, &mut stale);
+        (slots, stale)
+    }
+
+    /// A hit none of its owner's values reach, sitting in another
+    /// task's frame, is stale where that frame's own state proves the
+    /// bytes dead — a local the state does not initialize, the state
+    /// word rather than any state's storage, padding past a value's
+    /// members — and is filed under the
+    /// holder's frame, which the audit names as the holder's. It stays
+    /// unknown where nothing is proved: in a local whose initialization
+    /// the layout cannot vouch for, on a live waker (another task's
+    /// slot, which this step does not attribute), past a union, and
+    /// anywhere at all in a holder mid-poll, whose state may be half
+    /// written.
+    #[test]
+    fn test_a_hit_in_another_tasks_dead_storage_is_stale() {
+        let (_, snapshot) = crate::testkit::load_any("sleep-join");
+        let bundle = bundle();
+        let coro = BASE + 0x300;
+        let mut planted = Planted::new(&snapshot);
+        // Suspended at its one await: `live` and `lp` initialized,
+        // `unsure` of uncertain initialization, `dead` not.
+        planted.word(coro, 3);
+        // The coroutine's state follows its word: `live` at 8, `dead`
+        // at 24, `unsure` at 32.
+        let (live, dead, unsure) = (coro + 8, coro + 24, coro + 32);
+        let parked = TaskState(1 << 6);
+        let owned = beside_holder(&bundle, key(CORO, coro), parked);
+
+        for (slot, reason) in [
+            (dead, StaleReason::DeadLocal),
+            (coro, StaleReason::InactiveVariant),
+        ] {
+            let (slots, stale) = attribute_one(&planted, &bundle, &owned, slot);
+            assert!(slots.is_empty(), "{slot:#x}: {slots:?}");
+            let [demoted] = stale.as_slice() else {
+                panic!("{slot:#x}: {stale:?}");
+            };
+            assert_eq!(demoted.reason, reason, "{slot:#x}");
+            assert_eq!(demoted.owner, OWNER);
+            assert_eq!(demoted.root, SlotRoot::Frame { task: 1, frame: 0 });
+        }
+
+        for slot in [unsure, live] {
+            let (slots, stale) = attribute_one(&planted, &bundle, &owned, slot);
+            assert!(stale.is_empty(), "{slot:#x}: {stale:?}");
+            let [kept] = slots.as_slice() else {
+                panic!("{slot:#x}: {slots:?}");
+            };
+            assert!(
+                matches!(kept.attribution, Attribution::Unknown),
+                "{slot:#x}: {:?}",
+                kept.attribution
+            );
+        }
+
+        // RUNNING: the holder is mid-poll.
+        let running = beside_holder(&bundle, key(CORO, coro), TaskState((1 << 6) | 1));
+        let (slots, stale) = attribute_one(&planted, &bundle, &running, dead);
+        assert!(stale.is_empty(), "{stale:?}");
+        assert!(matches!(
+            slots.as_slice(),
+            [AttributedSlot {
+                attribution: Attribution::Unknown,
+                ..
+            }]
+        ));
+
+        // An `Option`'s `None` is no storage of a waker; behind a
+        // `MaybeUninit` it proves nothing, since nothing vouches for the
+        // bytes the union holds. Both read as `None`: the planted bytes
+        // are zero.
+        let (bare, behind) = (BASE + 0x500, BASE + 0x600);
+        let direct = beside_holder(&bundle, key(OPT_WAKER, bare), parked);
+        let (slots, stale) = attribute_one(&planted, &bundle, &direct, bare);
+        assert!(slots.is_empty(), "{slots:?}");
+        assert!(matches!(
+            stale.as_slice(),
+            [Stale {
+                reason: StaleReason::InactiveVariant,
+                ..
+            }]
+        ));
+        // Past the one member of a cache-padded cell, in its padding.
+        let padded = BASE + 0x700;
+        let cell = beside_holder(&bundle, key(CHANLIKE, padded), parked);
+        let (slots, stale) = attribute_one(&planted, &bundle, &cell, padded + 8 + 40);
+        assert!(slots.is_empty(), "{slots:?}");
+        assert!(matches!(
+            stale.as_slice(),
+            [Stale {
+                reason: StaleReason::Unoccupied,
+                ..
+            }]
+        ));
+        let unioned = beside_holder(&bundle, key(MAYBE_OPT, behind), parked);
+        let (slots, stale) = attribute_one(&planted, &bundle, &unioned, behind + 8);
+        assert!(stale.is_empty(), "{stale:?}");
+        assert!(matches!(
+            slots.as_slice(),
+            [AttributedSlot {
+                attribution: Attribution::Unknown,
+                ..
+            }]
+        ));
+
+        let (_, stale) = attribute_one(&planted, &bundle, &owned, dead);
+        let attributed = Attributed {
+            stale,
+            ..Attributed::default()
+        };
+        assert_eq!(
+            attributed.audit(&owned.list),
+            [format!(
+                "the hit at {dead:#x} names task 1 and sits in task 2's frame 0 but is in a \
+                 local the active state does not initialize"
+            )]
+        );
     }
 
     /// A slot in an outer frame's local is awaited where a frame

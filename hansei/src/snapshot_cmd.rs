@@ -298,6 +298,7 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
         &wakers,
         &attribution::Sources {
             list: &list,
+            extents: &extents,
             census: &census,
             registries: &registries,
             analysis: &analysis,

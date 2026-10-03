@@ -2101,6 +2101,7 @@ impl<'b, T: Target> Session<'b, T> {
             self.wakers(),
             &attribution::Sources {
                 list: &self.tasks,
+                extents: self.extents(),
                 census: self.census(),
                 registries: &self.registries,
                 analysis: &analysis,
