@@ -31,11 +31,11 @@ owned: alloc::string::String = "owned\ttext"
 c_owned: alloc::ffi::c_str::CString = "c\xfftext"
 c_borrowed: &core::ffi::c_str::CStr = "cstr"
 glyph: char = '中'
-ports: std::collections::hash::map::HashMap<u64, u32, std::hash::random::RandomState, alloc::alloc::Global> {
+ports: std::collections::hash::map::HashMap<u64, u32, core::hash::BuildHasherDefault<std::hash::random::DefaultHasher>, alloc::alloc::Global> {
       443: 2,
       80: 1,
   }
-seen: std::collections::hash::set::HashSet<u32, std::hash::random::RandomState, alloc::alloc::Global> {
+seen: std::collections::hash::set::HashSet<u32, core::hash::BuildHasherDefault<std::hash::random::DefaultHasher>, alloc::alloc::Global> {
       7,
       9,
   }

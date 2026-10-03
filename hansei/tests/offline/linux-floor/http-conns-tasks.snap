@@ -7,8 +7,8 @@ ID  STATE  FUT  AWAITING AT                                      WAITING ON     
 4   idle     0  src/bin/http-conns.rs:76                         http1 client                        async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
 5   idle     1  src/bin/http-conns.rs:137                        http1 server                        async fn http_conns::serve
 7   idle     0  src/bin/http-conns.rs:173                        oneshot rx                          async fn http_conns::requester
-8   idle     0  src/bin/http-conns.rs:76                         http1 client                        async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-9   idle     0  src/bin/http-conns.rs:137                        http1 server                        async fn http_conns::serve
+8   idle     0  src/bin/http-conns.rs:137                        http1 server                        async fn http_conns::serve
+9   idle     0  src/bin/http-conns.rs:76                         http1 client                        async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
 10  idle     1  src/bin/http-conns.rs:180                        oneshot rx                          async fn http_conns::reqwest_requester
 11  idle     0  src/bin/http-conns.rs:137                        http1 server                        async fn http_conns::serve
 12  idle     0  —                                                http1 client                        future Pin<Box<(dyn Future<Output=()> + Send)>>

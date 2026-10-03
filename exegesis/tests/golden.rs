@@ -3936,10 +3936,10 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         assert_format(
             program,
             bundle,
-            "std::collections::hash::map::HashMap<u64, u32, std::hash::random::RandomState, \
-             alloc::alloc::Global>",
-            "std::collections::hash::map::HashMap<u64, u32, std::hash::random::RandomState, \
-             alloc::alloc::Global> :: Node Map { length=base.table.table.items@+24, key=u64, \
+            "std::collections::hash::map::HashMap<u64, u32, core::hash::BuildHasherDefault<\
+             std::hash::random::DefaultHasher>, alloc::alloc::Global>",
+            "std::collections::hash::map::HashMap<u64, u32, core::hash::BuildHasherDefault<\
+             std::hash::random::DefaultHasher>, alloc::alloc::Global> :: Node Map { length=base.table.table.items@+24, key=u64, \
              value=u32, entries=Hash { bucket_mask=base.table.table.bucket_mask@+8, \
              ctrl=base.table.table.ctrl.pointer@+0, bucket=(u64, u32), key=__0@+0, \
              value=__1@+8 } }",
@@ -3947,10 +3947,10 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         assert_format(
             program,
             bundle,
-            "hashbrown::map::HashMap<u64, u32, std::hash::random::RandomState, \
-             alloc::alloc::Global>",
-            "hashbrown::map::HashMap<u64, u32, std::hash::random::RandomState, \
-             alloc::alloc::Global> :: Node Map { length=table.table.items@+24, key=u64, \
+            "hashbrown::map::HashMap<u64, u32, core::hash::BuildHasherDefault<\
+             std::hash::random::DefaultHasher>, alloc::alloc::Global>",
+            "hashbrown::map::HashMap<u64, u32, core::hash::BuildHasherDefault<\
+             std::hash::random::DefaultHasher>, alloc::alloc::Global> :: Node Map { length=table.table.items@+24, key=u64, \
              value=u32, entries=Hash { bucket_mask=table.table.bucket_mask@+8, \
              ctrl=table.table.ctrl.pointer@+0, bucket=(u64, u32), key=__0@+0, \
              value=__1@+8 } }",
@@ -3958,10 +3958,10 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         assert_format(
             program,
             bundle,
-            "std::collections::hash::set::HashSet<u32, std::hash::random::RandomState, \
-             alloc::alloc::Global>",
-            "std::collections::hash::set::HashSet<u32, std::hash::random::RandomState, \
-             alloc::alloc::Global> :: Node Map { length=base.map.table.table.items@+24, \
+            "std::collections::hash::set::HashSet<u32, core::hash::BuildHasherDefault<\
+             std::hash::random::DefaultHasher>, alloc::alloc::Global>",
+            "std::collections::hash::set::HashSet<u32, core::hash::BuildHasherDefault<\
+             std::hash::random::DefaultHasher>, alloc::alloc::Global> :: Node Map { length=base.map.table.table.items@+24, \
              key=u32, value=<set>, entries=Hash { \
              bucket_mask=base.map.table.table.bucket_mask@+8, \
              ctrl=base.map.table.table.ctrl.pointer@+0, bucket=(u32, ()), key=__0@+0 } }",
@@ -3972,8 +3972,8 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         assert_table(
             program,
             bundle,
-            "std::collections::hash::map::HashMap<u64, u32, std::hash::random::RandomState, \
-             alloc::alloc::Global>",
+            "std::collections::hash::map::HashMap<u64, u32, core::hash::BuildHasherDefault<\
+             std::hash::random::DefaultHasher>, alloc::alloc::Global>",
             "0.17.1",
             "base.",
             "(u64, u32)",
@@ -3981,8 +3981,8 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         assert_table(
             program,
             bundle,
-            "hashbrown::map::HashMap<u64, u32, std::hash::random::RandomState, \
-             alloc::alloc::Global>",
+            "hashbrown::map::HashMap<u64, u32, core::hash::BuildHasherDefault<\
+             std::hash::random::DefaultHasher>, alloc::alloc::Global>",
             "0.17.1",
             "",
             "(u64, u32)",
@@ -3990,8 +3990,8 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         assert_table(
             program,
             bundle,
-            "std::collections::hash::set::HashSet<u32, std::hash::random::RandomState, \
-             alloc::alloc::Global>",
+            "std::collections::hash::set::HashSet<u32, core::hash::BuildHasherDefault<\
+             std::hash::random::DefaultHasher>, alloc::alloc::Global>",
             "0.17.1",
             "base.map.",
             "(u32, ())",

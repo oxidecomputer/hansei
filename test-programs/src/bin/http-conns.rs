@@ -264,8 +264,13 @@ fn main() {
         );
 
         // (c) A connection that never speaks, so the server side is
-        // still choosing the protocol version.
-        let raw = TcpStream::connect(addr).await.expect("a loopback connect");
+        // still choosing the protocol version. Connected blocking and
+        // adopted: an async connect leaves this thread's waker in the
+        // socket's writer slot whenever writability lands between
+        // tokio's two readiness checks, which only sometimes happens.
+        let raw = std::net::TcpStream::connect(addr).expect("a loopback connect");
+        raw.set_nonblocking(true).expect("a nonblocking socket");
+        let raw = TcpStream::from_std(raw).expect("the socket registers");
         assert!(
             matches!(events.recv().await, Some(Event::Accepted)),
             "the raw connection is accepted"

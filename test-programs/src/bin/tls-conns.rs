@@ -138,11 +138,15 @@ async fn tcp_pair() -> (TcpStream, TcpStream) {
         .await
         .expect("a loopback listener");
     let addr = listener.local_addr().expect("a bound address");
-    let (client, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
-    (
-        client.expect("a loopback connect"),
-        accepted.expect("a loopback accept").0,
-    )
+    // A blocking connect, adopted: an async one leaves the connecting
+    // thread's waker in the socket's writer slot whenever writability
+    // lands between tokio's two readiness checks, which only sometimes
+    // happens. A loopback connect completes against the backlog.
+    let client = std::net::TcpStream::connect(addr).expect("a loopback connect");
+    client.set_nonblocking(true).expect("a nonblocking socket");
+    let client = TcpStream::from_std(client).expect("the socket registers");
+    let (accepted, _) = listener.accept().await.expect("a loopback accept");
+    (client, accepted)
 }
 
 /// One established TLS connection over [`tcp_pair`].

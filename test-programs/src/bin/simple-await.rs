@@ -42,10 +42,10 @@ async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
     // A non-ASCII `char` whose low byte is printable ASCII (`-`), so a
     // render that reads one byte of it prints a plausible wrong character.
     let glyph = '中';
-    // std's hash map and set, which wrap hashbrown's: the golden test
-    // asserts both tables' resolved member paths.
-    let ports = HashMap::from([(80u64, 1u32), (443, 2)]);
-    let seen = HashSet::from([7u32, 9]);
+    // std's map and set over hashbrown, unseeded: one bucket order, every run.
+    type Fixed = std::hash::BuildHasherDefault<std::hash::DefaultHasher>;
+    let ports: HashMap<u64, u32, Fixed> = HashMap::from_iter([(80u64, 1u32), (443, 2)]);
+    let seen: HashSet<u32, Fixed> = HashSet::from_iter([7u32, 9]);
     let first = ready_value().await;
     ready.send(()).expect("main waits for readiness");
     let second = park.await.unwrap_or(0);

@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`connections --with request park` over illumos/http-conns"
 ---
 ADDR       TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE  PEER             SERVER  METHOD  REQUEST
-0xADDR  8     —       http1  server  handling request   —         —                —       GET     /park
-0xADDR  11    —       http1  server  handling request   —         —                —       GET     /park
-0xADDR  12    10      http1  client  awaiting response  —         127.0.0.1:58396  —       GET     http://127.0.0.1:58396/park
+0xADDR  9     —       http1  server  handling request   —         —                —       GET     /park
+0xADDR  12    —       http1  server  handling request   —         —                —       GET     /park
+0xADDR  13    11      http1  client  awaiting response  —         127.0.0.1:35709  —       GET     http://127.0.0.1:35709/park
 [3 connections]

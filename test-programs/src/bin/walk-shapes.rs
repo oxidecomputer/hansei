@@ -271,10 +271,7 @@ fn main() {
         tokio::spawn(victim(taken_v_rx, r_victim_tx, lock.clone()));
         tokio::spawn(blocked(r_ba_tx, sem.clone()));
         tokio::spawn(blocked(r_bb_tx, sem.clone()));
-        {
-            let sem = sem.clone();
-            std::thread::spawn(move || hidden_runtime(r_hidden_tx, sem));
-        }
+        let hidden = sem.clone();
         std::thread::spawn(move || side_set(r_side_tx));
 
         let local = LocalSet::new();
@@ -293,6 +290,9 @@ fn main() {
                 r_victim_rx.await.expect("victim signals readiness");
                 r_ba_rx.await.expect("blocked signals readiness");
                 r_bb_rx.await.expect("blocked signals readiness");
+                // Only now does the other runtime's task queue on the
+                // semaphore: behind both of these, in that order.
+                std::thread::spawn(move || hidden_runtime(r_hidden_tx, hidden));
                 r_hidden_rx
                     .await
                     .expect("the hidden task signals readiness");

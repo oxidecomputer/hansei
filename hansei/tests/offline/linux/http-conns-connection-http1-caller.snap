@@ -1,10 +1,10 @@
 ---
 source: hansei/src/offline.rs
-description: "`connection 0x7f00d0002910` over linux/http-conns"
+description: "`connection 0x7f6cd4004a80` over linux/http-conns"
 ---
 connection 0xADDR
     proto: http1
-    driven by: task 9
+    driven by: task 7
     http: client, awaiting response
         dispatcher: 0xADDR hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
         conn: 0xADDR
@@ -12,16 +12,16 @@ connection 0xADDR
         reading: init
         writing: keep-alive
         method: GET
-        caller: task 7
+        caller: task 6
         alpn: none
         proxied: no
     tcp: fd 13
         stream: 0xADDR tokio::net::tcp::stream::TcpStream
         registration: 0xADDR
         ready: writable
-        waker: the reader slot, task 9
-        local address: 127.0.0.1:33596
-    peer: 127.0.0.1:35949
+        waker: the reader slot, task 7
+        local address: 127.0.0.1:43390
+    peer: 127.0.0.1:43409
     route:
         0xADDR hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>
         0xADDR tokio::net::tcp::stream::TcpStream
