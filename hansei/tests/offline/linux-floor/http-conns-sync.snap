@@ -3,13 +3,13 @@ source: hansei/src/offline.rs
 description: "`sync` over linux-floor/http-conns"
 ---
 oneshot 0xADDR: nothing sent, sender alive
-    rx: task 14
+    tx: task 8
 
 oneshot 0xADDR: nothing sent, sender alive
     tx: task 12
 
 oneshot 0xADDR: nothing sent, sender alive
-    tx: task 8
+    rx: task 14
 
 mpsc 0xADDR: 1 sender, 0 unread
     rx: task 4

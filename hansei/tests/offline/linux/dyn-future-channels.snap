@@ -6,7 +6,7 @@ oneshot 0xADDR: nothing sent, sender alive
     rx: task 3
 
 oneshot 0xADDR: nothing sent, sender alive
-    rx: task 5
+    rx: task 4
 
 oneshot 0xADDR: nothing sent, sender alive
-    rx: task 4
+    rx: task 5

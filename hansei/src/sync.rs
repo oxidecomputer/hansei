@@ -130,8 +130,10 @@ pub(crate) fn exec_sync<T: proc::Target>(
 
 /// The bare listing: every contended resource, one block each —
 /// semaphores in address order, then joined tasks in task order, then
-/// nonempty sets in address order, then each channel family in
-/// address order.
+/// nonempty sets by the task polling them, then each channel family by
+/// the first task party to it. A task's place in the listing is its
+/// id's, so two runs agree on the order wherever the program decided
+/// who owns what, whatever order the allocator laid it out in.
 fn print_listing(view: &View<'_>, kinds: &[Kind], out: &mut dyn io::Write) -> Result<()> {
     let mut printed = 0usize;
     let mut sep = |out: &mut dyn io::Write| -> Result<()> {
@@ -163,7 +165,7 @@ fn print_listing(view: &View<'_>, kinds: &[Kind], out: &mut dyn io::Write) -> Re
     }
     for kind in SLOT_FAMILIES {
         if wants(kinds, kind) {
-            for block in channel_blocks(view, kind).values() {
+            for block in &channel_listing(view, kind) {
                 sep(out)?;
                 print_channel(block, out)?;
             }
@@ -188,7 +190,11 @@ fn print_addressed(
     let semaphore = semaphores.get(&addr);
     let set = set_index(view).iter().any(|&(a, ..)| a == addr);
     let task = task_at(addr);
-    let channel = |kind: Kind| channel_blocks(view, kind).remove(&addr);
+    let channel = |kind: Kind| {
+        channel_listing(view, kind)
+            .into_iter()
+            .find(|block| block.addr == addr)
+    };
     match kinds {
         [Kind::Semaphore] => match semaphore {
             Some(block) => print_semaphore(block, view.names, out),
@@ -335,7 +341,7 @@ fn print_task_scoped(
     }
     for kind in SLOT_FAMILIES {
         if wants(kinds, kind) {
-            for block in channel_blocks(view, kind).values() {
+            for block in &channel_listing(view, kind) {
                 if block.parties.iter().any(|(_, party)| *party == index) {
                     sep(out)?;
                     print_channel(block, out)?;
@@ -368,12 +374,13 @@ struct ChannelBlock {
     /// The primitive's words, from the first slot that read them; a
     /// core does not change while it is read, so every slot's agree.
     reading: Option<Reading>,
-    /// Who holds a waker on the receiving side, in slot order, named
-    /// as the listings name owners.
-    rx: Vec<String>,
+    /// Who holds a waker on the receiving side, in task order, named
+    /// as the listings name owners, each with the index of its task
+    /// (a set child's, the task polling the set).
+    rx: Vec<(usize, String)>,
     /// Who holds a waker on the sending side: a oneshot sender polling
-    /// `poll_closed`.
-    tx: Vec<String>,
+    /// `poll_closed`. In task order, as `rx`.
+    tx: Vec<(usize, String)>,
     /// The tasks blocked on the channel's semaphore for capacity —
     /// their verified semaphore waits fall in the channel's bytes.
     tx_blocked: Vec<TaskRef>,
@@ -422,6 +429,25 @@ fn owner_name(view: &View<'_>, owner: Owner) -> (String, usize) {
     }
 }
 
+/// Every channel of `kind` a slot names, in the order the listing
+/// prints them: by the first task party to each, the primitive's
+/// address breaking a tie, and each side's names in task order. The
+/// slots are found in address order, which is where the allocator put
+/// each waker and so moves between runs of one program; who waits on
+/// what does not.
+fn channel_listing(view: &View<'_>, kind: Kind) -> Vec<ChannelBlock> {
+    let mut blocks: Vec<ChannelBlock> = channel_blocks(view, kind).into_values().collect();
+    for block in &mut blocks {
+        block.rx.sort_by_key(|(party, _)| *party);
+        block.tx.sort_by_key(|(party, _)| *party);
+    }
+    blocks.sort_by_key(|block| {
+        let first = block.parties.iter().map(|(_, party)| *party).min();
+        (first, block.addr)
+    });
+    blocks
+}
+
 /// Every channel of `kind` a slot names, by the primitive's address.
 fn channel_blocks(view: &View<'_>, kind: Kind) -> BTreeMap<u64, ChannelBlock> {
     let mut blocks: BTreeMap<u64, ChannelBlock> = BTreeMap::new();
@@ -456,8 +482,8 @@ fn channel_blocks(view: &View<'_>, kind: Kind) -> BTreeMap<u64, ChannelBlock> {
             Side::Rx => &mut block.rx,
             Side::Tx => &mut block.tx,
         };
-        if !names.contains(&name) {
-            names.push(name);
+        if !names.iter().any(|(_, n)| *n == name) {
+            names.push((party, name));
         }
         if !block.parties.contains(&(side, party)) {
             block.parties.push((side, party));
@@ -505,11 +531,17 @@ fn print_channel(block: &ChannelBlock, out: &mut dyn io::Write) -> Result<()> {
         None => "state not read".to_string(),
     };
     writeln!(out, "{} {:#x}: {words}", block.kind.word(), block.addr)?;
+    let names = |side: &[(usize, String)]| {
+        side.iter()
+            .map(|(_, name)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     if !block.rx.is_empty() {
-        writeln!(out, "    rx: {}", block.rx.join(", "))?;
+        writeln!(out, "    rx: {}", names(&block.rx))?;
     }
     if !block.tx.is_empty() {
-        writeln!(out, "    tx: {}", block.tx.join(", "))?;
+        writeln!(out, "    tx: {}", names(&block.tx))?;
     }
     if !block.tx_blocked.is_empty() {
         let blocked: Vec<String> = block.tx_blocked.iter().map(|t| t.to_string()).collect();
@@ -575,8 +607,8 @@ fn print_join(view: &View<'_>, index: usize, out: &mut dyn io::Write) -> Result<
 // ---------------------------------------------------------------------------
 
 /// Every set the census found, `(address, owner index, is_join_set)`,
-/// in address order, empties left out — a set with no members contends
-/// with nothing.
+/// by the task polling it, the address breaking a tie, empties left
+/// out — a set with no members contends with nothing.
 fn set_index(view: &View<'_>) -> Vec<(u64, usize, bool)> {
     let mut sets: Vec<(u64, usize, bool)> = view
         .sets
@@ -590,7 +622,7 @@ fn set_index(view: &View<'_>) -> Vec<(u64, usize, bool)> {
                 .map(|s| (s.addr, s.owner, true)),
         )
         .collect();
-    sets.sort_unstable();
+    sets.sort_unstable_by_key(|&(addr, owner, _)| (owner, addr));
     sets
 }
 

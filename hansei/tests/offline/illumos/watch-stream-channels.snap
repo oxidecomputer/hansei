@@ -3,25 +3,25 @@ source: hansei/src/offline.rs
 description: "`channels` over illumos/watch-stream"
 ---
 oneshot 0xADDR: nothing sent, sender alive
-    rx: task 5
-
-oneshot 0xADDR: nothing sent, sender alive
     rx: task 3
 
 oneshot 0xADDR: nothing sent, sender alive
+    rx: task 4
+
+oneshot 0xADDR: nothing sent, sender alive
+    rx: task 5
+
+watch 0xADDR: version 0, 1 sender, 1 receiver
+    rx: task 3
+
+watch 0xADDR: version 0, 1 sender, 1 receiver
+    rx: task 4
+
+watch 0xADDR: version 0, 1 sender, 1 receiver
+    rx: task 4
+
+watch 0xADDR: version 0, 1 sender, 1 receiver
     rx: task 4
 
 watch 0xADDR: version 0, 1 sender, 1 receiver
     rx: task 6
-
-watch 0xADDR: version 0, 1 sender, 1 receiver
-    rx: task 4
-
-watch 0xADDR: version 0, 1 sender, 1 receiver
-    rx: task 4
-
-watch 0xADDR: version 0, 1 sender, 1 receiver
-    rx: task 4
-
-watch 0xADDR: version 0, 1 sender, 1 receiver
-    rx: task 3

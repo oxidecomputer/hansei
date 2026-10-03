@@ -16,13 +16,13 @@ task 7 (async fn walk_shapes::local_parker): idle
     Waited by: task 8
 
 notify 0xADDR: waiting
-    rx: task 7
-
-notify 0xADDR: waiting
-    rx: task 3
+    rx: task 1
 
 notify 0xADDR: waiting
     rx: task 2
 
 notify 0xADDR: waiting
-    rx: task 1
+    rx: task 3
+
+notify 0xADDR: waiting
+    rx: task 7
