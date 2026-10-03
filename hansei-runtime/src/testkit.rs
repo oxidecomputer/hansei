@@ -441,6 +441,15 @@ fn mask_times(s: &str) -> String {
 ///   so that two mentions of one address still agree;
 /// - the timer readings [`mask`] hides, and elapsed times (`idle
 ///   (2ms)`);
+/// - a timer entry's own `deadline` field, which is milliseconds from
+///   the runtime's clock origin to registration rounded up, plus the
+///   duration: whether registration fell in the first millisecond is a
+///   race no readiness wait controls;
+/// - `r11` in a register block, which the `syscall` instruction
+///   overwrites with the flags: a thread parked in a syscall records
+///   either that or the value its previous call left, as the kernel
+///   saves it at whatever point the stop caught the thread, and the
+///   register is caller-saved, so neither is the program's state;
 /// - the process's own facts: its pid and parent, start time, the
 ///   checkout its binary ran from (truncated at a length that moves
 ///   with that path, in `psargs`), and the build ids, which follow the
@@ -459,8 +468,11 @@ pub fn mask_core(s: &str) -> String {
     let s = re(r"\b[0-9a-f]{40}\b").replace_all(s, "BUILDID");
     let s = re(r"(?m)^(psargs:\s+).*$").replace_all(&s, "${1}PSARGS");
     let s = re(r"\S*/test-programs/").replace_all(&s, "<test-programs>/");
+    // Before the numbering, so a varying r11 moves no other number.
+    let s = re(r"(?m)^(\s*r11\s+)0x[0-9a-f]+.*$").replace_all(&s, "${1}R11");
     let s = first_seen(&s);
     let s = mask_times(&s);
+    let s = re(r"\bdeadline: \d+\.\d{3}s").replace_all(&s, "deadline: TS");
     let s = re(r"\(\d+(\.\d+)?(ns|µs|ms|s)\)").replace_all(&s, "(T)");
     let s = re(r"(?m)^(pid:\s+)\d+").replace_all(&s, "${1}PID");
     let s = re(r"(?m)^(ppid:\s+)\d+").replace_all(&s, "${1}PID");
