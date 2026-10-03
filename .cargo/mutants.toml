@@ -519,4 +519,8 @@ exclude_re = [
     # process with them in every test.
     "testkit/cores\\.rs:.*: replace (take|take_one|sysroot|place) with \\(\\)",
     "testkit/cores\\.rs:.* in sysroot$",
+    # The same capture taken on demand for the genfix soak, whose
+    # oracle runs only when the soak loop asks for it: no sweep reaches
+    # it. The soak itself is its judge.
+    "testkit/cores\\.rs:.*: replace capture_now ",
 ]

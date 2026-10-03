@@ -310,6 +310,23 @@ pub fn load(dir: &Path, set: &str, program: &str) -> (Bundle, Proc) {
     (bundle, capture.open())
 }
 
+/// Capture `program` into `dir` now, as this system's own set's
+/// capture of it, and load it: for a loop whose program is written
+/// afresh between runs (the genfix soak's `gen-soak`), which is none
+/// of [`PROGRAMS`] and is taken whenever asked rather than once per
+/// run. The layout is a set's, so a failing capture can be kept whole.
+pub fn capture_now(dir: &Path, program: &str) -> (Bundle, Proc) {
+    let set = *CAPTURED.first().expect("this system cannot core a process");
+    let recipe = recipe(set);
+    let bin_a = testrun::fixture::build_a(&recipe, &[program]);
+    let bin_b = testrun::fixture::build_b(&recipe, &[program]);
+    take_one(dir, set, program, &bin_a, &bin_b);
+    let capture = locate(dir, set, program);
+    let bundle = Bundle::load(&bundle_path(dir, set, program, &capture))
+        .unwrap_or_else(|e| panic!("the {set}/{program} bundle loads: {e}"));
+    (bundle, capture.open())
+}
+
 /// The stdout line a fixture prints once the state under inspection is
 /// stable.
 pub fn marker(program: &str) -> &'static str {

@@ -7,30 +7,29 @@
 # The churn capture loop: for each seed, emit a churn-mode program with
 # genfix (`--churn`: every future completes shortly and is rebuilt,
 # nothing registers), build the same two-binary pair the parked soak
-# builds, run it, and capture snapshots at arbitrary instants — no
-# readiness handshake; the random delay before each core *is* the
-# point. Each capture is judged by the safety oracle alone
+# builds, run it, and core it at arbitrary instants — no readiness
+# handshake; the random delay before each core *is* the point. Each
+# core is judged by the safety oracle alone
 # (hansei-runtime/tests/churn.rs): no panic, no hang, the census's
-# total audit clean. Exactness is unassertable mid-flight, so a clean
-# contained failure of the capture-time pipeline — hansei's snapshot
-# command reporting an error and exiting — is tolerated and counted as
-# "declined", not a finding.
+# total audit clean, and the same result from two runs over the core.
+# Exactness is unassertable mid-flight, so the oracle asks nothing of
+# the listing's content.
 #
-# A capture that panics, hangs, or fails the oracle is kept whole —
-# source, core, binary, bundle, snapshot, log — under
-# $OUT/failures/seed-<n>-snap-<m>/. The core is the whole replay: a
-# snapshot is deterministic once taken, so there is no retry step here
-# the way the parked soak has one.
+# A core whose oracle run panics, hangs, or fails is kept whole —
+# source, core, build A, build B, bundle, log — under
+# $OUT/failures/seed-<n>-snap-<m>/. The core is the whole replay: the
+# pipeline over it is deterministic once it is taken, so there is no
+# retry step here the way the parked soak has one.
 #
 # Needs a capture-capable host, same as soak.sh (the pinned toolchain,
 # gcore, tracing permission). One program serves all of its seed's
-# captures: gcore stops, dumps, and resumes the process, which keeps
+# cores: gcore stops, dumps, and resumes the process, which keeps
 # churning in between.
 #
 # Usage: churn.sh [--seeds N] [--start S] [--snaps M] [--out DIR]
 #
-# The summary ends with the outcome-coverage union across every capture
-# that reached the oracle — which shapes the batch's arbitrary instants
+# The summary ends with the outcome-coverage union across every core
+# that passed the oracle — which shapes the batch's arbitrary instants
 # actually caught mid-flight.
 
 set -uo pipefail
@@ -47,11 +46,12 @@ OUT="$ROOT/test-programs/genfix/churn-out"
 parse_extra() { [[ "$1" == --snaps ]] && SNAPS="$2"; }
 parse_args "$@"
 mkdir -p "$OUT/failures"
-PAIRS="$OUT/pairs"
-mkdir -p "$PAIRS"
+TINFO="$OUT/gen-churn.tinfo"
 
 GEN_SRC="$ROOT/test-programs/src/bin/gen-churn.rs"
 FIXTURES="$ROOT/test-programs/fixtures"
+BUILD_A="$FIXTURES/bin-a/gen-churn"
+BUILD_B="$FIXTURES/bin/gen-churn"
 CHILD=""
 cleanup() {
     [[ -n "$CHILD" ]] && kill "$CHILD" 2>/dev/null
@@ -60,35 +60,33 @@ cleanup() {
 trap cleanup EXIT
 
 case "$(uname -s)" in
-    Linux) BINARY_FLAG=1 ;;
-    SunOS) BINARY_FLAG=0 ;;
+    Linux|SunOS) ;;
     *) echo "churn.sh: $(uname -s) takes no ELF core to capture from" >&2; exit 1 ;;
 esac
 
 cargo build -q -p genfix
 GENFIX="$ROOT/target/debug/genfix"
-(cd "$ROOT" && cargo build -q -p hansei --features snapshot)
+(cd "$ROOT" && cargo build -q -p hansei)
 HANSEI="$ROOT/target/debug/hansei"
 # Compile the oracle before the loop so its first run is not charged to
-# the first capture's timeout.
+# the first core's timeout.
 (cd "$ROOT" && cargo test -q -p hansei-runtime --test churn --no-run >/dev/null 2>&1)
 
-# Keep a failing capture's whole story for triage far from this host.
+# Keep a failing core's whole story for triage far from this host.
 keep_failure() {
     local seed="$1" snap="$2" core="$3" log="$4"
     local keep="$OUT/failures/seed-$seed-snap-$snap"
     mkdir -p "$keep"
     cp -f "$GEN_SRC" "$keep/gen-churn.rs"
-    cp -f "$FIXTURES/bin-a/gen-churn" "$keep/gen-churn.bin" 2>/dev/null
-    cp -f "$PAIRS/gen-churn.tinfo" "$keep/" 2>/dev/null
-    cp -f "$PAIRS/gen-churn.snapshot" "$keep/" 2>/dev/null
+    cp -f "$BUILD_A" "$keep/gen-churn.bin" 2>/dev/null
+    cp -f "$BUILD_B" "$keep/gen-churn.debug" 2>/dev/null
+    cp -f "$TINFO" "$keep/" 2>/dev/null
     [[ -f "$core" ]] && cp -f "$core" "$keep/core"
     cp -f "$log" "$keep/log"
     echo "churn.sh: seed $seed snap $snap FAILED; kept under $keep"
 }
 
 captures=0
-declined=0
 reached=0
 failures=()
 for (( seed = START; seed < START + SEEDS; seed++ )); do
@@ -98,7 +96,7 @@ for (( seed = START; seed < START + SEEDS; seed++ )); do
     if ! { REGEN_BIN_DIR="$FIXTURES/bin-a" REGEN_TARGET_DIR="$FIXTURES/target-a" \
                "$ROOT/test-programs/regen.sh" --no-debug-info gen-churn &&
            "$ROOT/test-programs/regen.sh" gen-churn &&
-           "$HANSEI" tokio-info extract "$FIXTURES/bin/gen-churn" -o "$PAIRS/gen-churn.tinfo";
+           "$HANSEI" tokio-info extract "$BUILD_B" -o "$TINFO";
          } >>"$seedlog" 2>&1; then
         echo "churn.sh: seed $seed: build failed (see $seedlog)"
         failures+=("$seed-build")
@@ -108,7 +106,7 @@ for (( seed = START; seed < START + SEEDS; seed++ )); do
     fifo="$(mktemp -u)"
     mkfifo "$fifo"
     coredir="$(mktemp -d)"
-    "$FIXTURES/bin-a/gen-churn" >"$fifo" 2>&1 &
+    "$BUILD_A" >"$fifo" 2>&1 &
     CHILD=$!
     # Liveness only — the program churns from the moment it says so;
     # there is no quiescent state to wait for.
@@ -128,35 +126,8 @@ for (( seed = START; seed < START + SEEDS; seed++ )); do
         core="$coredir/core.$CHILD"
         captures=$(( captures + 1 ))
 
-        binary=()
-        [[ "$BINARY_FLAG" == 1 ]] && binary=(--binary "$FIXTURES/bin-a/gen-churn")
-        snaplog="$OUT/snap.log"
-        echo "snapshot $PAIRS/gen-churn.snapshot" |
-            timeout 300 "$HANSEI" --core "$core" --tokio-info "$PAIRS/gen-churn.tinfo" \
-                "${binary[@]}" >"$snaplog" 2>&1
-        status=$?
-        cat "$snaplog" >>"$seedlog"
-        if [[ $status -eq 124 ]]; then
-            echo "churn.sh: seed $seed snap $snap: capture HUNG" | tee -a "$seedlog"
-            keep_failure "$seed" "$snap" "$core" "$seedlog"
-            failures+=("$seed-$snap-hang")
-            continue
-        elif grep -q 'panicked at' "$snaplog"; then
-            echo "churn.sh: seed $seed snap $snap: capture PANICKED" | tee -a "$seedlog"
-            keep_failure "$seed" "$snap" "$core" "$seedlog"
-            failures+=("$seed-$snap-panic")
-            continue
-        elif [[ $status -ne 0 ]]; then
-            # A contained refusal — mid-flight state the pipeline
-            # declined cleanly. Tolerated; counted so a batch that
-            # only ever declines is visible below.
-            declined=$(( declined + 1 ))
-            echo "churn.sh: seed $seed snap $snap: capture declined (contained)" >>"$seedlog"
-            continue
-        fi
-
         oraclelog="$OUT/oracle.log"
-        HANSEI_CHURN_PAIR="$PAIRS/gen-churn" \
+        HANSEI_CHURN_CORE="$core" HANSEI_CHURN_BINARY="$BUILD_A" HANSEI_CHURN_TINFO="$TINFO" \
             timeout 600 cargo test -q -p hansei-runtime --test churn -- --nocapture \
             >"$oraclelog" 2>&1
         ostatus=$?
@@ -164,7 +135,13 @@ for (( seed = START; seed < START + SEEDS; seed++ )); do
         if [[ $ostatus -eq 0 ]]; then
             reached=$(( reached + 1 ))
             note_outcomes "$oraclelog"
+        elif [[ $ostatus -eq 124 ]]; then
+            echo "churn.sh: seed $seed snap $snap: oracle HUNG" | tee -a "$seedlog"
+            keep_failure "$seed" "$snap" "$core" "$seedlog"
+            failures+=("$seed-$snap-hang")
         else
+            # A panic in the pipeline and a failed audit or determinism
+            # check both land here; the log says which.
             echo "churn.sh: seed $seed snap $snap: oracle FAILED" | tee -a "$seedlog"
             keep_failure "$seed" "$snap" "$core" "$seedlog"
             failures+=("$seed-$snap-oracle")
@@ -180,13 +157,13 @@ for (( seed = START; seed < START + SEEDS; seed++ )); do
 done
 
 echo
-echo "churn.sh: $captures captures over seeds $START..$(( START + SEEDS - 1 )):" \
-     "$reached passed the oracle, $declined declined, ${#failures[@]} failures"
+echo "churn.sh: $captures cores over seeds $START..$(( START + SEEDS - 1 )):" \
+     "$reached passed the oracle, ${#failures[@]} failures"
 if [[ ${#failures[@]} -gt 0 ]]; then
     echo "churn.sh: failures: ${failures[*]}"
 fi
 if [[ $reached -eq 0 ]]; then
-    echo "churn.sh: NO capture reached the oracle — the loop is not testing the census"
+    echo "churn.sh: NO core passed the oracle — the loop is not testing the census"
 fi
 print_coverage
 assert_coverage "$reached" || exit 1

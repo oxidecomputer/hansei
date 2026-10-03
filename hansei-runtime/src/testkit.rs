@@ -783,8 +783,12 @@ impl<'b> Enumeration<'b> {
 /// capture must satisfy beyond that is [`Run::healthy_problems`] and
 /// [`Run::registry_problems`], which a suite calls or does not — its
 /// strictness is visible at its call site.
-pub struct Run<'a> {
-    pub ctx: Context<'a, Fixture>,
+///
+/// Over a [`Fixture`] unless a suite brings its own target: the
+/// generated-fixture loops hold a core of a program no fixture set
+/// has, and read it as it is.
+pub struct Run<'a, T: Target = Fixture> {
+    pub ctx: Context<'a, T>,
     pub list: TaskList,
     pub census: FutureCensus,
     /// The allocator evidence the census was gated by, prepared under
@@ -796,11 +800,11 @@ pub struct Run<'a> {
 /// Run the pipeline over a loaded pair, gated the way a session gates
 /// it: discovery and the census read under the pair's prepared
 /// allocator evidence.
-pub fn run<'a>(bundle: &'a Bundle, fixture: &'a Fixture) -> Run<'a> {
-    let ctx = context(bundle, fixture);
-    let mut e = enumerate(&ctx, fixture);
+pub fn run<'a, T: Target>(bundle: &'a Bundle, target: &'a T) -> Run<'a, T> {
+    let ctx = Context::new(target, BundleView::new(bundle)).expect("the target has mappings");
+    let mut e = enumerate(&ctx, target);
     e.discover(&ctx, &[]);
-    let census = e.with_read(fixture, |read| census_with(&ctx, &e.list, read));
+    let census = e.with_read(target, |read| census_with(&ctx, &e.list, read));
     Run {
         ctx,
         list: e.list,
@@ -828,7 +832,7 @@ pub fn record(bundle: &Bundle, fixture: &Fixture) -> Snapshot {
         .expect("the recorder assembles a snapshot")
 }
 
-impl Run<'_> {
+impl<T: Target> Run<'_, T> {
     /// [`healthy_problems`] over this run.
     #[must_use]
     pub fn healthy_problems(&self) -> Vec<String> {

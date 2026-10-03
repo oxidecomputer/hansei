@@ -5,21 +5,20 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #
 # The generated-fixture soak loop: for each seed, emit a program with
-# genfix, capture a real snapshot pair from it (capture-snapshots.sh —
-# the same two-binary capture the checked-in fixtures get), and hold
-# the census to the program's own registry (the opt-in oracle in
-# hansei-runtime/tests/genfix.rs). A seed that fails is recaptured and
-# rechecked once, so a capture racing a body's first poll does not
-# read as a census bug; a seed that fails twice is recorded whole —
-# source, pair, log — under $OUT/failures/seed-<n>/ for triage, and a
-# deterministically failing seed's source becomes a quarantined
-# checked-in fixture.
+# genfix and hold a fresh core of it to the program's own registry
+# (the opt-in oracle in hansei-runtime/tests/genfix.rs, which takes
+# the core itself — the same two-binary capture every fixture gets —
+# into $OUT/capture). A seed that fails is recaptured and rechecked
+# once, so a capture racing a body's first poll does not read as a
+# census bug; a seed that fails twice is recorded whole — source,
+# core, build A, build B, log — under $OUT/failures/seed-<n>/ for
+# triage, and a deterministically failing seed's source becomes a
+# quarantined checked-in fixture.
 #
 # Needs a capture-capable host (Linux or illumos: the pinned toolchain,
-# gcore, and tracing permission — everything capture-snapshots.sh
-# already needs). The per-seed cost is dominated by the two fixture
-# builds, which are incremental against persistent target dirs, so a
-# soak's first seed is slow and the rest are not.
+# gcore, and tracing permission). The per-seed cost is dominated by
+# the two fixture builds, which are incremental against persistent
+# target dirs, so a soak's first seed is slow and the rest are not.
 #
 # Usage: soak.sh [--seeds N] [--start S] [--out DIR]
 #
@@ -40,8 +39,8 @@ START=0
 OUT="$ROOT/test-programs/genfix/out"
 parse_args "$@"
 mkdir -p "$OUT/failures"
-PAIRS="$OUT/pairs"
-mkdir -p "$PAIRS"
+CAPTURE="$OUT/capture"
+mkdir -p "$CAPTURE"
 
 GEN_SRC="$ROOT/test-programs/src/bin/gen-soak.rs"
 trap 'rm -f "$GEN_SRC"' EXIT
@@ -49,17 +48,12 @@ trap 'rm -f "$GEN_SRC"' EXIT
 cargo build -q -p genfix
 GENFIX="$ROOT/target/debug/genfix"
 
-# One check per seed: capture, then the oracle. Everything lands in
-# the seed's log; the caller decides what a failure means.
+# One check per seed: the oracle captures and judges. Everything lands
+# in the seed's log; the caller decides what a failure means.
 run_seed() {
     local seed="$1" log="$2"
     "$GENFIX" --seed "$seed" > "$GEN_SRC"
-    if ! "$ROOT/test-programs/capture-snapshots.sh" "$PAIRS" gen-soak \
-            >>"$log" 2>&1; then
-        echo "soak.sh: seed $seed: capture failed" >>"$log"
-        return 1
-    fi
-    HANSEI_GENFIX_PAIR="$PAIRS/gen-soak" \
+    HANSEI_GENFIX_CAPTURE="$CAPTURE" \
         cargo test -q -p hansei-runtime --test genfix -- --nocapture \
         >>"$log" 2>&1
 }
@@ -89,7 +83,13 @@ for (( seed = START; seed < START + SEEDS; seed++ )); do
     keep="$OUT/failures/seed-$seed"
     mkdir -p "$keep"
     cp -f "$GEN_SRC" "$keep/gen-soak.rs"
-    cp -f "$PAIRS/gen-soak.tinfo" "$PAIRS/gen-soak.snapshot" "$keep/" 2>/dev/null
+    # The capture as the oracle laid it out: the core, build A beside
+    # it, build B under debug/ (the set directory is this system's).
+    for taken in "$CAPTURE"/*/gen-soak; do
+        cp -f "$taken/core" "$keep/core" 2>/dev/null
+        cp -f "$taken/gen-soak" "$keep/gen-soak.bin" 2>/dev/null
+        cp -f "$taken/debug/gen-soak" "$keep/gen-soak.debug" 2>/dev/null
+    done
     mv -f "$log" "$keep/log"
     note_outcomes "$keep/log"
     echo "soak.sh: seed $seed FAILED; kept under $keep"

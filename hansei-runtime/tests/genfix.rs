@@ -3,15 +3,19 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! The generated-fixture oracle: everything a healthy capture of a
-//! genfix program must satisfy, over one snapshot pair.
+//! genfix program must satisfy, over a fresh core of it.
 //!
-//! Opt-in, like the matrix: `HANSEI_GENFIX_PAIR=<prefix>` names a pair
-//! as `<prefix>.tinfo` / `<prefix>.snapshot` (the soak loop passes
-//! what `capture-snapshots.sh` just wrote), and without it the test
-//! skips with a message. The soak loop (`test-programs/genfix/soak.sh`)
-//! runs this once per seed; a failure here after a clean recapture is
-//! a failing seed, and its generated source becomes a quarantined
-//! fixture.
+//! Opt-in, like the matrix: `HANSEI_GENFIX_CAPTURE=<dir>` captures
+//! `gen-soak` — whatever `src/bin/gen-soak.rs` holds, which the soak
+//! loop has just written — into that directory the way every fixture
+//! is captured (both builds, build A parked at its readiness marker
+//! and cored, the bundle extracted from build B), and without it the
+//! test skips with a message. The soak loop
+//! (`test-programs/genfix/soak.sh`) runs this once per seed; a failure
+//! here after a clean recapture is a failing seed, and its generated
+//! source becomes a quarantined fixture. The core is read as it is:
+//! the oracle diffs against the program's own registry, not a golden,
+//! so nothing needs renaming.
 //!
 //! The oracle is the registry diff plus everything a *healthy* capture
 //! is entitled to: the pipeline's total audit (inside
@@ -22,24 +26,20 @@
 //! for the soak's coverage summary — the generated corpus's version of
 //! the checked-in corpus's "sometimes" test.
 
-use hansei_bundle::Bundle;
 use hansei_runtime::testkit;
-use hansei_runtime::testkit::Fixture;
-use proc::snapshot::Snapshot;
+
+use std::path::PathBuf;
 
 #[test]
-fn test_generated_pair_matches_its_registry() {
-    let Ok(prefix) = std::env::var("HANSEI_GENFIX_PAIR") else {
-        eprintln!("HANSEI_GENFIX_PAIR is not set; nothing to check (soak.sh sets it)");
+fn test_generated_capture_matches_its_registry() {
+    let Some(dir) = std::env::var_os("HANSEI_GENFIX_CAPTURE").map(PathBuf::from) else {
+        eprintln!("HANSEI_GENFIX_CAPTURE is not set; nothing to check (soak.sh sets it)");
         return;
     };
 
-    let bundle = Bundle::load(format!("{prefix}.tinfo").as_ref()).expect("the bundle loads");
-    let snapshot = Fixture::from(
-        Snapshot::load(format!("{prefix}.snapshot").as_ref()).expect("the snapshot loads"),
-    );
+    let (bundle, core) = testkit::cores::capture_now(&dir, "gen-soak");
     // The total audit runs (and panics) inside the pipeline.
-    let r = testkit::run(&bundle, &snapshot);
+    let r = testkit::run(&bundle, &core);
     let (list, census) = (&r.list, &r.census);
 
     testkit::print_outcomes(census);
@@ -96,6 +96,7 @@ fn test_generated_pair_matches_its_registry() {
     }
     assert!(
         problems.is_empty(),
-        "the generated pair at {prefix} fails its oracle:\n{problems:#?}"
+        "the generated capture in {} fails its oracle:\n{problems:#?}",
+        dir.display()
     );
 }
