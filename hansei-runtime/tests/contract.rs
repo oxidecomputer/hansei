@@ -23,7 +23,7 @@ const PROGRAMS: &[&str] = &[
     "channels",
 ];
 
-/// A bundle from whichever set.
+/// A bundle of the primary cell, read without a target.
 ///
 /// What these pin is how the binder read the primary cell's DWARF, and
 /// every set is that same cell — a set differs in what its *capture*
@@ -31,8 +31,7 @@ const PROGRAMS: &[&str] = &[
 /// The per-version half of this coverage is the matrix suite's, where
 /// binding runs against every cell.
 fn fixture_bundle(program: &str) -> Bundle {
-    let (bundle, _) = hansei_runtime::testkit::load_any(program);
-    bundle
+    hansei_runtime::testkit::bundle(program)
 }
 
 /// Every fixture bundle records a clean walk contract: nothing broken,

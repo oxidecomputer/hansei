@@ -2091,7 +2091,7 @@ nothing deeper is on the native stack
     /// claims nothing.
     #[test]
     fn test_native_frames_resolve_futures_through_the_bundle_join() {
-        let (bundle, _snapshot) = hansei_runtime::testkit::load_any("unordered");
+        let bundle = hansei_runtime::testkit::bundle("unordered");
         let view = hansei_bundle::BundleView::new(&bundle);
         let (symbol, types) = bundle
             .dyn_futures
@@ -3070,7 +3070,7 @@ mod trace_render_tests {
     /// fact that survives without one.
     #[test]
     fn test_a_stateless_coroutine_frame_says_only_what_it_holds() {
-        let (bundle, _snapshot) = testkit::load_any("simple-await");
+        let bundle = testkit::bundle("simple-await");
         let view = hansei_bundle::BundleView::new(&bundle);
         let ty = view
             .find_by_name("simple_await::work::{async_fn_env#0}")

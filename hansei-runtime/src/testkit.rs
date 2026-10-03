@@ -558,6 +558,80 @@ pub fn load(set: &str, program: &str) -> (Bundle, Fixture) {
     (bundle, Fixture::from(snapshot))
 }
 
+/// `program`'s bundle, for a test that reads nothing of a target: the
+/// checked-in one from the set [`load_any`] reads, or under
+/// [`cores::CORES`] the one extracted from this system's own build B
+/// ([`bundle_path`]), so the test runs where no core is.
+///
+/// Only for a test that reads the bundle alone. A type id joined
+/// against a target's memory must come from that target's own bundle,
+/// which [`load`] returns beside it. And the build is native, Mach-O on
+/// a Mac, so a test asserting on a type only one system's std defines,
+/// or a monomorphization one object format keeps and another folds
+/// away, reads [`load`]'s bundle instead.
+pub fn bundle(program: &str) -> Bundle {
+    let path = match cores::dir() {
+        Some(_) => bundle_path(program),
+        None => fixture(fixture_sets()[0], &format!("{program}.tinfo")),
+    };
+    Bundle::load(&path)
+        .unwrap_or_else(|e| panic!("the {program} bundle loads from {}: {e}", path.display()))
+}
+
+/// The bundle the exegesis under test extracts from this system's own
+/// build B of `program` in the primary cell, once per run, written to a
+/// file whose path is returned. The build is the one the extraction
+/// goldens read, so on a Mac it is the Mach-O binary with its dSYM.
+pub fn bundle_path(program: &str) -> PathBuf {
+    assert!(
+        PROGRAMS.contains(&program),
+        "{program} is not a fixture program"
+    );
+    let recipe = matrix::Matrix::load().primary_recipe();
+    let binary = matrix::build_b(&recipe, &[program]).join(program);
+    let dsym = binary
+        .with_extension("dSYM")
+        .join("Contents/Resources/DWARF")
+        .join(program);
+    let dsym = dsym.exists().then_some(dsym);
+    let bundles = matrix::test_programs_dir().join("fixtures/bundles");
+    let path = bundles.join(format!("{program}.tinfo"));
+    testrun::once_per_run_each(
+        &bundles.join(".stamps"),
+        &[program],
+        |_| {
+            let root = matrix::test_programs_dir().join("..");
+            let mut inputs = testrun::Inputs::new();
+            inputs.file(&binary);
+            if let Some(dsym) = &dsym {
+                inputs.file(dsym);
+            }
+            inputs
+                .tree(&root.join("exegesis/src"), ".rs")
+                .tree(&root.join("hansei-bundle/src"), ".rs")
+                .file(&root.join("Cargo.lock"));
+            inputs.finish()
+        },
+        |_| {
+            let sources = exegesis::extract::DebugSources {
+                binary: &binary,
+                debug_info: dsym.as_deref(),
+            };
+            let opts = exegesis::extract::ExtractOptions {
+                extract_args: format!("testkit extraction of {program}"),
+                ..Default::default()
+            };
+            let (bundle, _stats) = exegesis::extract::extract_sources(&sources, &opts)
+                .unwrap_or_else(|e| panic!("extraction of {program} failed: {e}"));
+            std::fs::create_dir_all(&bundles).expect("failed to create the bundle dir");
+            let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+            bundle.save(&tmp).expect("failed to write the bundle");
+            std::fs::rename(&tmp, &path).expect("failed to install the bundle");
+        },
+    );
+    path
+}
+
 /// The files a session over a program's pair in `set` is opened from,
 /// as a command line names them.
 pub struct Paths {

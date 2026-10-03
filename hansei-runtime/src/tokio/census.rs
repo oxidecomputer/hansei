@@ -2512,14 +2512,14 @@ mod tests {
     /// the std/tokio plumbing the structural finders below pick from.
     fn unordered() -> &'static Bundle {
         static BUNDLE: OnceLock<Bundle> = OnceLock::new();
-        BUNDLE.get_or_init(|| testkit::load_any("unordered").0)
+        BUNDLE.get_or_init(|| testkit::bundle("unordered"))
     }
 
     /// The `joinset` fixture's bundle, for the one screen `unordered`
     /// has no type to exercise.
     fn joinset() -> &'static Bundle {
         static BUNDLE: OnceLock<Bundle> = OnceLock::new();
-        BUNDLE.get_or_init(|| testkit::load_any("joinset").0)
+        BUNDLE.get_or_init(|| testkit::bundle("joinset"))
     }
 
     /// The first bundle type satisfying `pred`, scanned in id order so
