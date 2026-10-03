@@ -594,7 +594,7 @@ pub fn bundle_path(program: &str) -> PathBuf {
         .join("Contents/Resources/DWARF")
         .join(program);
     let dsym = dsym.exists().then_some(dsym);
-    let bundles = matrix::test_programs_dir().join("fixtures/bundles");
+    let bundles = matrix::test_programs_dir().join("fixtures/bundles/native");
     let path = bundles.join(format!("{program}.tinfo"));
     testrun::once_per_run_each(
         &bundles.join(".stamps"),
@@ -649,7 +649,7 @@ pub struct Paths {
 pub fn paths(set: &str, program: &str) -> Paths {
     if let Some(dir) = cores::dir() {
         let capture = cores::capture(&dir, set, program);
-        let tokio_info = cores::bundle_path(&dir, set, program, &capture);
+        let tokio_info = cores::bundle_path(set, program, &capture);
         return Paths {
             core: capture.core,
             tokio_info,

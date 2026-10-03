@@ -24,8 +24,9 @@
 //! $HANSEI_CORES/<set>/sysroot/…             a Linux set's libraries
 //! ```
 //!
-//! Dot-named entries (`.stamps`, `.bundles`) are this host's own
-//! bookkeeping and never need copying.
+//! The dot-named `.stamps` is this host's own bookkeeping and never
+//! needs copying. The bundles extracted from build B are not kept
+//! here at all, but in the tree that extracted them ([`bundle_path`]).
 //!
 //! [`build_b`]: testrun::fixture::build_b
 
@@ -268,13 +269,18 @@ fn place(from: &Path, to: &Path) {
 }
 
 /// The bundle extracted from `capture`'s build B by the exegesis under
-/// test, once per run, and written to a file under `dir` whose path is
-/// returned.
-pub fn bundle_path(dir: &Path, set: &str, program: &str, capture: &Capture) -> PathBuf {
-    let bundles = dir.join(".bundles").join(set);
+/// test, once per run, and written to a file whose path is returned.
+///
+/// The file lives in the tree under test, not beside the cores: the
+/// cores are shared by every tree that reads them, but a bundle is
+/// that tree's exegesis's work. A mutation sweep runs one tree per
+/// job over one cores directory, and a bundle written there by a
+/// mutated exegesis would be read by every other job.
+pub fn bundle_path(set: &str, program: &str, capture: &Capture) -> PathBuf {
+    let bundles = test_programs_dir().join("fixtures/bundles").join(set);
     let path = bundles.join(format!("{program}.tinfo"));
     testrun::once_per_run_each(
-        &dir.join(".stamps").join(format!("bundles-{set}")),
+        &bundles.join(".stamps"),
         &[program],
         |_| {
             let root = test_programs_dir().join("..");
@@ -305,7 +311,7 @@ pub fn bundle_path(dir: &Path, set: &str, program: &str, capture: &Capture) -> P
 /// Load `program`'s bundle and open its core, from `set` in `dir`.
 pub fn load(dir: &Path, set: &str, program: &str) -> (Bundle, Proc) {
     let capture = capture(dir, set, program);
-    let bundle = Bundle::load(&bundle_path(dir, set, program, &capture))
+    let bundle = Bundle::load(&bundle_path(set, program, &capture))
         .unwrap_or_else(|e| panic!("the {set}/{program} bundle loads: {e}"));
     (bundle, capture.open())
 }
@@ -322,7 +328,7 @@ pub fn capture_now(dir: &Path, program: &str) -> (Bundle, Proc) {
     let bin_b = testrun::fixture::build_b(&recipe, &[program]);
     take_one(dir, set, program, &bin_a, &bin_b);
     let capture = locate(dir, set, program);
-    let bundle = Bundle::load(&bundle_path(dir, set, program, &capture))
+    let bundle = Bundle::load(&bundle_path(set, program, &capture))
         .unwrap_or_else(|e| panic!("the {set}/{program} bundle loads: {e}"));
     (bundle, capture.open())
 }
