@@ -508,4 +508,15 @@ exclude_re = [
     # peer's platform id; the binding's planning and validation have
     # unit tests of their own.
     "replace Context<'b, T>::observe_peer -> Result<String, String> with Ok",
+    # The shared capture: building, parking and coring every fixture
+    # program into HANSEI_CORES, once per run. Under
+    # HANSEI_REUSE_FIXTURES it is stamped by the capture record, which
+    # reads only the fixture sources (a test in the same file pins
+    # that), so the baseline takes the cores and no mutant runs this
+    # again: every mutant here would read as missed. The stability gate
+    # and every run over fresh cores exercise it instead. `Parked`,
+    # `gcore` and `binary_args` stay swept: acceptance cores a fresh
+    # process with them in every test.
+    "testkit/cores\\.rs:.*: replace (take|take_one|sysroot|place) with \\(\\)",
+    "testkit/cores\\.rs:.* in sysroot$",
 ]

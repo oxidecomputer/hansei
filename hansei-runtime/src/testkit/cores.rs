@@ -121,12 +121,22 @@ pub fn capture(dir: &Path, set: &str, program: &str) -> Capture {
 
 /// The record a capture keeps of what its builds were built from, which
 /// a reader holds the tree it runs in to.
+///
+/// It is also the capture's stamp under [`testrun::REUSE`], which is
+/// what lets a mutation sweep take its cores once and reuse them for
+/// every mutant. That is sound only while the record reads nothing but
+/// the fixture sources: a mutant of anything else must not reach a
+/// core, and no longer can now that capturing runs no hansei code.
 fn record(set: &str, program: &str) -> String {
-    let dir = test_programs_dir();
-    let matrix = Matrix::read(&dir);
+    record_in(&test_programs_dir(), set, program)
+}
+
+/// [`record`], over the `test-programs` tree at `dir`.
+fn record_in(dir: &Path, set: &str, program: &str) -> String {
+    let matrix = Matrix::read(dir);
     matrix
         .capture_recipe(set)
-        .capture_record(&dir, &matrix, set, program)
+        .capture_record(dir, &matrix, set, program)
 }
 
 fn locate(dir: &Path, set: &str, program: &str) -> Capture {
@@ -391,5 +401,70 @@ pub fn binary_args(core: &Path) -> Vec<PathBuf> {
     match proc.needs_binary() {
         false => Vec::new(),
         true => vec![proc.exec_name().expect("the core names no executable")],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FIXTURE_SETS, PROGRAMS, record, record_in};
+
+    use testrun::fixture::test_programs_dir;
+
+    use std::fs;
+    use std::path::Path;
+
+    /// Copy the `test-programs` tree at `from` to `to`, leaving out what
+    /// is built from it.
+    fn copy_sources(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            if from == test_programs_dir() && (name == "fixtures" || name == "target") {
+                continue;
+            }
+            let ty = entry.file_type().unwrap();
+            if ty.is_dir() {
+                copy_sources(&entry.path(), &to.join(&name));
+            } else if ty.is_file() {
+                fs::copy(entry.path(), to.join(&name)).unwrap();
+            }
+        }
+    }
+
+    /// The capture's record, which is its stamp when a mutation sweep
+    /// reuses cores, is the same over a copy of `test-programs` with no
+    /// workspace around it: it reads no source outside the fixtures, so
+    /// no mutant elsewhere can change it, and a sweep's cores are taken
+    /// once. And it does read them: a changed fixture source changes
+    /// that program's record, and no other's.
+    #[test]
+    fn test_the_capture_record_reads_only_the_fixture_sources() {
+        let real = test_programs_dir();
+        let scratch = tempfile::tempdir().unwrap();
+        let alone = scratch.path().join("test-programs");
+        copy_sources(&real, &alone);
+
+        for set in FIXTURE_SETS {
+            for program in PROGRAMS {
+                assert_eq!(
+                    record_in(&alone, set, program),
+                    record(set, program),
+                    "{set}/{program}"
+                );
+            }
+        }
+
+        let (changed, other) = (PROGRAMS[0], PROGRAMS[1]);
+        let before = (
+            record_in(&alone, "linux", changed),
+            record_in(&alone, "linux", other),
+        );
+        let source = alone.join("src/bin").join(format!("{changed}.rs"));
+        let mut text = fs::read_to_string(&source).unwrap();
+        text.push_str("\n// changed\n");
+        fs::write(&source, text).unwrap();
+        assert_ne!(record_in(&alone, "linux", changed), before.0);
+        assert_eq!(record_in(&alone, "linux", other), before.1);
     }
 }
