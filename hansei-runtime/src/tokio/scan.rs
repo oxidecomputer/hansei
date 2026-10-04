@@ -1834,9 +1834,17 @@ mod tests {
     /// trie node keeps its children in a `HashMap<Vec<u8>, Node>` — is
     /// asked about once per type, and a trie of bytes holds nothing the
     /// scan reports.
+    ///
+    /// Only the illumos set's bundle carries the trie: the type reaches
+    /// it through reqwest's cookie static, which the fixture never uses,
+    /// and the illumos build of it keeps that static where the Linux
+    /// build does not.
     #[test]
     fn test_a_type_reached_through_its_own_table_is_asked_about_once() {
-        let (bundle, snapshot) = testkit::load_any("http-conns");
+        if !testkit::reads("illumos") {
+            return;
+        }
+        let (bundle, snapshot) = testkit::load("illumos", "http-conns");
         let ctx = testkit::context(&bundle, &snapshot);
         let node = ctx
             .view
