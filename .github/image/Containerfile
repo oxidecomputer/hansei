@@ -1,0 +1,149 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# The Linux test environment. Every Linux run of hansei's suites happens
+# in this image, on a developer's Linux host and in CI alike, through
+# .github/scripts/in-image.sh. The cores the suites take show the C
+# library's frames, and the goldens print them, so the C library has
+# to be the same wherever a golden is blessed or checked; pinning the
+# image is how it stays the same.
+#
+# The image carries no Rust toolchain. rustup is installed with an
+# empty RUSTUP_HOME, which in-image.sh mounts a cache directory over,
+# and every toolchain, rust-toolchain.toml's included, installs into
+# that. rustup already pins a stable release exactly, so a toolchain
+# baked in here would add nothing to the pin, and advancing the
+# toolchain stays an ordinary commit that leaves the image alone.
+# cargo-nextest and cargo-mutants are installed into /usr/local/bin,
+# outside CARGO_HOME, so no mount hides them.
+#
+# The image is referenced by digest (.github/image/pinned), never by
+# tag. Changing it is deliberate:
+#
+#   1. Commit the change to this file and push the branch to GitHub.
+#      The push runs the "linux image" workflow, which builds the image,
+#      pushes it to GHCR, and prints the digest in its summary.
+#   2. On a Linux host, pull the image by that digest and re-bless the
+#      Linux goldens in it (HANSEI_IMAGE=<image@digest>
+#      .github/scripts/in-image.sh …).
+#   3. Record the digest in .github/image/pinned, together with the
+#      re-blessed goldens, and push again.
+#
+# The image is labelled with the commit it was built from and with this
+# file's git blob id, so it stays tied to this file however the
+# branch's history is rewritten: it is valid while
+# `git rev-parse HEAD:.github/image/Containerfile` matches its
+# hansei.containerfile label, and changing this file means building it
+# again. Never push an image built anywhere else: the labels are what
+# show the tracked file produced the pinned image, and a build is not
+# reproducible (layer timestamps, packages as the mirrors serve them
+# that day), so a rebuild is a new image to re-bless.
+
+ARG UBUNTU=docker.io/library/ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+
+# gcore takes every core the suites read, so its version is pinned
+# here rather than left to the distribution's. glibc now guards thread
+# stacks with in-VMA guard pages (MADV_GUARD_INSTALL), which merge
+# neighboring stacks into one mapping with unreadable pages inside;
+# before gdb 18, gcore gives up on a whole region at the first page it
+# cannot read and writes it out as zeros, so every worker thread's
+# stack and thread-locals in the core read back as zeros. Ubuntu
+# 26.04's gdb is 17.1. 18.1 is built from the GNU release tarball
+# (its signature checked against the GNU keyring when the checksum was
+# taken), with only what gcore and the suites' own gdb runs use.
+FROM ${UBUNTU} AS gdb
+ARG GDB_VERSION=18.1
+ARG GDB_SHA256=cd9fc3fe2b47743840e42c1592d3d87f8302eb18639c0b8b4ba0898002e2348f
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        g++ \
+        libexpat1-dev \
+        libgmp-dev \
+        libmpfr-dev \
+        libncurses-dev \
+        make \
+        xz-utils \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -sSfL --retry 5 --retry-all-errors -o /tmp/gdb.tar.xz "https://ftp.gnu.org/gnu/gdb/gdb-${GDB_VERSION}.tar.xz" \
+    && echo "${GDB_SHA256}  /tmp/gdb.tar.xz" | sha256sum -c - \
+    && mkdir /tmp/gdb && tar -xJf /tmp/gdb.tar.xz -C /tmp/gdb --strip-components=1 \
+    && mkdir /tmp/gdb/build && cd /tmp/gdb/build \
+    && ../configure --prefix=/opt/gdb \
+        --disable-nls --disable-werror --disable-sim --disable-gdbserver \
+        --disable-tui --without-python --without-guile --without-debuginfod \
+        --without-babeltrace --without-lzma --without-xxhash --with-expat \
+    && make -j"$(nproc)" all-gdb MAKEINFO=true \
+    && make install-gdb MAKEINFO=true \
+    && rm -rf /tmp/gdb /tmp/gdb.tar.xz
+
+FROM ${UBUNTU}
+
+# gcc, libc6-dev and make build the C parts of the workspace's and the
+# fixtures' dependencies (zstd-sys, libmimalloc-sys, ring); rsync is
+# how regen.sh copies the fixture crate for a matrix cell's build;
+# libexpat1, libgmp10 and libmpfr6 are what the gdb built above links;
+# tini is the container's init.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gcc \
+        git \
+        libc6-dev \
+        libexpat1 \
+        libgmp10 \
+        libmpfr6 \
+        make \
+        procps \
+        rsync \
+        tini \
+        xz-utils \
+        zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+# The suites start and kill fixture programs by the hundred, and an
+# orphan whose parent exits is reaped only by an init. The image brings
+# its own rather than rely on podman's --init, which needs an init
+# binary installed on the host.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+COPY --from=gdb /opt/gdb /opt/gdb
+ENV PATH=/opt/gdb/bin:$PATH
+RUN gdb --version | head -1 && command -v gcore
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+# rustup's proxies (cargo, rustc, …) live in CARGO_HOME/bin. Nothing is
+# left in RUSTUP_HOME, so the cache mounted over it hides nothing.
+ARG RUSTUP_VERSION=1.29.1
+ARG RUSTUP_SHA256=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
+RUN curl -sSfL --retry 5 --retry-all-errors -o /tmp/rustup-init \
+        "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init" \
+    && echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum -c - \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain none \
+    && rm /tmp/rustup-init \
+    && rm -rf "${RUSTUP_HOME:?}"/* \
+    && chmod -R a+rwX "$CARGO_HOME" "$RUSTUP_HOME"
+
+ARG NEXTEST_VERSION=0.9.143
+ARG NEXTEST_SHA256=66786b9abe23920d022a182d1416b1bbc8130dd4872a9553d76985a1708dcd1e
+RUN curl -sSfL --retry 5 --retry-all-errors -o /tmp/nextest.tar.gz \
+        "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${NEXTEST_VERSION}/cargo-nextest-${NEXTEST_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+    && echo "${NEXTEST_SHA256}  /tmp/nextest.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/nextest.tar.gz -C /usr/local/bin cargo-nextest \
+    && rm /tmp/nextest.tar.gz
+
+ARG MUTANTS_VERSION=27.1.0
+ARG MUTANTS_SHA256=dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e
+RUN curl -sSfL --retry 5 --retry-all-errors -o /tmp/mutants.tar.gz \
+        "https://github.com/sourcefrog/cargo-mutants/releases/download/v${MUTANTS_VERSION}/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz" \
+    && echo "${MUTANTS_SHA256}  /tmp/mutants.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/mutants.tar.gz -C /usr/local/bin cargo-mutants \
+    && rm /tmp/mutants.tar.gz

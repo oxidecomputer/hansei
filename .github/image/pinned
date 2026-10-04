@@ -1,0 +1,4 @@
+# The Linux test image .github/scripts/in-image.sh runs, by digest.
+# Changed only by the second commit of the procedure in the
+# Containerfile's header; "unpinned" until the image is first built.
+unpinned

@@ -1,0 +1,67 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# Build the Linux test image from .github/image/Containerfile, push it
+# to GHCR labelled with the commit it was built from and the
+# Containerfile's git blob id, and print its digest for
+# .github/image/pinned. This is step 2 of the procedure in the
+# Containerfile's header. A branch push that changes the Containerfile
+# or this workflow runs it; so can a dispatch. main never does: what
+# reaches main was built and pinned on its branch, and a rebuild would
+# be a different image.
+#
+# The blob id is the label that survives a branch's history being
+# rewritten: a pinned image whose blob id matches the Containerfile's
+# (git rev-parse HEAD:.github/image/Containerfile) was built from it,
+# whatever became of the commit.
+
+name: linux image
+
+on:
+  push:
+    branches-ignore: [main]
+    paths:
+      - .github/image/Containerfile
+      - .github/workflows/linux-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-26.04
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/hansei-ci
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build
+        run: |
+          podman build --platform linux/amd64 \
+            --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }} \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --label "hansei.containerfile=$(git rev-parse HEAD:.github/image/Containerfile)" \
+            --label "org.opencontainers.image.description=hansei's Linux test environment" \
+            -t "$IMAGE:${{ github.sha }}" \
+            -f .github/image/Containerfile .github/image
+
+      - name: Push
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          podman login ghcr.io -u "${{ github.actor }}" --password-stdin <<<"$TOKEN"
+          podman push --digestfile "$RUNNER_TEMP/digest" "$IMAGE:${{ github.sha }}"
+          pinned="$IMAGE@$(cat "$RUNNER_TEMP/digest")"
+          echo "$pinned"
+          {
+            echo "Built from \`${{ github.sha }}\`. To pin it, write this line"
+            echo "into \`.github/image/pinned\`:"
+            echo
+            echo '```'
+            echo "$pinned"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
