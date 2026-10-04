@@ -45,10 +45,80 @@ pub(crate) fn session_args(set: &str, program: &str) -> SessionArgs {
     }
 }
 
+/// The task a program's goldens aim their first-task commands at, named
+/// as `tasks` prints its type: the task each was written against. A
+/// capture's listing order is no fixture's to fix — tokio's ids, or a
+/// fresh core's canonical ones — so the name holds it still.
+const FIRST_TASKS: &[(&str, &str)] = &[
+    ("armed-select", "async fn armed_select::selector"),
+    (
+        "blocking-pool",
+        "future tokio::runtime::blocking::task::BlockingTask<\
+         blocking_pool::main::{async_block#0}::{closure_env#0}>",
+    ),
+    ("channels", "async fn channels::notify_waiter"),
+    ("ct-runtime", "async fn ct_runtime::sleeper"),
+    (
+        "delegation-cases",
+        "future Pin<Box<delegation_cases::Gated<1>>>",
+    ),
+    ("dyn-future", "async fn dyn_future::driver"),
+    ("foreign-runtime", "async fn foreign_runtime::joined"),
+    (
+        "futurelock",
+        "async block futurelock::main::{async_block#0}",
+    ),
+    ("gen-0007", "async fn gen_0007::driver_00"),
+    ("http-conns", "async fn http_conns::accept_loop"),
+    ("joinset", "async fn joinset::driver"),
+    ("local-set-io", "async fn local_set_io::local_reader"),
+    ("local-set", "async fn local_set::local_sleeper"),
+    ("local-set-timer", "async fn local_set_timer::local_sleeper"),
+    ("nested-await", "async fn nested_await::outer"),
+    ("simple-await", "async fn simple_await::work"),
+    ("sleep-join", "async fn sleep_join::sleeper"),
+    ("tls-conns", "async fn tls_conns::plain_client"),
+    ("two-releases", "async fn two_releases::keeper"),
+    ("unordered", "async fn unordered::driver"),
+    ("walk-shapes", "async fn walk_shapes::chained"),
+    ("watch-stream", "async fn watch_stream::resolver"),
+];
+
+/// Where a program's first task holds no future, the task whose first
+/// find its `future-held` golden shows instead, named the same way. Of
+/// several tasks of one name it is the first in listing order, which
+/// among tasks spawned at one site is the order they were spawned in.
+const HELD_OWNERS: &[(&str, &str)] = &[("http-conns", "async fn http_conns::serve")];
+
+/// The first task in `session` named `name` as `tasks` prints its type,
+/// which must be there: a fixture whose named task is gone has changed
+/// under its goldens.
+fn task_named<'s, T: proc::Target>(
+    session: &'s Session<'_, T>,
+    program: &str,
+    name: &str,
+) -> &'s bundle::Task {
+    let names = crate::typenames::TypeNames::of(session);
+    session
+        .tasks
+        .tasks
+        .iter()
+        .find(|task| crate::tasks::future_name(&task.future, &names) == name)
+        .unwrap_or_else(|| panic!("{program} runs no task `{name}`"))
+}
+
+/// [`FIRST_TASKS`]' task in `session`.
+fn first_task<'s, T: proc::Target>(session: &'s Session<'_, T>, program: &str) -> &'s bundle::Task {
+    let (_, name) = FIRST_TASKS
+        .iter()
+        .find(|(p, _)| *p == program)
+        .unwrap_or_else(|| panic!("{program} names no first task in FIRST_TASKS"));
+    task_named(session, program, name)
+}
+
 /// The command list every pair answers. The single-target commands
-/// aim at the first task — the listing is sorted by id, so the target
-/// is as stable as the fixture — and each entry carries the label its
-/// golden file is named with.
+/// aim at the program's first task ([`FIRST_TASKS`]), and each entry
+/// carries the label its golden file is named with.
 fn commands<T: proc::Target>(
     session: &Session<'_, T>,
     program: &str,
@@ -183,7 +253,21 @@ fn commands<T: proc::Target>(
     {
         list.push(("future-child", format!("future {node:#x}")));
     }
-    if let Some(held) = session.census().held.first() {
+    // The first find of the task the program names in HELD_OWNERS, or
+    // else of its first task where that holds one, as the census lists
+    // finds by task; any otherwise.
+    let first = first_task(session, program);
+    let owner = match HELD_OWNERS.iter().find(|(p, _)| *p == program) {
+        Some((_, name)) => task_named(session, program, name),
+        None => first,
+    };
+    let census = session.census();
+    if let Some(held) = census
+        .held
+        .iter()
+        .find(|held| session.tasks.tasks[held.owner].addr == owner.addr)
+        .or_else(|| census.held.first())
+    {
         list.push(("future-held", format!("future {:#x}", held.addr)));
     }
     // One connection of each kind the fixture holds, in full — an HTTP
@@ -220,7 +304,8 @@ fn commands<T: proc::Target>(
     if let Some(lwp) = session.lwps.first() {
         list.push(("thread-one", format!("thread {}", lwp.tid)));
     }
-    if let Some(task) = session.tasks.tasks.first() {
+    {
+        let task = first;
         if let Some(id) = task.task_id {
             list.push(("trace-first", format!("trace {id} -n")));
             // The cut keeps the most recent frame and earns the

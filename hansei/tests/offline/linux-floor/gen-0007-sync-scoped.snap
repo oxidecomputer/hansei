@@ -2,11 +2,8 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux-floor/gen-0007"
 ---
-task 2001 (async fn gen_0007::member_02): idle
-    Member of: a tokio::task::join_set::JoinSet<u64> (set 0xA1), driven by task 2005
-
 a tokio::task::join_set::JoinSet<u64> (set 0xA1): 2 members, driven by task 2005 (`v1`)
     Members (idle): task 2002, task 2001
 
-notify 0xA2: waiting
-    rx: task 2001
+a futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> (set 0xA2): 3 children, driven by task 2005 (`v0`)
+    In flight: 3

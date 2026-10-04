@@ -3,9 +3,10 @@ source: hansei/src/offline.rs
 description: "`future 0xA1` over linux-floor/http-conns"
 ---
 future 0xA1
-    type: future futures_channel::oneshot::Receiver<core::convert::Infallible>
-    held by: task 2003 (frame 1, `self`)
-    depth: 1 frame
-    awaiting on: futures_channel::lock::Lock @ 0xA2
+    type: future hyper_util::rt::tokio::TokioSleep
+    held by: task 2004 (frame 0, `conn`)
+    depth: 3 frames
+    awaiting on: timer (deadline TS on the target's monotonic clock)
+        waker: timer @ 0xA2
     held futures: 0
     join sets: 0

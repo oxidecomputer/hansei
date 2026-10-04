@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`print no_such_member` over linux/delegation-cases"
 ---
-error: type delegation_cases::Probe<7> has no member named no_such_member (members: case, ready, tag)
+error: type delegation_cases::Gated<1> has no member named no_such_member (members: gate, child, ready)

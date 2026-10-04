@@ -1,25 +1,16 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 2001 -n` over linux/http-conns"
+description: "`trace 2009 -n` over linux/http-conns"
 ---
-#0  future  hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<reqwest::async_impl::body::Body>, reqwest::async_impl::body::Body, reqwest::connect::sealed::Conn, hyper::proto::h1::role::Client>
-      waiting on http1 client 0xA1 fd N (GET sent, awaiting response headers)
-      via oneshot tx 0xA2 (nothing sent, receiver alive)
-      caller task 2011
-      request GET http://127.0.0.1:PORT/park
-#1  future  hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>
-      defined at hyper-1.10.1/src/client/conn/http1.rs:622 (Some, 0 locals)
-#2  future  futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>>
-      defined at futures-util-0.3.33/src/future/try_future/into_future.rs:33 (<no_state>, 1 local)
-#3  future  futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>>, futures_util::fns::MapErrFn<hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<reqwest::connect::Connector, reqwest::async_impl::body::Body>>>
-      defined at futures-util-0.3.33/src/future/future/map.rs:52 (Incomplete, 2 locals)
-#4  future  futures_util::future::future::Map<futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>>, futures_util::fns::MapErrFn<hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<reqwest::connect::Connector, reqwest::async_impl::body::Body>>>
-      defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
-#5  future  futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<reqwest::connect::Connector, reqwest::async_impl::body::Body>>
-      defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
-#6  future  futures_util::future::future::map::Map<futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<reqwest::connect::Connector, reqwest::async_impl::body::Body>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#3}<reqwest::connect::Connector, reqwest::async_impl::body::Body>>
-      defined at futures-util-0.3.33/src/future/future/map.rs:52 (Incomplete, 1 local)
-#7  future  futures_util::future::future::Map<futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<reqwest::connect::Connector, reqwest::async_impl::body::Body>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#3}<reqwest::connect::Connector, reqwest::async_impl::body::Body>> [dyn]
-      defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
-#8  future  Pin<Box<(dyn Future<Output=()> + Send)>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+#0  future  tokio::runtime::io::scheduled_io::Readiness
+      waiting on io fd N (readable)
+#1  async fn  tokio::runtime::io::scheduled_io::ScheduledIo::readiness
+      awaiting at tokio-1.52.4/src/runtime/io/scheduled_io.rs:385 (Suspend0, 0 locals)
+#2  async fn  tokio::runtime::io::registration::Registration::readiness
+      awaiting at tokio-1.52.4/src/runtime/io/registration.rs:205 (Suspend0, 0 locals)
+#3  async fn  tokio::runtime::io::registration::Registration::async_io<(mio::net::tcp::stream::TcpStream, core::net::socket_addr::SocketAddr), tokio::net::tcp::listener::TcpListener::accept::{async_fn#0}::{closure_env#0}>
+      awaiting at tokio-1.52.4/src/runtime/io/registration.rs:220 (Suspend0, 3 locals)
+#4  async fn  tokio::net::tcp::listener::TcpListener::accept
+      awaiting at tokio-1.52.4/src/net/tcp/listener.rs:164 (Suspend0, 0 locals)
+#5  async fn  http_conns::accept_loop
+      awaiting at src/bin/http-conns.rs:151 (Suspend0, 3 locals)

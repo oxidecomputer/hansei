@@ -3,9 +3,9 @@ source: hansei/src/offline.rs
 description: "`whatis 0xA1` over illumos/http-conns"
 ---
 Status: live
-Size:  256 bytes
+Size:  512 bytes
 
-Task 2001: future Pin<Box<(dyn Future<Output=()> + Send)>>
+Task 2009: async fn http_conns::accept_loop
     At: offset 0xA1 in the task's allocation (header 0xA2)
     State: idle
-    Spawned at: hyper-util-0.1.20/src/rt/tokio.rs:115:9
+    Spawned at: src/bin/http-conns.rs:201:28

@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`print no_such_member` over illumos/walk-shapes"
 ---
-error: type tokio::sync::batch_semaphore::Acquire has no member named no_such_member (members: node, semaphore, num_permits, queued)
+error: type walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}>> has no member named no_such_member (members: tag, inner)

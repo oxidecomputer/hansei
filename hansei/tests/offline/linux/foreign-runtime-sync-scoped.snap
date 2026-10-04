@@ -2,5 +2,9 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux/foreign-runtime"
 ---
+a tokio::sync::Semaphore (semaphore 0xA1): 0 permits available
+    Blocked on it: task 2002 (1 permit requested)
+    Wake queue: task 2002
+
 task 2002 (async fn foreign_runtime::joined): idle
     Waited by: task 2001

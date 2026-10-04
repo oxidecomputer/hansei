@@ -2,12 +2,6 @@
 source: hansei/src/offline.rs
 description: "`print` over linux-floor/two-releases"
 ---
-async_channel::Recv<u32> {
-    receiver: 0xA1 -> async_channel::Receiver<u32> { .. },
-    listener: core::option::Option<event_listener::EventListener> = Some {
-        inner: alloc::sync::Arc<event_listener::Inner, alloc::alloc::Global> {
-            ptr: 0xA2 -> alloc::sync::ArcInner<event_listener::Inner> { .. },
-        },
-        entry: core::option::Option<core::ptr::non_null::NonNull<event_listener::Entry>> { .. } @ 0xA3,
-    },
+tokio::sync::oneshot::Receiver<u32> {
+    inner: core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>> = Some(0xA1 -> alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>> { .. }),
 }

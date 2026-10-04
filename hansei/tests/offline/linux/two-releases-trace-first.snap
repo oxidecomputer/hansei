@@ -1,10 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 2001 -n` over linux/two-releases"
+description: "`trace 2003 -n` over linux/two-releases"
 ---
-#0  future  async_channel::Recv<u32>
-      defined at async-channel-1.9.0/src/lib.rs:1169 (<no_state>, 2 locals; holds 1 pending future)
-#1  future  Pin<Box<async_channel::Recv<u32>>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#2  async fn  two_releases::old_waiter
-      awaiting at src/bin/two-releases.rs:63 (Suspend0, 1 local)
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA1 (nothing sent, sender alive)
+#1  async fn  two_releases::keeper
+      awaiting at src/bin/two-releases.rs:42 (Suspend0, 6 locals)

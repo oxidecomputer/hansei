@@ -1,10 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 2001 -n` over illumos/delegation-cases"
+description: "`trace 2010 -n` over illumos/delegation-cases"
 ---
-#0  future  delegation_cases::Probe<7> [dyn]
-      defined at src/bin/delegation-cases.rs:33 (<no_state>, 3 locals)
-#1  future  Pin<Box<(dyn Future<Output=()> + Send)>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#2  future  Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
+#0  future  delegation_cases::Gated<1>
+      defined at src/bin/delegation-cases.rs:63 (<no_state>, 3 locals; holds 1 pending future)
+#1  future  Pin<Box<delegation_cases::Gated<1>>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)

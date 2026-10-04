@@ -1,16 +1,19 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 2001` over linux-floor/walk-shapes"
+description: "`task 2003` over linux-floor/walk-shapes"
 ---
-task 2001
+task 2003
     state: idle
     thread: <none>
-    owner: runtime 1 @ 0xA1 (current_thread, no thread inside it)
-    type: async fn walk_shapes::hidden_blocked
-    awaiting at: src/bin/walk-shapes.rs:180
-    awaiting on: a tokio::sync::Semaphore (semaphore 0xA2): 1 permit requested, 0 available; wake queue: task 2007, task 2008, task 2001
-        waker: its wake-queue node @ 0xA3
-    spawned at: src/bin/walk-shapes.rs:194:18
-    type defined at: src/bin/walk-shapes.rs:177
-    held futures: 0
+    owner: runtime 0 @ 0xA1 (current_thread)
+    type: async fn walk_shapes::chained
+    awaiting at: src/bin/walk-shapes.rs:116
+    awaiting on:
+        inner: walk_shapes::WrapE<walk_shapes::deep>
+            held in: frame 0 `inner`
+            awaiting on: notify rx 0xA2 (waiting)
+            type defined at: src/bin/walk-shapes.rs:77
+    spawned at: src/bin/walk-shapes.rs:258:9
+    type defined at: src/bin/walk-shapes.rs:105
+    held futures: 2
     join sets: 0

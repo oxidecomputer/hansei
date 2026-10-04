@@ -2,4 +2,5 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux/two-releases"
 ---
-task 2001 is party to no decoded relation: nothing waits to join it, and it blocks on no semaphore, drives no set and parks in no channel
+oneshot 0xA1: nothing sent, sender alive
+    rx: task 2003

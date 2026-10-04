@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 2001 -l 1` over linux-floor/delegation-cases"
+description: "`trace 2010 -l 1` over linux-floor/delegation-cases"
 ---
-#0  future  delegation_cases::Probe<7> [dyn]
-      defined at src/bin/delegation-cases.rs:33 (<no_state>, 3 locals)
-[3 frames, 1 shown]
+#0  future  delegation_cases::Gated<1>
+      defined at src/bin/delegation-cases.rs:63 (<no_state>, 3 locals; holds 1 pending future)
+[2 frames, 1 shown]

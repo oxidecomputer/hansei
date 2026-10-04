@@ -2,8 +2,18 @@
 source: hansei/src/offline.rs
 description: "`print` over linux/delegation-cases"
 ---
-delegation_cases::Probe<7> {
-    case: 6,
-    ready: core::option::Option<std::sync::mpsc::Sender<usize>> = Some(std::sync::mpmc::SenderFlavor<usize> { .. } @ 0xA1),
-    tag: 7,
+delegation_cases::Gated<1> {
+    gate: delegation_cases::Gate {
+        open: false,
+    },
+    child: delegation_cases::Probe<1> {
+        case: 0,
+        ready: core::option::Option<std::sync::mpsc::Sender<usize>> { .. } @ 0xA1,
+        tag: 1,
+    },
+    ready: std::sync::mpsc::Sender<usize> {
+        inner: std::sync::mpmc::Sender<usize> {
+            flavor: std::sync::mpmc::SenderFlavor<usize> = List(0xA2 -> std::sync::mpmc::counter::Counter<std::sync::mpmc::list::Channel<usize>> { .. }),
+        },
+    },
 }

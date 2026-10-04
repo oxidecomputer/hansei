@@ -2,15 +2,15 @@
 source: hansei/src/offline.rs
 description: "`print` over illumos/foreign-runtime"
 ---
-tokio::runtime::task::join::JoinHandle<u32> {
-    raw: tokio::runtime::task::raw::RawTask {
-        ptr: 0xA1 -> tokio::runtime::task::core::Header {
-                state: tokio::runtime::task::state::State {
-                    val: 216,
-                },
-                queue_next: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::ptr::non_null::NonNull<tokio::runtime::task::core::Header>>> { .. } @ 0xA2,
-                vtable: 0xA3 -> tokio::runtime::task::raw::Vtable { .. },
-                owner_id: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::num::nonzero::NonZero<u64>>> { .. } @ 0xA4,
-            },
+tokio::sync::batch_semaphore::Acquire {
+    node: tokio::sync::batch_semaphore::Waiter {
+        state: 1,
+        waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xA1,
+        pointers: tokio::util::linked_list::Pointers<tokio::sync::batch_semaphore::Waiter> {
+            inner: core::cell::UnsafeCell<tokio::util::linked_list::PointersInner<tokio::sync::batch_semaphore::Waiter>> { .. } @ 0xA2,
+        },
     },
+    semaphore: 0xA3 -> tokio::sync::batch_semaphore::Semaphore { .. },
+    num_permits: 1,
+    queued: true,
 }

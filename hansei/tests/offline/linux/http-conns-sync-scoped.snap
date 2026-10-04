@@ -2,5 +2,4 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux/http-conns"
 ---
-oneshot 0xA1: nothing sent, sender alive
-    tx: task 2001
+task 2009 is party to no decoded relation: nothing waits to join it, and it blocks on no semaphore, drives no set and parks in no channel

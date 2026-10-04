@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 2001 -l 1` over linux/dyn-future"
+description: "`trace 2002 -l 1` over linux/dyn-future"
 ---
 #0  future  tokio::sync::oneshot::Receiver<u32>
       waiting on oneshot rx 0xA1 (nothing sent, sender alive)
-[2 frames, 1 shown]
+[4 frames, 1 shown]

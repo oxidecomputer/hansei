@@ -1,12 +1,16 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 2001` over linux-floor/delegation-cases"
+description: "`task 2010` over linux-floor/delegation-cases"
 ---
-task 2001
+task 2010
     state: idle
     thread: <none>
-    type: future Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
-    awaiting on: unarmed: unknown at delegation_cases::Probe
+    type: future Pin<Box<delegation_cases::Gated<1>>>
+    awaiting on: unarmed: unknown at delegation_cases::Gated (holds 1 future)
+        child: delegation_cases::Probe<1>
+            held in: frame 0 `child`
+            awaiting on: unknown
+            type defined at: src/bin/delegation-cases.rs:33
     spawned at: src/bin/delegation-cases.rs:197:8
-    held futures: 0
+    held futures: 1
     join sets: 0

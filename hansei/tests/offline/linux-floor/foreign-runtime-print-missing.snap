@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`print no_such_member` over linux-floor/foreign-runtime"
 ---
-error: type tokio::runtime::task::core::Header has no member named no_such_member (members: state, queue_next, vtable, owner_id)
+error: type tokio::sync::batch_semaphore::Acquire has no member named no_such_member (members: node, semaphore, num_permits, queued)

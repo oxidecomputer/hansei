@@ -2,5 +2,6 @@
 source: hansei/src/offline.rs
 description: "`children` over illumos/delegation-cases"
 ---
-held futures: 0
+held futures: 1
+    (frame 0, `child`): 0xA1  future delegation_cases::Probe<1>
 join sets: 0
