@@ -313,10 +313,10 @@ mod tests {
     /// of an address is cut at the hole and at the run's end.
     #[test]
     fn test_a_denied_range_has_exact_edges() {
-        let (_, snapshot) = testkit::load_any("sleep-join");
-        let (base, len) = a_run(&snapshot);
+        let (_, core) = testkit::load_any("sleep-join");
+        let (base, len) = a_run(&core);
         let hole = base + 16..base + 32;
-        let corrupt = Corrupt::new(&snapshot).deny(hole.clone());
+        let corrupt = Corrupt::new(&core).deny(hole.clone());
 
         assert!(corrupt.read_bytes(base, 16).is_ok());
         assert!(corrupt.read_bytes(base + 15, 1).is_ok());
@@ -329,7 +329,7 @@ mod tests {
         assert!(corrupt.read_bytes(base + 32, len - 31).is_err());
         assert_eq!(
             corrupt.read_bytes(base + 32, 8).unwrap(),
-            snapshot.read_bytes(base + 32, 8).unwrap()
+            core.read_bytes(base + 32, 8).unwrap()
         );
 
         assert_eq!(corrupt.readable_len(base, 100), 16);
@@ -344,19 +344,19 @@ mod tests {
     /// of the run reads as captured.
     #[test]
     fn test_a_patch_changes_only_its_bytes() {
-        let (_, snapshot) = testkit::load_any("sleep-join");
-        let (base, _) = a_run(&snapshot);
-        let corrupt = Corrupt::new(&snapshot)
+        let (_, core) = testkit::load_any("sleep-join");
+        let (base, _) = a_run(&core);
+        let corrupt = Corrupt::new(&core)
             .patch(base + 8, 0x1122_3344_5566_7788)
             .patch_byte(base + 20, 0xab);
-        let before = snapshot.read_bytes(base, 32).unwrap();
+        let before = core.read_bytes(base, 32).unwrap();
         let after = corrupt.read_bytes(base, 32).unwrap();
         assert_eq!(&after[..8], &before[..8]);
         assert_eq!(&after[8..16], &0x1122_3344_5566_7788u64.to_le_bytes());
         assert_eq!(&after[16..20], &before[16..20]);
         assert_eq!(after[20], 0xab);
         assert_eq!(&after[21..], &before[21..]);
-        let mut blind = Corrupt::new(&snapshot);
+        let mut blind = Corrupt::new(&core);
         assert!(!blind.try_patch(0xdead_beef_0000, 1));
         assert!(blind.try_patch(base, 1));
     }
@@ -364,10 +364,10 @@ mod tests {
     /// Everything that is not memory is the healthy capture's.
     #[test]
     fn test_symbols_and_mappings_are_the_captures() {
-        let (_, snapshot) = testkit::load_any("sleep-join");
-        let corrupt = Corrupt::new(&snapshot).deny(0..0x1000);
+        let (_, core) = testkit::load_any("sleep-join");
+        let corrupt = Corrupt::new(&core).deny(0..0x1000);
         let name = testkit::expect::SYMBOL;
-        let inner = snapshot
+        let inner = core
             .lookup_symbol_by_name(name)
             .expect("the fixture exports it");
         let ours = corrupt.lookup_symbol_by_name(name).expect("delegated");
@@ -376,26 +376,22 @@ mod tests {
             corrupt
                 .lookup_symbol_by_addr(inner.st_value)
                 .map(|s| s.st_value),
-            snapshot
-                .lookup_symbol_by_addr(inner.st_value)
+            core.lookup_symbol_by_addr(inner.st_value)
                 .map(|s| s.st_value)
         );
         assert!(!corrupt.symbols().unwrap().is_empty());
         assert_eq!(
             corrupt.symbols().unwrap().len(),
-            snapshot.symbols().unwrap().len()
+            core.symbols().unwrap().len()
         );
         assert_eq!(
             corrupt.object_symbols().unwrap().len(),
-            snapshot.object_symbols().unwrap().len()
+            core.object_symbols().unwrap().len()
         );
-        assert_eq!(
-            corrupt.lwps().unwrap().len(),
-            snapshot.lwps().unwrap().len()
-        );
+        assert_eq!(corrupt.lwps().unwrap().len(), core.lwps().unwrap().len());
         assert_eq!(
             corrupt.mappings().unwrap().contains_addr(inner.st_value),
-            snapshot.mappings().unwrap().contains_addr(inner.st_value)
+            core.mappings().unwrap().contains_addr(inner.st_value)
         );
     }
 }

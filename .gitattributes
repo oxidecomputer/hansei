@@ -1,6 +1,0 @@
-# Target snapshots are raw serialized captures (see proc/src/snapshot.rs
-# for why they are not compressed): stored uncompressed so that git
-# delta-compresses consecutive recaptures, which a compressed frame
-# would defeat. Do not add -delta here — that is the effect being
-# relied on. They are not text and have no diff worth rendering.
-hansei-runtime/tests/fixtures/**/*.snapshot -diff merge=binary

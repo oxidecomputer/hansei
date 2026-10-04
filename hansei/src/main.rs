@@ -40,8 +40,6 @@ mod relations;
 pub mod repl;
 mod runtimes;
 mod settings;
-#[cfg(feature = "snapshot")]
-mod snapshot_cmd;
 pub mod summary;
 mod sync;
 mod tasks;
@@ -949,51 +947,6 @@ pub enum Command {
         /// a count, or `off` for no limit; `pager` takes a shell
         /// command (quoted where it carries flags), or `off`.
         value: Option<String>,
-    },
-
-    /// Capture a replayable snapshot of everything the analysis reads
-    /// from the target: task enumeration and every task's
-    /// await chain are driven once with a recording wrapper in place,
-    /// and the memory, symbol, and lwp state they touched is written
-    /// out. Together with tokio info extracted from a *separate* build
-    /// of the same source, the snapshot feeds the offline two-binary
-    /// tests.
-    #[cfg(feature = "snapshot")]
-    #[command(hide = true)]
-    Snapshot {
-        /// Where to write the snapshot. Written beside itself first
-        /// and renamed into place once complete, so a capture that
-        /// fails leaves whatever was there before.
-        output: PathBuf,
-
-        /// Fail the capture once its read log — every byte read,
-        /// duplicates included until the snapshot merges them — would
-        /// hold more than this many bytes. A resource bound for an
-        /// intentionally large capture, not a way to trim one.
-        #[arg(
-            long,
-            value_name = "BYTES",
-            default_value_t = proc::snapshot::CaptureLimits::default().read_log_bytes
-        )]
-        max_log_bytes: u64,
-
-        /// Fail the capture once its read log would hold more than
-        /// this many reads.
-        #[arg(
-            long,
-            value_name = "N",
-            default_value_t = proc::snapshot::CaptureLimits::default().read_log_entries
-        )]
-        max_log_entries: u64,
-
-        /// Fail the capture once the written snapshot would exceed
-        /// this many bytes.
-        #[arg(
-            long,
-            value_name = "BYTES",
-            default_value_t = proc::snapshot::CaptureLimits::default().output_bytes
-        )]
-        max_output_bytes: u64,
     },
 
     /// List the contended synchronization primitives: one block per
@@ -2326,20 +2279,6 @@ pub fn dispatch<T: Target>(
         Command::SaveTokioInfo { output } => exec_save_tokio_info(session, &output, out)?,
         Command::Config { key, value } => {
             settings::exec_config(&session.settings, key.as_deref(), value.as_deref(), out)?
-        }
-        #[cfg(feature = "snapshot")]
-        Command::Snapshot {
-            output,
-            max_log_bytes,
-            max_log_entries,
-            max_output_bytes,
-        } => {
-            let limits = proc::snapshot::CaptureLimits {
-                read_log_bytes: max_log_bytes,
-                read_log_entries: max_log_entries,
-                output_bytes: max_output_bytes,
-            };
-            snapshot_cmd::exec_snapshot(session, &output, limits, out)?
         }
         Command::Sync { addr, kind } => sync::exec_sync(session, addr, kind, out)?,
         Command::Channels { addr } => sync::exec_sync(session, addr, sync::CHANNELS.to_vec(), out)?,

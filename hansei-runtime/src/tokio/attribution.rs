@@ -3399,18 +3399,13 @@ mod tests {
         assert!(!attributed.find_armed(find("spare_tick")));
         // The set's two children each park on a oneshot whose receiver
         // slot holds the set's waker, not the task's: one owner-typed
-        // slot per child. A snapshot never captured those cells, and a
-        // core carries them.
+        // slot per child.
         let children: Vec<&AttributedSlot> = attributed
             .slots
             .iter()
             .filter(|s| matches!(s.owner, Owner::Child { .. }))
             .collect();
-        let expected = match snapshot {
-            Fixture::Core(_) => 2,
-            Fixture::Snapshot(_) => 0,
-        };
-        assert_eq!(children.len(), expected, "{children:#?}");
+        assert_eq!(children.len(), 2, "{children:#?}");
         let mut seen: Vec<usize> = Vec::new();
         for slot in &children {
             let Owner::Child { set: 0, child } = slot.owner else {

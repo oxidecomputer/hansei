@@ -50,13 +50,11 @@ use std::thread;
 pub const CORES: &str = "HANSEI_CORES";
 
 /// The directory the cores are read from ([`CORES`]).
-pub fn dir() -> Option<PathBuf> {
-    Some(
-        std::env::var_os(CORES)
-            .filter(|dir| !dir.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| test_programs_dir().join("fixtures/cores")),
-    )
+pub fn dir() -> PathBuf {
+    std::env::var_os(CORES)
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| test_programs_dir().join("fixtures/cores"))
 }
 
 /// The sets this system captures: its own, and on Linux the floor

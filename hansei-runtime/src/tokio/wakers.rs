@@ -1086,16 +1086,12 @@ mod planted_tests {
 
         let pctx = Context::new(&planted, BundleView::new(&bundle)).unwrap();
         // The planted record is one; neither the record with a wrong
-        // entry nor the one in anonymous memory is. A core also carries
-        // the binary's own set vtables in its data segment, which a
-        // snapshot never captured.
+        // entry nor the one in anonymous memory is. The core also
+        // carries the binary's own set vtables in its data segment.
         let found = pctx.set_waker_vtables();
         assert!(found.contains(&VTABLE), "{found:x?}");
         assert!(!found.contains(&BAD_VTABLE), "{found:x?}");
         assert!(!found.contains(&(ANON + 0x100)), "{found:x?}");
-        if let Fixture::Snapshot(_) = &snapshot {
-            assert_eq!(found, vec![VTABLE]);
-        }
         let slots = pctx.sweep_wakers(&Territory {
             list: &list,
             extents: &extents,

@@ -125,13 +125,7 @@ impl Recipe {
     pub fn inputs(&self, dir: &Path, matrix: &Matrix, program: &str) -> String {
         let mut inputs = Inputs::new();
         inputs.text(program).text(&self.text());
-        for path in [
-            "Cargo.toml",
-            "matrix.toml",
-            "regen.sh",
-            "capture-snapshots.sh",
-            "src/lib.rs",
-        ] {
+        for path in ["Cargo.toml", "matrix.toml", "regen.sh", "src/lib.rs"] {
             inputs.file(&dir.join(path));
         }
         inputs

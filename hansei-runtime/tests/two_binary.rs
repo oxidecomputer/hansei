@@ -2,46 +2,36 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Fixture-based two-binary offline tests.
+//! Fixture-based two-binary tests.
 //!
-//! Each fixture pair was produced by `test-programs/capture-snapshots.sh`:
-//! the `.snapshot` is everything the analysis read from a live run of
-//! one compilation (build A), and the `.tinfo` was extracted from a
-//! *separate* compilation of the same sources (build B). Joining B's
-//! layouts against A's memory by mangled symbol name is the two-binary
-//! constraint the whole design rests on, exercised here in plain
-//! `cargo test` on any platform.
+//! Each fixture's core is taken of one compilation (build A), and its
+//! bundle extracted from a *separate* compilation of the same sources
+//! (build B). Joining B's layouts against A's memory by mangled symbol
+//! name is the two-binary constraint the whole design rests on.
 //!
-//! The expected summaries are goldens: they change only when the
-//! fixtures are regenerated (new sources, toolchain, or tokio), and a
-//! diff here is reviewable line by line. `fingerprint N/N` counts the
-//! symbols the *capturing* system's linker kept, so it is a property of
-//! where the pair was made rather than of where the test runs — which
-//! is why each system that can core a process keeps a set of its own
-//! (`testkit::FIXTURE_SETS`) and a golden per set, suffixed with it — and
-//! every set is read wherever these run, macOS included.
+//! The expected summaries are goldens, and a diff here is reviewable
+//! line by line. `fingerprint N/N` counts the symbols the *capturing*
+//! system's linker kept, so it is a property of where the core was
+//! taken rather than of where the test runs — which is why each system
+//! that can core a process takes a set of its own
+//! (`testkit::FIXTURE_SETS`) and a golden per set, suffixed with it —
+//! and every set a run has is read wherever these run.
 //!
 //! Two things differ between the per-system sets, and both are the
 //! capture's: that fingerprint count, and how a timer deadline reads —
 //! illumos lwps stamp a stop time so it is reported relative to it, a
 //! Linux core records none so the absolute point on the monotonic
-//! clock is printed instead. Holding a set per system is what got the
-//! second spelling under an offline golden at all. Everything else —
-//! the tasks found, the chains walked, the locals live at each await —
-//! agrees across the sets, which is the point of holding both. The
-//! `linux-floor` set differs on the other axis instead: the same
-//! fixtures built against `matrix.toml`'s tokio floor, so the walks
-//! *execute* against the oldest supported release's memory rather than
-//! only binding to its layouts in the matrix.
-//!
-//! What the pairs were captured from is recorded in
-//! `fixtures/<set>/SOURCES.snap` and checked by
-//! [`test_fixtures_record_the_current_programs`], since nothing else
-//! here would notice the programs moving on without them.
+//! clock is printed instead. Everything else — the tasks found, the
+//! chains walked, the locals live at each await — agrees across the
+//! sets, which is the point of holding both. The `linux-floor` set
+//! differs on the other axis instead: the same fixtures built against
+//! `matrix.toml`'s tokio floor, so the walks *execute* against the
+//! oldest supported release's memory rather than only binding to its
+//! layouts in the matrix.
 
 use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::testkit::Fixture;
-use hansei_runtime::testkit::{FIXTURE_SETS, PROGRAMS, fixture_sets, load, load_any, mask, matrix};
+use hansei_runtime::testkit::{PROGRAMS, fixture_sets, load, load_any, mask};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
     AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, OwnerResolution, Registries,
@@ -55,183 +45,6 @@ use proc::Target;
 
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write;
-use std::path::Path;
-
-/// What a fixture pair was captured from: the program's own source, and
-/// the crate every program calls into before it parks.
-fn source_digest(set: &str, program: &str) -> String {
-    let dir = test_programs_dir();
-    let matrix = matrix::Matrix::read(&dir);
-    let recipe = matrix.capture_recipe(set);
-    let expected = recipe.capture_record(&dir, &matrix, set, program);
-    let path = hansei_runtime::testkit::fixture(set, &format!("{program}.capture"));
-    let recorded = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}; recapture the fixture", path.display()));
-    checked_source_digest(&recorded, &expected, set, program)
-}
-
-fn checked_source_digest(recorded: &str, expected: &str, set: &str, program: &str) -> String {
-    assert_eq!(
-        recorded, expected,
-        "{set}/{program}: capture inputs or flags changed; recapture before blessing SOURCES"
-    );
-    blake3::hash(recorded.as_bytes()).to_hex()[..32].to_string()
-}
-
-#[test]
-fn test_flag_only_stale_capture_is_rejected_before_blessing() {
-    let dir = test_programs_dir();
-    let matrix = matrix::Matrix::read(&dir);
-    let recipe = matrix.capture_recipe("linux");
-    let recorded = recipe.capture_record(&dir, &matrix, "linux", "delegation-cases");
-    assert!(!checked_source_digest(&recorded, &recorded, "linux", "delegation-cases").is_empty());
-
-    let mut changed = recipe.clone();
-    changed.dwp = true;
-    let expected = changed.capture_record(&dir, &matrix, "linux", "delegation-cases");
-    assert!(
-        std::panic::catch_unwind(|| {
-            checked_source_digest(&recorded, &expected, "linux", "delegation-cases")
-        })
-        .is_err()
-    );
-}
-
-fn test_programs_dir() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the crate is in a workspace")
-        .join("test-programs")
-}
-
-/// Which lockfile a set's pairs are built from — the other half of what
-/// a pair was captured from, since two builds of identical sources
-/// against different lockfiles are different programs. The version
-/// endpoint set (`<os>-floor`) pins tokio at `matrix.toml`'s floor;
-/// every other set is the primary `Cargo.lock`.
-fn lockfile_of(set: &str) -> String {
-    if set.ends_with("-floor") {
-        format!("locks/tokio-{}.lock", matrix::floor())
-    } else {
-        "Cargo.lock".to_owned()
-    }
-}
-
-/// The fixtures record programs that go on being edited underneath
-/// them.
-///
-/// A pair is captured once and checked in, and nothing else in the
-/// suite rebuilds it: the summaries below quote line numbers out of
-/// `test-programs/src`, but they are compared against a snapshot taken
-/// when those lines were somewhere else, so the two agree with each
-/// other however far the sources have moved on. That is how a golden
-/// here went on saying `simple-await.rs:65:21` long after the
-/// acceptance suite, which does rebuild, had moved to `:67:21` — both
-/// passing.
-///
-/// So the sources are hashed at capture and checked here. Nothing about
-/// a stale pair is wrong, exactly; it is a real recording of a real
-/// program. It is just no longer a recording of *this* one, which is
-/// what reading these goldens assumes.
-#[test]
-fn test_fixtures_record_the_current_programs() {
-    // Every set: each was captured on its own system, at its own time,
-    // and a set left behind by an edit to the programs is as stale as
-    // one captured before it, however recently the other was redone.
-    for set in FIXTURE_SETS {
-        if let Ok(capturing) = std::env::var("HANSEI_CAPTURE_SET") {
-            assert!(FIXTURE_SETS.contains(&capturing.as_str()));
-            if capturing != *set {
-                continue;
-            }
-        }
-        let sources: String = PROGRAMS
-            .iter()
-            .map(|p| format!("{p} {}\n", source_digest(set, p)))
-            .collect();
-        // The lockfile is per set — the floor set exists to build the
-        // same sources against a different tokio — so its record is
-        // too, a header line above the per-program digests.
-        let lock = lockfile_of(set);
-        let lock_path = test_programs_dir().join(&lock);
-        let lock_bytes = std::fs::read(&lock_path)
-            .unwrap_or_else(|e| panic!("failed to read {}: {e}", lock_path.display()));
-        let digests = format!(
-            "lock {lock} {}\n{sources}",
-            &blake3::hash(&lock_bytes).to_hex()[..32]
-        );
-        let mut settings = insta::Settings::clone_current();
-        // Beside the pairs it describes.
-        settings.set_snapshot_path(Path::new("fixtures").join(set));
-        settings.set_prepend_module_to_snapshot(false);
-        settings.set_omit_expression(true);
-        // Name the exact recapture command, because it is per set: the
-        // floor set needs the --tokio pin, and the mismatch this test
-        // reports is how a floor advance learns the set went stale.
-        let recapture = if set.ends_with("-floor") {
-            format!(
-                "test-programs/capture-snapshots.sh --tokio {}",
-                matrix::floor()
-            )
-        } else {
-            "test-programs/capture-snapshots.sh".to_owned()
-        };
-        settings.set_description(format!(
-            "the fixture programs (and lockfile) these snapshots were captured from. \
-             A digest that moved means the goldens in this file describe a program no \
-             longer in the tree: recapture with {recapture}, then re-bless the goldens \
-             here and in value_render.rs."
-        ));
-        settings.bind(|| insta::assert_snapshot!("SOURCES", digests));
-    }
-}
-
-/// The other half of the inventory: every pair on disk is one the
-/// suite reads.
-///
-/// A program in [`PROGRAMS`] with no pair already fails loudly — the
-/// first `load` panics. The reverse is silent: a program added to
-/// `capture-snapshots.sh` but forgotten here leaves its pair sitting
-/// in every `fixtures/<set>/` directory with nothing reading it, and
-/// nothing to say so. So each set's `*.tinfo`/`*.snapshot` basenames
-/// must be exactly the program list; non-pair files (`SOURCES.snap`)
-/// are exempt by extension.
-#[test]
-fn test_every_fixture_pair_is_in_the_program_list() {
-    let expected: BTreeSet<String> = PROGRAMS.iter().map(|p| p.to_string()).collect();
-    for set in FIXTURE_SETS {
-        let dir = hansei_runtime::testkit::fixture_dir(set);
-        let mut bundles = BTreeSet::new();
-        let mut snapshots = BTreeSet::new();
-        for entry in std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("failed to read {}: {e}", dir.display()))
-        {
-            let path = entry.expect("the fixture directory lists").path();
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            match path.extension().and_then(|e| e.to_str()) {
-                Some("tinfo") => {
-                    bundles.insert(stem.to_owned());
-                }
-                Some("snapshot") => {
-                    snapshots.insert(stem.to_owned());
-                }
-                _ => {}
-            }
-        }
-        assert_eq!(
-            bundles, expected,
-            "[{set}] the *.tinfo files are not exactly PROGRAMS — \
-             a pair captured but not listed is read by nothing"
-        );
-        assert_eq!(
-            snapshots, expected,
-            "[{set}] the *.snapshot files are not exactly PROGRAMS — \
-             a pair captured but not listed is read by nothing"
-        );
-    }
-}
 
 /// Run the full offline pipeline — fingerprint, discovery, enumeration,
 /// stage decode, await chains, and the dependency analysis — and render

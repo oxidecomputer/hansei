@@ -12,11 +12,14 @@
 //! failure paths are what they see when a binary is not what they
 //! thought.
 //!
-//! No fixture is built here. The bundle-reading verbs run over the
-//! checked-in `hansei-runtime` fixture bundles — real tokio bundles
-//! with every formatter attached — and the DWARF-reading ones over
-//! this test binary itself, which is a real object file on every
-//! platform and contains no tokio on any of them.
+//! The bundle-reading verbs run over the fixture programs' bundles,
+//! extracted from this system's own builds once per run
+//! (`testkit::bundle_path`) — real tokio bundles with every formatter
+//! attached — and the DWARF-reading ones over this test binary itself,
+//! which is a real object file on every platform and contains no tokio
+//! on any of them.
+
+use hansei_runtime::testkit::{self, PROGRAMS};
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -37,22 +40,9 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// The checked-in offline fixture bundles, shared with `hansei-runtime`.
-///
-/// The illumos set by name rather than whichever this build would read:
-/// what these want is bundles to run the verbs over, and that set has
-/// one per program on every platform, macOS included.
+/// Every fixture program's bundle, extracted from this system's build.
 fn fixture_bundles() -> Vec<PathBuf> {
-    let dir =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../hansei-runtime/tests/fixtures/illumos");
-    let mut bundles: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .expect("the fixture dir exists")
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|e| e == "tinfo"))
-        .collect();
-    bundles.sort();
-    assert!(!bundles.is_empty(), "no fixture bundles in {dir:?}");
-    bundles
+    PROGRAMS.iter().map(|p| testkit::bundle_path(p)).collect()
 }
 
 fn scratch() -> tempfile::TempDir {
@@ -75,15 +65,12 @@ fn kind_counts(text: &str) -> Vec<(&str, usize)> {
 }
 
 // ---------------------------------------------------------------------------
-// stats and dump, over every checked-in bundle
+// stats and dump, over every fixture bundle
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_stats_reports_a_bundle() {
-    let bundle = fixture_bundles()
-        .into_iter()
-        .find(|p| p.ends_with("futurelock.tinfo"))
-        .expect("the futurelock fixture is checked in");
+    let bundle = testkit::bundle_path("futurelock");
     let out = hansei(&["stats", bundle.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
@@ -108,10 +95,7 @@ fn test_stats_reports_a_bundle() {
 /// name.
 #[test]
 fn test_stats_and_dump_list_the_same_named_types() {
-    let bundle = fixture_bundles()
-        .into_iter()
-        .find(|p| p.ends_with("two-releases.tinfo"))
-        .expect("the two-releases fixture is checked in");
+    let bundle = testkit::bundle_path("two-releases");
     let path = bundle.to_str().unwrap();
     let stats = stdout(&hansei(&["stats", path]));
     let line = stats
@@ -160,9 +144,9 @@ fn test_stats_and_dump_list_the_same_named_types() {
 /// `dump` re-validates a loaded bundle in depth and renders every table,
 /// including each attached display program resolved to the member paths
 /// it addresses — the one production caller of the whole describer.
-/// Every checked-in bundle must survive it.
+/// Every fixture bundle must survive it.
 #[test]
-fn test_dump_renders_every_checked_in_bundle() {
+fn test_dump_renders_every_fixture_bundle() {
     let mut awaits = 0;
     for bundle in fixture_bundles() {
         let out = hansei(&["dump", bundle.to_str().unwrap()]);

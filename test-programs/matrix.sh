@@ -31,10 +31,8 @@
 # suite on a host that can take cores (HANSEI_CELL=<cell> cargo test -p
 # hansei --test acceptance) and commit. The floor and primary pins
 # advance deliberately, by hand; add refuses to touch them. Advancing
-# the floor also stales the linux-floor fixture set (its SOURCES check
-# fails against the new floor's lockfile): recapture it on the Linux
-# capture host with capture-snapshots.sh --tokio <new floor> and
-# re-bless its @linux-floor goldens.
+# the floor also moves the linux-floor set, whose cores are captured at
+# the floor: re-bless its @linux-floor goldens on a Linux host.
 
 set -uo pipefail
 

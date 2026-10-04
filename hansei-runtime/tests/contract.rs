@@ -2,8 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! The walk contract against real bundles: every fixture pair's bundle
-//! must carry a clean recorded report, the spellings that bind on the
+//! The walk contract against real bundles: every fixture program's
+//! bundle must carry a clean recorded report, the spellings that bind on the
 //! primary tokio/toolchain must stay the ones we think bind, and a
 //! bundle missing a recorded binding must be loud, not a silent
 //! structural decline.
@@ -11,9 +11,8 @@
 use hansei_bundle::{Bundle, BundleView, WalkOutcome, WalkRole};
 use hansei_runtime::tokio::contract::{Class, verify_walk_contract};
 
-/// Every program `capture-snapshots.sh` captures a fixture pair for
-/// (kept in sync with `two_binary.rs`, which checks the pairs against
-/// the sources).
+/// The fixture programs whose bundles these check, a subset of
+/// `testkit::PROGRAMS`.
 const PROGRAMS: &[&str] = &[
     "simple-await",
     "nested-await",
@@ -25,10 +24,9 @@ const PROGRAMS: &[&str] = &[
 
 /// A bundle of the primary cell, read without a target.
 ///
-/// What these pin is how the binder read the primary cell's DWARF, and
-/// every set is that same cell — a set differs in what its *capture*
-/// could see, which is the snapshot's side of a pair, not the bundle's.
-/// The per-version half of this coverage is the matrix suite's, where
+/// What these pin is how the binder read the primary cell's DWARF, so
+/// one bundle per program serves: the sets differ in their cores, not
+/// in the build a bundle is extracted from. The per-version half of this coverage is the matrix suite's, where
 /// binding runs against every cell.
 fn fixture_bundle(program: &str) -> Bundle {
     hansei_runtime::testkit::bundle(program)

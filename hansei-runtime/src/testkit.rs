@@ -2,11 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Test-only helpers over the checked-in fixture pairs in
-//! `tests/fixtures/<set>/`: the load-and-attach chain that this crate's
-//! offline suites and hansei's unit tests otherwise each re-spell.
-//! Nothing on a session's path calls this. See [`FIXTURE_SET`] for why
-//! there is more than one set.
+//! Test-only helpers over the fixture programs' fresh cores
+//! ([`cores`]): the load-and-attach chain that this crate's offline
+//! suites and hansei's unit tests otherwise each repeat. Nothing on a
+//! session's path calls this. See [`FIXTURE_SETS`] for why there is
+//! more than one set.
 
 use crate::heap::umem::UmemHeap;
 use crate::heap::view::{GateCounts, HeapView};
@@ -310,48 +310,34 @@ pub fn access_only(
     out
 }
 
-/// Every checked-in set of pairs, named for its capture's coordinates.
+/// Every set of cores, named for its capture's coordinates.
 ///
-/// The first axis is the capturing system. A pair is only as good as
-/// the symbol table its capture had to work with: the fingerprint
-/// joining bundle to snapshot is built from the tokio `poll`
+/// The first axis is the capturing system. A core is only as good as
+/// the symbol table of the binary it was taken from: the fingerprint
+/// joining bundle to core is built from the tokio `poll`
 /// instantiations that survive into the cored binary, and illumos
 /// keeps far more of them than Linux does. So each system that can
 /// core a process contributes a set, and neither stands for the other.
 ///
 /// The second axis is the tokio endpoint. The version matrix pins that
 /// the walks *bind* per supported tokio version; `linux-floor` — the
-/// same fixtures built against `matrix.toml`'s floor lockfile
-/// (`capture-snapshots.sh --tokio <floor>`, Linux host only) — is what
-/// *executes* them against memory from the oldest supported release.
-/// The newest is what the per-system sets already are, or near it; one
-/// endpoint set, deliberately not a per-cell cross product.
+/// same fixtures built against `matrix.toml`'s floor lockfile, taken
+/// on Linux — is what *executes* them against memory from the oldest
+/// supported release. The newest is what the per-system sets already
+/// are, or near it; one endpoint set, deliberately not a per-cell
+/// cross product.
 ///
 /// Which set a *reader* takes is not a property of where it runs. A
-/// pair is two files, and reading one needs nothing from the system
-/// that wrote it — which is what an offline suite is for. So the
-/// golden suites walk every set wherever they run, macOS included
-/// though it can capture neither, and a test that only wants some pair
-/// to render names the set it means.
+/// set's directory holds everything reading it needs, so the golden
+/// suites walk every set a run has, a Mac reading copies of all three
+/// though it can capture none, and a test that only wants some core to
+/// render names the set it means.
 pub const FIXTURE_SETS: &[&str] = &["illumos", "linux", "linux-floor"];
 
-/// The path of one checked-in fixture file in `set`.
-pub fn fixture(set: &str, name: &str) -> PathBuf {
-    fixture_dir(set).join(name)
-}
-
-/// The directory holding `set`.
-pub fn fixture_dir(set: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(set)
-}
-
-/// Every program `capture-snapshots.sh` captures a fixture pair for —
-/// the inventory each set holds, and the program list every suite
-/// reading the pairs iterates. `gen-0007` is quarantined generated
-/// output (see its header): it is in the offline suites and the
-/// capture loop only, not the golden, matrix, or acceptance lists.
+/// Every fixture program a set holds a core of — the program list every
+/// suite reading the sets iterates. `gen-0007` is quarantined generated
+/// output (see its header): it is in the offline suites only, not the
+/// golden, matrix, or acceptance lists.
 pub const PROGRAMS: &[&str] = &[
     "simple-await",
     "nested-await",
@@ -377,30 +363,17 @@ pub const PROGRAMS: &[&str] = &[
     "tls-conns",
 ];
 
-/// Mask the run-varying values analysis output carries — heap
-/// addresses and timer deadlines (relative to the stop instant, so
-/// they shift with how long the capture took) — so goldens over the
-/// pairs compare exactly. A deadline is masked with the word before it
-/// and without: the `connections` column prints it bare, `+29.981s`,
-/// under a header that already says what it is.
-///
-/// Over fresh cores ([`cores::CORES`]) the mask is [`mask_core`]'s
-/// instead, which a core needs and a snapshot never did.
+/// Mask the run-varying values analysis output carries, so goldens over
+/// fresh cores compare exactly from one capture to the next
+/// ([`mask_core`]).
 pub fn mask(s: &str) -> String {
-    match cores::dir() {
-        None => mask_times(
-            &regex::Regex::new(r"0x[0-9a-f]+")
-                .unwrap()
-                .replace_all(s, "0xADDR"),
-        ),
-        Some(_) => mask_core(s),
-    }
+    mask_core(s)
 }
 
-/// [`mask`], for output read from `set`, which over a Linux set's
-/// fresh cores also leaves out the waker slots attribution could only
-/// call unknown: the `unknown @ 0x…` line of a task's slot list and
-/// the `unknown` entry of a slot cell.
+/// [`mask`], for output read from `set`, which over a Linux set also
+/// leaves out the waker slots attribution could only call unknown: the
+/// `unknown @ 0x…` line of a task's slot list and the `unknown` entry
+/// of a slot cell.
 ///
 /// glibc keeps a freed chunk's old bytes past its first two words, so
 /// a waker the chunk held before it was freed reads as a hit, and
@@ -409,7 +382,7 @@ pub fn mask(s: &str) -> String {
 /// such a chunk from a live one (an illumos core's allocator index
 /// does exactly that, so the illumos set keeps its unknown slots).
 pub fn mask_for(set: &str, s: &str) -> String {
-    if cores::dir().is_none() || !set.starts_with("linux") {
+    if !set.starts_with("linux") {
         return mask(s);
     }
     let re = |pattern: &str| regex::Regex::new(pattern).unwrap();
@@ -512,32 +485,27 @@ fn first_seen(s: &str) -> String {
         .into_owned()
 }
 
-/// The sets this run reads, in [`FIXTURE_SETS`] order: every one over
-/// the checked-in snapshots, and over fresh cores ([`cores::CORES`]) the
-/// ones this system captures plus any other copied in beside them — on
-/// a system that captures none, all of them, each of which must be
+/// The sets this run reads, in [`FIXTURE_SETS`] order: the ones this
+/// system captures plus any other copied in beside them ([`cores`]) —
+/// on a system that captures none, all of them, each of which must be
 /// there. A test walking the sets walks these.
 pub fn fixture_sets() -> &'static [&'static str] {
     static SETS: OnceLock<Vec<&'static str>> = OnceLock::new();
-    SETS.get_or_init(|| match cores::dir() {
-        None => FIXTURE_SETS.to_vec(),
-        Some(dir) => cores::sets(&dir),
-    })
+    SETS.get_or_init(|| cores::sets(&cores::dir()))
 }
 
-/// Whether this run reads `set`: always over the snapshots and on a
-/// system that captures none, and over fresh cores elsewhere only for
-/// the host's own sets and copies beside them. A test whose subject is
-/// one system's capture — the illumos allocator, say — runs only where
-/// the run reads that set, which every system that cannot core does.
+/// Whether this run reads `set`: always on a system that captures
+/// none, and elsewhere only for the host's own sets and copies beside
+/// them. A test whose subject is one system's capture — the illumos
+/// allocator, say — runs only where the run reads that set, which every
+/// system that cannot core does.
 pub fn reads(set: &str) -> bool {
     fixture_sets().contains(&set)
 }
 
 /// `set` where this run reads it, and otherwise the first set it does:
 /// for a test written against one set whose choice of it is arbitrary,
-/// so that the run over the snapshots reads exactly what it always did
-/// and a capturing host still runs it over a set of its own.
+/// so that a capturing host still runs it over a set of its own.
 pub fn set_or_any(set: &'static str) -> &'static str {
     match reads(set) {
         true => set,
@@ -549,8 +517,8 @@ pub fn set_or_any(set: &'static str) -> &'static str {
 /// some real capture to work with rather than every capture there is.
 ///
 /// The choice is arbitrary and fixed for a given run: the first set
-/// the run reads ([`fixture_sets`]), so illumos's over the snapshots
-/// and on a Mac, the host's own on a capturing host. A test reading
+/// the run reads ([`fixture_sets`]), so illumos's on a Mac and the
+/// host's own on a capturing host. A test reading
 /// this is testing what it does with a pair, and two sets would only
 /// run it twice. A test whose subject *is* the capture walks
 /// [`fixture_sets`] instead.
@@ -558,26 +526,18 @@ pub fn load_any(program: &str) -> (Bundle, Fixture) {
     load(fixture_sets()[0], program)
 }
 
-/// Load a program's fixture pair from `set`: its snapshot, or under
-/// [`cores::CORES`] a fresh core opened through the production reader
-/// with the bundle extracted from its build B.
+/// Load a program's fixture pair from `set`: a fresh core opened
+/// through the production reader, with the bundle extracted from its
+/// build B.
 pub fn load(set: &str, program: &str) -> (Bundle, Fixture) {
-    if let Some(dir) = cores::dir() {
-        let (bundle, proc) = cores::load(&dir, set, program);
-        let core = Canonical::new(proc, &bundle);
-        return (bundle, Fixture::Core(Box::new(core)));
-    }
-    let bundle = Bundle::load(&fixture(set, &format!("{program}.tinfo")))
-        .expect("fixture tokio info loads; regenerate with capture-snapshots.sh");
-    let snapshot = Snapshot::load(&fixture(set, &format!("{program}.snapshot")))
-        .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
-    (bundle, Fixture::from(snapshot))
+    let (bundle, proc) = cores::load(&cores::dir(), set, program);
+    let core = Canonical::new(proc, &bundle);
+    (bundle, Fixture(Box::new(core)))
 }
 
 /// `program`'s bundle, for a test that reads nothing of a target: the
-/// checked-in one from the set [`load_any`] reads, or under
-/// [`cores::CORES`] the one extracted from this system's own build B
-/// ([`bundle_path`]), so the test runs where no core is.
+/// one extracted from this system's own build B ([`bundle_path`]), so
+/// the test runs where no core is.
 ///
 /// Only for a test that reads the bundle alone. A type id joined
 /// against a target's memory must come from that target's own bundle,
@@ -586,10 +546,7 @@ pub fn load(set: &str, program: &str) -> (Bundle, Fixture) {
 /// or a monomorphization one object format keeps and another folds
 /// away, reads [`load`]'s bundle instead.
 pub fn bundle(program: &str) -> Bundle {
-    let path = match cores::dir() {
-        Some(_) => bundle_path(program),
-        None => fixture(fixture_sets()[0], &format!("{program}.tinfo")),
-    };
+    let path = bundle_path(program);
     Bundle::load(&path)
         .unwrap_or_else(|e| panic!("the {program} bundle loads from {}: {e}", path.display()))
 }
@@ -653,7 +610,7 @@ pub fn bundle_path(program: &str) -> PathBuf {
 /// The files a session over a program's pair in `set` is opened from,
 /// as a command line names them.
 pub struct Paths {
-    /// The snapshot, or the core.
+    /// The core.
     pub core: PathBuf,
     /// The tokio-info file.
     pub tokio_info: PathBuf,
@@ -665,21 +622,13 @@ pub struct Paths {
 
 /// The files [`load`] reads `program`'s pair in `set` from.
 pub fn paths(set: &str, program: &str) -> Paths {
-    if let Some(dir) = cores::dir() {
-        let capture = cores::capture(&dir, set, program);
-        let tokio_info = cores::bundle_path(set, program, &capture);
-        return Paths {
-            core: capture.core,
-            tokio_info,
-            binary: capture.sysroot.is_some().then_some(capture.binary),
-            sysroot: capture.sysroot,
-        };
-    }
+    let capture = cores::capture(&cores::dir(), set, program);
+    let tokio_info = cores::bundle_path(set, program, &capture);
     Paths {
-        core: fixture(set, &format!("{program}.snapshot")),
-        tokio_info: fixture(set, &format!("{program}.tinfo")),
-        binary: None,
-        sysroot: None,
+        core: capture.core,
+        tokio_info,
+        binary: capture.sysroot.is_some().then_some(capture.binary),
+        sysroot: capture.sysroot,
     }
 }
 
@@ -702,8 +651,8 @@ pub struct Enumeration<'b> {
     /// [`discover`]: Enumeration::discover
     pub registries: Registries,
     /// The allocator evidence the pair reads under, prepared the way a
-    /// session prepares it ([`crate::heap::prepare`]): the recorded
-    /// policy of a snapshot, honored before anything is gated by it.
+    /// session prepares it ([`crate::heap::prepare`]), honoring a
+    /// recorded snapshot's policy before anything is gated by it.
     pub heap: Option<UmemHeap>,
     /// What the gates refused through [`with_read`] and [`discover`],
     /// for as long as this enumeration is read.
@@ -809,9 +758,9 @@ pub struct Run<'a, T: Target = Fixture> {
     pub ctx: Context<'a, T>,
     pub list: TaskList,
     pub census: FutureCensus,
-    /// The allocator evidence the census was gated by, prepared under
-    /// the snapshot's recorded policy: `Some` on a pair whose capture
-    /// built an index, `None` on one that recorded none.
+    /// The allocator evidence the census was gated by, prepared the
+    /// way a session prepares it: `Some` where the target's allocator
+    /// could be indexed (an illumos core), `None` elsewhere.
     pub heap: Option<UmemHeap>,
 }
 

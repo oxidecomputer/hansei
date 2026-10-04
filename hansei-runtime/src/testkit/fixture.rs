@@ -2,10 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! The target a fixture-reading test reads: a checked-in snapshot, or a
-//! fresh core when [`super::cores::CORES`] asks for one.
+//! The target a fixture-reading test reads: a fresh core of the
+//! program ([`super::cores`]).
 
-use proc::snapshot::{RecordedHeapEvidence, Snapshot};
+use proc::snapshot::RecordedHeapEvidence;
 use proc::{
     BuildIds, FatalSignal, LwpInfo, Mappings, Proc, ProcessFacts, Regs, Result, SymbolBuf, Target,
 };
@@ -15,29 +15,16 @@ use super::canonical::Canonical;
 use std::ops::Range;
 use std::path::PathBuf;
 
-/// One fixture program's target, whichever kind the run reads. Tests
-/// name this rather than either kind, so the same body runs over both.
+/// One fixture program's target: a fresh core, through the production
+/// reader, renamed canonically. Tests name this rather than the types
+/// behind it.
 #[derive(Debug)]
-pub enum Fixture {
-    /// The checked-in snapshot.
-    Snapshot(Box<Snapshot>),
-    /// A fresh core, through the production reader, renamed canonically.
-    Core(Box<Canonical<Proc>>),
-}
+pub struct Fixture(pub Box<Canonical<Proc>>);
 
-impl From<Snapshot> for Fixture {
-    fn from(snapshot: Snapshot) -> Self {
-        Fixture::Snapshot(Box::new(snapshot))
-    }
-}
-
-/// Forward a `Target` method to whichever kind is in hand.
+/// Forward a `Target` method to the core.
 macro_rules! dispatch {
     ($self:ident, $method:ident($($arg:expr),*)) => {
-        match $self {
-            Fixture::Snapshot(t) => Target::$method(&**t, $($arg),*),
-            Fixture::Core(t) => Target::$method(&**t, $($arg),*),
-        }
+        Target::$method(&*$self.0, $($arg),*)
     };
 }
 

@@ -6,22 +6,10 @@ license.workspace = true
 repository.workspace = true
 description = "A tokio post-mortem debugger: inspect the runtime, its tasks and their futures in a core dump"
 
-[features]
-# The `snapshot` command, which captures the offline tests' fixtures
-# rather than answering anything about a target. Off by default: it is
-# a tool for producing test data, not part of what a session is for,
-# and its name would otherwise take a share of the command namespace
-# that prefixes resolve against. `test-programs/capture-snapshots.sh`
-# turns it on. It pulls in hansei-runtime's test-support module
-# because the capture reads the census registry through
-# `testkit::expect` — a capture is test data, so the dependency
-# direction is honest.
-snapshot = ["hansei-runtime/testkit"]
-
 [dev-dependencies]
-# The unit tests drive enumeration and rendering over the checked-in
-# fixture pairs through testkit; the non-test code never touches it
-# (outside the `snapshot` feature, which enables this itself).
+# The unit tests drive enumeration and rendering over fresh cores of
+# the fixture programs through testkit; the non-test code never
+# touches it.
 hansei-runtime = { workspace = true, features = ["testkit"] }
 insta = { workspace = true }
 tempfile = { workspace = true }

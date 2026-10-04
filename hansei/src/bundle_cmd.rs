@@ -960,7 +960,7 @@ mod tests {
     use super::{BundleCmd, ExtractStats, admit, exec, provenance, write_extracted};
 
     use hansei_bundle::Bundle;
-    use hansei_runtime::testkit::{self, FIXTURE_SETS, PROGRAMS};
+    use hansei_runtime::testkit::{self, PROGRAMS};
 
     use std::path::Path;
 
@@ -1017,12 +1017,11 @@ mod tests {
     /// The verb writes nothing it refuses: an unsupported extraction
     /// fails naming the flag and leaves no file behind, and the flag
     /// writes the same bundle out, still recording what it was written
-    /// over. Any checked-in bundle stands in for the extraction's, with
+    /// over. Any fixture's bundle stands in for the extraction's, with
     /// that record added.
     #[test]
     fn test_extract_writes_nothing_it_refuses() {
-        let tinfo = testkit::fixture(FIXTURE_SETS[0], &format!("{}.tinfo", PROGRAMS[0]));
-        let mut bundle = Bundle::load(&tinfo).expect("the fixture bundle should load");
+        let mut bundle = testkit::bundle(PROGRAMS[0]);
         bundle.meta.unsupported = vec!["parking_lot 0.10.2 is older".to_owned()];
         let dir = tempfile::tempdir().expect("tempdir");
         let output = dir.path().join("x.tinfo");

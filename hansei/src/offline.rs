@@ -2,20 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Offline command goldens: a session over each checked-in fixture
-//! pair (`hansei-runtime/tests/fixtures/<set>/`), answering the
-//! commands the snapshot capture feeds, through hansei's own printers.
-//! This is the suite that runs on any platform — the acceptance suite
-//! exercises the same commands against real cores, remotes only.
+//! Offline command goldens: a session over a fresh core of each
+//! fixture program in each set (`testkit::cores`), answering the
+//! commands through hansei's own printers, with the bundle extracted
+//! from a separate debug build. A Mac reads copies of cores captured
+//! elsewhere, so this suite runs on every platform; the acceptance
+//! suite drives the binary itself, on the systems that take cores.
 //!
-//! A snapshot holds only what its capture touched: task enumeration
-//! and every await chain. A command that reads memory the capture
-//! never did sees `unreadable` there, and the golden records exactly
-//! that. A command that fails outright goldens its error text instead
-//! — either way the recorded behavior is the reviewed surface.
-//!
-//! Snapshots carry no lwp names and no umem heap, so anything read
-//! from those goldens as absent.
+//! A command that fails outright goldens its error text instead —
+//! either way the recorded behavior is the reviewed surface.
 
 use crate::output::Theme;
 use crate::{Session, SessionArgs, dispatch, repl};
@@ -131,14 +126,10 @@ fn commands<T: proc::Target>(
         // has an lwp).
         ("tasks-with-state", "tasks --with state idle".to_owned()),
         // A clause whose argument lists alternatives: either id keeps
-        // its row. A fresh core's ids are canonical ones, from
-        // `TASK_BASE` up, so it names the same two places in them.
+        // its row. A core's ids are canonical ones, from `TASK_BASE` up.
         ("tasks-with-ids", {
             use hansei_runtime::testkit::canonical::TASK_BASE;
-            match testkit::cores::dir() {
-                None => "tasks --with id 3,6".to_owned(),
-                Some(_) => format!("tasks --with id {},{}", TASK_BASE + 2, TASK_BASE + 5),
-            }
+            format!("tasks --with id {},{}", TASK_BASE + 2, TASK_BASE + 5)
         }),
         ("tasks-group-waiting", "tasks --group waiting-on".to_owned()),
         ("tasks-group-lwp", "tasks --group lwp".to_owned()),
@@ -593,10 +584,7 @@ fn golden(program: &str) {
                 );
             // A command naming an address names one of this capture's.
             let description = format!("`{line}` over {set}/{program}");
-            settings.set_description(match testkit::cores::dir() {
-                Some(_) => testkit::mask_core(&description),
-                None => description,
-            });
+            settings.set_description(testkit::mask_core(&description));
             settings.bind(|| {
                 insta::assert_snapshot!(
                     format!("{program}-{label}"),
@@ -716,8 +704,6 @@ fn outputs<T: proc::Target>(
 /// side only.
 #[test]
 fn test_the_canonical_renaming_changes_only_names() {
-    use hansei_runtime::testkit::{Canonical, Fixture};
-
     let number = regex::Regex::new(r"(^|[^:.\w])(\d+)\b").unwrap();
     // The process's own facts name no lwp and no task, and may hold a
     // number a canonical id also is (a uid of 1001).
@@ -751,24 +737,13 @@ fn test_the_canonical_renaming_changes_only_names() {
             "walk-shapes",
         ] {
             let (bundle, fixture) = testkit::load(set, program);
-            let (raw, renamed, tids, tasks) = match &fixture {
-                Fixture::Core(core) => (
-                    outputs(&bundle, core.inner(), set, program),
-                    outputs(&bundle, &**core, set, program),
-                    core.tid_renaming().to_vec(),
-                    core.task_renaming().to_vec(),
-                ),
-                Fixture::Snapshot(_) => {
-                    let (_, again) = testkit::load(set, program);
-                    let core = Canonical::new(again, &bundle);
-                    (
-                        outputs(&bundle, &fixture, set, program),
-                        outputs(&bundle, &core, set, program),
-                        core.tid_renaming().to_vec(),
-                        core.task_renaming().to_vec(),
-                    )
-                }
-            };
+            let core = &fixture.0;
+            let (raw, renamed, tids, tasks) = (
+                outputs(&bundle, core.inner(), set, program),
+                outputs(&bundle, &**core, set, program),
+                core.tid_renaming().to_vec(),
+                core.task_renaming().to_vec(),
+            );
             assert!(!tasks.is_empty(), "[{set}] {program}: no task was renamed");
             let undo_line = |text: &str| {
                 if facts.is_match(text) {
@@ -879,15 +854,15 @@ fn test_a_snapshot_claiming_an_index_it_cannot_rebuild_does_not_attach() {
     use proc::Target;
     use proc::snapshot::{RecordedHeapEvidence, Recorder};
 
-    let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "simple-await");
+    let (bundle, core) = testkit::load(testkit::set_or_any("linux"), "simple-await");
     // Everything the attach reads, recorded — except an allocator walk,
     // which this capture never made — under the claim that one was.
     // Where the fixture maps libumem — an illumos core, whose walk the
     // enumeration below would otherwise make through the recorder —
     // the allocator is hidden from the recording.
-    let hidden = match snapshot.lookup_symbol_by_name("libumem.so.1`umem_ready") {
-        Some(ready) => Corrupt::new(&snapshot).deny(ready.st_value..ready.st_value + 4),
-        None => Corrupt::new(&snapshot),
+    let hidden = match core.lookup_symbol_by_name("libumem.so.1`umem_ready") {
+        Some(ready) => Corrupt::new(&core).deny(ready.st_value..ready.st_value + 4),
+        None => Corrupt::new(&core),
     };
     let recorder = Recorder::new(&hidden);
     let ctx = bundle::Context::new(&recorder, BundleView::new(&bundle)).unwrap();

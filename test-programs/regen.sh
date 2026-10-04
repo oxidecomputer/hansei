@@ -32,8 +32,8 @@
 #   --no-debug-info  build without debug info — the shape of a binary a
 #                    production core comes from. A bundle can never be
 #                    extracted from such a build; pair it with a full
-#                    debug build of the same cell, which is what
-#                    capture-snapshots.sh does for its core target.
+#                    debug build of the same cell, which is what the
+#                    tests' core captures do for their target.
 #   --dwp            build with -C split-debuginfo=packed (via the cargo
 #                    profile), producing a skeleton-DWARF binary and its
 #                    .dwp package side by side under fixtures/bin/dwp.
