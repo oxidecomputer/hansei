@@ -49,8 +49,8 @@ A fixed-size byte array with a canonical text form is a `Notation` on
 plus a detector, with no format bump beyond the notation itself.
 
 The last two are the escape hatches, and they are why new node kinds should
-be rare: `Variant` + `ValueExpr` absorbed `watch::Receiver` (`74efab5`) and
-`CustomList` absorbed the whole mpsc block chain (`f816c1c`), both of which
+be rare: `Variant` + `ValueExpr` absorbed `watch::Receiver` (`5f5a7ab`) and
+`CustomList` absorbed the whole mpsc block chain (`25feec4`), both of which
 had looked irreducible.
 
 Addressing is a `Selector` — a list of `Step::Member(MemberRef)` /
