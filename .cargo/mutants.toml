@@ -10,8 +10,9 @@
 #     git diff origin/main > /tmp/change.diff
 #     cargo mutants --in-diff /tmp/change.diff
 #
-# and a sweep of one crate is `cargo mutants -p hansei-runtime` (~25
-# minutes). See https://mutants.rs/.
+# and a sweep of one crate is `cargo mutants -p hansei-runtime`: about
+# twenty seconds a mutant at -j 6 on a 32-core host (3,831 mutants, so
+# most of a day), measured 2026-10-03. See https://mutants.rs/.
 #
 # Set HANSEI_REUSE_FIXTURES for any sweep. A sweep is one nextest run
 # per mutant over one scratch copy of the tree per job, so without it
@@ -21,6 +22,12 @@
 # against 20 s); see testrun/src/lib.rs for what the digest covers.
 
 test_tool = "nextest"
+
+# Stop a mutant's test run at its first failure, and kill whatever is
+# still running rather than wait for it. One failure is the verdict;
+# without this a caught mutant waited minutes for the slowest
+# acceptance test still in flight, which was most of a sweep's time.
+additional_cargo_test_args = ["--max-fail=1:immediate"]
 
 # Copy only what git tracks. cargo-mutants copies the tree into a
 # scratch dir per job, and does *not* filter by gitignore unless told
