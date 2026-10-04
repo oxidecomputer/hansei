@@ -2500,6 +2500,18 @@ mod tests {
             .take(20)
             .collect();
         assert!(!want.is_empty(), "the test binary has no function symbols");
+        // Every function name at each link address. Identical functions
+        // can be folded into one, so one address may carry several
+        // names, and a lookup by address answers with any of them.
+        let mut names_at: std::collections::BTreeMap<u64, Vec<String>> = Default::default();
+        for s in elf.syms.iter().filter(|s| s.st_type() == STT_FUNC) {
+            if let Some(name) = elf.strtab.get_at(s.st_name) {
+                names_at
+                    .entry(s.st_value)
+                    .or_default()
+                    .push(name.to_string());
+            }
+        }
 
         // The bias is where the object landed less where it was linked,
         // which is zero for a position-dependent executable and its
@@ -2523,12 +2535,13 @@ mod tests {
                 .lookup_symbol_by_name(&name)
                 .unwrap_or_else(|| panic!("{name} did not resolve"));
             assert_eq!(sym.st_value, link_value + bias, "{name} has the wrong bias");
-            // And back again, from an address inside the function.
-            assert_eq!(
-                p.lookup_symbol_by_addr(sym.st_value)
-                    .as_ref()
-                    .map(|s| &s.name),
-                Some(&sym.name)
+            // And back again, from an address inside the function, to
+            // one of the names that address carries.
+            let back = p.lookup_symbol_by_addr(sym.st_value).map(|s| s.name);
+            let names = &names_at[&link_value];
+            assert!(
+                back.as_ref().is_some_and(|b| names.contains(b)),
+                "{name}: by address found {back:?}, not one of {names:?}"
             );
         }
         assert!(p.lookup_symbol_by_name("no_such_symbol_anywhere").is_none());
