@@ -71,3 +71,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unwind = { path = "unwind" }
 zstd = "0.13"
 zstd-sys = "2.0"
+
+# Dependencies build optimized, with line tables only, in the test
+# profile. The suites spend most of their time in other people's code
+# (blake3 checking every bundle it loads, gimli and object parsing the
+# fixtures' DWARF, the runtime hansei spawns), which unoptimized is
+# several times slower; a dependency compiles once, never per edit.
+# Workspace crates keep full debug info: exegesis's unit tests read
+# their own binary's DWARF.
+[profile.dev.package."*"]
+opt-level = 2
+debug = "line-tables-only"
