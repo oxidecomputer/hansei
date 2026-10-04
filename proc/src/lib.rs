@@ -8,6 +8,7 @@ use std::io;
 use std::ops::Range;
 
 pub mod coredump;
+#[cfg(feature = "testkit")]
 pub mod snapshot;
 mod target;
 #[cfg(test)]
@@ -26,8 +27,6 @@ pub struct Error {
 enum ErrorKind {
     #[error("malformed core file: {0}")]
     BadCore(&'static str),
-    #[error("{0}")]
-    CaptureLimit(snapshot::LimitExceeded),
     #[error("could not convert path to C string")]
     BadPath(#[from] NulError),
     #[error("failed to grab process: {0}")]
@@ -78,12 +77,6 @@ impl Error {
 
     pub fn bad_core(what: &'static str) -> Self {
         Self::new(ErrorKind::BadCore(what))
-    }
-
-    /// A snapshot capture charged more against one of its limits than
-    /// the limit allows; see [`snapshot::CaptureLimits`].
-    pub fn capture_limit(exceeded: snapshot::LimitExceeded) -> Self {
-        Self::new(ErrorKind::CaptureLimit(exceeded))
     }
 
     pub fn bad_path(e: NulError) -> Self {
@@ -165,12 +158,29 @@ impl std::error::Error for Error {}
 // Target
 // ---------------------------------------------------------------------------
 
+/// Whether a recording built a usable allocator index over its target,
+/// and so recorded the reads a replay needs to rebuild it
+/// ([`Target::recorded_heap_evidence`]).
+///
+/// `Available` is a claim: the recording's discovery and census were
+/// gated by that index, and a replay that cannot rebuild it has an
+/// incomplete recording in hand, not a target without an allocator.
+/// `Unavailable` is neutral — nothing was learned about liveness, and
+/// a replay treats every allocation the way a target with no allocator
+/// evidence is treated. Neither is a switch a reader may flip to skip
+/// a gate.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RecordedHeapEvidence {
+    Available,
+    Unavailable,
+}
+
 /// The narrow reading surface a debugger needs from a target: memory
 /// bytes, symbol lookups, mappings, LWP state, and where a thread-local
 /// lives in a given thread.
 ///
-/// Implemented by [`Proc`] — a core dump of either system — and by
-/// snapshots captured from one, which replay on any platform. The
+/// Implemented by [`Proc`] — a core dump of either system — and, in
+/// tests, by the in-memory snapshots a recording of one assembles. The
 /// layers interpreting a target run against whichever is to hand.
 ///
 /// `Sync` is part of the contract: a render pass fans a collection's
@@ -277,11 +287,11 @@ pub trait Target: Sync {
     }
 
     /// What the target records about its own allocator evidence. A
-    /// snapshot says whether its capture built an allocator index —
-    /// and so recorded the reads that rebuild it — while a target that
-    /// records nothing about the question (a core, a live process)
-    /// answers `None` and is asked directly.
-    fn recorded_heap_evidence(&self) -> Option<snapshot::RecordedHeapEvidence> {
+    /// test's snapshot says whether its recording built an allocator
+    /// index — and so recorded the reads that rebuild it — while a
+    /// target that records nothing about the question (a core) answers
+    /// `None` and is asked directly.
+    fn recorded_heap_evidence(&self) -> Option<RecordedHeapEvidence> {
         None
     }
 
@@ -535,7 +545,7 @@ impl From<Reg> for gimli::Register {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Default)]
 pub struct Regs {
     pub r15: u64,
     pub r14: u64,
@@ -810,7 +820,7 @@ pub struct ProcessFacts {
     pub execfn: Option<String>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct LwpInfo {
     /// The LWP's thread id.
     pub tid: u32,
@@ -824,13 +834,6 @@ pub struct LwpInfo {
     /// stack nor the heap, which is the whole reason to record it.
     /// Empty for an LWP with no alternate stack, and on a target whose
     /// core does not say (a Linux one).
-    ///
-    /// Adding this to a snapshot is a breaking change and takes a
-    /// [`snapshot::FORMAT_VERSION`](crate::snapshot::FORMAT_VERSION)
-    /// bump with it: postcard is not self-describing, so a reader
-    /// decodes fields by position and a capture written without this
-    /// one runs off the end rather than defaulting it. `serde(default)`
-    /// buys nothing here.
     pub altstack: Range<u64>,
     /// The timestamp the LWP was stopped.
     pub tstamp: Timespec,
@@ -849,26 +852,13 @@ impl fmt::Debug for LwpInfo {
     }
 }
 
-#[derive(
-    Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Timespec {
     pub tv_sec: i64,
     pub tv_nsec: i64,
 }
 
-#[derive(
-    Clone,
-    Default,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Debug,
-    serde::Serialize,
-    serde::Deserialize,
-)]
+#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Mappings {
     pub(crate) inner: Vec<LoadedObjectWithPath>,
 }
@@ -932,7 +922,7 @@ impl IntoIterator for Mappings {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct LoadedObjectWithPath {
     pub path: Option<String>,
     pub vaddr: u64,
@@ -1005,11 +995,9 @@ impl fmt::Debug for LoadedObjectWithPath {
 /// Memory-mapping permission and provenance bits (`prmap_t.pr_mflags`).
 ///
 /// The bit values are fixed by illumos's `<sys/procfs.h>` and are stable
-/// ABI, so they are spelled out here rather than taken from libproc-sys;
-/// snapshots captured on illumos decode them on any platform.
-#[derive(
-    Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+/// ABI, so they are written out here rather than taken from libproc-sys;
+/// an illumos core decodes them on any platform.
+#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub struct MapFlags(pub u32);
 
 impl MapFlags {
@@ -1110,9 +1098,7 @@ impl PartialOrd for LoadedObject {
     }
 }
 
-#[derive(
-    Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct SymbolBuf {
     pub name: String,
     pub st_name: usize,

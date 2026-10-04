@@ -6,7 +6,18 @@ license.workspace = true
 repository.workspace = true
 description = "Core-dump targets: memory, threads and symbols from illumos and Linux cores"
 
+[features]
+# The in-memory `Snapshot` and the `Recorder` that assembles one
+# (`src/snapshot.rs`): test support for doctoring a target after the
+# fact, which no production build carries. On for this crate's own
+# tests (the self dev-dependency below) and through hansei-runtime's
+# `testkit` feature.
+testkit = []
+
 [dev-dependencies]
+# The self dev-dependency exists to turn the testkit feature on
+# whenever this crate's own test targets build.
+proc = { path = ".", features = ["testkit"] }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 testrun = { workspace = true }
@@ -17,9 +28,7 @@ gimli = { workspace = true }
 # build wherever the crate does.
 goblin = { workspace = true }
 memmap2 = { workspace = true }
-postcard = { workspace = true }
 scroll = { workspace = true }
-serde = { workspace = true }
 thiserror = { workspace = true }
 
 # The libproc-backed reference reader lives inside the on-box test

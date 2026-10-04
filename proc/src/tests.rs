@@ -404,7 +404,7 @@ fn test_read_u64_decodes_little_endian() {
 }
 
 /// Targets without an object symtab report an empty one rather than
-/// failing; only [`crate::snapshot::Snapshot`] and `Proc` override it.
+/// failing; only `Proc` and the test-only `Snapshot` override it.
 #[test]
 fn test_object_symbols_default_to_none() {
     let target = MemTarget::new(0, Vec::new());

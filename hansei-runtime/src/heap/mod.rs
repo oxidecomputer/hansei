@@ -17,8 +17,8 @@ pub mod view;
 use crate::heap::umem::UmemHeap;
 
 use anyhow::{Result, anyhow};
+use proc::RecordedHeapEvidence;
 use proc::Target;
-use proc::snapshot::RecordedHeapEvidence;
 
 /// The allocator evidence a session or capture reads under, prepared
 /// once before anything is gated by it, under the policy the target

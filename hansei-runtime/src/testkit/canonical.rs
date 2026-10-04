@@ -31,7 +31,7 @@ use crate::testkit;
 use crate::tokio::bundle::Context;
 
 use hansei_bundle::{Bundle, BundleView, WalkRole};
-use proc::snapshot::RecordedHeapEvidence;
+use proc::RecordedHeapEvidence;
 use proc::{
     BuildIds, FatalSignal, LwpInfo, Mappings, ProcessFacts, Regs, Result, SymbolBuf, Target,
 };

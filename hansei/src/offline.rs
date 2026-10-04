@@ -851,8 +851,9 @@ fn test_registered_wakers_name_the_registries_and_the_joins() {
 fn test_a_snapshot_claiming_an_index_it_cannot_rebuild_does_not_attach() {
     use hansei_bundle::BundleView;
     use hansei_runtime::testkit::corrupt::Corrupt;
+    use proc::RecordedHeapEvidence;
     use proc::Target;
-    use proc::snapshot::{RecordedHeapEvidence, Recorder};
+    use proc::snapshot::Recorder;
 
     let (bundle, core) = testkit::load(testkit::set_or_any("linux"), "simple-await");
     // Everything the attach reads, recorded — except an allocator walk,

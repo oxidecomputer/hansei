@@ -284,7 +284,7 @@ impl<T: Target> Target for Corrupt<'_, T> {
         self.inner.exec_bias()
     }
 
-    fn recorded_heap_evidence(&self) -> Option<proc::snapshot::RecordedHeapEvidence> {
+    fn recorded_heap_evidence(&self) -> Option<proc::RecordedHeapEvidence> {
         // The policy is the capture's, not the damage's: a snapshot
         // whose allocator metadata this double denies still claims the
         // index, which is exactly the mismatch a replay has to refuse.

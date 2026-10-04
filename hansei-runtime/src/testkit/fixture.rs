@@ -5,7 +5,7 @@
 //! The target a fixture-reading test reads: a fresh core of the
 //! program ([`super::cores`]).
 
-use proc::snapshot::RecordedHeapEvidence;
+use proc::RecordedHeapEvidence;
 use proc::{
     BuildIds, FatalSignal, LwpInfo, Mappings, Proc, ProcessFacts, Regs, Result, SymbolBuf, Target,
 };

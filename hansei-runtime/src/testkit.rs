@@ -784,7 +784,8 @@ pub fn run<'a, T: Target>(bundle: &'a Bundle, target: &'a T) -> Run<'a, T> {
 /// production [`Recorder`](proc::snapshot::Recorder): for a test whose
 /// subject is a snapshot, whichever kind of target the run reads.
 pub fn record(bundle: &Bundle, fixture: &Fixture) -> Snapshot {
-    use proc::snapshot::{RecordedHeapEvidence, Recorder};
+    use proc::RecordedHeapEvidence;
+    use proc::snapshot::Recorder;
     let recorder = Recorder::new(fixture);
     let ctx = Context::new(&recorder, BundleView::new(bundle)).expect("the fixture has mappings");
     let mut e = enumerate(&ctx, &recorder);

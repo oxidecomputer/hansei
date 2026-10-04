@@ -12,9 +12,9 @@ description = "Reads a tokio runtime's tasks, futures and threads out of a targe
 # library built without that cfg — but nothing on a session's path
 # calls it, so it stays out of production builds behind this feature.
 # On for: this crate's own test targets (the self dev-dependency
-# below), hansei's tests (its dev-dependency), and hansei's `snapshot`
-# feature (the capture command reads the census registry through
-# `testkit::expect`).
+# below) and hansei's tests (its dev-dependency). It turns on proc's
+# own `testkit`, for the `Recorder` the doctored-target tests record
+# through.
 #
 # It is also the one way exegesis reaches this crate outside a
 # dev-dependency: a fixture read from a fresh core has its bundle
@@ -22,7 +22,7 @@ description = "Reads a tokio runtime's tasks, futures and threads out of a targe
 # testkit is library code that a dev-dependency is invisible to. The
 # DWARF stack still never reaches a production build, which is what
 # keeping exegesis out of the read side protects.
-testkit = ["dep:exegesis", "dep:regex", "dep:tempfile", "dep:testrun"]
+testkit = ["dep:exegesis", "dep:regex", "dep:tempfile", "dep:testrun", "proc/testkit"]
 
 [dev-dependencies]
 blake3.workspace = true

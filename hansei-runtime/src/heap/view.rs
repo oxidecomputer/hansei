@@ -198,45 +198,6 @@ mod tests {
         assert_eq!(view.owns(BUFFERS + 0x10_0000), None);
     }
 
-    /// The walk answers "no index" to any read it cannot make, a
-    /// capture limit's refusal included — so a capture that built its
-    /// index through the recorder cannot tell an exhausted limit from
-    /// a target without umem by the walk's answer alone. The recorder
-    /// still knows: the violation is sticky, it names the limit, and
-    /// no snapshot assembles over it.
-    #[test]
-    fn test_a_limit_the_walk_swallows_still_fails_the_capture() {
-        use proc::snapshot::{CaptureLimits, Limit, RecordedHeapEvidence, Recorder};
-
-        let (f, _) = target();
-        // Through a recorder with room, the walk builds what it builds
-        // over the bare target, and the reads are what the log holds.
-        let ample = Recorder::new(&f);
-        assert!(UmemHeap::build(&ample).is_some());
-        assert_eq!(ample.failure(), None);
-        let charged = ample.charged();
-        assert!(charged.entries > 1, "{charged:?}");
-
-        let scarce = Recorder::with_limits(
-            &f,
-            CaptureLimits {
-                read_log_entries: charged.entries - 1,
-                ..CaptureLimits::default()
-            },
-        );
-        assert!(UmemHeap::build(&scarce).is_none());
-        let exceeded = scarce
-            .failure()
-            .expect("the walk's refused read was the recorder's violation");
-        assert_eq!(exceeded.limit, Limit::ReadLogEntries);
-        assert_eq!(exceeded.cap, charged.entries - 1);
-        assert_eq!(exceeded.charged, charged.entries);
-        let err = scarce
-            .snapshot(RecordedHeapEvidence::Unavailable)
-            .expect_err("a capture past its limit assembles no snapshot");
-        assert_eq!(err.to_string(), exceeded.to_string());
-    }
-
     /// Each gate counts into its own tally and no other, so the numbers
     /// a session reports say which corroboration refused what.
     #[test]

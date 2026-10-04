@@ -29,8 +29,9 @@ use hansei_runtime::tokio::bundle::{ChainEnd, Context, Registries, TaskList, Tas
 use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::observe::ReadContext;
 use hansei_runtime::tokio::{census, graph};
+use proc::RecordedHeapEvidence;
 use proc::Target;
-use proc::snapshot::{RecordedHeapEvidence, Recorder};
+use proc::snapshot::Recorder;
 
 use std::ops::Range;
 

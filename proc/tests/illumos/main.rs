@@ -19,7 +19,8 @@
 
 #![cfg(target_os = "illumos")]
 
-use proc::snapshot::{CaptureLimits, RecordedHeapEvidence, Recorder, Snapshot};
+use proc::RecordedHeapEvidence;
+use proc::snapshot::Recorder;
 
 mod libproc;
 use libproc::Core as LibprocCore;
@@ -832,8 +833,8 @@ fn test_status_describes_the_process() {
 // ---------------------------------------------------------------------------
 
 /// A snapshot recorded from a real target replays everything the
-/// capture touched, through a file, with the target itself gone from
-/// the picture — the whole point of [`Recorder`].
+/// recording touched, answering from its own copy rather than the
+/// target's — the whole point of [`Recorder`].
 #[test]
 fn test_snapshot_replays_a_recorded_target() {
     let parked = Parked::spawn();
@@ -872,18 +873,9 @@ fn test_snapshot_replays_a_recorded_target() {
                 .expect("failed to resolve the thread-local")
         })
         .collect();
-    let snapshot = recorder
+    let replay = recorder
         .snapshot(RecordedHeapEvidence::Unavailable)
         .expect("failed to build the snapshot");
-
-    // Through a file, the way the capture tools write it.
-    let dir = tempfile::tempdir().expect("failed to create a tempdir");
-    let path = dir.path().join("park.snapshot");
-    snapshot
-        .save(&path, CaptureLimits::default().output_bytes)
-        .expect("failed to save the snapshot");
-    let replay = Snapshot::load(&path).expect("failed to load the snapshot");
-    assert_eq!(replay, snapshot);
     assert_eq!(replay.heap_evidence(), RecordedHeapEvidence::Unavailable);
 
     assert_eq!(replay.read_bytes(addr, 64).unwrap(), bytes);

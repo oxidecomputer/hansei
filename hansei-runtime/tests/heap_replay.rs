@@ -16,8 +16,9 @@ use hansei_runtime::tokio::bundle::Context;
 use hansei_runtime::tokio::census::FutureCensus;
 
 use hansei_bundle::BundleView;
+use proc::RecordedHeapEvidence;
 use proc::Target;
-use proc::snapshot::{RecordedHeapEvidence, Recorder};
+use proc::snapshot::Recorder;
 
 /// The gated population a census settled on, as the addresses of its
 /// finds and what it refused — what a replay has to reproduce exactly.
@@ -85,7 +86,6 @@ fn test_a_recapture_replays_the_same_gated_population() {
         e.discover(&ctx, &[]);
         let census = e.with_read(&recorder, |read| testkit::census_with(&ctx, &e.list, read));
         assert_eq!(population(&census), population(&first.census), "{program}");
-        assert_eq!(recorder.failure(), None);
         let recaptured = recorder
             .snapshot(RecordedHeapEvidence::Available)
             .expect("the recorder assembles a snapshot");
