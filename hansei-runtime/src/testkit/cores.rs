@@ -89,6 +89,9 @@ pub struct Capture {
     pub binary: PathBuf,
     /// Build B, which the bundle is extracted from.
     pub debug: PathBuf,
+    /// The record of what both builds were built from, which a reader
+    /// holds the tree it runs in to.
+    pub record: PathBuf,
     /// Where a Linux core's libraries are, at their recorded paths.
     pub sysroot: Option<PathBuf>,
 }
@@ -146,6 +149,7 @@ fn locate(dir: &Path, set: &str, program: &str) -> Capture {
         core: at.join("core"),
         binary: at.join(program),
         debug: at.join("debug").join(program),
+        record: at.join("capture"),
         sysroot: set
             .starts_with("linux")
             .then(|| dir.join(set).join("sysroot")),
@@ -156,7 +160,7 @@ fn locate(dir: &Path, set: &str, program: &str) -> Capture {
     if !complete {
         missing(dir, set, program);
     }
-    let recorded = fs::read_to_string(at.join("capture")).unwrap_or_default();
+    let recorded = fs::read_to_string(&capture.record).unwrap_or_default();
     assert!(
         recorded == record(set, program),
         "{CORES}={}: the {set} capture of {program} was built from other \
@@ -279,6 +283,11 @@ fn place(from: &Path, to: &Path) {
 ///
 /// Each program stamps under a lock of its own, so processes wanting
 /// different programs extract them at once rather than in turn.
+///
+/// A run reusing fixtures (`testrun::REUSE`) stamps it with the capture's
+/// record of what build B was built from, not build B itself: the
+/// record is a few lines, build B up to a hundred megabytes, and the
+/// stamp is checked on every load.
 pub fn bundle_path(set: &str, program: &str, capture: &Capture) -> PathBuf {
     let bundles = test_programs_dir().join("fixtures/bundles").join(set);
     let path = bundles.join(format!("{program}.tinfo"));
@@ -289,7 +298,7 @@ pub fn bundle_path(set: &str, program: &str, capture: &Capture) -> PathBuf {
             let root = test_programs_dir().join("..");
             let mut inputs = testrun::Inputs::new();
             inputs
-                .file(&capture.debug)
+                .file(&capture.record)
                 .tree(&root.join("exegesis/src"), ".rs")
                 .tree(&root.join("hansei-bundle/src"), ".rs")
                 .file(&root.join("Cargo.lock"));

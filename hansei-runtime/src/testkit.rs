@@ -595,13 +595,15 @@ pub fn bundle(program: &str) -> Bundle {
 /// file whose path is returned. The build is the one the extraction
 /// goldens read, so on a Mac it is the Mach-O binary with its dSYM.
 /// Each program stamps under a lock of its own, as
-/// [`cores::bundle_path`]'s do.
+/// [`cores::bundle_path`]'s do, and a run reusing fixtures stamps it,
+/// as they do, with what build B was built from rather than build B.
 pub fn bundle_path(program: &str) -> PathBuf {
     assert!(
         PROGRAMS.contains(&program),
         "{program} is not a fixture program"
     );
-    let recipe = matrix::Matrix::load().primary_recipe();
+    let matrix = matrix::Matrix::load();
+    let recipe = matrix.primary_recipe();
     let binary = matrix::build_b(&recipe, &[program]).join(program);
     let dsym = binary
         .with_extension("dSYM")
@@ -614,13 +616,11 @@ pub fn bundle_path(program: &str) -> PathBuf {
         &bundles.join(".stamps").join(program),
         &[program],
         |_| {
-            let root = matrix::test_programs_dir().join("..");
+            let test_programs = matrix::test_programs_dir();
+            let root = test_programs.join("..");
             let mut inputs = testrun::Inputs::new();
-            inputs.file(&binary);
-            if let Some(dsym) = &dsym {
-                inputs.file(dsym);
-            }
             inputs
+                .text(&recipe.inputs(&test_programs, &matrix, program))
                 .tree(&root.join("exegesis/src"), ".rs")
                 .tree(&root.join("hansei-bundle/src"), ".rs")
                 .file(&root.join("Cargo.lock"));
