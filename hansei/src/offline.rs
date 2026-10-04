@@ -790,12 +790,21 @@ fn test_registered_wakers_name_the_registries_and_the_joins() {
 #[test]
 fn test_a_snapshot_claiming_an_index_it_cannot_rebuild_does_not_attach() {
     use hansei_bundle::BundleView;
+    use hansei_runtime::testkit::corrupt::Corrupt;
+    use proc::Target;
     use proc::snapshot::{RecordedHeapEvidence, Recorder};
 
     let (bundle, snapshot) = testkit::load(testkit::set_or_any("linux"), "simple-await");
     // Everything the attach reads, recorded — except an allocator walk,
     // which this capture never made — under the claim that one was.
-    let recorder = Recorder::new(&snapshot);
+    // Where the fixture maps libumem — an illumos core, whose walk the
+    // enumeration below would otherwise make through the recorder —
+    // the allocator is hidden from the recording.
+    let hidden = match snapshot.lookup_symbol_by_name("libumem.so.1`umem_ready") {
+        Some(ready) => Corrupt::new(&snapshot).deny(ready.st_value..ready.st_value + 4),
+        None => Corrupt::new(&snapshot),
+    };
+    let recorder = Recorder::new(&hidden);
     let ctx = bundle::Context::new(&recorder, BundleView::new(&bundle)).unwrap();
     let list = testkit::tasks(&ctx, &recorder);
     let _ = testkit::census(&ctx, &list);
@@ -813,7 +822,7 @@ fn test_a_snapshot_claiming_an_index_it_cannot_rebuild_does_not_attach() {
     // The same reads under the neutral policy attach as the fixture
     // itself does.
     let neutral = {
-        let recorder = Recorder::new(&snapshot);
+        let recorder = Recorder::new(&hidden);
         let ctx = bundle::Context::new(&recorder, BundleView::new(&bundle)).unwrap();
         let list = testkit::tasks(&ctx, &recorder);
         let _ = testkit::census(&ctx, &list);

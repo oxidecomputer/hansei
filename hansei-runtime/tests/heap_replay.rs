@@ -117,21 +117,30 @@ fn test_a_recapture_replays_the_same_gated_population() {
     }
 }
 
-/// A pair that claims an index whose metadata cannot be read is an
+/// A capture that claims an index whose metadata cannot be read is an
 /// incomplete capture: the attach refuses it outright rather than
 /// reading the pair ungated, and says which claim it could not honor.
+/// The capture is recorded here, from the fixture, so it claims the
+/// index the fixture's own walk built — a fresh core records no claim
+/// of its own to deny.
 #[test]
 fn test_a_claimed_index_whose_metadata_is_denied_does_not_attach() {
     // Only an illumos capture maps libumem.
     if !testkit::reads("illumos") {
         return;
     }
-    let (bundle, snapshot) = testkit::load("illumos", "simple-await");
-    let ready = snapshot
+    let (bundle, fixture) = testkit::load("illumos", "simple-await");
+    let captured = testkit::record(&bundle, &fixture);
+    assert_eq!(
+        captured.recorded_heap_evidence(),
+        Some(RecordedHeapEvidence::Available),
+        "the fixture's walk builds an index"
+    );
+    let ready = captured
         .lookup_symbol_by_name("libumem.so.1`umem_ready")
         .expect("the capture recorded umem's own symbols")
         .st_value;
-    let denied = Corrupt::new(&snapshot).deny(ready..ready + 4);
+    let denied = Corrupt::new(&captured).deny(ready..ready + 4);
     let ctx = Context::new(&denied, BundleView::new(&bundle)).unwrap();
     let err = match testkit::try_enumerate(&ctx, &denied) {
         Ok(_) => panic!("the claim is not honored"),
