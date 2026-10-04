@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux-floor/local-set"
 ---
-a tokio::sync::Semaphore (semaphore 0xADDR): 0 permits available
-    Blocked on it: task 2 (1 permit requested)
-    Wake queue: task 2
+a tokio::sync::Semaphore (semaphore 0xA1): 0 permits available
+    Blocked on it: task 2002 (1 permit requested)
+    Wake queue: task 2002
 
-task 1 (async fn local_set::local_sleeper): idle
-    Waited by: task 3
+task 2001 (async fn local_set::local_sleeper): idle
+    Waited by: task 2003

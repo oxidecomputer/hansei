@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 1 -l 1` over illumos/local-set-io"
+description: "`trace 2001 -l 1` over illumos/local-set-io"
 ---
-#0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
-      waiting on io fd 11 (readable)
+#0  future  tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
+      waiting on io fd N (readable)
 [2 frames, 1 shown]

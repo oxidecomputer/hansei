@@ -2,13 +2,23 @@
 source: hansei/src/offline.rs
 description: "`info` over linux/futurelock"
 ---
-core:       <snapshot>
+core:  <core>
 tokio info: <tokio info>
 symbols resolved: 5/5
 allocator evidence: unavailable
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 8.2 MiB swept in 54 chunks
-    hits: 9 task-pattern, 0 set-pattern; 1 admitted; 5 unlisted headers
-    by class: 1 task extent, 8 lwp stack
-    attributed: 1 by a registry, 0 by owner type, 0 by holding type, 0 from another task's side, 0 unknown; 0 stale
-process: not recorded by this target
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; N swept in N chunks
+    hits: N
+    by class: N
+    attributed: N
+pid:  PID (futurelock)
+ppid:  PID
+uid:  ID
+gid:  ID
+psargs: PSARGS
+execfn: <test-programs>/fixtures/bin-a/futurelock
+executable: <test-programs>/fixtures/bin-a/futurelock
+build id (core):  BUILDID
+build id (binary): BUILDID — agree
+argv: not recorded in a Linux core (psargs is its 80-byte spelling)
+environment: not recorded in a Linux core
 signal: none recorded

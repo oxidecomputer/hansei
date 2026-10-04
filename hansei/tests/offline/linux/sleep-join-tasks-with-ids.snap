@@ -1,7 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over linux/sleep-join"
+description: "`tasks --with id 2003,2006` over linux/sleep-join"
 ---
-ID  STATE  FUT  AWAITING AT               WAITING ON  TYPE
-3   idle     0  src/bin/sleep-join.rs:16  timer       async fn sleep_join::sleeper
-[1 task]
+[0 tasks]

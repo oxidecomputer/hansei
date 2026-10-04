@@ -2,82 +2,82 @@
 source: hansei/src/offline.rs
 description: "`futures --exec trace -l 1` over illumos/watch-stream"
 ---
-future 0xADDR
-future 0xADDR: future tokio::sync::oneshot::Receiver<u32>
-Held by: task 3 — async fn watch_stream::resolver (frame 1, `once`)
+future 0xA1
+future 0xA1: future tokio::sync::oneshot::Receiver<u32>
+Held by: task 2001 — async fn watch_stream::resolver (frame 1, `once`)
 
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA2 (nothing sent, sender alive)
 
-future 0xADDR
-future 0xADDR: async fn tokio_stream::wrappers::watch::make_future<u32>
-Held by: task 3 — async fn watch_stream::resolver (frame 1, `stream`)
+future 0xA3
+future 0xA3: async fn tokio_stream::wrappers::watch::make_future<u32>
+Held by: task 2001 — async fn watch_stream::resolver (frame 1, `stream`)
 
-#0  future        tokio::sync::notify::Notified
-      waiting on watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+#0  future  tokio::sync::notify::Notified
+      waiting on watch rx 0xA4 (version 0, 1 sender, 1 receiver)
 [5 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
-Held by: task 3 — async fn watch_stream::resolver (frame 1, `next`)
+future 0xA5
+future 0xA5: future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+Held by: task 2001 — async fn watch_stream::resolver (frame 1, `next`)
 
-#0  future        tokio::sync::notify::Notified
-      waiting on watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+#0  future  tokio::sync::notify::Notified
+      waiting on watch rx 0xA4 (version 0, 1 sender, 1 receiver)
 [8 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: future tokio::sync::oneshot::Receiver<u32>
-Held by: task 4 — async fn watch_stream::mapper (frame 1, `once`)
+future 0xA6
+future 0xA6: future tokio::sync::oneshot::Receiver<u32>
+Held by: task 2002 — async fn watch_stream::mapper (frame 1, `once`)
 
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA7 (nothing sent, sender alive)
 
-future 0xADDR
-future 0xADDR: async fn tokio_stream::wrappers::watch::make_future<u32>
-Held by: task 4 — async fn watch_stream::mapper (frame 1, `map[0]`)
+future 0xA8
+future 0xA8: async fn tokio_stream::wrappers::watch::make_future<u32>
+Held by: task 2002 — async fn watch_stream::mapper (frame 1, `map[0]`)
 
-#0  future        tokio::sync::notify::Notified
-      waiting on watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+#0  future  tokio::sync::notify::Notified
+      waiting on watch rx 0xA9 (version 0, 1 sender, 1 receiver)
 [5 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: async fn tokio_stream::wrappers::watch::make_future<u32>
-Held by: task 4 — async fn watch_stream::mapper (frame 1, `map[1]`)
+future 0xA10
+future 0xA10: async fn tokio_stream::wrappers::watch::make_future<u32>
+Held by: task 2002 — async fn watch_stream::mapper (frame 1, `map[1]`)
 
-#0  future        tokio::sync::notify::Notified
-      waiting on watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+#0  future  tokio::sync::notify::Notified
+      waiting on watch rx 0xA11 (version 0, 1 sender, 1 receiver)
 [5 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: async fn tokio_stream::wrappers::watch::make_future<u32>
-Held by: task 4 — async fn watch_stream::mapper (frame 1, `map[2]`)
+future 0xA12
+future 0xA12: async fn tokio_stream::wrappers::watch::make_future<u32>
+Held by: task 2002 — async fn watch_stream::mapper (frame 1, `map[2]`)
 
-#0  future        tokio::sync::notify::Notified
-      waiting on watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+#0  future  tokio::sync::notify::Notified
+      waiting on watch rx 0xA13 (version 0, 1 sender, 1 receiver)
 [5 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: future futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
-Held by: task 4 — async fn watch_stream::mapper (frame 1, `next`)
+future 0xA14
+future 0xA14: future futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
+Held by: task 2002 — async fn watch_stream::mapper (frame 1, `next`)
 
-#0  future        tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>
+#0  future  tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>
       defined at tokio-stream-0.1.19/src/stream_map.rs:682 (<no_state>, 1 local)
 [2 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: async block tokio_stream::wrappers::watch::WatchStream::new<u32>
-Held by: task 5 — async fn watch_stream::fresh (frame 1, `stream`)
+future 0xA15
+future 0xA15: async block tokio_stream::wrappers::watch::WatchStream::new<u32>
+Held by: task 2003 — async fn watch_stream::fresh (frame 1, `stream`)
 
 the chain ends in a future that has never been polled
-#0  async block   tokio_stream::wrappers::watch::WatchStream::new<u32>
+#0  async block  tokio_stream::wrappers::watch::WatchStream::new<u32>
       state Unresumed
 
-future 0xADDR
-future 0xADDR: future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
-Held by: task 5 — async fn watch_stream::fresh (frame 1, `next`)
+future 0xA16
+future 0xA16: future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+Held by: task 2003 — async fn watch_stream::fresh (frame 1, `next`)
 
 the chain ends in a future that has never been polled
-#0  async block   tokio_stream::wrappers::watch::WatchStream::new<u32> [dyn]
+#0  async block  tokio_stream::wrappers::watch::WatchStream::new<u32> [dyn]
       state Unresumed
 [4 frames, 1 shown]
 [Executed against 10 futures, 0 failed]

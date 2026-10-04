@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 1 -n` over illumos/local-set-timer"
+description: "`trace 2001 -n` over illumos/local-set-timer"
 ---
-#0  future        tokio::time::sleep::Sleep
+#0  future  tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
-#1  async fn      local_set_timer::local_sleeper
+#1  async fn  local_set_timer::local_sleeper
       awaiting at src/bin/local-set-timer.rs:22 (Suspend0, 0 locals)

@@ -2,13 +2,23 @@
 source: hansei/src/offline.rs
 description: "`info` over linux-floor/http-conns"
 ---
-core:       <snapshot>
+core:  <core>
 tokio info: <tokio info>
 symbols resolved: 23/23
 allocator evidence: unavailable
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.2 MiB swept in 198 chunks
-    hits: 45 task-pattern, 0 set-pattern; 26 admitted; 4 unlisted headers
-    by class: 5 task extent, 3 find, 18 lwp stack, 19 anon
-    attributed: 13 by a registry, 7 by owner type, 1 by holding type, 2 from another task's side, 0 unknown; 3 stale
-process: not recorded by this target
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; N swept in N chunks
+    hits: N
+    by class: N
+    attributed: N
+pid:  PID (http-conns)
+ppid:  PID
+uid:  ID
+gid:  ID
+psargs: PSARGS
+execfn: <test-programs>/fixtures/bin-a/rust-1.98.0-tokio-1.47.5-unstable/http-conns
+executable: <test-programs>/fixtures/bin-a/rust-1.98.0-tokio-1.47.5-unstable/http-conns
+build id (core):  BUILDID
+build id (binary): BUILDID — agree
+argv: not recorded in a Linux core (psargs is its 80-byte spelling)
+environment: not recorded in a Linux core
 signal: none recorded

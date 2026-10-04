@@ -1,18 +1,18 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 3` over illumos/joinset"
+description: "`task 2001` over illumos/joinset"
 ---
-task 3
+task 2001
     state: idle
     thread: <none>
     type: async fn joinset::driver
     awaiting at: src/bin/joinset.rs:83
     awaiting on:
-        join set 0xADDR (3 tasks)
+        join set 0xA1 (3 tasks)
             held in: frame 2 `set`
             declared at: src/bin/joinset.rs:52
             awaiting at: src/bin/joinset.rs:83
-            waker: tokio::util::idle_notified_set::ListsInner @ 0xADDR
+            waker: tokio::util::idle_notified_set::ListsInner @ 0xA2
     spawned at: src/bin/joinset.rs:100:21
     type defined at: src/bin/joinset.rs:48
     held futures: 0

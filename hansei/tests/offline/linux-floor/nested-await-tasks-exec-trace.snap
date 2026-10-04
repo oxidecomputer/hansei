@@ -2,13 +2,13 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux-floor/nested-await"
 ---
-task 3
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
-#1  async fn      nested_await::leaf
+task 2001
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA1 (nothing sent, sender alive)
+#1  async fn  nested_await::leaf
       awaiting at src/bin/nested-await.rs:12 (Suspend0, 0 locals)
-#2  async fn      nested_await::middle
+#2  async fn  nested_await::middle
       awaiting at src/bin/nested-await.rs:16 (Suspend0, 0 locals)
-#3  async fn      nested_await::outer
+#3  async fn  nested_await::outer
       awaiting at src/bin/nested-await.rs:23 (Suspend0, 0 locals)
 [Executed against 1 task, 0 failed]

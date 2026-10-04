@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 3` over linux/armed-select"
+description: "`task 2001` over linux/armed-select"
 ---
-task 3
+task 2001
     state: idle
     thread: <none>
     type: async fn armed_select::selector
@@ -15,23 +15,23 @@ task 3
                 held in: frame 1 `once`
                 declared at: src/bin/armed-select.rs:33
                 awaiting at: src/bin/armed-select.rs:50
-                awaiting on: oneshot rx 0xADDR (nothing sent, sender alive)
+                awaiting on: oneshot rx 0xA1 (nothing sent, sender alive)
                 type defined at: tokio-1.52.4/src/sync/oneshot.rs:1271
             branch 1 (borrowed): async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
                 held in: frame 1 `recv`
                 awaiting at: src/bin/armed-select.rs:51
-                awaiting on: mpsc rx 0xADDR (1 sender, capacity 4, 0 unread)
+                awaiting on: mpsc rx 0xA2 (1 sender, capacity 4, 0 unread)
                 type defined at: tokio-1.52.4/src/sync/mpsc/bounded.rs:243
             branch 2 (borrowed): async fn tokio::sync::watch::Receiver::changed<u32>
                 held in: frame 1 `changed`
                 awaiting at: src/bin/armed-select.rs:52
-                awaiting on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                awaiting on: watch rx 0xA3 (version 0, 1 sender, 1 receiver)
                 type defined at: tokio-1.52.4/src/sync/watch.rs:818
             branch 3 (borrowed): tokio::time::sleep::Sleep
                 held in: frame 1 `sleep`
                 awaiting on: timer (deadline TS on the target's monotonic clock)
                 type defined at: tokio-1.52.4/src/time/sleep.rs:457
-                waker: timer @ 0xADDR
+                waker: timer @ 0xA4
     spawned at: src/bin/armed-select.rs:186:25
     type defined at: src/bin/armed-select.rs:31
     held futures: 4

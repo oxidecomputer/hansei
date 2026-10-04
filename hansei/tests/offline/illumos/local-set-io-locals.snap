@@ -2,13 +2,13 @@
 source: hansei/src/offline.rs
 description: "`locals` over illumos/local-set-io"
 ---
-reader: &mut tokio::net::unix::stream::UnixStream = 0xADDR (task 1) -> tokio::net::unix::stream::UnixStream {
+reader: &mut tokio::net::unix::stream::UnixStream = 0xA1 (task 2001) -> tokio::net::unix::stream::UnixStream {
           io: tokio::io::poll_evented::PollEvented<mio::net::uds::stream::UnixStream> {
-              io: core::option::Option<mio::net::uds::stream::UnixStream> { .. } @ 0xADDR (task 1),
-              registration: tokio::runtime::io::registration::Registration { .. } @ 0xADDR (task 1),
+              io: core::option::Option<mio::net::uds::stream::UnixStream> { .. } @ 0xA2 (task 2001),
+              registration: tokio::runtime::io::registration::Registration { .. } @ 0xA1 (task 2001),
           },
       }
 buf: &mut [u8] {
-      data_ptr: 0xADDR (task 1) -> 0,
+      data_ptr: 0xA3 (task 2001) -> 0,
       length: 8,
   }

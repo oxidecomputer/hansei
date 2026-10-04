@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`threads` over illumos/local-set-timer"
 ---
-LWP  NAME  ROLE             TASK  FRAME 0
-1    —     block_on caller  —     0xADDR
+LWP  NAME  ROLE  TASK  FRAME 0
+1001  —  block_on caller  —  ioctl
 [1 thread]

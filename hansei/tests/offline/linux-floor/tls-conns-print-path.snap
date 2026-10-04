@@ -2,12 +2,12 @@
 source: hansei/src/offline.rs
 description: "`print reader` over linux-floor/tls-conns"
 ---
-0xADDR -> tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream> {
+0xA1 -> tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream> {
         io: tokio::net::tcp::stream::TcpStream {
-            io: tokio::io::poll_evented::PollEvented<mio::net::tcp::stream::TcpStream> { .. } @ 0xADDR,
+            io: tokio::io::poll_evented::PollEvented<mio::net::tcp::stream::TcpStream> { .. } @ 0xA1,
         },
         session: rustls::client::client_conn::connection::ClientConnection {
-            inner: rustls::conn::ConnectionCommon<rustls::client::client_conn::ClientConnectionData> { .. } @ 0xADDR,
+            inner: rustls::conn::ConnectionCommon<rustls::client::client_conn::ClientConnectionData> { .. } @ 0xA2,
         },
         state: tokio_rustls::common::TlsState = Stream,
         need_flush: false,

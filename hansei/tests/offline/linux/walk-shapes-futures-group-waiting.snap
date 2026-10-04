@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over linux/walk-shapes"
 ---
-COUNT  WAITING ON                                 FUTURES
-    1  <empty>                                    0xADDR
-    1  notify rx                                  0xADDR
-    1  unarmed: a tokio::sync::Mutex (semaphore)  0xADDR
+COUNT  WAITING ON  FUTURES
+    1  <empty>  0xA1
+    1  notify rx  0xA2
+    1  unarmed: a tokio::sync::Mutex (semaphore)  0xA3
 [3 groups]

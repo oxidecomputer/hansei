@@ -1,13 +1,13 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 3` over linux-floor/channels"
+description: "`task 2001` over linux-floor/channels"
 ---
-task 3
+task 2001
     state: idle
     thread: <none>
     type: async fn channels::notify_waiter
     awaiting at: src/bin/channels.rs:37
-    awaiting on: notify rx 0xADDR (waiting, 1 queued)
+    awaiting on: notify rx 0xA1 (waiting, 1 queued)
     spawned at: src/bin/channels.rs:139:23
     type defined at: src/bin/channels.rs:27
     held futures: 0

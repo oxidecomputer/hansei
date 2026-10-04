@@ -1,8 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over linux-floor/blocking-pool"
+description: "`tasks --with id 2003,2006` over linux-floor/blocking-pool"
 ---
-ID  STATE     RT  FUT  AWAITING AT                  WAITING ON  TYPE
-3   blocking  ?     0  —                            —           future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
-6   idle      0     0  src/bin/blocking-pool.rs:22  task 3      async fn blocking_pool::running_waiter
-[2 tasks]
+ID  STATE  RT  FUT  AWAITING AT  WAITING ON  TYPE
+2003  blocking (queued)  0  0  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}>
+[1 task]

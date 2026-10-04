@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux-floor/walk-shapes"
 ---
-LWP      NAME  ROLE                       TASK  FRAME 0
-3410404  —     block_on caller            —     0xADDR
-3410406  —     tokio context, no runtime  —     0xADDR
-3410407  —     tokio context, no runtime  —     0xADDR
+LWP  NAME  ROLE  TASK  FRAME 0
+1001  —  block_on caller  —  __syscall_cancel_arch
+1002  —  tokio context, no runtime  —  syscall
+1003  —  tokio context, no runtime  —  syscall
 [3 threads]

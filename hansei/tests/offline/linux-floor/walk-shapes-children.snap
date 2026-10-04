@@ -2,7 +2,5 @@
 source: hansei/src/offline.rs
 description: "`children` over linux-floor/walk-shapes"
 ---
-held futures: 2
-    (frame 1, `wz`): 0xADDR  async fn walk_shapes::deep  Unresumed
-    (frame 0, `inner`): 0xADDR  future walk_shapes::WrapE<walk_shapes::deep>
+held futures: 0
 join sets: 0

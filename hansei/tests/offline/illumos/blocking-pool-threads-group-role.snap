@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`threads --group role` over illumos/blocking-pool"
 ---
-COUNT  ROLE             LWPS
-    2  worker           2, 3
-    1  blocking         4
-    1  entered runtime  1
+COUNT  ROLE  LWPS
+    2  worker  1002, 1003
+    1  blocking  1004
+    1  entered runtime  1001
 [3 groups]

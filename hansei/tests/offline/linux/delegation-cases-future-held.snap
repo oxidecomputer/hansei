@@ -1,11 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0x55dcf0514148` over linux/delegation-cases"
+description: "`future 0xA1` over linux/delegation-cases"
 ---
-future 0xADDR
-    type: future delegation_cases::Probe<1>
-    held by: task 1 (frame 0, `child`)
-    depth: 1 frame
-    awaiting on: unarmed: unknown at delegation_cases::Probe
+future 0xA1
+    type: future tokio::runtime::task::join::JoinHandle<()>
+    held by: task 2004 (frame 0, `handle`)
+    depth: 2 frames
+    awaiting on: unarmed: task 2011
     held futures: 0
     join sets: 0

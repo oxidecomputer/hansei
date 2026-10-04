@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over illumos/delegation-cases"
+description: "`tasks --with id 2003,2006` over illumos/delegation-cases"
 ---
-ID  STATE  FUT  AWAITING AT  WAITING ON                                      TYPE
-3   idle     0  —            unarmed: unknown at delegation_cases::Retained  future Pin<Box<delegation_cases::Retained>>
-6   idle     0  —            unarmed: unknown at delegation_cases::Probe     future Pin<Box<Box<delegation_cases::Probe<6>>>>
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2003  idle  0  src/bin/delegation-cases.rs:384  unarmed: never ready  future Pin<Box<delegation_cases::main::{async_block_env#3}>>
+2006  idle  0  —  unarmed: unknown at delegation_cases::RawHolder  future Pin<Box<delegation_cases::RawHolder>>
 [2 tasks]

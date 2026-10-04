@@ -2,10 +2,10 @@
 source: hansei/src/offline.rs
 description: "`threads` over illumos/futurelock"
 ---
-LWP  NAME  ROLE                 TASK  FRAME 0
-1    —     entered runtime      —     0xADDR
-2    —     worker 0, parked     —     0xADDR
-3    —     worker 1, parked     —     0xADDR
-4    —     worker 3, in driver  —     0xADDR
-5    —     worker 2, parked     —     0xADDR
+LWP  NAME  ROLE  TASK  FRAME 0
+1001  —  entered runtime  —  __lwp_park
+1002  tokio-rt-worker  worker N, parked  —  __lwp_park
+1003  tokio-rt-worker  worker N, parked  —  __lwp_park
+1004  tokio-rt-worker  worker N, parked  —  __lwp_park
+1005  tokio-rt-worker  worker N, in driver  —  ioctl
 [5 threads]

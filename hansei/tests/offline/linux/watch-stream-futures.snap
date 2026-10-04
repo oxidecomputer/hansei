@@ -2,15 +2,15 @@
 source: hansei/src/offline.rs
 description: "`futures` over linux/watch-stream"
 ---
-ADDR            TASK  HELD IN            STATE                                                    WAITING ON                                               ARMED  TYPE
-0xADDR  3     frame 1, `once`    —                                                        oneshot rx                                               yes    future tokio::sync::oneshot::Receiver<u32>
-0xADDR  3     frame 1, `stream`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch rx                                                 yes    async fn tokio_stream::wrappers::watch::make_future<u32>
-0xADDR  3     frame 1, `next`    —                                                        watch rx                                                 yes    future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
-0xADDR  4     frame 1, `once`    —                                                        oneshot rx                                               yes    future tokio::sync::oneshot::Receiver<u32>
-0xADDR  4     frame 1, `map[0]`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch rx                                                 yes    async fn tokio_stream::wrappers::watch::make_future<u32>
-0xADDR  4     frame 1, `map[1]`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch rx                                                 yes    async fn tokio_stream::wrappers::watch::make_future<u32>
-0xADDR  4     frame 1, `map[2]`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch rx                                                 yes    async fn tokio_stream::wrappers::watch::make_future<u32>
-0xADDR  4     frame 1, `next`    —                                                        unarmed: unknown at tokio_stream::stream_map::StreamMap  no     future futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
-0xADDR  5     frame 1, `stream`  Unresumed                                                —                                                        no     async block tokio_stream::wrappers::watch::WatchStream::new<u32>
-0xADDR  5     frame 1, `next`    —                                                        —                                                        no     future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+ADDR  TASK  HELD IN  STATE  WAITING ON  ARMED  TYPE
+0xA1  2001  frame 1, `once`  —  oneshot rx  yes  future tokio::sync::oneshot::Receiver<u32>
+0xA2  2001  frame 1, `stream`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch rx  yes  async fn tokio_stream::wrappers::watch::make_future<u32>
+0xA3  2001  frame 1, `next`  —  watch rx  yes  future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+0xA4  2002  frame 1, `once`  —  oneshot rx  yes  future tokio::sync::oneshot::Receiver<u32>
+0xA5  2002  frame 1, `map[0]`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch rx  yes  async fn tokio_stream::wrappers::watch::make_future<u32>
+0xA6  2002  frame 1, `map[1]`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch rx  yes  async fn tokio_stream::wrappers::watch::make_future<u32>
+0xA7  2002  frame 1, `map[2]`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch rx  yes  async fn tokio_stream::wrappers::watch::make_future<u32>
+0xA8  2002  frame 1, `next`  —  unarmed: unknown at tokio_stream::stream_map::StreamMap  no  future futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
+0xA9  2003  frame 1, `stream`  Unresumed  —  no  async block tokio_stream::wrappers::watch::WatchStream::new<u32>
+0xA10  2003  frame 1, `next`  —  —  no  future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
 [10 futures]

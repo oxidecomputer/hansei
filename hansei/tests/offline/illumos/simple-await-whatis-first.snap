@@ -1,12 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x16d5600` over illumos/simple-await"
+description: "`whatis 0xA1` over illumos/simple-await"
 ---
 Status: live
-Size:   528 byte block
-Offset: +16 in block
+Size:  512 bytes
 
-Task 3: async fn simple_await::work
-    At: offset 0xADDR in the task's allocation (header 0xADDR)
+Task 2001: async fn simple_await::work
+    At: offset 0xA1 in the task's allocation (header 0xA2)
     State: idle
     Spawned at: src/bin/simple-await.rs:89:21

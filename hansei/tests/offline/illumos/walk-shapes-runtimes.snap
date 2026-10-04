@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`runtimes` over illumos/walk-shapes"
 ---
-ID  FLAVOR          HANDLE     TASKS  FUT  WORKERS  THREADS  FOUND VIA
-0   current_thread  0xADDR      7   10        1        1  a thread's runtime context
-1   current_thread  0xADDR      1    1        1        0  a task waker queued on a semaphore scanned in an enumerated task's storage
+ID  FLAVOR  HANDLE  TASKS  FUT  WORKERS  THREADS  FOUND VIA
+0  current_thread  0xA1  7  10  1  1  a thread's runtime context
+1  current_thread  0xA2  1  1  1  0  a task waker queued on a semaphore scanned in an enumerated task's storage
 [2 runtimes]

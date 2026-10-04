@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waker` over linux/two-releases"
 ---
-COUNT  WAITING ON                   TASKS
-    1  event_listener::Entry        4
-    1  event_listener::State::Task  5
-    1  oneshot rx                   3
+COUNT  WAITING ON  TASKS
+    1  event_listener::Entry  2001
+    1  event_listener::State::Task  2002
+    1  oneshot rx  2003
 [3 groups]

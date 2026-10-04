@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over illumos/foreign-runtime"
+description: "`tasks --with id 2003,2006` over illumos/foreign-runtime"
 ---
-ID  STATE  RT  FUT  AWAITING AT                    WAITING ON  TYPE
-3   idle   0     0  src/bin/foreign-runtime.rs:30  task 1      async fn foreign_runtime::joiner
+ID  STATE  RT  FUT  AWAITING AT  WAITING ON  TYPE
+2003  idle  1  0  src/bin/foreign-runtime.rs:55  unarmed: never ready  async fn foreign_runtime::detached
 [1 task]

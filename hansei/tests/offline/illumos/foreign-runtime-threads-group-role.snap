@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads --group role` over illumos/foreign-runtime"
 ---
-COUNT  ROLE                       LWPS
-    1  block_on caller            1
-    1  tokio context, no runtime  2
+COUNT  ROLE  LWPS
+    1  block_on caller  1001
+    1  tokio context, no runtime  1002
 [2 groups]

@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`connections --group phase` over illumos/http-conns"
 ---
-COUNT  PHASE              CONNECTIONS
-    4  idle               server task 4, client task 5, server task 16, …
-    2  awaiting response  client task 10, client task 13
-    2  handling request   server task 9, server task 12
-    1  negotiating        server task 14
+COUNT  PHASE  CONNECTIONS
+    4  idle  client task 2002, server task 2004, server task 2008, …
+    2  awaiting response  client task 2001, client task 2014
+    2  handling request  server task 2005, server task 2006
+    1  negotiating  server task 2007
 [4 groups]

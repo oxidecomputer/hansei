@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over illumos/two-releases"
 ---
-COUNT  WAITING ON                   FUTURES
-    2  event_listener::State::Task  0xADDR, 0xADDR
-    1  event_listener::Entry        0xADDR
+COUNT  WAITING ON  FUTURES
+    2  event_listener::State::Task  0xA1, 0xA2
+    1  event_listener::Entry  0xA3
 [2 groups]

@@ -1,7 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over linux/nested-await"
+description: "`tasks --with id 2003,2006` over linux/nested-await"
 ---
-ID  STATE  FUT  AWAITING AT                 WAITING ON  TYPE
-3   idle     0  src/bin/nested-await.rs:23  oneshot rx  async fn nested_await::outer
-[1 task]
+[0 tasks]

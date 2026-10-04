@@ -2,5 +2,6 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux/walk-shapes"
 ---
-notify 0xADDR: waiting
-    rx: task 1
+a tokio::sync::Semaphore (semaphore 0xA1): 0 permits available
+    Blocked on it: task 2001 (1 permit requested), task 2007 (1 permit requested), task 2008 (1 permit requested)
+    Wake queue: task 2007, task 2008, task 2001

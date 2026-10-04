@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over linux/watch-stream"
 ---
-COUNT  WAITING ON                                               FUTURES
-    5  watch rx                                                 0xADDR, 0xADDR, 0xADDR, …
-    2  <empty>                                                  0xADDR, 0xADDR
-    2  oneshot rx                                               0xADDR, 0xADDR
-    1  unarmed: unknown at tokio_stream::stream_map::StreamMap  0xADDR
+COUNT  WAITING ON  FUTURES
+    5  watch rx  0xA1, 0xA2, 0xA3, …
+    2  <empty>  0xA4, 0xA5
+    2  oneshot rx  0xA6, 0xA7
+    1  unarmed: unknown at tokio_stream::stream_map::StreamMap  0xA8
 [4 groups]

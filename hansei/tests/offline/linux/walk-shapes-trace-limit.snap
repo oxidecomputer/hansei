@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 1 -l 1` over linux/walk-shapes"
+description: "`trace 2001 -l 1` over linux/walk-shapes"
 ---
-#0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
-      defined at src/bin/walk-shapes.rs:44 (<no_state>, 2 locals; holds 1 pending future)
-[2 frames, 1 shown]
+#0  future  tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Semaphore (semaphore 0xA1): 1 permit requested, 0 available; wake queue: task 2007, task 2008, task 2001
+[3 frames, 1 shown]

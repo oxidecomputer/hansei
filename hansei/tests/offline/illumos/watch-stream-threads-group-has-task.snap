@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task` over illumos/watch-stream"
 ---
 COUNT  HAS TASK  LWPS
-    1  no        1
+    1  no  1001
 [1 group]

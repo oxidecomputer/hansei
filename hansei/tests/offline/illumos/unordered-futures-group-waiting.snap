@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over illumos/unordered"
 ---
-COUNT  WAITING ON          FUTURES
-   13  <empty>             0xADDR, 0xADDR, 0xADDR, …
-    3  unarmed: notify rx  0xADDR, 0xADDR, 0xADDR
+COUNT  WAITING ON  FUTURES
+   13  <empty>  0xA1, 0xA2, 0xA3, …
+    3  notify rx  0xA4, 0xA5, 0xA6
 [2 groups]

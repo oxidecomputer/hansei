@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 1 -n` over illumos/ct-runtime"
+description: "`trace 2001 -n` over illumos/ct-runtime"
 ---
-#0  future        tokio::time::sleep::Sleep
+#0  future  tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
-#1  async fn      ct_runtime::sleeper
+#1  async fn  ct_runtime::sleeper
       awaiting at src/bin/ct-runtime.rs:17 (Suspend0, 0 locals)

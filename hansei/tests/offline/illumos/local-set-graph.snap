@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`graph` over illumos/local-set"
 ---
 TASK  STATE  WAITING ON
-3     idle   task 1
-└─ 1  idle   timer
+2003  idle  task 2001
+└─ 2001  idle  timer

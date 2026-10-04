@@ -2,11 +2,11 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux/armed-select"
 ---
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 3
+oneshot 0xA1: nothing sent, sender alive
+    rx: task 2001
 
-mpsc 0xADDR: 1 sender, capacity 4, 0 unread
-    rx: task 3
+mpsc 0xA2: 1 sender, capacity 4, 0 unread
+    rx: task 2001
 
-watch 0xADDR: version 0, 1 sender, 1 receiver
-    rx: task 3
+watch 0xA3: version 0, 1 sender, 1 receiver
+    rx: task 2001

@@ -2,19 +2,11 @@
 source: hansei/src/offline.rs
 description: "`locals` over linux/foreign-runtime"
 ---
-node: tokio::sync::batch_semaphore::Waiter {
-      state: 1,
-      waker: core::option::Option<core::task::wake::Waker> = Some(task 1),
-      pointers: tokio::util::linked_list::Pointers<tokio::sync::batch_semaphore::Waiter> {
-          inner: tokio::util::linked_list::PointersInner<tokio::sync::batch_semaphore::Waiter> {
-              prev: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>> { .. } @ 0xADDR (task 1),
-              next: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>> { .. } @ 0xADDR (task 1),
+raw: tokio::runtime::task::raw::RawTask = 0xA1 (task 2002) -> tokio::runtime::task::core::Header {
+          state: tokio::runtime::task::state::State {
+              val: 216,
           },
-      },
-  }
-semaphore: &tokio::sync::batch_semaphore::Semaphore = 0xADDR -> tokio::sync::batch_semaphore::Semaphore {
-          waiters: tokio::loom::std::parking_lot::Mutex<tokio::sync::batch_semaphore::Waitlist> { .. } @ 0xADDR,
-          permits: closed=false, permits=0,
+          queue_next: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::ptr::non_null::NonNull<tokio::runtime::task::core::Header>>> { .. } @ 0xA2 (task 2002),
+          vtable: 0xA3 -> tokio::runtime::task::raw::Vtable { .. },
+          owner_id: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::num::nonzero::NonZero<u64>>> { .. } @ 0xA4 (task 2002),
       }
-num_permits: usize = 1
-queued: bool = true

@@ -1,13 +1,13 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 5` over linux-floor/channels"
+description: "`task 2003` over linux-floor/channels"
 ---
-task 5
+task 2003
     state: idle
     thread: <none>
     type: async fn channels::hold
     awaiting at: src/bin/channels.rs:70
-    awaiting on: oneshot rx 0xADDR (nothing sent, sender alive)
+    awaiting on: oneshot rx 0xA1 (nothing sent, sender alive)
     spawned at: src/bin/channels.rs:159:23
     type defined at: src/bin/channels.rs:54
     held futures: 0

@@ -2,12 +2,12 @@
 source: hansei/src/offline.rs
 description: "`tasks --with type two_releases::keeper --exec up print old_tx` over linux/two-releases"
 ---
-task 3
-#1  async fn      two_releases::keeper
+task 2003
+#1  async fn  two_releases::keeper
       awaiting at src/bin/two-releases.rs:42 (Suspend0, 6 locals)
-0xADDR -> alloc::sync::ArcInner<async_channel::Channel<u32>> {
+0xA1 -> alloc::sync::ArcInner<async_channel::Channel<u32>> {
         strong: 3,
         weak: 1,
-        data: async_channel::Channel<u32> { .. } @ 0xADDR,
+        data: async_channel::Channel<u32> { .. } @ 0xA2,
     }
 [Executed against 1 task, 0 failed]

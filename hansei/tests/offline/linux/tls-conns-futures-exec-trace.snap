@@ -2,33 +2,33 @@
 source: hansei/src/offline.rs
 description: "`futures --exec trace -l 1` over linux/tls-conns"
 ---
-future 0xADDR
-future 0xADDR: future tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>
-Held by: task 5 — async fn tls_conns::split_client (frame 1, `read`)
+future 0xA1
+future 0xA1: future tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>
+Held by: task 2003 — async fn tls_conns::split_client (frame 1, `read`)
 
-#0  future        tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>
-      waiting on io fd 13 (readable)
+#0  future  tokio::io::util::read::Read<tokio::io::split::ReadHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>>
+      waiting on io fd N (readable)
       tls client, TLSv1_3, established, 1 record read, 0 written
 
-future 0xADDR
-future 0xADDR: future tokio::io::util::write_buf::WriteBuf<tokio::io::split::WriteHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>, core::io::cursor::Cursor<Vec<u8>>>
-Held by: task 5 — async fn tls_conns::split_client (frame 1, `write`)
+future 0xA2
+future 0xA2: future tokio::io::util::write_buf::WriteBuf<tokio::io::split::WriteHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>, core::io::cursor::Cursor<Vec<u8>>>
+Held by: task 2003 — async fn tls_conns::split_client (frame 1, `write`)
 
-#0  future        tokio::io::util::write_buf::WriteBuf<tokio::io::split::WriteHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>, core::io::cursor::Cursor<Vec<u8>>>
-      waiting on io fd 13 (writable)
+#0  future  tokio::io::util::write_buf::WriteBuf<tokio::io::split::WriteHalf<tokio_rustls::TlsStream<tokio::net::tcp::stream::TcpStream>>, core::io::cursor::Cursor<Vec<u8>>>
+      waiting on io fd N (writable)
       tls client, TLSv1_3, established, 1 record read, 0 written
 
-future 0xADDR
-future 0xADDR: future tokio::io::util::read::Read<tokio::net::tcp::split_owned::OwnedReadHalf>
-Held by: task 7 — async fn tls_conns::owned_split_client (frame 1, `read`)
+future 0xA3
+future 0xA3: future tokio::io::util::read::Read<tokio::net::tcp::split_owned::OwnedReadHalf>
+Held by: task 2005 — async fn tls_conns::owned_split_client (frame 1, `read`)
 
-#0  future        tokio::io::util::read::Read<tokio::net::tcp::split_owned::OwnedReadHalf>
-      waiting on io fd 15 (readable)
+#0  future  tokio::io::util::read::Read<tokio::net::tcp::split_owned::OwnedReadHalf>
+      waiting on io fd N (readable)
 
-future 0xADDR
-future 0xADDR: future tokio::io::util::write_buf::WriteBuf<tokio::net::tcp::split_owned::OwnedWriteHalf, core::io::cursor::Cursor<Vec<u8>>>
-Held by: task 7 — async fn tls_conns::owned_split_client (frame 1, `write`)
+future 0xA4
+future 0xA4: future tokio::io::util::write_buf::WriteBuf<tokio::net::tcp::split_owned::OwnedWriteHalf, core::io::cursor::Cursor<Vec<u8>>>
+Held by: task 2005 — async fn tls_conns::owned_split_client (frame 1, `write`)
 
-#0  future        tokio::io::util::write_buf::WriteBuf<tokio::net::tcp::split_owned::OwnedWriteHalf, core::io::cursor::Cursor<Vec<u8>>>
-      waiting on io fd 15 (writable)
+#0  future  tokio::io::util::write_buf::WriteBuf<tokio::net::tcp::split_owned::OwnedWriteHalf, core::io::cursor::Cursor<Vec<u8>>>
+      waiting on io fd N (writable)
 [Executed against 4 futures, 0 failed]

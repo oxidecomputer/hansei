@@ -2,41 +2,41 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux-floor/joinset"
 ---
-task 3
-#0  future        core::future::poll_fn::PollFn<tokio::task::join_set::JoinSet::join_next::{async_fn#0}::{closure_env#0}<u32>>
+task 2001
+#0  future  core::future::poll_fn::PollFn<tokio::task::join_set::JoinSet::join_next::{async_fn#0}::{closure_env#0}<u32>>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
-#1  async fn      tokio::task::join_set::JoinSet::join_next<u32>
+#1  async fn  tokio::task::join_set::JoinSet::join_next<u32>
       awaiting at tokio-1.47.5/src/task/join_set.rs:283 (Suspend0, 0 locals)
-#2  async fn      joinset::driver
+#2  async fn  joinset::driver
       awaiting at src/bin/joinset.rs:83 (Suspend1, 6 locals)
 
-task 4
-#0  future        tokio::sync::notify::Notified
-      waiting on notify rx 0xADDR (waiting, 5 queued)
-#1  async fn      joinset::member
+task 2002
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA1 (waiting, 5 queued)
+#1  async fn  joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
-task 5
-#0  future        tokio::sync::notify::Notified
-      waiting on notify rx 0xADDR (waiting, 5 queued)
-#1  async fn      joinset::member
+task 2003
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA1 (waiting, 5 queued)
+#1  async fn  joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
-task 6
-#0  future        tokio::sync::notify::Notified
-      waiting on notify rx 0xADDR (waiting, 5 queued)
-#1  async fn      joinset::member
+task 2004
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA1 (waiting, 5 queued)
+#1  async fn  joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
-task 7
-#0  future        tokio::sync::notify::Notified
-      waiting on notify rx 0xADDR (waiting, 5 queued)
-#1  async fn      joinset::member
+task 2005
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA1 (waiting, 5 queued)
+#1  async fn  joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
-task 8
-#0  future        tokio::sync::notify::Notified
-      waiting on notify rx 0xADDR (waiting, 5 queued)
-#1  async fn      joinset::member
+task 2006
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA1 (waiting, 5 queued)
+#1  async fn  joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 [Executed against 6 tasks, 0 failed]

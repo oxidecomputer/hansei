@@ -2,18 +2,8 @@
 source: hansei/src/offline.rs
 description: "`print` over illumos/delegation-cases"
 ---
-delegation_cases::Gated<1> {
-    gate: delegation_cases::Gate {
-        open: false,
-    },
-    child: delegation_cases::Probe<1> {
-        case: 0,
-        ready: core::option::Option<std::sync::mpsc::Sender<usize>> { .. } @ 0xADDR,
-        tag: 1,
-    },
-    ready: std::sync::mpsc::Sender<usize> {
-        inner: std::sync::mpmc::Sender<usize> {
-            flavor: std::sync::mpmc::SenderFlavor<usize> = List(0xADDR -> std::sync::mpmc::counter::Counter<std::sync::mpmc::list::Channel<usize>> { .. }),
-        },
-    },
+delegation_cases::Probe<7> {
+    case: 6,
+    ready: core::option::Option<std::sync::mpsc::Sender<usize>> = Some(std::sync::mpmc::SenderFlavor<usize> { .. } @ 0xA1),
+    tag: 7,
 }

@@ -2,17 +2,17 @@
 source: hansei/src/offline.rs
 description: "`locals` over linux-floor/tls-conns"
 ---
-reader: &mut tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream> = 0xADDR (task 3) -> tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream> {
+reader: &mut tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream> = 0xA1 (task 2001) -> tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream> {
           io: tokio::net::tcp::stream::TcpStream {
-              io: tokio::io::poll_evented::PollEvented<mio::net::tcp::stream::TcpStream> { .. } @ 0xADDR (task 3),
+              io: tokio::io::poll_evented::PollEvented<mio::net::tcp::stream::TcpStream> { .. } @ 0xA1 (task 2001),
           },
           session: rustls::client::client_conn::connection::ClientConnection {
-              inner: rustls::conn::ConnectionCommon<rustls::client::client_conn::ClientConnectionData> { .. } @ 0xADDR (task 3),
+              inner: rustls::conn::ConnectionCommon<rustls::client::client_conn::ClientConnectionData> { .. } @ 0xA2 (task 2001),
           },
           state: tokio_rustls::common::TlsState = Stream,
           need_flush: false,
       }
 buf: &mut [u8] {
-      data_ptr: 0xADDR (task 3) -> 0,
+      data_ptr: 0xA3 (task 2001) -> 0,
       length: 64,
   }

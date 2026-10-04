@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`graph` over illumos/http-conns"
 ---
-TASK                                STATE  WAITING ON
-8                                   idle   oneshot rx
-└─ 10 [its response awaited above]  idle   http1 client
-11                                  idle   oneshot rx
-└─ 13 [its response awaited above]  idle   http1 client
+TASK  STATE  WAITING ON
+2010  idle  oneshot rx
+└─ 2014 [its response awaited above]  idle  http1 client
+2011  idle  oneshot rx
+└─ 2001 [its response awaited above]  idle  http1 client

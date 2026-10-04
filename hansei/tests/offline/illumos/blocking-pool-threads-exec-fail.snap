@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads --with has-task yes --exec type no::such::Type` over illumos/blocking-pool"
 ---
-thread 4
+thread 1004
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 [Executed against 1 thread, 1 failed]
 error: --exec failed against 1 of 1 thread

@@ -2,10 +2,10 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/futurelock"
 ---
-LWP      NAME  ROLE                 TASK  FRAME 0
-2089116  —     entered runtime      —     0xADDR
-2089118  —     worker 0, parked     —     0xADDR
-2089119  —     worker 1, parked     —     0xADDR
-2089120  —     worker 2, parked     —     0xADDR
-2089121  —     worker 3, in driver  —     0xADDR
+LWP  NAME  ROLE  TASK  FRAME 0
+1001  —  entered runtime  —  syscall
+1002  —  worker N, parked  —  syscall
+1003  —  worker N, parked  —  syscall
+1004  —  worker N, parked  —  syscall
+1005  —  worker N, in driver  —  __syscall_cancel_arch
 [5 threads]

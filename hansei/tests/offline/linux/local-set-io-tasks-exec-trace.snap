@@ -2,41 +2,41 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux/local-set-io"
 ---
-task 1
-#0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
-      waiting on io fd 10 (readable)
-#1  async fn      local_set_io::local_reader
+task 2001
+#0  future  tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
+      waiting on io fd N (readable)
+#1  async fn  local_set_io::local_reader
       awaiting at src/bin/local-set-io.rs:32 (Suspend0, 2 locals)
 
-task 2
-#0  future        tokio::runtime::io::scheduled_io::Readiness
-      waiting on io fd 12 (readable)
-#1  async fn      tokio::runtime::io::scheduled_io::ScheduledIo::readiness
+task 2002
+#0  future  tokio::runtime::io::scheduled_io::Readiness
+      waiting on io fd N (readable)
+#1  async fn  tokio::runtime::io::scheduled_io::ScheduledIo::readiness
       awaiting at tokio-1.52.4/src/runtime/io/scheduled_io.rs:385 (Suspend0, 0 locals)
-#2  async fn      tokio::runtime::io::registration::Registration::readiness
+#2  async fn  tokio::runtime::io::registration::Registration::readiness
       awaiting at tokio-1.52.4/src/runtime/io/registration.rs:205 (Suspend0, 0 locals)
-#3  async fn      tokio::net::unix::stream::UnixStream::ready
+#3  async fn  tokio::net::unix::stream::UnixStream::ready
       awaiting at tokio-1.52.4/src/net/unix/stream.rs:177 (Suspend0, 0 locals)
-#4  async fn      tokio::net::unix::stream::UnixStream::readable
+#4  async fn  tokio::net::unix::stream::UnixStream::readable
       awaiting at tokio-1.52.4/src/net/unix/stream.rs:234 (Suspend0, 0 locals)
-#5  async fn      local_set_io::local_watcher
+#5  async fn  local_set_io::local_watcher
       awaiting at src/bin/local-set-io.rs:40 (Suspend0, 2 locals)
 
-task 3
-#0  future        tokio::io::util::write_all::WriteAll<tokio::net::unix::stream::UnixStream>
-      waiting on io fd 14 (writable)
-#1  async fn      local_set_io::local_writer
+task 2003
+#0  future  tokio::io::util::write_all::WriteAll<tokio::net::unix::stream::UnixStream>
+      waiting on io fd N (writable)
+#1  async fn  local_set_io::local_writer
       awaiting at src/bin/local-set-io.rs:60 (Suspend1, 2 locals)
 
-task 4
-#0  future        tokio::io::util::read::Read<local_set_io::Gated>
+task 2004
+#0  future  tokio::io::util::read::Read<local_set_io::Gated>
       defined at tokio-1.52.4/src/io/util/read.rs:49 (<no_state>, 2 locals)
-#1  async fn      local_set_io::local_gated_reader
+#1  async fn  local_set_io::local_gated_reader
       awaiting at src/bin/local-set-io.rs:100 (Suspend0, 2 locals)
 
-task 5
-#0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
-      waiting on io fd 16 (readable)
-#1  async fn      local_set_io::reader
+task 2005
+#0  future  tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
+      waiting on io fd N (readable)
+#1  async fn  local_set_io::reader
       awaiting at src/bin/local-set-io.rs:114 (Suspend0, 2 locals)
 [Executed against 5 tasks, 0 failed]

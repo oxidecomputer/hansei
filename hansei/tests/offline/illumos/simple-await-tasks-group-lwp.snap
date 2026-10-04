@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --group lwp` over illumos/simple-await"
 ---
-COUNT  LWP      TASKS
-    1  <empty>  3
+COUNT  LWP  TASKS
+    1  <empty>  2001
 [1 group]

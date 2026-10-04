@@ -2,22 +2,22 @@
 source: hansei/src/offline.rs
 description: "`futures` over illumos/unordered"
 ---
-ADDR      TASK  HELD IN                                        STATE                               WAITING ON          ARMED  TYPE
-0xADDR  3     frame 2, `held`                                Unresumed                           —                   no     async fn unordered::set_member
-0xADDR  3     frame 2, `boxed`                               Unresumed                           —                   no     async fn unordered::set_member
-0xADDR  3     frame 2, `pair`                                Unresumed                           —                   no     async fn unordered::leaf
-0xADDR  3     frame 2, `maybe`                               Unresumed                           —                   no     async fn unordered::leaf
-0xADDR  3     frame 2, `nested_hold`                         Unresumed                           —                   no     async fn unordered::holder<unordered::leaf>
-0xADDR  3     frame 0, `inner`, via held future at 0xADDR  Unresumed                           —                   no     async fn unordered::leaf
-0xADDR  3     frame 2, `keyed[0]`                            Unresumed                           —                   no     async fn unordered::leaf
-0xADDR  3     frame 2, `keyed[1]`                            Unresumed                           —                   no     async fn unordered::leaf
-0xADDR  3     set 0xADDR                                   Suspend0 — src/bin/unordered.rs:87  unarmed: notify rx  no     async fn unordered::set_member
-0xADDR  3     frame 1, `held`, via set child at 0xADDR     Unresumed                           —                   no     async fn unordered::leaf
-0xADDR  3     set 0xADDR                                   Suspend0 — src/bin/unordered.rs:87  unarmed: notify rx  no     async fn unordered::set_member
-0xADDR  3     frame 1, `held`, via set child at 0xADDR     Unresumed                           —                   no     async fn unordered::leaf
-0xADDR  3     set 0xADDR                                   Suspend0 — src/bin/unordered.rs:87  unarmed: notify rx  no     async fn unordered::set_member
-0xADDR  3     frame 1, `held`, via set child at 0xADDR     Unresumed                           —                   no     async fn unordered::leaf
-0xADDR  3     set 0xADDR, via set child at 0xADDR        Unresumed                           —                   no     async fn unordered::leaf
-0xADDR  3     set 0xADDR, via set child at 0xADDR        Unresumed                           —                   no     async fn unordered::leaf
+ADDR  TASK  HELD IN  STATE  WAITING ON  ARMED  TYPE
+0xA1  2001  frame 2, `held`  Unresumed  —  no  async fn unordered::set_member
+0xA2  2001  frame 2, `boxed`  Unresumed  —  no  async fn unordered::set_member
+0xA3  2001  frame 2, `pair`  Unresumed  —  no  async fn unordered::leaf
+0xA4  2001  frame 2, `maybe`  Unresumed  —  no  async fn unordered::leaf
+0xA5  2001  frame 2, `nested_hold`  Unresumed  —  no  async fn unordered::holder<unordered::leaf>
+0xA5  2001  frame 0, `inner`, via held future at 0xA5  Unresumed  —  no  async fn unordered::leaf
+0xA6  2001  frame 2, `keyed[0]`  Unresumed  —  no  async fn unordered::leaf
+0xA7  2001  frame 2, `keyed[1]`  Unresumed  —  no  async fn unordered::leaf
+0xA8  2001  set 0xA9  Suspend0 — src/bin/unordered.rs:87  notify rx  yes  async fn unordered::set_member
+0xA10  2001  frame 1, `held`, via set child at 0xA8  Unresumed  —  no  async fn unordered::leaf
+0xA11  2001  set 0xA9  Suspend0 — src/bin/unordered.rs:87  notify rx  yes  async fn unordered::set_member
+0xA12  2001  frame 1, `held`, via set child at 0xA11  Unresumed  —  no  async fn unordered::leaf
+0xA13  2001  set 0xA9  Suspend0 — src/bin/unordered.rs:87  notify rx  yes  async fn unordered::set_member
+0xA14  2001  frame 1, `held`, via set child at 0xA13  Unresumed  —  no  async fn unordered::leaf
+0xA15  2001  set 0xA16, via set child at 0xA13  Unresumed  —  no  async fn unordered::leaf
+0xA17  2001  set 0xA16, via set child at 0xA13  Unresumed  —  no  async fn unordered::leaf
 [16 futures]
 note: 2 rows print an address another find prints too; there, `future 0x…` and `trace 0x…` select the innermost, and `--exec` runs against each row's own

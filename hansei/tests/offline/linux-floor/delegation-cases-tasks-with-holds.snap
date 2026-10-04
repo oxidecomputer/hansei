@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`tasks --with holds >0` over linux-floor/delegation-cases"
 ---
-ID  STATE  FUT  AWAITING AT  WAITING ON                                                     TYPE
-1   idle     1  —            unarmed: unknown at delegation_cases::Gated (holds 1 future)   future Pin<Box<delegation_cases::Gated<1>>>
-2   idle     1  —            unarmed: unknown at delegation_cases::Gated (holds 1 future)   future Pin<Box<delegation_cases::Gated<2>>>
-9   idle     1  —            unarmed: unknown at delegation_cases::Holder (holds 1 future)  future Pin<Box<delegation_cases::Holder<delegation_cases::main>>>
-10  idle     1  —            unarmed: unknown at delegation_cases::Handle (holds 1 future)  future Pin<Box<delegation_cases::Handle>>
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2004  idle  1  —  unarmed: unknown at delegation_cases::Handle (holds 1 future)  future Pin<Box<delegation_cases::Handle>>
+2009  idle  1  —  unarmed: unknown at delegation_cases::Gated (holds 1 future)  future Pin<Box<delegation_cases::Gated<2>>>
+2010  idle  1  —  unarmed: unknown at delegation_cases::Gated (holds 1 future)  future Pin<Box<delegation_cases::Gated<1>>>
+2011  idle  1  —  unarmed: unknown at delegation_cases::Holder (holds 1 future)  future Pin<Box<delegation_cases::Holder<delegation_cases::main>>>
 [4 tasks]

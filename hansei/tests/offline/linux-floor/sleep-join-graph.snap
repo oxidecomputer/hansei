@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`graph` over linux-floor/sleep-join"
 ---
 TASK  STATE  WAITING ON
-4     idle   task 3
-└─ 3  idle   timer
+2002  idle  task 2001
+└─ 2001  idle  timer

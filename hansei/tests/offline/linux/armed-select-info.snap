@@ -2,13 +2,23 @@
 source: hansei/src/offline.rs
 description: "`info` over linux/armed-select"
 ---
-core:       <snapshot>
+core:  <core>
 tokio info: <tokio info>
 symbols resolved: 15/15
 allocator evidence: unavailable
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.2 MiB swept in 67 chunks
-    hits: 14 task-pattern, 0 set-pattern; 10 admitted; 3 unlisted headers
-    by class: 3 task extent, 1 find, 4 lwp stack, 6 anon
-    attributed: 3 by a registry, 6 by owner type, 1 by holding type, 0 from another task's side, 0 unknown; 0 stale
-process: not recorded by this target
+waker slots: 1 copy of tokio's WAKER_VTABLE, 1 set vtable; N swept in N chunks
+    hits: N
+    by class: N
+    attributed: N
+pid:  PID (armed-select)
+ppid:  PID
+uid:  ID
+gid:  ID
+psargs: PSARGS
+execfn: <test-programs>/fixtures/bin-a/armed-select
+executable: <test-programs>/fixtures/bin-a/armed-select
+build id (core):  BUILDID
+build id (binary): BUILDID — agree
+argv: not recorded in a Linux core (psargs is its 80-byte spelling)
+environment: not recorded in a Linux core
 signal: none recorded

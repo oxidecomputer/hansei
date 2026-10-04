@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`thread 2089622` over linux/channels"
+description: "`thread 1001` over linux/channels"
 ---
-lwp 2089622  polling no task
+lwp 1001  polling no task
     thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId> = None
     runtime:
       tokio::runtime::context::runtime::EnterRuntime = Entered {

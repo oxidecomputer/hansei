@@ -2,96 +2,96 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux/delegation-cases"
 ---
-task 1
-#0  future        delegation_cases::Gated<1>
-      defined at src/bin/delegation-cases.rs:63 (<no_state>, 3 locals; holds 1 pending future)
-#1  future        Pin<Box<delegation_cases::Gated<1>>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-
-task 2
-#0  future        delegation_cases::Gated<2>
-      defined at src/bin/delegation-cases.rs:63 (<no_state>, 3 locals; holds 1 pending future)
-#1  future        Pin<Box<delegation_cases::Gated<2>>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-
-task 3
-#0  future        delegation_cases::Retained
-      defined at src/bin/delegation-cases.rs:85 (<no_state>, 0 locals)
-#1  future        Pin<Box<delegation_cases::Retained>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-
-task 4
-#0  future        delegation_cases::RawHolder
-      defined at src/bin/delegation-cases.rs:104 (<no_state>, 2 locals)
-#1  future        Pin<Box<delegation_cases::RawHolder>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-
-task 5
-#0  future        delegation_cases::Probe<5>
+task 2001
+#0  future  delegation_cases::Probe<7> [dyn]
       defined at src/bin/delegation-cases.rs:33 (<no_state>, 3 locals)
-#1  future        &mut delegation_cases::Probe<5>
-      defined at library/core/src/future/future.rs:120 (<no_state>, 0 locals)
-#2  future        Pin<Box<&mut delegation_cases::Probe<5>>>
+#1  future  Pin<Box<(dyn Future<Output=()> + Send)>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+#2  future  Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
 
-task 6
-#0  future        delegation_cases::Probe<6>
-      defined at src/bin/delegation-cases.rs:33 (<no_state>, 3 locals)
-#1  future        Box<delegation_cases::Probe<6>>
-      defined at library/alloc/src/boxed.rs:2458 (<no_state>, 0 locals)
-#2  future        Pin<Box<Box<delegation_cases::Probe<6>>>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-
-task 7
-#0  future        delegation_cases::Probe<7> [dyn]
-      defined at src/bin/delegation-cases.rs:33 (<no_state>, 3 locals)
-#1  future        Pin<Box<(dyn Future<Output=()> + Send)>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#2  future        Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-
-task 8
-#0  future        delegation_cases::Probe<8>
-      defined at src/bin/delegation-cases.rs:33 (<no_state>, 3 locals)
-#1  future        tracing::instrument::Instrumented<delegation_cases::Probe<8>>
-      defined at tracing-0.1.40/src/instrument.rs:318 (<no_state>, 2 locals)
-#2  future        Pin<Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-
-task 9
-#0  future        delegation_cases::Holder<delegation_cases::main>
-      defined at src/bin/delegation-cases.rs:125 (<no_state>, 2 locals; holds 1 pending future)
-#1  future        Pin<Box<delegation_cases::Holder<delegation_cases::main>>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-
-task 10
-#0  future        delegation_cases::Handle
-      defined at src/bin/delegation-cases.rs:149 (<no_state>, 2 locals; holds 1 pending future)
-#1  future        Pin<Box<delegation_cases::Handle>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-
-task 11
-#0  future        delegation_cases::Leaf [dyn]
+task 2002
+#0  future  delegation_cases::Leaf [dyn]
       defined at src/bin/delegation-cases.rs:176 (<no_state>, 3 locals)
-#1  future        Pin<Box<(dyn Future<Output=()> + Send + Sync)>>
+#1  future  Pin<Box<(dyn Future<Output=()> + Send + Sync)>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#2  async block   delegation_cases::main::{async_block_env#1} [dyn]
+#2  async block  delegation_cases::main::{async_block_env#1} [dyn]
       awaiting at src/bin/delegation-cases.rs:361 (Suspend0, 1 local)
-#3  future        Pin<Box<(dyn Future<Output=()> + Send)>>
+#3  future  Pin<Box<(dyn Future<Output=()> + Send)>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#4  future        Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
+#4  future  Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
 
-task 12
+task 2003
 the chain ends in a future that is never ready
-#0  future        core::future::pending::Pending<()>
+#0  future  core::future::pending::Pending<()>
       (<no_state>, 0 locals)
-#1  async block   delegation_cases::main::{async_block_env#2}
+#1  async block  delegation_cases::main::{async_block_env#2}
       awaiting at src/bin/delegation-cases.rs:377 (Suspend0, 1 local)
-#2  future        Pin<&mut delegation_cases::main::{async_block_env#2}>
+#2  future  Pin<&mut delegation_cases::main::{async_block_env#2}>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#3  async block   delegation_cases::main::{async_block_env#3}
+#3  async block  delegation_cases::main::{async_block_env#3}
       awaiting at src/bin/delegation-cases.rs:384 (Suspend0, 2 locals)
-#4  future        Pin<Box<delegation_cases::main::{async_block_env#3}>>
+#4  future  Pin<Box<delegation_cases::main::{async_block_env#3}>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+
+task 2004
+#0  future  delegation_cases::Handle
+      defined at src/bin/delegation-cases.rs:149 (<no_state>, 2 locals; holds 1 pending future)
+#1  future  Pin<Box<delegation_cases::Handle>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+
+task 2005
+#0  future  delegation_cases::Retained
+      defined at src/bin/delegation-cases.rs:85 (<no_state>, 0 locals)
+#1  future  Pin<Box<delegation_cases::Retained>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+
+task 2006
+#0  future  delegation_cases::RawHolder
+      defined at src/bin/delegation-cases.rs:104 (<no_state>, 2 locals)
+#1  future  Pin<Box<delegation_cases::RawHolder>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+
+task 2007
+#0  future  delegation_cases::Probe<5>
+      defined at src/bin/delegation-cases.rs:33 (<no_state>, 3 locals)
+#1  future  &mut delegation_cases::Probe<5>
+      defined at library/core/src/future/future.rs:120 (<no_state>, 0 locals)
+#2  future  Pin<Box<&mut delegation_cases::Probe<5>>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+
+task 2008
+#0  future  delegation_cases::Probe<6>
+      defined at src/bin/delegation-cases.rs:33 (<no_state>, 3 locals)
+#1  future  Box<delegation_cases::Probe<6>>
+      defined at library/alloc/src/boxed.rs:2458 (<no_state>, 0 locals)
+#2  future  Pin<Box<Box<delegation_cases::Probe<6>>>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+
+task 2009
+#0  future  delegation_cases::Gated<2>
+      defined at src/bin/delegation-cases.rs:63 (<no_state>, 3 locals; holds 1 pending future)
+#1  future  Pin<Box<delegation_cases::Gated<2>>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+
+task 2010
+#0  future  delegation_cases::Gated<1>
+      defined at src/bin/delegation-cases.rs:63 (<no_state>, 3 locals; holds 1 pending future)
+#1  future  Pin<Box<delegation_cases::Gated<1>>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+
+task 2011
+#0  future  delegation_cases::Holder<delegation_cases::main>
+      defined at src/bin/delegation-cases.rs:125 (<no_state>, 2 locals; holds 1 pending future)
+#1  future  Pin<Box<delegation_cases::Holder<delegation_cases::main>>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+
+task 2012
+#0  future  delegation_cases::Probe<8>
+      defined at src/bin/delegation-cases.rs:33 (<no_state>, 3 locals)
+#1  future  tracing::instrument::Instrumented<delegation_cases::Probe<8>>
+      defined at tracing-0.1.40/src/instrument.rs:318 (<no_state>, 2 locals)
+#2  future  Pin<Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
 [Executed against 12 tasks, 0 failed]

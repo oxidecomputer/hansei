@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`connections --with role server --without phase negotiating` over illumos/http-conns"
 ---
-ADDR       TASK  CALLER  PROTO  ROLE    PHASE             DEADLINE    PEER  SERVER  METHOD  REQUEST
-0xADDR  4     —       http1  server  idle (7ms)        +TS  —     —       —       —
-0xADDR  9     —       http1  server  handling request  —           —     —       GET     /park
-0xADDR  12    —       http1  server  handling request  —           —     —       GET     /park
-0xADDR  16    —       http1  server  idle (4ms)        +TS  —     —       —       —
+ADDR  TASK  CALLER  PROTO  ROLE  PHASE  DEADLINE  PEER  SERVER  METHOD  REQUEST
+0xA1  2004  —  http1  server  idle (T)  +TS  —  —  —  —
+0xA2  2005  —  http1  server  handling request  —  —  —  GET  /park
+0xA3  2006  —  http1  server  handling request  —  —  —  GET  /park
+0xA4  2008  —  http1  server  idle (T)  +TS  —  —  —  —
 [4 connections]

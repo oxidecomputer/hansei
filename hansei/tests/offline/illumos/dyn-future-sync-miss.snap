@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`sync 0x1` over illumos/dyn-future"
+description: "`sync 0xA1` over illumos/dyn-future"
 ---
-error: no decoded resource at 0xADDR, and no task's frames hold it by value; `sync` lists semaphores, joined tasks and sets
+error: no decoded resource at 0xA1, and no task's frames hold it by value; `sync` lists semaphores, joined tasks and sets

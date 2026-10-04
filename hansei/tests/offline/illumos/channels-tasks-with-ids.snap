@@ -1,8 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over illumos/channels"
+description: "`tasks --with id 2003,2006` over illumos/channels"
 ---
-ID  STATE  FUT  AWAITING AT             WAITING ON  TYPE
-3   idle     0  src/bin/channels.rs:37  notify rx   async fn channels::notify_waiter
-6   idle     3  src/bin/channels.rs:95  semaphore   async fn channels::send_waiter
-[2 tasks]
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2003  idle  0  src/bin/channels.rs:70  oneshot rx  async fn channels::hold
+[1 task]

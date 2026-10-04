@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over illumos/local-set"
+description: "`tasks --with id 2003,2006` over illumos/local-set"
 ---
-ID  STATE  RT  FUT  AWAITING AT              WAITING ON  TYPE
-3   idle   0     0  src/bin/local-set.rs:34  task 1      async fn local_set::joiner
+ID  STATE  RT  FUT  AWAITING AT  WAITING ON  TYPE
+2003  idle  0  0  src/bin/local-set.rs:34  task 2001  async fn local_set::joiner
 [1 task]

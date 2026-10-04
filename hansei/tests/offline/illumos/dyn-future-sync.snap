@@ -2,17 +2,17 @@
 source: hansei/src/offline.rs
 description: "`sync` over illumos/dyn-future"
 ---
-task 5 (async fn dyn_future::set_member): idle
-    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3
+task 2001 (async fn dyn_future::set_member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xA1), driven by task 2002
 
-a tokio::task::join_set::JoinSet<u32> (set 0xADDR): 1 member, driven by task 3 (`set`)
-    Members (idle): task 5
+a tokio::task::join_set::JoinSet<u32> (set 0xA1): 1 member, driven by task 2002 (`set`)
+    Members (idle): task 2001
 
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 3
+oneshot 0xA2: nothing sent, sender alive
+    rx: task 2001
 
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 4
+oneshot 0xA3: nothing sent, sender alive
+    rx: task 2002
 
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 5
+oneshot 0xA4: nothing sent, sender alive
+    rx: task 2003

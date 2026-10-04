@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`sync 0xdbf880 --kind address` over illumos/blocking-pool"
+description: "`sync 0xA1 --kind address` over illumos/blocking-pool"
 ---
-0xADDR: no decoded resource owns this address
-    Referenced by value: task 6 (frame #1 future blocking_pool::running_waiter::Suspend0, in `__awaitee`), task 6 (frame #0 future tokio::runtime::task::join::JoinHandle<u32>, in `raw`)
+0xA1: no decoded resource owns this address
+    Referenced by value: task 2004 (frame #1 future blocking_pool::running_waiter::Suspend0, in `__awaitee`), task 2004 (frame #0 future tokio::runtime::task::join::JoinHandle<u32>, in `raw`)

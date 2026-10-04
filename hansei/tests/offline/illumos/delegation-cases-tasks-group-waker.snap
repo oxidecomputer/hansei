@@ -2,13 +2,13 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waker` over illumos/delegation-cases"
 ---
-COUNT  WAITING ON                                       TASKS
-    4  unarmed: unknown at delegation_cases::Probe      5, 6, 7, …
-    2  unarmed: unknown at delegation_cases::Gated      1, 2
-    1  unarmed: never ready                             12
-    1  unarmed: unknown at delegation_cases::Handle     10
-    1  unarmed: unknown at delegation_cases::Holder     9
-    1  unarmed: unknown at delegation_cases::Leaf       11
-    1  unarmed: unknown at delegation_cases::RawHolder  4
-    1  unarmed: unknown at delegation_cases::Retained   3
+COUNT  WAITING ON  TASKS
+    4  unarmed: unknown at delegation_cases::Probe  2001, 2007, 2008, …
+    2  unarmed: unknown at delegation_cases::Gated  2009, 2010
+    1  unarmed: never ready  2003
+    1  unarmed: unknown at delegation_cases::Handle  2004
+    1  unarmed: unknown at delegation_cases::Holder  2011
+    1  unarmed: unknown at delegation_cases::Leaf  2002
+    1  unarmed: unknown at delegation_cases::RawHolder  2006
+    1  unarmed: unknown at delegation_cases::Retained  2005
 [8 groups]

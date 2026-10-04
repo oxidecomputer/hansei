@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3 -l 1` over illumos/channels"
+description: "`trace 2001 -l 1` over illumos/channels"
 ---
-#0  future        tokio::sync::notify::Notified
-      waiting on notify rx 0xADDR (waiting, 1 queued)
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA1 (waiting, 1 queued)
 [3 frames, 1 shown]

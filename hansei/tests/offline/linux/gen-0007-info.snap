@@ -2,13 +2,23 @@
 source: hansei/src/offline.rs
 description: "`info` over linux/gen-0007"
 ---
-core:       <snapshot>
+core:  <core>
 tokio info: <tokio info>
 symbols resolved: 11/11
 allocator evidence: unavailable
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.2 MiB swept in 59 chunks
-    hits: 6 task-pattern, 0 set-pattern; 2 admitted; 2 unlisted headers
-    by class: 2 task extent, 3 lwp stack, 1 unmapped companion
-    attributed: 1 by a registry, 1 by owner type, 0 by holding type, 0 from another task's side, 0 unknown; 0 stale
-process: not recorded by this target
+waker slots: 1 copy of tokio's WAKER_VTABLE, 2 set vtables; N swept in N chunks
+    hits: N
+    by class: N
+    attributed: N
+pid:  PID (gen-0007)
+ppid:  PID
+uid:  ID
+gid:  ID
+psargs: PSARGS
+execfn: <test-programs>/fixtures/bin-a/gen-0007
+executable: <test-programs>/fixtures/bin-a/gen-0007
+build id (core):  BUILDID
+build id (binary): BUILDID — agree
+argv: not recorded in a Linux core (psargs is its 80-byte spelling)
+environment: not recorded in a Linux core
 signal: none recorded

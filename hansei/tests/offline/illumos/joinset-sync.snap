@@ -2,27 +2,27 @@
 source: hansei/src/offline.rs
 description: "`sync` over illumos/joinset"
 ---
-task 4 (async fn joinset::member): idle
-    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3
+task 2002 (async fn joinset::member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xA1), driven by task 2001
 
-task 5 (async fn joinset::member): idle
-    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3
+task 2003 (async fn joinset::member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xA1), driven by task 2001
 
-task 6 (async fn joinset::member): idle
-    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3
+task 2004 (async fn joinset::member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xA1), driven by task 2001
 
-task 7 (async fn joinset::member): idle
-    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3
+task 2005 (async fn joinset::member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xA2), driven by task 2001
 
-task 8 (async fn joinset::member): idle
-    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3
+task 2006 (async fn joinset::member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xA2), driven by task 2001
 
-a tokio::task::join_set::JoinSet<u32> (set 0xADDR): 3 members, driven by task 3 (`set`)
-    Members (idle): task 6, task 5, task 4
+a tokio::task::join_set::JoinSet<u32> (set 0xA1): 3 members, driven by task 2001 (`set`)
+    Members (idle): task 2004, task 2003, task 2002
 
-a tokio::task::join_set::JoinSet<u32> (set 0xADDR): 3 members, driven by task 3 (`kept`)
+a tokio::task::join_set::JoinSet<u32> (set 0xA2): 3 members, driven by task 2001 (`kept`)
     Members (complete, awaiting join): task 9
-    Members (idle): task 8, task 7
+    Members (idle): task 2006, task 2005
 
-notify 0xADDR: waiting
-    rx: task 4, task 5, task 6, task 7, task 8
+notify 0xA3: waiting
+    rx: task 2002, task 2003, task 2004, task 2005, task 2006

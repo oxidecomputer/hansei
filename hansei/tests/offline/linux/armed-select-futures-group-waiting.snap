@@ -2,15 +2,14 @@
 source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over linux/armed-select"
 ---
-COUNT  WAITING ON                                      FUTURES
-    3  timer                                           0xADDR, 0xADDR, 0xADDR
-    2  oneshot rx                                      0xADDR, 0xADDR
-    2  unarmed: oneshot rx                             0xADDR, 0xADDR
-    1  <empty>                                         0xADDR
-    1  mpsc rx                                         0xADDR
-    1  unarmed: never ready                            0xADDR
-    1  unarmed: notify rx                              0xADDR
-    1  unarmed: timer                                  0xADDR
-    1  unarmed: unknown at core::future::ready::Ready  0xADDR
-    1  watch rx                                        0xADDR
-[10 groups]
+COUNT  WAITING ON  FUTURES
+    4  oneshot rx  0xA1, 0xA2, 0xA3, …
+    3  timer  0xA4, 0xA5, 0xA6
+    1  <empty>  0xA7
+    1  mpsc rx  0xA8
+    1  unarmed: never ready  0xA9
+    1  unarmed: notify rx  0xA10
+    1  unarmed: timer  0xA11
+    1  unarmed: unknown at core::future::ready::Ready  0xA12
+    1  watch rx  0xA13
+[9 groups]

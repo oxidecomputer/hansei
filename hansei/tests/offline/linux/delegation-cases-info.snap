@@ -2,12 +2,23 @@
 source: hansei/src/offline.rs
 description: "`info` over linux/delegation-cases"
 ---
-core:       <snapshot>
+core:  <core>
 tokio info: <tokio info>
 symbols resolved: 25/25
 allocator evidence: unavailable
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 2.2 MiB swept in 58 chunks
-    hits: 0 task-pattern, 0 set-pattern; 0 admitted; 0 unlisted headers
-    attributed: 0 by a registry, 0 by owner type, 0 by holding type, 0 from another task's side, 0 unknown; 0 stale
-process: not recorded by this target
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; N swept in N chunks
+    hits: N
+    by class: N
+    attributed: N
+pid:  PID (delegation-cases)
+ppid:  PID
+uid:  ID
+gid:  ID
+psargs: PSARGS
+execfn: <test-programs>/fixtures/bin-a/delegation-cases
+executable: <test-programs>/fixtures/bin-a/delegation-cases
+build id (core):  BUILDID
+build id (binary): BUILDID — agree
+argv: not recorded in a Linux core (psargs is its 80-byte spelling)
+environment: not recorded in a Linux core
 signal: none recorded

@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`frame 0 locals` over linux/simple-await"
 ---
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
-inner: core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>> = Some(0xADDR -> alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>> { .. })
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA1 (nothing sent, sender alive)
+inner: core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>> = Some(0xA2 -> alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>> { .. })

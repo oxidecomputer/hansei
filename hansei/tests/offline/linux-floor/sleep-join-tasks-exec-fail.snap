@@ -2,10 +2,10 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec type no::such::Type` over linux-floor/sleep-join"
 ---
-task 3
+task 2001
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-task 4
+task 2002
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 [Executed against 2 tasks, 2 failed]
 error: --exec failed against 2 of 2 tasks

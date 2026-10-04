@@ -2,11 +2,11 @@
 source: hansei/src/offline.rs
 description: "`futures --exec trace -l 1` over illumos/futurelock"
 ---
-future 0xADDR
-future 0xADDR: async fn futurelock::do_async_thing
-Held by: task 5 — async block futurelock::main::{async_block#0} (frame 5, `future1`)
+future 0xA1
+future 0xA1: async fn futurelock::do_async_thing
+Held by: task 2001 — async block futurelock::main::{async_block#0} (frame 5, `future1`)
 
-#0  future        tokio::sync::batch_semaphore::Acquire
-      waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+#0  future  tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Mutex (semaphore 0xA2): 1 permit requested, 0 available; wake queue: task 2001
 [5 frames, 1 shown]
 [Executed against 1 future, 0 failed]

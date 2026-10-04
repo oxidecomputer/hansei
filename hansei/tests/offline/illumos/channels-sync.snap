@@ -2,11 +2,11 @@
 source: hansei/src/offline.rs
 description: "`sync` over illumos/channels"
 ---
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 5
+oneshot 0xA1: nothing sent, sender alive
+    rx: task 2003
 
-mpsc 0xADDR: 1 sender, capacity 4, 0 unread
-    rx: task 4
+mpsc 0xA2: 1 sender, capacity 4, 0 unread
+    rx: task 2002
 
-notify 0xADDR: waiting
-    rx: task 3
+notify 0xA3: waiting
+    rx: task 2001

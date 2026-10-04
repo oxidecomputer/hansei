@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over illumos/two-releases"
+description: "`tasks --with id 2003,2006` over illumos/two-releases"
 ---
-ID  STATE  FUT  AWAITING AT                 WAITING ON  TYPE
-3   idle     0  src/bin/two-releases.rs:42  oneshot rx  async fn two_releases::keeper
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2003  idle  0  src/bin/two-releases.rs:42  oneshot rx  async fn two_releases::keeper
 [1 task]

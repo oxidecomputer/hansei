@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3 -l 1` over linux-floor/unordered"
+description: "`trace 2001 -l 1` over linux-floor/unordered"
 ---
-#0  future        futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
+#0  future  futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
       defined at futures-util-0.3.33/src/stream/futures_unordered/mod.rs:411 (<no_state>, 3 locals)
 [3 frames, 1 shown]

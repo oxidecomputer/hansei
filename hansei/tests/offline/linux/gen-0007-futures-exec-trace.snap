@@ -2,59 +2,59 @@
 source: hansei/src/offline.rs
 description: "`futures --exec trace -l 1` over linux/gen-0007"
 ---
-future 0xADDR
-future 0xADDR: async fn gen_0007::leaf_01
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xADDR (frame 1, `v0`), polled by task 3 — async fn gen_0007::driver_00
+future 0xA1: async fn gen_0007::holder_04<gen_0007::leaf_05>
+future 0xA1: async fn gen_0007::holder_04<gen_0007::leaf_05>
+Held by: task 2002 — async fn gen_0007::member_03 (frame 1, `v0`)
 
 the chain ends in a future that has never been polled
-#0  async fn      gen_0007::leaf_01
-      state Unresumed
-
-future 0xADDR
-future 0xADDR: async fn gen_0007::leaf_01
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xADDR (frame 1, `v0`), polled by task 3 — async fn gen_0007::driver_00
-
-the chain ends in a future that has never been polled
-#0  async fn      gen_0007::leaf_01
-      state Unresumed
-
-future 0xADDR
-future 0xADDR: async fn gen_0007::leaf_01
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xADDR (frame 1, `v0`), polled by task 3 — async fn gen_0007::driver_00
-
-the chain ends in a future that has never been polled
-#0  async fn      gen_0007::leaf_01
-      state Unresumed
-
-future 0xADDR: async fn gen_0007::holder_04<gen_0007::leaf_05>
-future 0xADDR: async fn gen_0007::holder_04<gen_0007::leaf_05>
-Held by: task 5 — async fn gen_0007::member_03 (frame 1, `v0`)
-
-the chain ends in a future that has never been polled
-#0  async fn      gen_0007::holder_04<gen_0007::leaf_05>
+#0  async fn  gen_0007::holder_04<gen_0007::leaf_05>
       state Unresumed (holds 1 pending future)
 
-future 0xADDR: async fn gen_0007::leaf_05
-future 0xADDR: async fn gen_0007::leaf_05
-Held by: task 5 — async fn gen_0007::member_03 (frame 0, `inner`, via held future at 0xADDR)
+future 0xA1: async fn gen_0007::leaf_05
+future 0xA1: async fn gen_0007::leaf_05
+Held by: task 2002 — async fn gen_0007::member_03 (frame 0, `inner`, via held future at 0xA1)
 
 the chain ends in a future that has never been polled
-#0  async fn      gen_0007::leaf_05
+#0  async fn  gen_0007::leaf_05
       state Unresumed
 
-future 0xADDR: async fn gen_0007::holder_08<gen_0007::leaf_09>
-future 0xADDR: async fn gen_0007::holder_08<gen_0007::leaf_09>
-Held by: task 7 — async fn gen_0007::member_07 (frame 1, `v0`)
+future 0xA2: async fn gen_0007::holder_08<gen_0007::leaf_09>
+future 0xA2: async fn gen_0007::holder_08<gen_0007::leaf_09>
+Held by: task 2004 — async fn gen_0007::member_07 (frame 1, `v0`)
 
 the chain ends in a future that has never been polled
-#0  async fn      gen_0007::holder_08<gen_0007::leaf_09>
+#0  async fn  gen_0007::holder_08<gen_0007::leaf_09>
       state Unresumed (holds 1 pending future)
 
-future 0xADDR: async fn gen_0007::leaf_09
-future 0xADDR: async fn gen_0007::leaf_09
-Held by: task 7 — async fn gen_0007::member_07 (frame 0, `inner`, via held future at 0xADDR)
+future 0xA2: async fn gen_0007::leaf_09
+future 0xA2: async fn gen_0007::leaf_09
+Held by: task 2004 — async fn gen_0007::member_07 (frame 0, `inner`, via held future at 0xA2)
 
 the chain ends in a future that has never been polled
-#0  async fn      gen_0007::leaf_09
+#0  async fn  gen_0007::leaf_09
+      state Unresumed
+
+future 0xA3
+future 0xA3: async fn gen_0007::leaf_01
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xA4 (frame 1, `v0`), polled by task 2005 — async fn gen_0007::driver_00
+
+the chain ends in a future that has never been polled
+#0  async fn  gen_0007::leaf_01
+      state Unresumed
+
+future 0xA5
+future 0xA5: async fn gen_0007::leaf_01
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xA4 (frame 1, `v0`), polled by task 2005 — async fn gen_0007::driver_00
+
+the chain ends in a future that has never been polled
+#0  async fn  gen_0007::leaf_01
+      state Unresumed
+
+future 0xA6
+future 0xA6: async fn gen_0007::leaf_01
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xA4 (frame 1, `v0`), polled by task 2005 — async fn gen_0007::driver_00
+
+the chain ends in a future that has never been polled
+#0  async fn  gen_0007::leaf_01
       state Unresumed
 [Executed against 7 futures, 0 failed]

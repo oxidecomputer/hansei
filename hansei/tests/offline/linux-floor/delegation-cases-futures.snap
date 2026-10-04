@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`futures` over linux-floor/delegation-cases"
 ---
-ADDR            TASK  HELD IN            STATE      WAITING ON                                   ARMED  TYPE
-0xADDR  1     frame 0, `child`   —          unarmed: unknown at delegation_cases::Probe  no     future delegation_cases::Probe<1>
-0xADDR  2     frame 0, `child`   —          unarmed: unknown at delegation_cases::Probe  no     future delegation_cases::Probe<2>
-0xADDR  9     frame 0, `held`    Unresumed  —                                            no     async block delegation_cases::main
-0xADDR  10    frame 0, `handle`  —          unarmed: task 9                              no     future tokio::runtime::task::join::JoinHandle<()>
+ADDR  TASK  HELD IN  STATE  WAITING ON  ARMED  TYPE
+0xA1  2004  frame 0, `handle`  —  unarmed: task 2011  no  future tokio::runtime::task::join::JoinHandle<()>
+0xA2  2009  frame 0, `child`  —  unarmed: unknown at delegation_cases::Probe  no  future delegation_cases::Probe<2>
+0xA3  2010  frame 0, `child`  —  unarmed: unknown at delegation_cases::Probe  no  future delegation_cases::Probe<1>
+0xA4  2011  frame 0, `held`  Unresumed  —  no  async block delegation_cases::main
 [4 futures]

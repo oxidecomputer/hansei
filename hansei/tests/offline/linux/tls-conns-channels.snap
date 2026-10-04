@@ -2,20 +2,20 @@
 source: hansei/src/offline.rs
 description: "`channels` over linux/tls-conns"
 ---
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 10
+oneshot 0xA1: nothing sent, sender alive
+    rx: task 2008
 
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 11
+oneshot 0xA2: nothing sent, sender alive
+    rx: task 2009
 
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 13
+oneshot 0xA3: nothing sent, sender alive
+    rx: task 2011
 
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 15
+oneshot 0xA4: nothing sent, sender alive
+    rx: task 2013
 
-mpsc 0xADDR: 1 sender, 0 unread
-    rx: task 17
+mpsc 0xA5: 1 sender, 0 unread
+    rx: task 2015
 
-mpsc 0xADDR: 1 sender, 0 unread
-    rx: task 19
+mpsc 0xA6: 1 sender, 0 unread
+    rx: task 2017

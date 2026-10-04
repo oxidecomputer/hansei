@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over linux-floor/dyn-future"
+description: "`tasks --with id 2003,2006` over linux-floor/dyn-future"
 ---
-ID  STATE  FUT  AWAITING AT               WAITING ON  TYPE
-3   idle     0  src/bin/dyn-future.rs:40  oneshot rx  async fn dyn_future::driver
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2003  idle  0  src/bin/dyn-future.rs:98  oneshot rx  async fn dyn_future::hold_aligned
 [1 task]

@@ -2,13 +2,13 @@
 source: hansei/src/offline.rs
 description: "`tasks --with type two_releases::keeper --exec up print new_box` over illumos/two-releases"
 ---
-task 3
-#1  async fn      two_releases::keeper
+task 2003
+#1  async fn  two_releases::keeper
       awaiting at src/bin/two-releases.rs:42 (Suspend0, 6 locals)
-0xADDR -> async_channel::Receiver<u32> {
+0xA1 -> async_channel::Receiver<u32> {
         channel: alloc::sync::Arc<async_channel::Channel<u32>, alloc::alloc::Global> {
-            ptr: 0xADDR -> alloc::sync::ArcInner<async_channel::Channel<u32>> { .. },
+            ptr: 0xA2 -> alloc::sync::ArcInner<async_channel::Channel<u32>> { .. },
         },
-        listener: core::option::Option<event_listener::EventListener<()>> { .. } @ 0xADDR,
+        listener: core::option::Option<event_listener::EventListener<()>> { .. } @ 0xA3,
     }
 [Executed against 1 task, 0 failed]

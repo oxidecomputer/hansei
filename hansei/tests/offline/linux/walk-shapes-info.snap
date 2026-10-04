@@ -2,13 +2,23 @@
 source: hansei/src/offline.rs
 description: "`info` over linux/walk-shapes"
 ---
-core:       <snapshot>
+core:  <core>
 tokio info: <tokio info>
 symbols resolved: 17/17
 allocator evidence: unavailable
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.2 MiB swept in 44 chunks
-    hits: 10 task-pattern, 0 set-pattern; 9 admitted; 1 unlisted header
-    by class: 9 task extent, 1 lwp stack
-    attributed: 5 by a registry, 4 by owner type, 0 by holding type, 0 from another task's side, 0 unknown; 0 stale
-process: not recorded by this target
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; N swept in N chunks
+    hits: N
+    by class: N
+    attributed: N
+pid:  PID (walk-shapes)
+ppid:  PID
+uid:  ID
+gid:  ID
+psargs: PSARGS
+execfn: <test-programs>/fixtures/bin-a/walk-shapes
+executable: <test-programs>/fixtures/bin-a/walk-shapes
+build id (core):  BUILDID
+build id (binary): BUILDID — agree
+argv: not recorded in a Linux core (psargs is its 80-byte spelling)
+environment: not recorded in a Linux core
 signal: none recorded

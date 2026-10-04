@@ -2,20 +2,20 @@
 source: hansei/src/offline.rs
 description: "`trace` over illumos/simple-await"
 ---
-lwp 1 native stack:
-0xADDR  
-0xADDR  
-0xADDR  
-0xADDR  
-0xADDR  
-0xADDR  <parking_lot::condvar::Condvar>::wait_until_internal
-0xADDR  <tokio::runtime::park::Inner>::park
-0xADDR  tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::multi_thread::MultiThread>::block_on<simple_await::main::{closure#0}>::{closure#0}, ()>
-0xADDR  <tokio::runtime::runtime::Runtime>::block_on::<simple_await::main::{closure#0}>
-0xADDR  simple_await::main
-0xADDR  std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
-0xADDR  std::rt::lang_start::<()>::{closure#0}
-0xADDR  std::rt::lang_start_internal
-0xADDR  main
-0xADDR  _start_crt
-0xADDR  _start
+lwp 1001 native stack:
+0xA1  __lwp_park
+0xA2  cond_wait_queue
+0xA3  __cond_wait
+0xA4  cond_wait
+0xA5  pthread_cond_wait
+0xA6  <parking_lot::condvar::Condvar>::wait_until_internal
+0xA7  <tokio::runtime::park::Inner>::park
+0xA8  tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::multi_thread::MultiThread>::block_on<simple_await::main::{closure#0}>::{closure#0}, ()>
+0xA9  <tokio::runtime::runtime::Runtime>::block_on::<simple_await::main::{closure#0}>
+0xA10  simple_await::main
+0xA11  std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+0xA12  std::rt::lang_start::<()>::{closure#0}
+0xA13  std::rt::lang_start_internal
+0xA14  main
+0xA15  _start_crt
+0xA16  _start

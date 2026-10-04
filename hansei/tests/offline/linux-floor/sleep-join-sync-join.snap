@@ -2,5 +2,5 @@
 source: hansei/src/offline.rs
 description: "`sync --kind join` over linux-floor/sleep-join"
 ---
-task 3 (async fn sleep_join::sleeper): idle
-    Waited by: task 4
+task 2001 (async fn sleep_join::sleeper): idle
+    Waited by: task 2002

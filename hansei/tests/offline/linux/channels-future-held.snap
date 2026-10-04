@@ -1,12 +1,12 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0x55caef483650` over linux/channels"
+description: "`future 0xA1` over linux/channels"
 ---
-future 0xADDR
+future 0xA1
     type: async fn tokio::sync::mpsc::bounded::Sender::send<u32>
-    held by: task 6 (frame 1, `send`)
+    held by: task 2004 (frame 1, `send`)
     state: Suspend0 — tokio-1.52.4/src/sync/mpsc/bounded.rs:817
     depth: 4 frames
-    awaiting on: tokio::sync::batch_semaphore::Waiter @ 0xADDR
+    awaiting on: tokio::sync::batch_semaphore::Waiter @ 0xA2
     held futures: 0
     join sets: 0

@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`runtimes --group flavor` over illumos/http-conns"
 ---
-COUNT  FLAVOR        RUNTIMES
+COUNT  FLAVOR  RUNTIMES
     1  multi_thread  runtime 0
 [1 group]

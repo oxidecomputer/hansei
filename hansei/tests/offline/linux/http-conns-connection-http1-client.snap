@@ -1,21 +1,21 @@
 ---
 source: hansei/src/offline.rs
-description: "`connection 0x55fb6b80cce0` over linux/http-conns"
+description: "`connection 0xA1` over linux/http-conns"
 ---
-connection 0xADDR
+connection 0xA1
     proto: http1
-    driven by: task 5
+    driven by: task 2013
     http: client, idle
-        dispatcher: 0xADDR hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
-        conn: 0xADDR
+        dispatcher: 0xA1 hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
+        conn: 0xA1
         keep-alive: idle
         reading: init
         writing: init
-    tcp: fd 11
-        stream: 0xADDR tokio::net::tcp::stream::TcpStream
-        registration: 0xADDR
+    tcp: fd N
+        stream: 0xA1 tokio::net::tcp::stream::TcpStream
+        registration: 0xA2
         ready: writable
-        waker: the reader slot, task 5
+        waker: the reader slot, task 2013
     route:
-        0xADDR hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>
-        0xADDR tokio::net::tcp::stream::TcpStream
+        0xA1 hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>
+        0xA1 tokio::net::tcp::stream::TcpStream

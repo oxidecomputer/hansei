@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads --group role` over linux/tls-conns"
 ---
-COUNT  ROLE             LWPS
-    2  worker           3548900, 3548901
-    1  entered runtime  3548898
+COUNT  ROLE  LWPS
+    2  worker  1002, 1003
+    1  entered runtime  1001
 [2 groups]

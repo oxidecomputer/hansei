@@ -2,8 +2,11 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux-floor/unordered"
 ---
-a futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> (set 0xADDR): 3 children, driven by task 3 (`set`)
+a futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> (set 0xA1): 3 children, driven by task 2001 (`set`)
     In flight: 3
 
-a futures_util::stream::futures_unordered::FuturesUnordered<Pin<Box<(dyn Future<Output=u32> + Send)>>> (set 0xADDR): 2 children, driven by task 3 (`inner`)
+a futures_util::stream::futures_unordered::FuturesUnordered<Pin<Box<(dyn Future<Output=u32> + Send)>>> (set 0xA2): 2 children, driven by task 2001 (`inner`)
     In flight: 2
+
+notify 0xA3: waiting
+    rx: child 2 of the set at 0xA1 (polled by task 2001), child 1 of the set at 0xA1 (polled by task 2001), child 0 of the set at 0xA1 (polled by task 2001)

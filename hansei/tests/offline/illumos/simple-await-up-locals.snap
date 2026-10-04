@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`up locals` over illumos/simple-await"
 ---
-#1  async fn      simple_await::work
+#1  async fn  simple_await::work
       awaiting at src/bin/simple-await.rs:51 (Suspend1, 15 locals)
 count: u32 = 3
 labels: alloc::collections::btree::map::BTreeMap<u64, u32, alloc::alloc::Global> {

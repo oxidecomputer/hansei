@@ -2,5 +2,5 @@
 source: hansei/src/offline.rs
 description: "`sync --kind join` over linux-floor/dyn-future"
 ---
-task 5 (async fn dyn_future::set_member): idle
-    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3
+task 2001 (async fn dyn_future::set_member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xA1), driven by task 2002

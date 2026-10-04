@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3 -l 1` over linux-floor/gen-0007"
+description: "`trace 2001 -l 1` over linux-floor/gen-0007"
 ---
-#0  future        gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
-      (<no_state>, 0 locals)
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA1 (waiting, 1 queued)
 [2 frames, 1 shown]

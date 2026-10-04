@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`graph` over linux/foreign-runtime"
 ---
 TASK  STATE  WAITING ON
-4     idle   task 1
-└─ 1  idle   semaphore
+2001  idle  task 2002
+└─ 2002  idle  semaphore

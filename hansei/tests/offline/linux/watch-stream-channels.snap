@@ -2,26 +2,26 @@
 source: hansei/src/offline.rs
 description: "`channels` over linux/watch-stream"
 ---
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 3
+oneshot 0xA1: nothing sent, sender alive
+    rx: task 2001
 
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 4
+oneshot 0xA2: nothing sent, sender alive
+    rx: task 2002
 
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 5
+oneshot 0xA3: nothing sent, sender alive
+    rx: task 2003
 
-watch 0xADDR: version 0, 1 sender, 1 receiver
-    rx: task 3
+watch 0xA4: version 0, 1 sender, 1 receiver
+    rx: task 2001
 
-watch 0xADDR: version 0, 1 sender, 1 receiver
-    rx: task 4
+watch 0xA5: version 0, 1 sender, 1 receiver
+    rx: task 2002
 
-watch 0xADDR: version 0, 1 sender, 1 receiver
-    rx: task 4
+watch 0xA6: version 0, 1 sender, 1 receiver
+    rx: task 2002
 
-watch 0xADDR: version 0, 1 sender, 1 receiver
-    rx: task 4
+watch 0xA7: version 0, 1 sender, 1 receiver
+    rx: task 2002
 
-watch 0xADDR: version 0, 1 sender, 1 receiver
-    rx: task 6
+watch 0xA8: version 0, 1 sender, 1 receiver
+    rx: task 2004

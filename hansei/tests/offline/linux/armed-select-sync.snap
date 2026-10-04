@@ -2,23 +2,29 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux/armed-select"
 ---
-a futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> (set 0xADDR): 2 children, driven by task 6 (`set`)
+a futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> (set 0xA1): 2 children, driven by task 2004 (`set`)
     In flight: 2
 
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 3
+oneshot 0xA2: nothing sent, sender alive
+    rx: task 2001
 
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 4
+oneshot 0xA3: nothing sent, sender alive
+    rx: task 2002
 
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 7
+oneshot 0xA4: nothing sent, sender alive
+    rx: child 1 of the set at 0xA1 (polled by task 2004)
 
-mpsc 0xADDR: 1 sender, capacity 4, 0 unread
-    rx: task 3
+oneshot 0xA5: nothing sent, sender alive
+    rx: child 0 of the set at 0xA1 (polled by task 2004)
 
-watch 0xADDR: version 0, 1 sender, 1 receiver
-    rx: task 3
+oneshot 0xA6: nothing sent, sender alive
+    rx: task 2005
 
-notify 0xADDR: waiting
-    rx: task 5
+mpsc 0xA7: 1 sender, capacity 4, 0 unread
+    rx: task 2001
+
+watch 0xA8: version 0, 1 sender, 1 receiver
+    rx: task 2001
+
+notify 0xA9: waiting
+    rx: task 2003

@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`tasks --with type execute<Pin --exec up print dispatch` over illumos/http-conns"
 ---
-task 5
-#1  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
+task 2013
+#1  future  hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
       defined at hyper-1.10.1/src/client/conn/http1.rs:622 (Some, 0 locals)
 hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>> {
     callback: core::option::Option<hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> = None,
@@ -11,35 +11,35 @@ hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::By
         inner: tokio::sync::mpsc::unbounded::UnboundedReceiver<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> {
             chan: tokio::sync::mpsc::chan::Rx<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore> {
                 inner: alloc::sync::Arc<tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore>, alloc::alloc::Global> {
-                    ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore>> { .. },
+                    ptr: 0xA1 -> alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore>> { .. },
                 },
             },
         },
         taker: want::Taker {
             inner: alloc::sync::Arc<want::Inner, alloc::alloc::Global> {
-                ptr: 0xADDR -> alloc::sync::ArcInner<want::Inner> { .. },
+                ptr: 0xA2 -> alloc::sync::ArcInner<want::Inner> { .. },
             },
         },
     },
     rx_closed: false,
 }
 
-task 10
-#1  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
+task 2014
+#1  future  hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
       defined at hyper-1.10.1/src/client/conn/http1.rs:622 (Some, 0 locals)
 hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>> {
-    callback: core::option::Option<hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> = Some(hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>> { .. } @ 0xADDR),
+    callback: core::option::Option<hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> = Some(hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>> { .. } @ 0xA3),
     rx: hyper::client::dispatch::Receiver<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>> {
         inner: tokio::sync::mpsc::unbounded::UnboundedReceiver<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> {
             chan: tokio::sync::mpsc::chan::Rx<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore> {
                 inner: alloc::sync::Arc<tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore>, alloc::alloc::Global> {
-                    ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore>> { .. },
+                    ptr: 0xA4 -> alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore>> { .. },
                 },
             },
         },
         taker: want::Taker {
             inner: alloc::sync::Arc<want::Inner, alloc::alloc::Global> {
-                ptr: 0xADDR -> alloc::sync::ArcInner<want::Inner> { .. },
+                ptr: 0xA5 -> alloc::sync::ArcInner<want::Inner> { .. },
             },
         },
     },

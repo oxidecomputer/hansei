@@ -450,10 +450,11 @@ fn mask_times(s: &str) -> String {
 ///   either that or the value its previous call left, as the kernel
 ///   saves it at whatever point the stop caught the thread, and the
 ///   register is caller-saved, so neither is the program's state;
-/// - the process's own facts: its pid and parent, start time, the
-///   checkout its binary ran from (truncated at a length that moves
-///   with that path, in `psargs`), and the build ids, which follow the
-///   path the build was compiled at;
+/// - the process's own facts: its pid and parent, the user and group it
+///   ran as (whoever took the core), start time, the checkout its
+///   binary ran from (truncated at a length that moves with that path,
+///   in `psargs`), and the build ids, which follow the path the build
+///   was compiled at;
 /// - the worker index: which worker held the driver is a race no
 ///   readiness wait controls, so the state is kept and the number not;
 /// - what scheduling and stale stack contents decide: the runtime's
@@ -476,6 +477,9 @@ pub fn mask_core(s: &str) -> String {
     let s = re(r"\(\d+(\.\d+)?(ns|µs|ms|s)\)").replace_all(&s, "(T)");
     let s = re(r"(?m)^(pid:\s+)\d+").replace_all(&s, "${1}PID");
     let s = re(r"(?m)^(ppid:\s+)\d+").replace_all(&s, "${1}PID");
+    let s = re(r"(?m)^(uid|gid):(\s+)\d+ \(effective \d+\)$")
+        .replace_all(&s, "$1:${2}ID (effective ID)");
+    let s = re(r"(?m)^(uid|gid):(\s+)\d+$").replace_all(&s, "$1:${2}ID");
     let s = re(r"(?m)^(start:\s+).*$").replace_all(&s, "${1}TIME");
     let s = re(r"\bworker \d+\b").replace_all(&s, "worker N");
     let s = re(r"(MetricAtomic\w+ \{\n\s*value: )\d+").replace_all(&s, "${1}N");

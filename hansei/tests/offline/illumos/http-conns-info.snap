@@ -2,13 +2,23 @@
 source: hansei/src/offline.rs
 description: "`info` over illumos/http-conns"
 ---
-core:       <snapshot>
+core:  <core>
 tokio info: <tokio info>
 symbols resolved: 34/34
-allocator evidence: libumem index (58 caches, 59 slabs)
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 280.4 KiB swept in 3909 chunks
-    hits: 29 task-pattern, 0 set-pattern; 23 admitted; 6 unlisted headers
-    by class: 1 task extent, 3 find, 19 umem live, 6 lwp stack
-    attributed: 13 by a registry, 7 by owner type, 1 by holding type, 2 from another task's side, 0 unknown; 0 stale
-process: not recorded by this target
+allocator evidence: libumem index (N caches, N slabs)
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; N swept in N chunks
+    hits: N
+    by class: N
+    attributed: N
+pid:  PID (http-conns)
+ppid:  PID
+uid:  ID (effective ID)
+gid:  ID (effective ID)
+model:  LP64
+start:  TIME
+psargs: PSARGS
+executable: <test-programs>/fixtures/bin-a/http-conns
+argv:
+  <test-programs>/fixtures/bin-a/http-conns
+environment:
 signal: none recorded

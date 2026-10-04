@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux/watch-stream"
 ---
-ID  STATE  FUT  AWAITING AT                  WAITING ON               TYPE
-3   idle     3  src/bin/watch-stream.rs:43   oneshot rx, watch rx     async fn watch_stream::resolver
-4   idle     5  src/bin/watch-stream.rs:75   oneshot rx, 3x watch rx  async fn watch_stream::mapper
-5   idle     2  src/bin/watch-stream.rs:96   oneshot rx               async fn watch_stream::fresh
-6   idle     0  src/bin/watch-stream.rs:108  watch rx                 async fn watch_stream::direct
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2001  idle  3  src/bin/watch-stream.rs:43  oneshot rx, watch rx  async fn watch_stream::resolver
+2002  idle  5  src/bin/watch-stream.rs:75  oneshot rx, 3x watch rx  async fn watch_stream::mapper
+2003  idle  2  src/bin/watch-stream.rs:96  oneshot rx  async fn watch_stream::fresh
+2004  idle  0  src/bin/watch-stream.rs:108  watch rx  async fn watch_stream::direct
 [4 tasks]

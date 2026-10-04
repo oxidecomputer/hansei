@@ -2,16 +2,16 @@
 source: hansei/src/offline.rs
 description: "`census` over linux-floor/gen-0007"
 ---
-Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
+Threads: 3 lwps, 3 in runtime 0 @ 0xA1
 
-COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        2104904
-    1  0   worker           parked           2104903
-    1  0   entered runtime  block_on caller  2104901
-    0  0   blocking pool    0 idle, 0 busy   —
+COUNT  RT  ROLE  STATE  LWPS
+    1  0  worker  in driver  1003
+    1  0  worker  parked  1002
+    1  0  entered runtime  block_on caller  1001
+    0  0  blocking pool  0 idle, 0 busy  —
 [3 lwps]
 
-Tasks: 5 owned by runtime 0 @ 0xADDR
+Tasks: 5 owned by runtime 0 @ 0xA1
 
 COUNT  STATE
     5  idle

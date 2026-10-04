@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`print no_such_member` over linux-floor/http-conns"
 ---
-error: type tokio::runtime::io::scheduled_io::Readiness has no member named no_such_member (members: scheduled_io, state, waiter)
+error: type hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<reqwest::async_impl::body::Body>, reqwest::async_impl::body::Body, reqwest::connect::sealed::Conn, hyper::proto::h1::role::Client> has no member named no_such_member (members: conn, dispatch, body_tx, body_rx, is_closing)

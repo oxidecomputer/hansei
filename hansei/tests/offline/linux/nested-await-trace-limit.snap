@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3 -l 1` over linux/nested-await"
+description: "`trace 2001 -l 1` over linux/nested-await"
 ---
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA1 (nothing sent, sender alive)
 [4 frames, 1 shown]

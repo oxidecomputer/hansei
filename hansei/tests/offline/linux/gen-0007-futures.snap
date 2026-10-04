@@ -2,13 +2,13 @@
 source: hansei/src/offline.rs
 description: "`futures` over linux/gen-0007"
 ---
-ADDR            TASK  HELD IN                                              STATE      WAITING ON  ARMED  TYPE
-0xADDR  3     set 0xADDR                                   Unresumed  —           no     async fn gen_0007::leaf_01
-0xADDR  3     set 0xADDR                                   Unresumed  —           no     async fn gen_0007::leaf_01
-0xADDR  3     set 0xADDR                                   Unresumed  —           no     async fn gen_0007::leaf_01
-0xADDR  5     frame 1, `v0`                                        Unresumed  —           no     async fn gen_0007::holder_04<gen_0007::leaf_05>
-0xADDR  5     frame 0, `inner`, via held future at 0xADDR  Unresumed  —           no     async fn gen_0007::leaf_05
-0xADDR  7     frame 1, `v0`                                        Unresumed  —           no     async fn gen_0007::holder_08<gen_0007::leaf_09>
-0xADDR  7     frame 0, `inner`, via held future at 0xADDR  Unresumed  —           no     async fn gen_0007::leaf_09
+ADDR  TASK  HELD IN  STATE  WAITING ON  ARMED  TYPE
+0xA1  2002  frame 1, `v0`  Unresumed  —  no  async fn gen_0007::holder_04<gen_0007::leaf_05>
+0xA1  2002  frame 0, `inner`, via held future at 0xA1  Unresumed  —  no  async fn gen_0007::leaf_05
+0xA2  2004  frame 1, `v0`  Unresumed  —  no  async fn gen_0007::holder_08<gen_0007::leaf_09>
+0xA2  2004  frame 0, `inner`, via held future at 0xA2  Unresumed  —  no  async fn gen_0007::leaf_09
+0xA3  2005  set 0xA4  Unresumed  —  no  async fn gen_0007::leaf_01
+0xA5  2005  set 0xA4  Unresumed  —  no  async fn gen_0007::leaf_01
+0xA6  2005  set 0xA4  Unresumed  —  no  async fn gen_0007::leaf_01
 [7 futures]
 note: 4 rows print an address another find prints too; there, `future 0x…` and `trace 0x…` select the innermost, and `--exec` runs against each row's own

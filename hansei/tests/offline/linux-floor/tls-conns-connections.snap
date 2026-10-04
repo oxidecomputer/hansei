@@ -2,18 +2,18 @@
 source: hansei/src/offline.rs
 description: "`connections` over linux-floor/tls-conns"
 ---
-ADDR            TASK  CALLER  PROTO      ROLE    PHASE        DEADLINE  PEER  SERVER  METHOD  REQUEST
-0xADDR  3     —       tls        client  established  —         —     —       —       —
-0xADDR  4     —       tls        server  established  —         —     —       —       —
-0xADDR  5     —       tls        client  established  —         —     —       —       —
-0xADDR  6     —       tls        server  established  —         —     —       —       —
-0xADDR  7     —       tcp        —       open         —         —     —       —       —
-0xADDR  8     —       tcp        —       open         —         —     —       —       —
-0xADDR  9     —       tls        client  closing      —         —     —       —       —
-0xADDR  12    —       tls        client  handshaking  —         —     —       —       —
-0xADDR  14    —       tls        server  handshaking  —         —     —       —       —
-0xADDR  16    —       tls        client  established  —         —     —       —       —
-0xADDR  17    —       http1      client  idle         —         —     —       —       —
-0xADDR  18    —       http1/tls  server  idle         —         —     —       —       —
-0xADDR  19    —       http1/tls  client  idle         —         —     —       —       —
+ADDR  TASK  CALLER  PROTO  ROLE  PHASE  DEADLINE  PEER  SERVER  METHOD  REQUEST
+0xA1  2001  —  tls  client  established  —  —  —  —  —
+0xA2  2002  —  tls  server  established  —  —  —  —  —
+0xA3  2003  —  tls  client  established  —  —  —  —  —
+0xA4  2004  —  tls  server  established  —  —  —  —  —
+0xA5  2005  —  tcp  —  open  —  —  —  —  —
+0xA6  2006  —  tcp  —  open  —  —  —  —  —
+0xA7  2007  —  tls  client  closing  —  —  —  —  —
+0xA8  2010  —  tls  client  handshaking  —  —  —  —  —
+0xA9  2012  —  tls  server  handshaking  —  —  —  —  —
+0xA10  2014  —  tls  client  established  —  —  —  —  —
+0xA11  2015  —  http1  client  idle  —  —  —  —  —
+0xA12  2016  —  http1/tls  server  idle  —  —  —  —  —
+0xA13  2017  —  http1/tls  client  idle  —  —  —  —  —
 [13 connections]

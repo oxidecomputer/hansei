@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x55f93af90000` over linux-floor/tls-conns"
+description: "`whatis 0xA1` over linux-floor/tls-conns"
 ---
-Connection 0xADDR: tls client, established, task 3
-    At: offset 0xADDR in the socket's registration, tokio::runtime::io::scheduled_io::ScheduledIo
-    In full: connection 0xADDR
+Connection 0xA1: tls client, established, task 2001
+    At: offset 0xA2 in the socket's registration, tokio::runtime::io::scheduled_io::ScheduledIo
+    In full: connection 0xA1

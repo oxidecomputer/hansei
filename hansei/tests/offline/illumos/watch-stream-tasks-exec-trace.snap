@@ -2,33 +2,33 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/watch-stream"
 ---
-task 3
-#0  future        core::future::poll_fn::PollFn<watch_stream::resolver::{async_fn#0}::{closure_env#0}>
+task 2001
+#0  future  core::future::poll_fn::PollFn<watch_stream::resolver::{async_fn#0}::{closure_env#0}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
-#1  async fn      watch_stream::resolver
+#1  async fn  watch_stream::resolver
       awaiting at src/bin/watch-stream.rs:43 (Suspend0, 5 locals; holds 3 pending futures)
 
-task 4
-#0  future        core::future::poll_fn::PollFn<watch_stream::mapper::{async_fn#0}::{closure_env#0}>
+task 2002
+#0  future  core::future::poll_fn::PollFn<watch_stream::mapper::{async_fn#0}::{closure_env#0}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
-#1  async fn      watch_stream::mapper
+#1  async fn  watch_stream::mapper
       awaiting at src/bin/watch-stream.rs:75 (Suspend0, 5 locals; holds 5 pending futures)
 
-task 5
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
-#1  async fn      watch_stream::fresh
+task 2003
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA1 (nothing sent, sender alive)
+#1  async fn  watch_stream::fresh
       awaiting at src/bin/watch-stream.rs:96 (Suspend0, 2 locals; holds 2 pending futures)
 
-task 6
-#0  future        tokio::sync::notify::Notified
-      waiting on watch rx 0xADDR (version 0, 1 sender, 1 receiver)
-#1  async fn      tokio::sync::watch::changed_impl<u32>
+task 2004
+#0  future  tokio::sync::notify::Notified
+      waiting on watch rx 0xA2 (version 0, 1 sender, 1 receiver)
+#1  async fn  tokio::sync::watch::changed_impl<u32>
       awaiting at tokio-1.52.4/src/sync/watch.rs:999 (Suspend1, 2 locals)
-#2  future        tokio::task::coop::Coop<tokio::sync::watch::changed_impl<u32>>
+#2  future  tokio::task::coop::Coop<tokio::sync::watch::changed_impl<u32>>
       defined at tokio-1.52.4/src/task/coop/mod.rs:446 (<no_state>, 1 local)
-#3  async fn      tokio::sync::watch::Receiver::changed<u32>
+#3  async fn  tokio::sync::watch::Receiver::changed<u32>
       awaiting at tokio-1.52.4/src/sync/watch.rs:819 (Suspend0, 0 locals)
-#4  async fn      watch_stream::direct
+#4  async fn  watch_stream::direct
       awaiting at src/bin/watch-stream.rs:108 (Suspend0, 1 local)
 [Executed against 4 tasks, 0 failed]

@@ -1,5 +1,14 @@
 ---
 source: hansei/src/offline.rs
-description: "`print tag` over illumos/walk-shapes"
+description: "`print node` over illumos/walk-shapes"
 ---
-7
+tokio::sync::batch_semaphore::Waiter {
+    state: 1,
+    waker: core::option::Option<core::task::wake::Waker> = Some(0xA1),
+    pointers: tokio::util::linked_list::Pointers<tokio::sync::batch_semaphore::Waiter> {
+        inner: tokio::util::linked_list::PointersInner<tokio::sync::batch_semaphore::Waiter> {
+            prev: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>> { .. } @ 0xA2,
+            next: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>> { .. } @ 0xA3,
+        },
+    },
+}

@@ -2,31 +2,31 @@
 source: hansei/src/offline.rs
 description: "`tasks --with type two_releases::keeper --exec up locals` over linux/two-releases"
 ---
-task 3
-#1  async fn      two_releases::keeper
+task 2003
+#1  async fn  two_releases::keeper
       awaiting at src/bin/two-releases.rs:42 (Suspend0, 6 locals)
-old_tx: async_channel::Sender<u32> = 0xADDR -> alloc::sync::ArcInner<async_channel::Channel<u32>> {
+old_tx: async_channel::Sender<u32> = 0xA1 -> alloc::sync::ArcInner<async_channel::Channel<u32>> {
           strong: 3,
           weak: 1,
-          data: async_channel::Channel<u32> { .. } @ 0xADDR,
+          data: async_channel::Channel<u32> { .. } @ 0xA2,
       }
-new_tx: async_channel::Sender<u32> = 0xADDR -> alloc::sync::ArcInner<async_channel::Channel<u32>> {
+new_tx: async_channel::Sender<u32> = 0xA3 -> alloc::sync::ArcInner<async_channel::Channel<u32>> {
           strong: 3,
           weak: 1,
-          data: async_channel::Channel<u32> { .. } @ 0xADDR,
+          data: async_channel::Channel<u32> { .. } @ 0xA4,
       }
-old_box: alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global> = 0xADDR -> async_channel::Receiver<u32> {
+old_box: alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global> = 0xA5 -> async_channel::Receiver<u32> {
           channel: alloc::sync::Arc<async_channel::Channel<u32>, alloc::alloc::Global> {
-              ptr: 0xADDR -> alloc::sync::ArcInner<async_channel::Channel<u32>> { .. },
+              ptr: 0xA1 -> alloc::sync::ArcInner<async_channel::Channel<u32>> { .. },
           },
-          listener: core::option::Option<event_listener::EventListener> { .. } @ 0xADDR,
+          listener: core::option::Option<event_listener::EventListener> { .. } @ 0xA6,
       }
-new_box: alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global> = 0xADDR -> async_channel::Receiver<u32> {
+new_box: alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global> = 0xA7 -> async_channel::Receiver<u32> {
           channel: alloc::sync::Arc<async_channel::Channel<u32>, alloc::alloc::Global> {
-              ptr: 0xADDR -> alloc::sync::ArcInner<async_channel::Channel<u32>> { .. },
+              ptr: 0xA3 -> alloc::sync::ArcInner<async_channel::Channel<u32>> { .. },
           },
-          listener: core::option::Option<event_listener::EventListener<()>> { .. } @ 0xADDR,
+          listener: core::option::Option<event_listener::EventListener<()>> { .. } @ 0xA8,
       }
-old_some: core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>> = Some(0xADDR -> async_channel::Receiver<u32> { .. })
-new_some: core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>> = Some(0xADDR -> async_channel::Receiver<u32> { .. })
+old_some: core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>> = Some(0xA9 -> async_channel::Receiver<u32> { .. })
+new_some: core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>> = Some(0xA10 -> async_channel::Receiver<u32> { .. })
 [Executed against 1 task, 0 failed]

@@ -1,27 +1,29 @@
 ---
 source: hansei/src/offline.rs
-description: "`connection 0x2041650` over illumos/http-conns"
+description: "`connection 0xA1` over illumos/http-conns"
 ---
-connection 0xADDR
+connection 0xA1
     proto: http1
-    driven by: task 10
+    driven by: task 2001
     http: client, awaiting response
-        dispatcher: 0xADDR hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
-        conn: 0xADDR
+        dispatcher: 0xA1 hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<reqwest::async_impl::body::Body>, reqwest::async_impl::body::Body, reqwest::connect::sealed::Conn, hyper::proto::h1::role::Client>
+        conn: 0xA1
         keep-alive: busy
         reading: init
         writing: keep-alive
         method: GET
-        caller: task 8
+        caller: task 2011
+        request: GET http://127.0.0.1:PORT/park
         alpn: none
         proxied: no
-    tcp: fd 12
-        stream: 0xADDR tokio::net::tcp::stream::TcpStream
-        registration: 0xADDR
+    tcp: fd N
+        stream: 0xA2 tokio::net::tcp::stream::TcpStream
+        registration: 0xA3
         ready: writable
-        waker: the reader slot, task 10
-        local address: 127.0.0.1:49187
-    peer: 127.0.0.1:35709
+        waker: the reader slot, task 2001
+        local address: 127.0.0.1:PORT
+    peer: 127.0.0.1:PORT
     route:
-        0xADDR hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>
-        0xADDR tokio::net::tcp::stream::TcpStream
+        0xA4 reqwest::connect::sealed::Conn
+        0xA2 hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>
+        0xA2 tokio::net::tcp::stream::TcpStream

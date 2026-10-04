@@ -1,15 +1,17 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 3` over linux-floor/http-conns"
+description: "`task 2001` over linux-floor/http-conns"
 ---
-task 3
+task 2001
     state: idle
     thread: <none>
-    type: async fn http_conns::accept_loop
-    awaiting at: src/bin/http-conns.rs:151
-    awaiting on: io fd 10 (readable)
-        waker: a waiter node, awaiting readable, ready: <none>
-    spawned at: src/bin/http-conns.rs:201:28
-    type defined at: src/bin/http-conns.rs:144
+    type: future Pin<Box<(dyn Future<Output=()> + Send)>>
+    awaiting on: http1 client 0xA1 fd N (GET sent, awaiting response headers)
+        via: oneshot tx 0xA2 (nothing sent, receiver alive)
+        caller: task 2011
+        request: GET http://127.0.0.1:PORT/park
+        io 0xA3 read
+            waker: the read-waiter slot, awaiting readable, ready: writable
+    spawned at: hyper-util-0.1.20/src/rt/tokio.rs:115:9
     held futures: 0
     join sets: 0

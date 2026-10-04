@@ -2,13 +2,13 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waker` over linux/http-conns"
 ---
-COUNT  WAITING ON                          TASKS
-    3  oneshot rx                          6, 9, 13
-    2  http1 client awaiting response      7, 11
-    2  http1 client idle                   5, 15
-    2  http1 server handling request       8, 10
-    2  http1 server idle                   4, 14
-    1  futures_channel::lock::Lock, timer  17
-    1  http server negotiating             12
-    1  io                                  3
+COUNT  WAITING ON  TASKS
+    3  oneshot rx  2010, 2011, 2012
+    2  http1 client awaiting response  2001, 2014
+    2  http1 client idle  2002, 2013
+    2  http1 server handling request  2005, 2006
+    2  http1 server idle  2004, 2008
+    1  futures_channel::lock::Lock, timer  2003
+    1  http server negotiating  2007
+    1  io  2009
 [8 groups]

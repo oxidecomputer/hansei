@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3 -n` over linux/watch-stream"
+description: "`trace 2001 -n` over linux/watch-stream"
 ---
-#0  future        core::future::poll_fn::PollFn<watch_stream::resolver::{async_fn#0}::{closure_env#0}>
+#0  future  core::future::poll_fn::PollFn<watch_stream::resolver::{async_fn#0}::{closure_env#0}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
-#1  async fn      watch_stream::resolver
+#1  async fn  watch_stream::resolver
       awaiting at src/bin/watch-stream.rs:43 (Suspend0, 5 locals; holds 3 pending futures)

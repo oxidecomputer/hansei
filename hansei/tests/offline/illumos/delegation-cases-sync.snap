@@ -2,5 +2,5 @@
 source: hansei/src/offline.rs
 description: "`sync` over illumos/delegation-cases"
 ---
-task 9 (future Pin<Box<delegation_cases::Holder<delegation_cases::main>>>): idle
-    Handle held by: task 10, unawaited
+task 2011 (future Pin<Box<delegation_cases::Holder<delegation_cases::main>>>): idle
+    Handle held by: task 2004, unawaited

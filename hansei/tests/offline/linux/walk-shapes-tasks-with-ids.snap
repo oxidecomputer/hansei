@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over linux/walk-shapes"
+description: "`tasks --with id 2003,2006` over linux/walk-shapes"
 ---
-ID  STATE  RT  FUT  AWAITING AT                 WAITING ON  TYPE
-3   idle   0     1  src/bin/walk-shapes.rs:160  notify rx   async fn walk_shapes::abandoner
-6   idle   0     0  src/bin/walk-shapes.rs:174  semaphore   async fn walk_shapes::blocked
+ID  STATE  RT  FUT  AWAITING AT  WAITING ON  TYPE
+2003  idle  0  2  src/bin/walk-shapes.rs:116  notify rx  async fn walk_shapes::chained
+2006  idle  0  0  src/bin/walk-shapes.rs:168  semaphore  async fn walk_shapes::victim
 [2 tasks]

@@ -2,13 +2,23 @@
 source: hansei/src/offline.rs
 description: "`info` over illumos/local-set-io"
 ---
-core:       <snapshot>
+core:  <core>
 tokio info: <tokio info>
 symbols resolved: 19/19
-allocator evidence: libumem index (58 caches, 32 slabs)
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 172.3 KiB swept in 3523 chunks
-    hits: 4 task-pattern, 0 set-pattern; 4 admitted; 0 unlisted headers
-    by class: 1 task extent, 3 umem live
-    attributed: 4 by a registry, 0 by owner type, 0 by holding type, 0 from another task's side, 0 unknown; 0 stale
-process: not recorded by this target
+allocator evidence: libumem index (N caches, N slabs)
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; N swept in N chunks
+    hits: N
+    by class: N
+    attributed: N
+pid:  PID (local-set-io)
+ppid:  PID
+uid:  ID (effective ID)
+gid:  ID (effective ID)
+model:  LP64
+start:  TIME
+psargs: PSARGS
+executable: <test-programs>/fixtures/bin-a/local-set-io
+argv:
+  <test-programs>/fixtures/bin-a/local-set-io
+environment:
 signal: none recorded

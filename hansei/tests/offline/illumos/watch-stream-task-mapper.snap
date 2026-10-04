@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 4` over illumos/watch-stream"
+description: "`task 2002` over illumos/watch-stream"
 ---
-task 4
+task 2002
     state: idle
     thread: <none>
     type: async fn watch_stream::mapper
@@ -15,7 +15,7 @@ task 4
                 held in: frame 1 `once`
                 declared at: src/bin/watch-stream.rs:59
                 awaiting at: src/bin/watch-stream.rs:76
-                awaiting on: oneshot rx 0xADDR (nothing sent, sender alive)
+                awaiting on: oneshot rx 0xA1 (nothing sent, sender alive)
                 type defined at: tokio-1.52.4/src/sync/oneshot.rs:1271
             branch 1 (borrowed): futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
                 held in: frame 1 `next`
@@ -24,15 +24,15 @@ task 4
                 entries:
                     "alpha":
                         held in: frame 1 `map[0]`
-                        awaiting on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                        awaiting on: watch rx 0xA2 (version 0, 1 sender, 1 receiver)
                         type defined at: tokio-stream-0.1.19/src/wrappers/watch.rs:104
                     "beta":
                         held in: frame 1 `map[1]`
-                        awaiting on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                        awaiting on: watch rx 0xA3 (version 0, 1 sender, 1 receiver)
                         type defined at: tokio-stream-0.1.19/src/wrappers/watch.rs:104
                     "gamma":
                         held in: frame 1 `map[2]`
-                        awaiting on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                        awaiting on: watch rx 0xA4 (version 0, 1 sender, 1 receiver)
                         type defined at: tokio-stream-0.1.19/src/wrappers/watch.rs:104
     spawned at: src/bin/watch-stream.rs:132:23
     type defined at: src/bin/watch-stream.rs:57

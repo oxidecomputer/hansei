@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3 -l 1` over linux-floor/two-releases"
+description: "`trace 2001 -l 1` over linux-floor/two-releases"
 ---
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
-[2 frames, 1 shown]
+#0  future  async_channel::Recv<u32>
+      defined at async-channel-1.9.0/src/lib.rs:1169 (<no_state>, 2 locals; holds 1 pending future)
+[3 frames, 1 shown]

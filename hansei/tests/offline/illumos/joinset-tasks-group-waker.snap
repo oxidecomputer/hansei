@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waker` over illumos/joinset"
 ---
-COUNT  WAITING ON                                  TASKS
-    5  notify rx                                   4, 5, 6, …
-    1  tokio::util::idle_notified_set::ListsInner  3
+COUNT  WAITING ON  TASKS
+    5  notify rx  2002, 2003, 2004, …
+    1  tokio::util::idle_notified_set::ListsInner  2001
 [2 groups]

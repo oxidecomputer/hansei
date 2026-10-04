@@ -1,9 +1,13 @@
 ---
 source: hansei/src/offline.rs
-description: "`print scheduled_io` over illumos/http-conns"
+description: "`print conn` over illumos/http-conns"
 ---
-0xADDR -> tokio::runtime::io::scheduled_io::ScheduledIo {
-        linked_list_pointers: core::cell::UnsafeCell<tokio::util::linked_list::Pointers<tokio::runtime::io::scheduled_io::ScheduledIo>> { .. } @ 0xADDR,
-        readiness: 327680,
-        waiters: tokio::loom::std::parking_lot::Mutex<tokio::runtime::io::scheduled_io::Waiters> { .. } @ 0xADDR,
-    }
+hyper::proto::h1::conn::Conn<reqwest::connect::sealed::Conn, bytes::bytes::Bytes, hyper::proto::h1::role::Client> {
+    version: http::version::Version = Http::Http11,
+    keep_alive: hyper::proto::h1::conn::KA = Busy,
+    reading: hyper::proto::h1::conn::Reading = Init,
+    writing: hyper::proto::h1::conn::Writing = KeepAlive,
+    method: core::option::Option<http::method::Method> = Some(http::method::Inner { .. } @ 0xA1),
+    read_buf_len: 0,
+    read_buf_cap: 8192,
+}

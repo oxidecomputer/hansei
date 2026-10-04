@@ -2,17 +2,17 @@
 source: hansei/src/offline.rs
 description: "`channels` over linux/http-conns"
 ---
-oneshot 0xADDR: nothing sent, sender alive
-    tx: task 7
+oneshot 0xA1: nothing sent, sender alive
+    tx: task 2001
 
-oneshot 0xADDR: nothing sent, sender alive
-    tx: task 11
+oneshot 0xA2: nothing sent, sender alive
+    rx: task 2012
 
-oneshot 0xADDR: nothing sent, sender alive
-    rx: task 13
+oneshot 0xA3: nothing sent, sender alive
+    tx: task 2014
 
-mpsc 0xADDR: 1 sender, 0 unread
-    rx: task 5
+mpsc 0xA4: 1 sender, 0 unread
+    rx: task 2002
 
-mpsc 0xADDR: 1 sender, 0 unread
-    rx: task 15
+mpsc 0xA5: 1 sender, 0 unread
+    rx: task 2013

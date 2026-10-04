@@ -2,17 +2,17 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/ct-runtime"
 ---
-task 1
-#0  future        tokio::time::sleep::Sleep
+task 2001
+#0  future  tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
-#1  async fn      ct_runtime::sleeper
+#1  async fn  ct_runtime::sleeper
       awaiting at src/bin/ct-runtime.rs:17 (Suspend0, 0 locals)
 
-task 2
-#0  future        tokio::sync::batch_semaphore::Acquire
-      waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
-#1  async fn      tokio::sync::semaphore::Semaphore::acquire
+task 2002
+#0  future  tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Semaphore (semaphore 0xA1): 1 permit requested, 0 available; wake queue: task 2002
+#1  async fn  tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.52.4/src/sync/semaphore.rs:597 (Suspend0, 1 local)
-#2  async fn      ct_runtime::acquirer
+#2  async fn  ct_runtime::acquirer
       awaiting at src/bin/ct-runtime.rs:24 (Suspend0, 0 locals)
 [Executed against 2 tasks, 0 failed]

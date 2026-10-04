@@ -1,5 +1,10 @@
 ---
 source: hansei/src/offline.rs
-description: "`print inner` over linux-floor/two-releases"
+description: "`print receiver` over linux-floor/two-releases"
 ---
-core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>> = Some(0xADDR -> alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>> { .. })
+0xA1 -> async_channel::Receiver<u32> {
+        channel: alloc::sync::Arc<async_channel::Channel<u32>, alloc::alloc::Global> {
+            ptr: 0xA2 -> alloc::sync::ArcInner<async_channel::Channel<u32>> { .. },
+        },
+        listener: core::option::Option<event_listener::EventListener> { .. } @ 0xA3,
+    }

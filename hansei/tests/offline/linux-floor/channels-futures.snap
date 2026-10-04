@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`futures` over linux-floor/channels"
 ---
-ADDR            TASK  HELD IN            STATE                                                 WAITING ON                            ARMED  TYPE
-0xADDR  6     frame 1, `send`    Suspend0 — tokio-1.47.5/src/sync/mpsc/bounded.rs:811  tokio::sync::batch_semaphore::Waiter  yes    async fn tokio::sync::mpsc::bounded::Sender::send<u32>
-0xADDR  6     frame 1, `sleep`   —                                                     unarmed: timer                        no     future tokio::time::sleep::Sleep
-0xADDR  6     frame 1, `missed`  Returned                                              —                                     no     async block channels::send_waiter::{async_fn#0}
+ADDR  TASK  HELD IN  STATE  WAITING ON  ARMED  TYPE
+0xA1  2004  frame 1, `send`  Suspend0 — tokio-1.47.5/src/sync/mpsc/bounded.rs:811  tokio::sync::batch_semaphore::Waiter  yes  async fn tokio::sync::mpsc::bounded::Sender::send<u32>
+0xA2  2004  frame 1, `sleep`  —  unarmed: timer  no  future tokio::time::sleep::Sleep
+0xA3  2004  frame 1, `missed`  Returned  —  no  async block channels::send_waiter::{async_fn#0}
 [3 futures]

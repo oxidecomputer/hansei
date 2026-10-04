@@ -3,9 +3,9 @@ source: hansei/src/offline.rs
 description: "`print` over linux/tls-conns"
 ---
 tokio::io::util::read::Read<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>> {
-    reader: 0xADDR -> tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream> { .. },
+    reader: 0xA1 -> tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream> { .. },
     buf: &mut [u8] {
-        data_ptr: 0xADDR -> 0,
+        data_ptr: 0xA2 -> 0,
         length: 64,
     },
 }

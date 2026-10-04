@@ -3,7 +3,7 @@ source: hansei-runtime/tests/two_binary.rs
 ---
 fingerprint 19/19
 workers 3
-task 3 idle joinset::driver::{async_fn_env#0}
+task 2001 idle joinset::driver::{async_fn_env#0}
   spawned src/bin/joinset.rs:100:21
   defined src/bin/joinset.rs:48
   await joinset::driver::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:83 locals [notify, started_tx, started_rx, set, kept, sum]
@@ -12,43 +12,43 @@ task 3 idle joinset::driver::{async_fn_env#0}
   end unknown continuation (NoRule)
   site src/bin/joinset.rs:83
   assessed Unknown(Continuation)
-task 4 idle joinset::member::{async_fn_env#0}
+task 2002 idle joinset::member::{async_fn_env#0}
   spawned src/bin/joinset.rs:54:13
   defined src/bin/joinset.rs:31
   await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:34 locals [started, notify]
   await tokio::sync::notify::Notified
   end primitive
   site src/bin/joinset.rs:34
-  waiting on notify rx 0xADDR (waiting, 5 queued)
-task 5 idle joinset::member::{async_fn_env#0}
+  waiting on notify rx 0xA1 (waiting, 5 queued)
+task 2003 idle joinset::member::{async_fn_env#0}
   spawned src/bin/joinset.rs:54:13
   defined src/bin/joinset.rs:31
   await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:34 locals [started, notify]
   await tokio::sync::notify::Notified
   end primitive
   site src/bin/joinset.rs:34
-  waiting on notify rx 0xADDR (waiting, 5 queued)
-task 6 idle joinset::member::{async_fn_env#0}
+  waiting on notify rx 0xA1 (waiting, 5 queued)
+task 2004 idle joinset::member::{async_fn_env#0}
   spawned src/bin/joinset.rs:54:13
   defined src/bin/joinset.rs:31
   await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:34 locals [started, notify]
   await tokio::sync::notify::Notified
   end primitive
   site src/bin/joinset.rs:34
-  waiting on notify rx 0xADDR (waiting, 5 queued)
-task 7 idle joinset::member::{async_fn_env#0}
+  waiting on notify rx 0xA1 (waiting, 5 queued)
+task 2005 idle joinset::member::{async_fn_env#0}
   spawned src/bin/joinset.rs:62:14
   defined src/bin/joinset.rs:31
   await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:34 locals [started, notify]
   await tokio::sync::notify::Notified
   end primitive
   site src/bin/joinset.rs:34
-  waiting on notify rx 0xADDR (waiting, 5 queued)
-task 8 idle joinset::member::{async_fn_env#0}
+  waiting on notify rx 0xA1 (waiting, 5 queued)
+task 2006 idle joinset::member::{async_fn_env#0}
   spawned src/bin/joinset.rs:62:14
   defined src/bin/joinset.rs:31
   await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:34 locals [started, notify]
   await tokio::sync::notify::Notified
   end primitive
   site src/bin/joinset.rs:34
-  waiting on notify rx 0xADDR (waiting, 5 queued)
+  waiting on notify rx 0xA1 (waiting, 5 queued)

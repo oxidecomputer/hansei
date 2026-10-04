@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over linux/foreign-runtime"
 ---
-COUNT  WAITING ON                                           TASKS
-    1  a tokio::sync::Semaphore (semaphore 0xADDR)  1
-    1  task 1                                               4
-    1  timer                                                3
-    1  unarmed: never ready                                 2
+COUNT  WAITING ON  TASKS
+    1  a tokio::sync::Semaphore (semaphore 0xA1)  2002
+    1  task 2002  2001
+    1  timer  2004
+    1  unarmed: never ready  2003
 [4 groups]

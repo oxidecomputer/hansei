@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --group lwp` over linux/gen-0007"
 ---
-COUNT  LWP      TASKS
-    5  <empty>  3, 4, 5, …
+COUNT  LWP  TASKS
+    5  <empty>  2001, 2002, 2003, …
 [1 group]

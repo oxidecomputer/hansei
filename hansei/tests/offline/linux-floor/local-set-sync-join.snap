@@ -2,5 +2,5 @@
 source: hansei/src/offline.rs
 description: "`sync --kind join` over linux-floor/local-set"
 ---
-task 1 (async fn local_set::local_sleeper): idle
-    Waited by: task 3
+task 2001 (async fn local_set::local_sleeper): idle
+    Waited by: task 2003

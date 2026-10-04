@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over linux/dyn-future"
 ---
 COUNT  WAITING ON  TASKS
-    3  oneshot rx  3, 4, 5
+    3  oneshot rx  2001, 2002, 2003
 [1 group]

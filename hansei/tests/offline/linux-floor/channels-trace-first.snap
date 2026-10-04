@@ -1,10 +1,10 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3 -n` over linux-floor/channels"
+description: "`trace 2001 -n` over linux-floor/channels"
 ---
-#0  future        tokio::sync::notify::Notified
-      waiting on notify rx 0xADDR (waiting, 1 queued)
-#1  future        Pin<&mut tokio::sync::notify::Notified>
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA1 (waiting, 1 queued)
+#1  future  Pin<&mut tokio::sync::notify::Notified>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#2  async fn      channels::notify_waiter
+#2  async fn  channels::notify_waiter
       awaiting at src/bin/channels.rs:37 (Suspend0, 2 locals)

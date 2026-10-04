@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waker` over linux/channels"
 ---
-COUNT  WAITING ON                                                      TASKS
-    1  a tokio::sync::mpsc bounded channel (semaphore 0xADDR)  6
-    1  mpsc rx                                                         4
-    1  notify rx                                                       3
-    1  oneshot rx                                                      5
+COUNT  WAITING ON  TASKS
+    1  a tokio::sync::mpsc bounded channel (semaphore 0xA1)  2004
+    1  mpsc rx  2002
+    1  notify rx  2001
+    1  oneshot rx  2003
 [4 groups]

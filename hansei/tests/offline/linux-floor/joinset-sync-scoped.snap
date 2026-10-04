@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux-floor/joinset"
 ---
-a tokio::task::join_set::JoinSet<u32> (set 0xADDR): 3 members, driven by task 3 (`set`)
-    Members (idle): task 6, task 5, task 4
+a tokio::task::join_set::JoinSet<u32> (set 0xA1): 3 members, driven by task 2001 (`set`)
+    Members (idle): task 2004, task 2003, task 2002
 
-a tokio::task::join_set::JoinSet<u32> (set 0xADDR): 3 members, driven by task 3 (`kept`)
+a tokio::task::join_set::JoinSet<u32> (set 0xA2): 3 members, driven by task 2001 (`kept`)
     Members (complete, awaiting join): task 9
-    Members (idle): task 8, task 7
+    Members (idle): task 2006, task 2005

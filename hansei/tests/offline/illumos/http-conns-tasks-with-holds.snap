@@ -2,10 +2,10 @@
 source: hansei/src/offline.rs
 description: "`tasks --with holds >0` over illumos/http-conns"
 ---
-ID  STATE  FUT  AWAITING AT                                      WAITING ON                          TYPE
-4   idle     1  src/bin/http-conns.rs:137                        http1 server                        async fn http_conns::serve
-11  idle     1  src/bin/http-conns.rs:180                        oneshot rx                          async fn http_conns::reqwest_requester
-14  idle     1  src/bin/http-conns.rs:137                        http server                         async fn http_conns::serve
-16  idle     1  src/bin/http-conns.rs:137                        http1 server                        async fn http_conns::serve
-18  idle     3  hyper-util-0.1.20/src/client/legacy/pool.rs:798  futures_channel::lock::Lock, timer  future Pin<Box<(dyn Future<Output=()> + Send)>>
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2003  idle  3  hyper-util-0.1.20/src/client/legacy/pool.rs:798  futures_channel::lock::Lock, timer  future Pin<Box<(dyn Future<Output=()> + Send)>>
+2004  idle  1  src/bin/http-conns.rs:137  http1 server  async fn http_conns::serve
+2007  idle  1  src/bin/http-conns.rs:137  http server  async fn http_conns::serve
+2008  idle  1  src/bin/http-conns.rs:137  http1 server  async fn http_conns::serve
+2011  idle  1  src/bin/http-conns.rs:180  oneshot rx  async fn http_conns::reqwest_requester
 [5 tasks]

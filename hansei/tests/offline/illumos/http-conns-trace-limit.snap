@@ -1,7 +1,10 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3 -l 1` over illumos/http-conns"
+description: "`trace 2001 -l 1` over illumos/http-conns"
 ---
-#0  future        tokio::runtime::io::scheduled_io::Readiness
-      waiting on io fd 9 (readable)
-[6 frames, 1 shown]
+#0  future  hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<reqwest::async_impl::body::Body>, reqwest::async_impl::body::Body, reqwest::connect::sealed::Conn, hyper::proto::h1::role::Client>
+      waiting on http1 client 0xA1 fd N (GET sent, awaiting response headers)
+      via oneshot tx 0xA2 (nothing sent, receiver alive)
+      caller task 2011
+      request GET http://127.0.0.1:PORT/park
+[9 frames, 1 shown]

@@ -2,11 +2,11 @@
 source: hansei/src/offline.rs
 description: "`census` over illumos/local-set"
 ---
-Threads: 1 lwp, 1 in runtime 0 @ 0xADDR
+Threads: 1 lwp, 1 in runtime 0 @ 0xA1
 
-COUNT  RT  ROLE             STATE           LWPS
-    1  0   block_on thread  in driver       1
-    0  0   blocking pool    0 idle, 0 busy  —
+COUNT  RT  ROLE  STATE  LWPS
+    1  0  block_on thread  in driver  1001
+    0  0  blocking pool  0 idle, 0 busy  —
 [1 lwp]
 
 Tasks: 3 owned by 1 runtime and 1 local set

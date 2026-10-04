@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over linux-floor/local-set"
 ---
-ID  STATE  RT  FUT  AWAITING AT              WAITING ON  TYPE
-1   idle   1     0  src/bin/local-set.rs:20  timer       async fn local_set::local_sleeper
-2   idle   1     0  src/bin/local-set.rs:27  semaphore   async fn local_set::local_acquirer
-3   idle   0     0  src/bin/local-set.rs:34  task 1      async fn local_set::joiner
+ID  STATE  RT  FUT  AWAITING AT  WAITING ON  TYPE
+2001  idle  1  0  src/bin/local-set.rs:20  timer  async fn local_set::local_sleeper
+2002  idle  1  0  src/bin/local-set.rs:27  semaphore  async fn local_set::local_acquirer
+2003  idle  0  0  src/bin/local-set.rs:34  task 2001  async fn local_set::joiner
 [3 tasks]

@@ -2,11 +2,11 @@
 source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over illumos/http-conns"
 ---
-COUNT  WAITING ON                                                       FUTURES
-    3  timer                                                            0xADDR, 0xADDR, 0xADDR
-    2  futures_channel::lock::Lock                                      0xADDR, 0xADDR
-    1  unarmed: oneshot rx                                              0xADDR
-    1  unarmed: unknown at hyper_util::server::conn::auto::ReadVersion  0xADDR
-    1  unarmed: unknown at reqwest::async_impl::client::PendingRequest  0xADDR
-    1  unarmed: unknown at tower_http::follow_redirect::ResponseFuture  0xADDR
+COUNT  WAITING ON  FUTURES
+    3  timer  0xA1, 0xA2, 0xA3
+    2  futures_channel::lock::Lock  0xA4, 0xA5
+    1  unarmed: oneshot rx  0xA6
+    1  unarmed: unknown at hyper_util::server::conn::auto::ReadVersion  0xA7
+    1  unarmed: unknown at reqwest::async_impl::client::PendingRequest  0xA6
+    1  unarmed: unknown at tower_http::follow_redirect::ResponseFuture  0xA6
 [6 groups]

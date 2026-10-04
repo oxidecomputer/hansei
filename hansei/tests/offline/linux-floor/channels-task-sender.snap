@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 6` over linux-floor/channels"
+description: "`task 2004` over linux-floor/channels"
 ---
-task 6
+task 2004
     state: idle
     thread: <none>
     type: async fn channels::send_waiter
@@ -13,9 +13,9 @@ task 6
             awaiting at: src/bin/channels.rs:95
             branch 0 (borrowed): async fn tokio::sync::mpsc::bounded::Sender::send<u32>
                 held in: frame 1 `send`
-                awaiting on: a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6
+                awaiting on: a tokio::sync::mpsc bounded channel (semaphore 0xA1): 1 permit requested, 0 available; wake queue: task 2004
                 type defined at: tokio-1.47.5/src/sync/mpsc/bounded.rs:810
-                waker: tokio::sync::batch_semaphore::Waiter @ 0xADDR
+                waker: tokio::sync::batch_semaphore::Waiter @ 0xA2
             branch 1: tokio::time::sleep::Sleep: disabled
                 type defined at: tokio-1.47.5/src/time/sleep.rs:439
             branch 2: async block channels::send_waiter::{async_fn#0}: disabled

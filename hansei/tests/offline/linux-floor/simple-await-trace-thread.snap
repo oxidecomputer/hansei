@@ -2,5 +2,18 @@
 source: hansei/src/offline.rs
 description: "`trace` over linux-floor/simple-await"
 ---
-lwp 3050205 native stack:
-0xADDR
+lwp 1001 native stack:
+0xA1  syscall
+0xA2  <parking_lot::condvar::Condvar>::wait_until_internal
+0xA3  <tokio::runtime::park::Inner>::park
+0xA4  <tokio::runtime::park::CachedParkThread>::block_on::<simple_await::main::{closure#0}>
+0xA5  <tokio::runtime::runtime::Runtime>::block_on::<simple_await::main::{closure#0}>
+0xA6  oxide_tokio_rt::run_builder::<(), simple_await::main::{closure#0}>
+0xA7  simple_await::main
+0xA8  std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+0xA9  std::rt::lang_start::<()>::{closure#0}
+0xA10  std::rt::lang_start_internal
+0xA11  main
+0xA12  __libc_start_call_main
+0xA13  __libc_start_main_impl
+0xA14  _start

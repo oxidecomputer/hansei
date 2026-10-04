@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --group lwp` over linux/http-conns"
 ---
-COUNT  LWP      TASKS
-   14  <empty>  3, 4, 5, …
+COUNT  LWP  TASKS
+   14  <empty>  2001, 2002, 2003, …
 [1 group]

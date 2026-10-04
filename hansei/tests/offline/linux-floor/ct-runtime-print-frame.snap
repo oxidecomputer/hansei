@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`print` over linux-floor/ct-runtime"
 ---
 tokio::time::sleep::Sleep {
-    deadline: 1000000.001s,
+    deadline: TS,
     state: registered,
 }

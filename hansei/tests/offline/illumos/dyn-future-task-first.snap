@@ -1,14 +1,14 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 3` over illumos/dyn-future"
+description: "`task 2001` over illumos/dyn-future"
 ---
-task 3
+task 2001
     state: idle
     thread: <none>
-    type: async fn dyn_future::driver
-    awaiting at: src/bin/dyn-future.rs:40
-    awaiting on: oneshot rx 0xADDR (nothing sent, sender alive)
-    spawned at: src/bin/dyn-future.rs:57:21
-    type defined at: src/bin/dyn-future.rs:24
+    type: async fn dyn_future::set_member
+    awaiting at: src/bin/dyn-future.rs:21
+    awaiting on: oneshot rx 0xA1 (nothing sent, sender alive)
+    spawned at: src/bin/dyn-future.rs:32:9
+    type defined at: src/bin/dyn-future.rs:19
     held futures: 0
-    join sets: 1 (1 task)
+    join sets: 0

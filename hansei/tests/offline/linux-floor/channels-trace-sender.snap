@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 6 -n` over linux-floor/channels"
+description: "`trace 2004 -n` over linux-floor/channels"
 ---
-#0  future        core::future::poll_fn::PollFn<channels::send_waiter::{async_fn#0}::{closure_env#1}>
+#0  future  core::future::poll_fn::PollFn<channels::send_waiter::{async_fn#0}::{closure_env#1}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
-#1  async fn      channels::send_waiter
+#1  async fn  channels::send_waiter
       awaiting at src/bin/channels.rs:95 (Suspend0, 6 locals; holds 3 pending futures)

@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`locals` over linux/sleep-join"
 ---
 entry: tokio::runtime::Timer = Traditional(tokio::runtime::time::entry::TimerEntry {
-      deadline: 1000000.001s,
+      deadline: TS,
       state: registered,
   })

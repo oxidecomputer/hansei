@@ -2,13 +2,13 @@
 source: hansei/src/offline.rs
 description: "`graph` over linux-floor/walk-shapes"
 ---
-TASK                                   STATE  WAITING ON
-4                                      idle   semaphore
-└─ 3 [queued ahead of the task above]  idle   notify rx
-8                                      idle   task 7
-└─ 7                                   idle   notify rx
+TASK  STATE  WAITING ON
+2006  idle  semaphore
+└─ 2005 [queued ahead of the task above]  idle  notify rx
+2010  idle  task 2009
+└─ 2009  idle  notify rx
 
-futurelock: task 3 holds place 0 in the wake queue of a tokio::sync::Mutex (semaphore 0xADDR) in a future it cannot poll until the future tokio::sync::notify::Notified it awaits completes:
+futurelock: task 2005 holds place 0 in the wake queue of a tokio::sync::Mutex (semaphore 0xA1) in a future it cannot poll until the future tokio::sync::notify::Notified it awaits completes:
   `fut` (async fn tokio::sync::mutex::Mutex::lock<()>)
   held across async fn walk_shapes::abandoner state Suspend1 — src/bin/walk-shapes.rs:160
-  queued behind it: task 4
+  queued behind it: task 2006

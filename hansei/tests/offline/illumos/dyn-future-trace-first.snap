@@ -1,12 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3 -n` over illumos/dyn-future"
+description: "`trace 2001 -n` over illumos/dyn-future"
 ---
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
-#1  async fn      dyn_future::boxed_leaf [dyn]
-      awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
-#2  future        Pin<Box<(dyn Future<Output=u32> + Send)>>
-      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#3  async fn      dyn_future::driver
-      awaiting at src/bin/dyn-future.rs:40 (Suspend0, 1 local)
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA1 (nothing sent, sender alive)
+#1  async fn  dyn_future::set_member
+      awaiting at src/bin/dyn-future.rs:21 (Suspend0, 0 locals)

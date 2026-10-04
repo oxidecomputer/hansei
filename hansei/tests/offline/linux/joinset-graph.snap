@@ -2,10 +2,10 @@
 source: hansei/src/offline.rs
 description: "`graph` over linux/joinset"
 ---
-TASK                         STATE  WAITING ON
-3                            idle   tokio::util::idle_notified_set::ListsInner
-├─ 4 [in the JoinSet above]  idle   notify rx
-├─ 5 [in the JoinSet above]  idle   notify rx
-├─ 6 [in the JoinSet above]  idle   notify rx
-├─ 7 [in the JoinSet above]  idle   notify rx
-└─ 8 [in the JoinSet above]  idle   notify rx
+TASK  STATE  WAITING ON
+2001  idle  tokio::util::idle_notified_set::ListsInner
+├─ 2002 [in the JoinSet above]  idle  notify rx
+├─ 2003 [in the JoinSet above]  idle  notify rx
+├─ 2004 [in the JoinSet above]  idle  notify rx
+├─ 2005 [in the JoinSet above]  idle  notify rx
+└─ 2006 [in the JoinSet above]  idle  notify rx

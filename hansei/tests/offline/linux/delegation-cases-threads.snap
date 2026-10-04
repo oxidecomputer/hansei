@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/delegation-cases"
 ---
-LWP      NAME  ROLE                       TASK  FRAME 0
-2092462  —     tokio context, no runtime  —     0xADDR
-2092464  —     block_on caller            —     0xADDR
+LWP  NAME  ROLE  TASK  FRAME 0
+1001  —  tokio context, no runtime  —  syscall
+1002  —  block_on caller  —  __syscall_cancel_arch
 [2 threads]

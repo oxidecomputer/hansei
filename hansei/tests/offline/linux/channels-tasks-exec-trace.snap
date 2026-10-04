@@ -2,31 +2,31 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux/channels"
 ---
-task 3
-#0  future        tokio::sync::notify::Notified
-      waiting on notify rx 0xADDR (waiting, 1 queued)
-#1  future        Pin<&mut tokio::sync::notify::Notified>
+task 2001
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA1 (waiting, 1 queued)
+#1  future  Pin<&mut tokio::sync::notify::Notified>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#2  async fn      channels::notify_waiter
+#2  async fn  channels::notify_waiter
       awaiting at src/bin/channels.rs:37 (Suspend0, 2 locals)
 
-task 4
-#0  future        core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::Receiver::recv::{async_fn#0}::{closure_env#0}<u32>>
-      waiting on mpsc rx 0xADDR (1 sender, capacity 4, 0 unread)
-#1  async fn      tokio::sync::mpsc::bounded::Receiver::recv<u32>
+task 2002
+#0  future  core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::Receiver::recv::{async_fn#0}::{closure_env#0}<u32>>
+      waiting on mpsc rx 0xA2 (1 sender, capacity 4, 0 unread)
+#1  async fn  tokio::sync::mpsc::bounded::Receiver::recv<u32>
       awaiting at tokio-1.52.4/src/sync/mpsc/bounded.rs:245 (Suspend0, 0 locals)
-#2  async fn      channels::recv_waiter
+#2  async fn  channels::recv_waiter
       awaiting at src/bin/channels.rs:48 (Suspend0, 1 local)
 
-task 5
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
-#1  async fn      channels::hold
+task 2003
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA3 (nothing sent, sender alive)
+#1  async fn  channels::hold
       awaiting at src/bin/channels.rs:70 (Suspend0, 10 locals)
 
-task 6
-#0  future        core::future::poll_fn::PollFn<channels::send_waiter::{async_fn#0}::{closure_env#1}>
+task 2004
+#0  future  core::future::poll_fn::PollFn<channels::send_waiter::{async_fn#0}::{closure_env#1}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
-#1  async fn      channels::send_waiter
+#1  async fn  channels::send_waiter
       awaiting at src/bin/channels.rs:95 (Suspend0, 6 locals; holds 3 pending futures)
 [Executed against 4 tasks, 0 failed]

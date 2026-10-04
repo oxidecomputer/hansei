@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/local-set"
 ---
-LWP      NAME  ROLE             TASK  FRAME 0
-2090694  —     block_on caller  —     0xADDR
+LWP  NAME  ROLE  TASK  FRAME 0
+1001  —  block_on caller  —  __internal_syscall_cancel
 [1 thread]

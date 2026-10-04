@@ -2,4 +2,15 @@
 source: hansei/src/offline.rs
 description: "`print` over linux-floor/gen-0007"
 ---
-gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
+tokio::sync::notify::Notified {
+    notify: 0xA1 -> tokio::sync::notify::Notify { .. },
+    state: tokio::sync::notify::State = Waiting,
+    notify_waiters_calls: 0,
+    waiter: tokio::sync::notify::Waiter {
+        pointers: tokio::util::linked_list::Pointers<tokio::sync::notify::Waiter> {
+            inner: core::cell::UnsafeCell<tokio::util::linked_list::PointersInner<tokio::sync::notify::Waiter>> { .. } @ 0xA2,
+        },
+        waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xA3,
+        notification: tokio::sync::notify::AtomicNotification = 0,
+    },
+}

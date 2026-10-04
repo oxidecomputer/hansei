@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3 -l 1` over linux-floor/armed-select"
+description: "`trace 2001 -l 1` over linux-floor/armed-select"
 ---
-#0  future        core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#0}>
+#0  future  core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#0}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
 [2 frames, 1 shown]

@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`threads` over illumos/walk-shapes"
 ---
-LWP  NAME  ROLE                       TASK  FRAME 0
-1    —     block_on caller            —     0xADDR
-2    —     tokio context, no runtime  —     0xADDR
-3    —     tokio context, no runtime  —     0xADDR
+LWP  NAME  ROLE  TASK  FRAME 0
+1001  —  block_on caller  —  ioctl
+1002  —  tokio context, no runtime  —  __lwp_park
+1003  —  tokio context, no runtime  —  __lwp_park
 [3 threads]

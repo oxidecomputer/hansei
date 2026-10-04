@@ -1,12 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0x1b54dd0` over illumos/http-conns"
+description: "`future 0xA1` over illumos/http-conns"
 ---
-future 0xADDR
-    type: future hyper_util::rt::tokio::TokioSleep
-    held by: task 4 (frame 0, `conn`)
-    depth: 3 frames
-    awaiting on: timer (deadline TS)
-        waker: timer @ 0xADDR
+future 0xA1
+    type: future futures_channel::oneshot::Receiver<core::convert::Infallible>
+    held by: task 2003 (frame 1, `self`)
+    depth: 1 frame
+    awaiting on: futures_channel::lock::Lock @ 0xA2
     held futures: 0
     join sets: 0

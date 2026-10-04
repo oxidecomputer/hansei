@@ -2,131 +2,131 @@
 source: hansei/src/offline.rs
 description: "`futures --exec trace -l 1` over linux/unordered"
 ---
-future 0xADDR
-future 0xADDR: async fn unordered::set_member
-Held by: task 3 — async fn unordered::driver (frame 2, `held`)
+future 0xA1
+future 0xA1: async fn unordered::set_member
+Held by: task 2001 — async fn unordered::driver (frame 2, `held`)
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::set_member
+#0  async fn  unordered::set_member
       state Unresumed
 
-future 0xADDR
-future 0xADDR: async fn unordered::set_member
-Held by: task 3 — async fn unordered::driver (frame 2, `boxed`)
+future 0xA2
+future 0xA2: async fn unordered::set_member
+Held by: task 2001 — async fn unordered::driver (frame 2, `boxed`)
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::set_member
+#0  async fn  unordered::set_member
       state Unresumed
 
-future 0xADDR
-future 0xADDR: async fn unordered::leaf
-Held by: task 3 — async fn unordered::driver (frame 2, `pair`)
+future 0xA3
+future 0xA3: async fn unordered::leaf
+Held by: task 2001 — async fn unordered::driver (frame 2, `pair`)
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::leaf
+#0  async fn  unordered::leaf
       state Unresumed
 
-future 0xADDR
-future 0xADDR: async fn unordered::leaf
-Held by: task 3 — async fn unordered::driver (frame 2, `maybe`)
+future 0xA4
+future 0xA4: async fn unordered::leaf
+Held by: task 2001 — async fn unordered::driver (frame 2, `maybe`)
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::leaf
+#0  async fn  unordered::leaf
       state Unresumed
 
-future 0xADDR: async fn unordered::holder<unordered::leaf>
-future 0xADDR: async fn unordered::holder<unordered::leaf>
-Held by: task 3 — async fn unordered::driver (frame 2, `nested_hold`)
+future 0xA5: async fn unordered::holder<unordered::leaf>
+future 0xA5: async fn unordered::holder<unordered::leaf>
+Held by: task 2001 — async fn unordered::driver (frame 2, `nested_hold`)
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::holder<unordered::leaf>
+#0  async fn  unordered::holder<unordered::leaf>
       state Unresumed (holds 1 pending future)
 
-future 0xADDR: async fn unordered::leaf
-future 0xADDR: async fn unordered::leaf
-Held by: task 3 — async fn unordered::driver (frame 0, `inner`, via held future at 0xADDR)
+future 0xA5: async fn unordered::leaf
+future 0xA5: async fn unordered::leaf
+Held by: task 2001 — async fn unordered::driver (frame 0, `inner`, via held future at 0xA5)
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::leaf
+#0  async fn  unordered::leaf
       state Unresumed
 
-future 0xADDR
-future 0xADDR: async fn unordered::leaf
-Held by: task 3 — async fn unordered::driver (frame 2, `keyed[0]`)
+future 0xA6
+future 0xA6: async fn unordered::leaf
+Held by: task 2001 — async fn unordered::driver (frame 2, `keyed[0]`)
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::leaf
+#0  async fn  unordered::leaf
       state Unresumed
 
-future 0xADDR
-future 0xADDR: async fn unordered::leaf
-Held by: task 3 — async fn unordered::driver (frame 2, `keyed[1]`)
+future 0xA7
+future 0xA7: async fn unordered::leaf
+Held by: task 2001 — async fn unordered::driver (frame 2, `keyed[1]`)
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::leaf
+#0  async fn  unordered::leaf
       state Unresumed
 
-future 0xADDR
-future 0xADDR: async fn unordered::set_member
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR (frame 2, `set`), polled by task 3 — async fn unordered::driver
+future 0xA8
+future 0xA8: async fn unordered::set_member
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xA9 (frame 2, `set`), polled by task 2001 — async fn unordered::driver
 
-#0  future        tokio::sync::notify::Notified
-      waiting on notify rx 0xADDR (waiting)
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA10 (waiting)
 [2 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: async fn unordered::leaf
-Held by: task 3 — async fn unordered::driver (frame 1, `held`, via set child at 0xADDR)
+future 0xA11
+future 0xA11: async fn unordered::leaf
+Held by: task 2001 — async fn unordered::driver (frame 1, `held`, via set child at 0xA8)
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::leaf
+#0  async fn  unordered::leaf
       state Unresumed
 
-future 0xADDR
-future 0xADDR: async fn unordered::set_member
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR (frame 2, `set`), polled by task 3 — async fn unordered::driver
+future 0xA12
+future 0xA12: async fn unordered::set_member
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xA9 (frame 2, `set`), polled by task 2001 — async fn unordered::driver
 
-#0  future        tokio::sync::notify::Notified
-      waiting on notify rx 0xADDR (waiting)
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA10 (waiting)
 [2 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: async fn unordered::leaf
-Held by: task 3 — async fn unordered::driver (frame 1, `held`, via set child at 0xADDR)
+future 0xA13
+future 0xA13: async fn unordered::leaf
+Held by: task 2001 — async fn unordered::driver (frame 1, `held`, via set child at 0xA12)
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::leaf
+#0  async fn  unordered::leaf
       state Unresumed
 
-future 0xADDR
-future 0xADDR: async fn unordered::set_member
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR (frame 2, `set`), polled by task 3 — async fn unordered::driver
+future 0xA14
+future 0xA14: async fn unordered::set_member
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xA9 (frame 2, `set`), polled by task 2001 — async fn unordered::driver
 
-#0  future        tokio::sync::notify::Notified
-      waiting on notify rx 0xADDR (waiting)
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA10 (waiting)
 [2 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: async fn unordered::leaf
-Held by: task 3 — async fn unordered::driver (frame 1, `held`, via set child at 0xADDR)
+future 0xA15
+future 0xA15: async fn unordered::leaf
+Held by: task 2001 — async fn unordered::driver (frame 1, `held`, via set child at 0xA14)
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::leaf
+#0  async fn  unordered::leaf
       state Unresumed
 
-future 0xADDR
-future 0xADDR: async fn unordered::leaf
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<Pin<Box<(dyn Future<Output=u32> + Send)>>> at 0xADDR (frame 1, `inner`, via set child at 0xADDR), polled by task 3 — async fn unordered::driver
+future 0xA16
+future 0xA16: async fn unordered::leaf
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<Pin<Box<(dyn Future<Output=u32> + Send)>>> at 0xA17 (frame 1, `inner`, via set child at 0xA14), polled by task 2001 — async fn unordered::driver
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::leaf
+#0  async fn  unordered::leaf
       state Unresumed
 
-future 0xADDR
-future 0xADDR: async fn unordered::leaf
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<Pin<Box<(dyn Future<Output=u32> + Send)>>> at 0xADDR (frame 1, `inner`, via set child at 0xADDR), polled by task 3 — async fn unordered::driver
+future 0xA18
+future 0xA18: async fn unordered::leaf
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<Pin<Box<(dyn Future<Output=u32> + Send)>>> at 0xA17 (frame 1, `inner`, via set child at 0xA14), polled by task 2001 — async fn unordered::driver
 
 the chain ends in a future that has never been polled
-#0  async fn      unordered::leaf
+#0  async fn  unordered::leaf
       state Unresumed
 [Executed against 16 futures, 0 failed]

@@ -2,27 +2,27 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux/walk-shapes"
 ---
-a tokio::sync::Mutex (semaphore 0xADDR): 0 permits available
-    Queued by: task 3's `fut` (async fn tokio::sync::mutex::Mutex::lock<()>), still waiting for 1 permit, a future it cannot poll until the future tokio::sync::notify::Notified it awaits completes
-    Queued behind it: task 4
-    Blocked on it: task 4 (1 permit requested)
-    Wake queue: a non-task waiter (held off), task 4
+a tokio::sync::Mutex (semaphore 0xA1): 0 permits available
+    Queued by: task 2005's `fut` (async fn tokio::sync::mutex::Mutex::lock<()>), still waiting for 1 permit, a future it cannot poll until the future tokio::sync::notify::Notified it awaits completes
+    Queued behind it: task 2006
+    Blocked on it: task 2006 (1 permit requested)
+    Wake queue: a non-task waiter (held off), task 2006
 
-a tokio::sync::Semaphore (semaphore 0xADDR): 0 permits available
-    Blocked on it: task 5 (1 permit requested), task 6 (1 permit requested), task 10 (1 permit requested)
-    Wake queue: task 5, task 6, task 10
+a tokio::sync::Semaphore (semaphore 0xA2): 0 permits available
+    Blocked on it: task 2001 (1 permit requested), task 2007 (1 permit requested), task 2008 (1 permit requested)
+    Wake queue: task 2007, task 2008, task 2001
 
-task 7 (async fn walk_shapes::local_parker): idle
-    Waited by: task 8
+task 2009 (async fn walk_shapes::local_parker): idle
+    Waited by: task 2010
 
-notify 0xADDR: waiting
-    rx: task 1
+notify 0xA3: waiting
+    rx: task 2003
 
-notify 0xADDR: waiting
-    rx: task 2
+notify 0xA4: waiting
+    rx: task 2004
 
-notify 0xADDR: waiting
-    rx: task 3
+notify 0xA5: waiting
+    rx: task 2005
 
-notify 0xADDR: waiting
-    rx: task 7
+notify 0xA6: waiting
+    rx: task 2009

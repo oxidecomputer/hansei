@@ -1,11 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0x55f23fea5210` over linux/armed-select"
+description: "`future 0xA1` over linux/armed-select"
 ---
-future 0xADDR
+future 0xA1
     type: future tokio::sync::oneshot::Receiver<u32>
-    held by: task 3 (frame 1, `once`)
+    held by: task 2001 (frame 1, `once`)
     depth: 1 frame
-    awaiting on: oneshot rx 0xADDR (nothing sent, sender alive)
+    awaiting on: oneshot rx 0xA2 (nothing sent, sender alive)
     held futures: 0
     join sets: 0

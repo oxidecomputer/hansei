@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print gate` over illumos/delegation-cases"
+description: "`print case` over illumos/delegation-cases"
 ---
-false
+6

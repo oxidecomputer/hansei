@@ -2,25 +2,25 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux/two-releases"
 ---
-task 3
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
-#1  async fn      two_releases::keeper
-      awaiting at src/bin/two-releases.rs:42 (Suspend0, 6 locals)
-
-task 4
-#0  future        async_channel::Recv<u32>
+task 2001
+#0  future  async_channel::Recv<u32>
       defined at async-channel-1.9.0/src/lib.rs:1169 (<no_state>, 2 locals; holds 1 pending future)
-#1  future        Pin<Box<async_channel::Recv<u32>>>
+#1  future  Pin<Box<async_channel::Recv<u32>>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#2  async fn      two_releases::old_waiter
+#2  async fn  two_releases::old_waiter
       awaiting at src/bin/two-releases.rs:63 (Suspend0, 1 local)
 
-task 5
-#0  future        async_channel::Recv<u32>
+task 2002
+#0  future  async_channel::Recv<u32>
       defined at event-listener-strategy-0.5.4/src/lib.rs:260 (<no_state>, 1 local; holds 1 pending future)
-#1  future        Pin<Box<async_channel::Recv<u32>>>
+#1  future  Pin<Box<async_channel::Recv<u32>>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#2  async fn      two_releases::new_waiter
+#2  async fn  two_releases::new_waiter
       awaiting at src/bin/two-releases.rs:82 (Suspend0, 1 local)
+
+task 2003
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA1 (nothing sent, sender alive)
+#1  async fn  two_releases::keeper
+      awaiting at src/bin/two-releases.rs:42 (Suspend0, 6 locals)
 [Executed against 3 tasks, 0 failed]

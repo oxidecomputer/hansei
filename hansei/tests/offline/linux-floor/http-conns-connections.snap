@@ -2,14 +2,14 @@
 source: hansei/src/offline.rs
 description: "`connections` over linux-floor/http-conns"
 ---
-ADDR            TASK  CALLER  PROTO  ROLE    PHASE              DEADLINE                                     PEER             SERVER  METHOD  REQUEST
-0xADDR  4     —       http1  client  idle               —                                            —                —       —       —
-0xADDR  5     —       http1  server  idle               TS on the target's monotonic clock  —                —       —       —
-0xADDR  8     —       http1  server  handling request   —                                            —                —       GET     /park
-0xADDR  9     7       http1  client  awaiting response  —                                            127.0.0.1:45425  —       GET     —
-0xADDR  11    —       http1  server  handling request   —                                            —                —       GET     /park
-0xADDR  12    10      http1  client  awaiting response  —                                            127.0.0.1:45425  —       GET     http://127.0.0.1:45425/park
-0xADDR  13    —       http1  server  negotiating        —                                            —                —       —       —
-0xADDR  15    —       http1  server  idle               TS on the target's monotonic clock  —                —       —       —
-0xADDR  16    —       http1  client  idle               —                                            127.0.0.1:45425  —       —       —
+ADDR  TASK  CALLER  PROTO  ROLE  PHASE  DEADLINE  PEER  SERVER  METHOD  REQUEST
+0xA1  2001  2011  http1  client  awaiting response  —  127.0.0.1:PORT  —  GET  http://127.0.0.1:PORT/park
+0xA2  2002  —  http1  client  idle  —  127.0.0.1:PORT  —  —  —
+0xA3  2004  —  http1  server  idle  TS on the target's monotonic clock  —  —  —  —
+0xA4  2005  —  http1  server  handling request  —  —  —  GET  /park
+0xA5  2006  —  http1  server  handling request  —  —  —  GET  /park
+0xA6  2007  —  http1  server  negotiating  —  —  —  —  —
+0xA7  2008  —  http1  server  idle  TS on the target's monotonic clock  —  —  —  —
+0xA8  2013  —  http1  client  idle  —  —  —  —  —
+0xA9  2014  2010  http1  client  awaiting response  —  127.0.0.1:PORT  —  GET  —
 [9 connections]

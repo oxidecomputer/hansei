@@ -2,13 +2,13 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec type no::such::Type` over illumos/local-set-timer"
 ---
-task 1
+task 2001
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-task 2
+task 2002
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-task 3
+task 2003
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 [Executed against 3 tasks, 3 failed]
 error: --exec failed against 3 of 3 tasks

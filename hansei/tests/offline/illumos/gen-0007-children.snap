@@ -3,11 +3,4 @@ source: hansei/src/offline.rs
 description: "`children` over illumos/gen-0007"
 ---
 held futures: 0
-join sets: 2 (2 tasks and 3 futures)
-    - futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xADDR (frame 1, `v0`): 3 children in flight
-        0xADDR  async fn gen_0007::leaf_01  Unresumed
-        0xADDR  async fn gen_0007::leaf_01  Unresumed
-        0xADDR  async fn gen_0007::leaf_01  Unresumed
-    - tokio::task::join_set::JoinSet<u64> at 0xADDR (frame 1, `v1`): 2 tasks
-        task 5  async fn gen_0007::member_03  idle
-        task 4  async fn gen_0007::member_02  idle
+join sets: 0

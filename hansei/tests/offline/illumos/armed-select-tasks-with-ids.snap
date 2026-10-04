@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over illumos/armed-select"
+description: "`tasks --with id 2003,2006` over illumos/armed-select"
 ---
-ID  STATE  FUT  AWAITING AT                  WAITING ON                                                 TYPE
-3   idle     4  src/bin/armed-select.rs:49   mpsc rx, oneshot rx, timer, watch rx                       async fn armed_select::selector
-6   idle     2  src/bin/armed-select.rs:101  futures_core::task::__internal::atomic_waker::AtomicWaker  async fn armed_select::driver
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2003  idle  0  src/bin/armed-select.rs:77  notify rx  async fn armed_select::waiter
+2006  idle  2  src/bin/armed-select.rs:149  timer  async fn armed_select::pacer
 [2 tasks]

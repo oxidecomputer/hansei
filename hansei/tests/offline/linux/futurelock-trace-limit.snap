@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 5 -l 1` over linux/futurelock"
+description: "`trace 2001 -l 1` over linux/futurelock"
 ---
-#0  future        tokio::sync::batch_semaphore::Acquire
-      waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+#0  future  tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Mutex (semaphore 0xA1): 1 permit requested, 0 available; wake queue: task 2001
 [7 frames, 1 shown]

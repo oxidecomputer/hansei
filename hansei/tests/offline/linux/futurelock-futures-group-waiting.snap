@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over linux/futurelock"
 ---
-COUNT  WAITING ON                                 FUTURES
-    1  unarmed: a tokio::sync::Mutex (semaphore)  0xADDR
+COUNT  WAITING ON  FUTURES
+    1  unarmed: a tokio::sync::Mutex (semaphore)  0xA1
 [1 group]

@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/simple-await"
 ---
-task 3
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
-#1  async fn      simple_await::work
+task 2001
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA1 (nothing sent, sender alive)
+#1  async fn  simple_await::work
       awaiting at src/bin/simple-await.rs:51 (Suspend1, 15 locals)
 [Executed against 1 task, 0 failed]

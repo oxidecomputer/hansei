@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 3` over illumos/watch-stream"
+description: "`task 2001` over illumos/watch-stream"
 ---
-task 3
+task 2001
     state: idle
     thread: <none>
     type: async fn watch_stream::resolver
@@ -15,12 +15,12 @@ task 3
                 held in: frame 1 `once`
                 declared at: src/bin/watch-stream.rs:32
                 awaiting at: src/bin/watch-stream.rs:44
-                awaiting on: oneshot rx 0xADDR (nothing sent, sender alive)
+                awaiting on: oneshot rx 0xA1 (nothing sent, sender alive)
                 type defined at: tokio-1.52.4/src/sync/oneshot.rs:1271
             branch 1 (borrowed): futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
                 held in: frame 1 `next`
                 awaiting at: src/bin/watch-stream.rs:45
-                awaiting on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                awaiting on: watch rx 0xA2 (version 0, 1 sender, 1 receiver)
                 type defined at: futures-util-0.3.33/src/stream/stream/next.rs:31
     spawned at: src/bin/watch-stream.rs:120:25
     type defined at: src/bin/watch-stream.rs:30

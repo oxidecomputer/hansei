@@ -1,10 +1,10 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3 -n` over linux/unordered"
+description: "`trace 2001 -n` over linux/unordered"
 ---
-#0  future        futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
+#0  future  futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
       defined at futures-util-0.3.33/src/stream/futures_unordered/mod.rs:411 (<no_state>, 3 locals)
-#1  future        futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>>
+#1  future  futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>>
       defined at futures-util-0.3.33/src/stream/stream/next.rs:31 (<no_state>, 1 local)
-#2  async fn      unordered::driver
+#2  async fn  unordered::driver
       awaiting at src/bin/unordered.rs:138 (Suspend0, 9 locals; holds 7 pending futures)

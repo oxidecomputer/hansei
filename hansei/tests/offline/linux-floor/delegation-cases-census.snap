@@ -2,15 +2,15 @@
 source: hansei/src/offline.rs
 description: "`census` over linux-floor/delegation-cases"
 ---
-Threads: 2 lwps, 1 in runtime 0 @ 0xADDR
+Threads: 2 lwps, 1 in runtime 0 @ 0xA1
 
-COUNT  RT  ROLE                       STATE           LWPS
-    1  0   block_on thread            in driver       2105668
-    0  0   blocking pool              0 idle, 0 busy  —
-    1  —   tokio context, no runtime  —               2105666
+COUNT  RT  ROLE  STATE  LWPS
+    1  0  block_on thread  in driver  1002
+    0  0  blocking pool  0 idle, 0 busy  —
+    1  —  tokio context, no runtime  —  1001
 [2 lwps]
 
-Tasks: 12 owned by runtime 0 @ 0xADDR
+Tasks: 12 owned by runtime 0 @ 0xA1
 
 COUNT  STATE
    12  idle

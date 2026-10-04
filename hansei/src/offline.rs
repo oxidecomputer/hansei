@@ -501,7 +501,7 @@ fn golden(program: &str) {
             // `info` prints the fixture pair's absolute paths, which
             // are this machine's; the golden records their roles.
             text = text
-                .replace(&args.core.display().to_string(), "<snapshot>")
+                .replace(&args.core.display().to_string(), "<core>")
                 .replace(
                     &args.tokio_info.as_deref().unwrap().display().to_string(),
                     "<tokio info>",

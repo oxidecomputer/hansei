@@ -1,8 +1,10 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 1 -n` over linux-floor/walk-shapes"
+description: "`trace 2001 -n` over linux-floor/walk-shapes"
 ---
-#0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
-      defined at src/bin/walk-shapes.rs:44 (<no_state>, 2 locals; holds 1 pending future)
-#1  async fn      walk_shapes::chained
-      awaiting at src/bin/walk-shapes.rs:116 (Suspend0, 1 local; holds 1 pending future)
+#0  future  tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Semaphore (semaphore 0xA1): 1 permit requested, 0 available; wake queue: task 2007, task 2008, task 2001
+#1  async fn  tokio::sync::semaphore::Semaphore::acquire
+      awaiting at tokio-1.47.5/src/sync/semaphore.rs:591 (Suspend0, 1 local)
+#2  async fn  walk_shapes::hidden_blocked
+      awaiting at src/bin/walk-shapes.rs:180 (Suspend0, 1 local)

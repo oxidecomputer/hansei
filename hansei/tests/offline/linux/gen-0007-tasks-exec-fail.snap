@@ -2,19 +2,19 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec type no::such::Type` over linux/gen-0007"
 ---
-task 3
+task 2001
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-task 4
+task 2002
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-task 5
+task 2003
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-task 6
+task 2004
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-task 7
+task 2005
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 [Executed against 5 tasks, 5 failed]
 error: --exec failed against 5 of 5 tasks

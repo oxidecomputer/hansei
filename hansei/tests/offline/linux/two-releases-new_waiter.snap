@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --with type two_releases::new_waiter --exec task` over linux/two-releases"
 ---
-task 5
+task 2002
     state: idle
     thread: <none>
     type: async fn two_releases::new_waiter
@@ -12,7 +12,7 @@ task 5
             held in: frame 0 `_inner`
             awaiting on: unknown
             type defined at: event-listener-strategy-0.5.4/src/lib.rs:385
-            waker: event_listener::State::Task @ 0xADDR
+            waker: event_listener::State::Task @ 0xA1
     spawned at: src/bin/two-releases.rs:112:27
     type defined at: src/bin/two-releases.rs:67
     held futures: 1

@@ -1,20 +1,20 @@
 ---
 source: hansei/src/offline.rs
-description: "`connection 0x55b58b96b260` over linux/tls-conns"
+description: "`connection 0xA1` over linux/tls-conns"
 ---
-connection 0xADDR
+connection 0xA1
     proto: http1/tls
-    driven by: task 18
+    driven by: task 2016
     http: server, idle
-        dispatcher: 0xADDR hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<tls_conns::https_server::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>, hyper::proto::h1::role::Server>
-        conn: 0xADDR
+        dispatcher: 0xA1 hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<tls_conns::https_server::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>, hyper::proto::h1::role::Server>
+        conn: 0xA1
         keep-alive: idle
         reading: init
         writing: init
         handler: none running
         header-read timer: not armed
     tls: server, TLSv1_3, established
-        stream: 0xADDR tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>
+        stream: 0xA1 tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>
         suite: TLS13_AES_256_GCM_SHA384
         handshake: resumed
         peer certificates: 0
@@ -23,13 +23,13 @@ connection 0xADDR
         unread: 0 records, 0 bytes
         stream state: Stream
         closure: none
-    tcp: fd 26
-        stream: 0xADDR tokio::net::tcp::stream::TcpStream
-        registration: 0xADDR
+    tcp: fd N
+        stream: 0xA1 tokio::net::tcp::stream::TcpStream
+        registration: 0xA2
         ready: writable
-        waker: the reader slot, task 18
+        waker: the reader slot, task 2016
     route:
-        0xADDR hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>
-        0xADDR hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>
-        0xADDR tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>
-        0xADDR tokio::net::tcp::stream::TcpStream
+        0xA1 hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>
+        0xA1 hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>
+        0xA1 tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>
+        0xA1 tokio::net::tcp::stream::TcpStream

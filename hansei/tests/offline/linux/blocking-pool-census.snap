@@ -2,16 +2,16 @@
 source: hansei/src/offline.rs
 description: "`census` over linux/blocking-pool"
 ---
-Threads: 4 lwps, 4 in runtime 0 @ 0xADDR
+Threads: 4 lwps, 4 in runtime 0 @ 0xA1
 
-COUNT  RT  ROLE             STATE                     LWPS
-    1  0   worker           in driver                 2092212
-    1  0   worker           parked                    2092213
-    1  0   blocking pool    0 idle, 1 busy, 2 queued  —
-    1  0   entered runtime  block_on caller           —
+COUNT  RT  ROLE  STATE  LWPS
+    1  0  worker  in driver  1003
+    1  0  worker  parked  1002
+    1  0  blocking pool  0 idle, 1 busy, 2 queued  —
+    1  0  entered runtime  block_on caller  —
 [4 lwps]
 
-Tasks: 5: 4 owned by runtime 0 @ 0xADDR, 1 with no established owner
+Tasks: 5: 4 owned by runtime 0 @ 0xA1, 1 with no established owner
 
 COUNT  STATE
     2  blocking (queued)

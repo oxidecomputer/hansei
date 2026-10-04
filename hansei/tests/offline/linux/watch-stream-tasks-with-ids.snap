@@ -1,8 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over linux/watch-stream"
+description: "`tasks --with id 2003,2006` over linux/watch-stream"
 ---
-ID  STATE  FUT  AWAITING AT                  WAITING ON            TYPE
-3   idle     3  src/bin/watch-stream.rs:43   oneshot rx, watch rx  async fn watch_stream::resolver
-6   idle     0  src/bin/watch-stream.rs:108  watch rx              async fn watch_stream::direct
-[2 tasks]
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2003  idle  2  src/bin/watch-stream.rs:96  oneshot rx  async fn watch_stream::fresh
+[1 task]

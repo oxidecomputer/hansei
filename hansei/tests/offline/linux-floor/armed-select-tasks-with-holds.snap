@@ -2,10 +2,10 @@
 source: hansei/src/offline.rs
 description: "`tasks --with holds >0` over linux-floor/armed-select"
 ---
-ID  STATE  FUT  AWAITING AT                  WAITING ON                            TYPE
-3   idle     4  src/bin/armed-select.rs:49   mpsc rx, oneshot rx, timer, watch rx  async fn armed_select::selector
-4   idle     1  src/bin/armed-select.rs:67   oneshot rx                            async fn armed_select::holder
-7   idle     3  src/bin/armed-select.rs:128  oneshot rx, timer                     async fn armed_select::ticker
-8   idle     2  src/bin/armed-select.rs:149  timer                                 async fn armed_select::pacer
-9   idle     2  src/bin/armed-select.rs:169  unarmed: never ready                  async fn armed_select::forever
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2001  idle  4  src/bin/armed-select.rs:49  mpsc rx, oneshot rx, timer, watch rx  async fn armed_select::selector
+2002  idle  1  src/bin/armed-select.rs:67  oneshot rx  async fn armed_select::holder
+2005  idle  3  src/bin/armed-select.rs:128  oneshot rx, timer  async fn armed_select::ticker
+2006  idle  2  src/bin/armed-select.rs:149  timer  async fn armed_select::pacer
+2007  idle  2  src/bin/armed-select.rs:169  unarmed: never ready  async fn armed_select::forever
 [5 tasks]

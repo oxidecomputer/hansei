@@ -2,13 +2,23 @@
 source: hansei/src/offline.rs
 description: "`info` over illumos/unordered"
 ---
-core:       <snapshot>
+core:  <core>
 tokio info: <tokio info>
 symbols resolved: 15/15
-allocator evidence: libumem index (58 caches, 36 slabs)
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 148.7 KiB swept in 3469 chunks
-    hits: 3 task-pattern, 0 set-pattern; 1 admitted; 2 unlisted headers
-    by class: 1 umem live, 2 lwp stack
-    attributed: 0 by a registry, 0 by owner type, 1 by holding type, 0 from another task's side, 0 unknown; 0 stale
-process: not recorded by this target
+allocator evidence: libumem index (N caches, N slabs)
+waker slots: 1 copy of tokio's WAKER_VTABLE, 4 set vtables; N swept in N chunks
+    hits: N
+    by class: N
+    attributed: N
+pid:  PID (unordered)
+ppid:  PID
+uid:  ID (effective ID)
+gid:  ID (effective ID)
+model:  LP64
+start:  TIME
+psargs: PSARGS
+executable: <test-programs>/fixtures/bin-a/unordered
+argv:
+  <test-programs>/fixtures/bin-a/unordered
+environment:
 signal: none recorded

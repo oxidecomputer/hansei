@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print gate` over linux-floor/delegation-cases"
+description: "`print case` over linux-floor/delegation-cases"
 ---
-false
+6

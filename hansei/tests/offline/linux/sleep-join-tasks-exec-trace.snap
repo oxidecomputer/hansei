@@ -2,15 +2,15 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux/sleep-join"
 ---
-task 3
-#0  future        tokio::time::sleep::Sleep
+task 2001
+#0  future  tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
-#1  async fn      sleep_join::sleeper
+#1  async fn  sleep_join::sleeper
       awaiting at src/bin/sleep-join.rs:16 (Suspend0, 0 locals)
 
-task 4
-#0  future        tokio::runtime::task::join::JoinHandle<u32>
-      waiting on task 3
-#1  async fn      sleep_join::joiner
+task 2002
+#0  future  tokio::runtime::task::join::JoinHandle<u32>
+      waiting on task 2001
+#1  async fn  sleep_join::joiner
       awaiting at src/bin/sleep-join.rs:23 (Suspend0, 0 locals)
 [Executed against 2 tasks, 0 failed]

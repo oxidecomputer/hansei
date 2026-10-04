@@ -1,7 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over linux-floor/http-conns"
+description: "`tasks --with id 2003,2006` over linux-floor/http-conns"
 ---
-ID  STATE  FUT  AWAITING AT                WAITING ON  TYPE
-3   idle     0  src/bin/http-conns.rs:151  io          async fn http_conns::accept_loop
-[1 task]
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2003  idle  3  hyper-util-0.1.20/src/client/legacy/pool.rs:798  futures_channel::lock::Lock, timer  future Pin<Box<(dyn Future<Output=()> + Send)>>
+2006  idle  0  src/bin/http-conns.rs:137  http1 server  async fn http_conns::serve
+[2 tasks]

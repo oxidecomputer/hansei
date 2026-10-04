@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`sync 0x107b080 --kind address` over illumos/walk-shapes"
+description: "`sync 0xA1 --kind address` over illumos/walk-shapes"
 ---
-0xADDR: no decoded resource owns this address
-    Referenced by value: task 7 (frame #1 future walk_shapes::local_parker::Suspend0, in `__awaitee`), task 7 (frame #0 future tokio::sync::notify::Notified, in `waiter`), task 8 (frame #1 future walk_shapes::joiner::Suspend0, in `__awaitee`), task 8 (frame #0 future tokio::runtime::task::join::JoinHandle<u32>, in `raw`)
+0xA1: no decoded resource owns this address
+    Referenced by value: task 2009 (frame #1 future walk_shapes::local_parker::Suspend0, in `__awaitee`), task 2009 (frame #0 future tokio::sync::notify::Notified, in `waiter`), task 2010 (frame #1 future walk_shapes::joiner::Suspend0, in `__awaitee`), task 2010 (frame #0 future tokio::runtime::task::join::JoinHandle<u32>, in `raw`)

@@ -4,7 +4,7 @@ description: "`print` over linux-floor/watch-stream"
 ---
 core::future::poll_fn::PollFn<watch_stream::resolver::{async_fn#0}::{closure_env#0}> {
     f: watch_stream::resolver::{async_fn#0}::{closure_env#0} {
-        _ref__disabled: 0xADDR -> 0,
-        _ref__futures: 0xADDR -> (&mut tokio::sync::oneshot::Receiver<u32>, &mut core::pin::Pin<&mut futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>>) (..),
+        _ref__disabled: 0xA1 -> 0,
+        _ref__futures: 0xA2 -> (&mut tokio::sync::oneshot::Receiver<u32>, &mut core::pin::Pin<&mut futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>>) (..),
     },
 }

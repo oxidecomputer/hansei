@@ -2,13 +2,23 @@
 source: hansei/src/offline.rs
 description: "`info` over linux/unordered"
 ---
-core:       <snapshot>
+core:  <core>
 tokio info: <tokio info>
 symbols resolved: 3/3
 allocator evidence: unavailable
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.2 MiB swept in 46 chunks
-    hits: 4 task-pattern, 0 set-pattern; 1 admitted; 2 unlisted headers
-    by class: 3 lwp stack, 1 anon
-    attributed: 0 by a registry, 0 by owner type, 1 by holding type, 0 from another task's side, 0 unknown; 0 stale
-process: not recorded by this target
+waker slots: 1 copy of tokio's WAKER_VTABLE, 4 set vtables; N swept in N chunks
+    hits: N
+    by class: N
+    attributed: N
+pid:  PID (unordered)
+ppid:  PID
+uid:  ID
+gid:  ID
+psargs: PSARGS
+execfn: <test-programs>/fixtures/bin-a/unordered
+executable: <test-programs>/fixtures/bin-a/unordered
+build id (core):  BUILDID
+build id (binary): BUILDID — agree
+argv: not recorded in a Linux core (psargs is its 80-byte spelling)
+environment: not recorded in a Linux core
 signal: none recorded

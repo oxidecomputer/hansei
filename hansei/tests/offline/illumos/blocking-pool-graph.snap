@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`graph` over illumos/blocking-pool"
 ---
-TASK  STATE    WAITING ON
-6     idle     task 3
-└─ 3  running  — (mid-poll)
-7     idle     task 4
-└─ 4  queued   — (queued)
+TASK  STATE  WAITING ON
+2004  idle  task 2001
+└─ 2001  running  — (mid-poll)
+2005  idle  task 2002
+└─ 2002  queued  — (queued)

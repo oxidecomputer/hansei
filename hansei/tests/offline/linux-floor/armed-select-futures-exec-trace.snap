@@ -2,109 +2,109 @@
 source: hansei/src/offline.rs
 description: "`futures --exec trace -l 1` over linux-floor/armed-select"
 ---
-future 0xADDR
-future 0xADDR: future tokio::sync::oneshot::Receiver<u32>
-Held by: task 3 — async fn armed_select::selector (frame 1, `once`)
+future 0xA1
+future 0xA1: future tokio::sync::oneshot::Receiver<u32>
+Held by: task 2001 — async fn armed_select::selector (frame 1, `once`)
 
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA2 (nothing sent, sender alive)
 
-future 0xADDR
-future 0xADDR: async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
-Held by: task 3 — async fn armed_select::selector (frame 1, `recv`)
+future 0xA3
+future 0xA3: async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
+Held by: task 2001 — async fn armed_select::selector (frame 1, `recv`)
 
-#0  future        core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::Receiver::recv::{async_fn#0}::{closure_env#0}<u32>>
-      waiting on mpsc rx 0xADDR (1 sender, capacity 4, 0 unread)
+#0  future  core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::Receiver::recv::{async_fn#0}::{closure_env#0}<u32>>
+      waiting on mpsc rx 0xA4 (1 sender, capacity 4, 0 unread)
 [2 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: async fn tokio::sync::watch::Receiver::changed<u32>
-Held by: task 3 — async fn armed_select::selector (frame 1, `changed`)
+future 0xA5
+future 0xA5: async fn tokio::sync::watch::Receiver::changed<u32>
+Held by: task 2001 — async fn armed_select::selector (frame 1, `changed`)
 
-#0  future        tokio::sync::notify::Notified
-      waiting on watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+#0  future  tokio::sync::notify::Notified
+      waiting on watch rx 0xA6 (version 0, 1 sender, 1 receiver)
 [4 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: future tokio::time::sleep::Sleep
-Held by: task 3 — async fn armed_select::selector (frame 1, `sleep`)
+future 0xA7
+future 0xA7: future tokio::time::sleep::Sleep
+Held by: task 2001 — async fn armed_select::selector (frame 1, `sleep`)
 
-#0  future        tokio::time::sleep::Sleep
+#0  future  tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
 
-future 0xADDR
-future 0xADDR: future tokio::sync::notify::Notified
-Held by: task 4 — async fn armed_select::holder (frame 1, `notified`)
+future 0xA8
+future 0xA8: future tokio::sync::notify::Notified
+Held by: task 2002 — async fn armed_select::holder (frame 1, `notified`)
 
-#0  future        tokio::sync::notify::Notified
-      waiting on notify rx 0xADDR (waiting)
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA9 (waiting)
 
-future 0xADDR
-future 0xADDR: async fn armed_select::child
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> at 0xADDR (frame 2, `set`), polled by task 6 — async fn armed_select::driver
+future 0xA10
+future 0xA10: async fn armed_select::child
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> at 0xA11 (frame 2, `set`), polled by task 2004 — async fn armed_select::driver
 
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA12 (nothing sent, sender alive)
 [2 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: async fn armed_select::child
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> at 0xADDR (frame 2, `set`), polled by task 6 — async fn armed_select::driver
+future 0xA13
+future 0xA13: async fn armed_select::child
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> at 0xA11 (frame 2, `set`), polled by task 2004 — async fn armed_select::driver
 
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA14 (nothing sent, sender alive)
 [2 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: future tokio::sync::oneshot::Receiver<u32>
-Held by: task 7 — async fn armed_select::ticker (frame 1, `once`)
+future 0xA15
+future 0xA15: future tokio::sync::oneshot::Receiver<u32>
+Held by: task 2005 — async fn armed_select::ticker (frame 1, `once`)
 
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA16 (nothing sent, sender alive)
 
-future 0xADDR
-future 0xADDR: future tokio::time::sleep::Sleep
-Held by: task 7 — async fn armed_select::ticker (frame 1, `interval`)
+future 0xA17
+future 0xA17: future tokio::time::sleep::Sleep
+Held by: task 2005 — async fn armed_select::ticker (frame 1, `interval`)
 
-#0  future        tokio::time::sleep::Sleep
+#0  future  tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
 
-future 0xADDR
-future 0xADDR: async fn tokio::time::interval::Interval::tick
-Held by: task 7 — async fn armed_select::ticker (frame 1, `tick`)
+future 0xA18
+future 0xA18: async fn tokio::time::interval::Interval::tick
+Held by: task 2005 — async fn armed_select::ticker (frame 1, `tick`)
 
-#0  future        tokio::time::sleep::Sleep
+#0  future  tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
 [4 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: future tokio::time::sleep::Sleep
-Held by: task 8 — async fn armed_select::pacer (frame 4, `spare`)
+future 0xA19
+future 0xA19: future tokio::time::sleep::Sleep
+Held by: task 2006 — async fn armed_select::pacer (frame 4, `spare`)
 
-#0  future        tokio::time::sleep::Sleep
+#0  future  tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
 
-future 0xADDR
-future 0xADDR: async fn tokio::time::interval::Interval::tick
-Held by: task 8 — async fn armed_select::pacer (frame 4, `spare_tick`)
+future 0xA20
+future 0xA20: async fn tokio::time::interval::Interval::tick
+Held by: task 2006 — async fn armed_select::pacer (frame 4, `spare_tick`)
 
 the chain ends in a future that has never been polled
-#0  async fn      tokio::time::interval::Interval::tick
+#0  async fn  tokio::time::interval::Interval::tick
       state Unresumed
 
-future 0xADDR
-future 0xADDR: async block armed_select::forever::{async_fn#0}
-Held by: task 9 — async fn armed_select::forever (frame 1, `wrapped`)
+future 0xA21
+future 0xA21: async block armed_select::forever::{async_fn#0}
+Held by: task 2007 — async fn armed_select::forever (frame 1, `wrapped`)
 
 the chain ends in a future that is never ready
-#0  future        futures_util::future::pending::Pending<u32>
+#0  future  futures_util::future::pending::Pending<u32>
       (<no_state>, 0 locals)
 [3 frames, 1 shown]
 
-future 0xADDR
-future 0xADDR: future core::future::ready::Ready<u32>
-Held by: task 9 — async fn armed_select::forever (frame 1, `at_once`)
+future 0xA22
+future 0xA22: future core::future::ready::Ready<u32>
+Held by: task 2007 — async fn armed_select::forever (frame 1, `at_once`)
 
-#0  future        core::future::ready::Ready<u32>
+#0  future  core::future::ready::Ready<u32>
       defined at library/core/src/future/ready.rs:22 (<no_state>, 0 locals)
 [Executed against 14 futures, 0 failed]

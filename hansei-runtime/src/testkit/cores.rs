@@ -2,8 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Fresh cores of the fixture programs, read in place of the checked-in
-//! snapshots when [`CORES`] names a directory to keep them in.
+//! Fresh cores of the fixture programs, which every fixture-reading
+//! test reads, kept in the directory [`CORES`] names or in the tree's
+//! own `test-programs/fixtures/cores`.
 //!
 //! A system that can core a process takes its own sets there, once per
 //! run: both compilations of every program built
@@ -42,16 +43,20 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 
-/// Name a directory here and every fixture-reading test reads fresh
-/// cores from it instead of the checked-in snapshots, capturing the
-/// sets this system takes into it first.
+/// Where the fixture-reading tests keep their cores, the sets this
+/// system takes captured into it first: the directory this names, or
+/// `test-programs/fixtures/cores` in the tree under test when it names
+/// none.
 pub const CORES: &str = "HANSEI_CORES";
 
-/// The directory [`CORES`] names, when this run reads cores.
+/// The directory the cores are read from ([`CORES`]).
 pub fn dir() -> Option<PathBuf> {
-    std::env::var_os(CORES)
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
+    Some(
+        std::env::var_os(CORES)
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| test_programs_dir().join("fixtures/cores")),
+    )
 }
 
 /// The sets this system captures: its own, and on Linux the floor
@@ -174,9 +179,10 @@ fn locate(dir: &Path, set: &str, program: &str) -> Capture {
 /// any other failure among them stands out.
 fn missing(dir: &Path, set: &str, program: &str) -> ! {
     panic!(
-        "{CORES}={} holds no {set} capture of {program}: a system that \
-         cannot core reads the cores a capturing host took, so copy that \
-         host's {CORES} directory here (check-all.sh's local leg does)",
+        "{} holds no {set} capture of {program}: a system that cannot core \
+         reads the cores a capturing host took, so copy that host's cores \
+         here, or name where they are with {CORES} (check-all.sh's local \
+         leg does)",
         dir.display()
     )
 }

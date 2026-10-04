@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`thread 1` over illumos/two-releases"
+description: "`thread 1001` over illumos/two-releases"
 ---
-lwp 1  polling no task
+lwp 1001  polling no task
     thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId> = None
     runtime:
       tokio::runtime::context::runtime::EnterRuntime = Entered {

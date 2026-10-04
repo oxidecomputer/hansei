@@ -1,16 +1,16 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 1` over linux/foreign-runtime"
+description: "`task 2001` over linux/foreign-runtime"
 ---
-task 1
+task 2001
     state: idle
     thread: <none>
-    owner: runtime 1 @ 0xADDR (current_thread, no thread inside it)
-    type: async fn foreign_runtime::joined
-    awaiting at: src/bin/foreign-runtime.rs:40
-    awaiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1
-        waker: its wake-queue node @ 0xADDR
-    spawned at: src/bin/foreign-runtime.rs:87:23
-    type defined at: src/bin/foreign-runtime.rs:35
+    owner: runtime 0 @ 0xA1 (current_thread)
+    type: async fn foreign_runtime::joiner
+    awaiting at: src/bin/foreign-runtime.rs:30
+    awaiting on: task 2002
+        waker: its trailer
+    spawned at: src/bin/foreign-runtime.rs:133:23
+    type defined at: src/bin/foreign-runtime.rs:27
     held futures: 0
     join sets: 0

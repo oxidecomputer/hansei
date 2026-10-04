@@ -2,53 +2,53 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/armed-select"
 ---
-task 3
-#0  future        core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#0}>
+task 2001
+#0  future  core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#0}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
-#1  async fn      armed_select::selector
+#1  async fn  armed_select::selector
       awaiting at src/bin/armed-select.rs:49 (Suspend0, 8 locals; holds 4 pending futures)
 
-task 4
-#0  future        tokio::sync::oneshot::Receiver<u32>
-      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
-#1  async fn      armed_select::holder
+task 2002
+#0  future  tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xA1 (nothing sent, sender alive)
+#1  async fn  armed_select::holder
       awaiting at src/bin/armed-select.rs:67 (Suspend0, 1 local; holds 1 pending future)
 
-task 5
-#0  future        tokio::sync::notify::Notified
-      waiting on notify rx 0xADDR (waiting, 1 queued)
-#1  async fn      armed_select::waiter
+task 2003
+#0  future  tokio::sync::notify::Notified
+      waiting on notify rx 0xA2 (waiting, 1 queued)
+#1  async fn  armed_select::waiter
       awaiting at src/bin/armed-select.rs:77 (Suspend0, 0 locals)
 
-task 6
-#0  future        futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child>
+task 2004
+#0  future  futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child>
       defined at futures-util-0.3.33/src/stream/futures_unordered/mod.rs:411 (<no_state>, 3 locals)
-#1  future        futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child>>
+#1  future  futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child>>
       defined at futures-util-0.3.33/src/stream/stream/next.rs:31 (<no_state>, 1 local)
-#2  async fn      armed_select::driver
+#2  async fn  armed_select::driver
       awaiting at src/bin/armed-select.rs:101 (Suspend0, 2 locals)
 
-task 7
-#0  future        core::future::poll_fn::PollFn<armed_select::ticker::{async_fn#0}::{closure_env#0}>
+task 2005
+#0  future  core::future::poll_fn::PollFn<armed_select::ticker::{async_fn#0}::{closure_env#0}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
-#1  async fn      armed_select::ticker
+#1  async fn  armed_select::ticker
       awaiting at src/bin/armed-select.rs:128 (Suspend0, 5 locals; holds 3 pending futures)
 
-task 8
-#0  future        tokio::time::sleep::Sleep
+task 2006
+#0  future  tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
-#1  future        Pin<Box<tokio::time::sleep::Sleep>>
+#1  future  Pin<Box<tokio::time::sleep::Sleep>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
-#2  future        core::future::poll_fn::PollFn<tokio::time::interval::Interval::tick::{async_fn#0}::{closure_env#0}>
+#2  future  core::future::poll_fn::PollFn<tokio::time::interval::Interval::tick::{async_fn#0}::{closure_env#0}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
-#3  async fn      tokio::time::interval::Interval::tick
+#3  async fn  tokio::time::interval::Interval::tick
       awaiting at tokio-1.52.4/src/time/interval.rs:447 (Suspend0, 0 locals)
-#4  async fn      armed_select::pacer
+#4  async fn  armed_select::pacer
       awaiting at src/bin/armed-select.rs:149 (Suspend0, 3 locals; holds 2 pending futures)
 
-task 9
-#0  future        core::future::poll_fn::PollFn<armed_select::forever::{async_fn#0}::{closure_env#1}>
+task 2007
+#0  future  core::future::poll_fn::PollFn<armed_select::forever::{async_fn#0}::{closure_env#1}>
       defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
-#1  async fn      armed_select::forever
+#1  async fn  armed_select::forever
       awaiting at src/bin/armed-select.rs:169 (Suspend0, 4 locals; holds 2 pending futures)
 [Executed against 7 tasks, 0 failed]

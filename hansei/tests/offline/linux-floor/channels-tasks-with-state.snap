@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over linux-floor/channels"
 ---
-ID  STATE  FUT  AWAITING AT             WAITING ON  TYPE
-3   idle     0  src/bin/channels.rs:37  notify rx   async fn channels::notify_waiter
-4   idle     0  src/bin/channels.rs:48  mpsc rx     async fn channels::recv_waiter
-5   idle     0  src/bin/channels.rs:70  oneshot rx  async fn channels::hold
-6   idle     3  src/bin/channels.rs:95  semaphore   async fn channels::send_waiter
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2001  idle  0  src/bin/channels.rs:37  notify rx  async fn channels::notify_waiter
+2002  idle  0  src/bin/channels.rs:48  mpsc rx  async fn channels::recv_waiter
+2003  idle  0  src/bin/channels.rs:70  oneshot rx  async fn channels::hold
+2004  idle  3  src/bin/channels.rs:95  semaphore  async fn channels::send_waiter
 [4 tasks]

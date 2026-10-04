@@ -1,7 +1,7 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over linux/foreign-runtime"
+description: "`tasks --with id 2003,2006` over linux/foreign-runtime"
 ---
-ID  STATE  RT  FUT  AWAITING AT                    WAITING ON  TYPE
-3   idle   2     0  src/bin/foreign-runtime.rs:67  timer       async fn foreign_runtime::local_sleeper
+ID  STATE  RT  FUT  AWAITING AT  WAITING ON  TYPE
+2003  idle  1  0  src/bin/foreign-runtime.rs:55  unarmed: never ready  async fn foreign_runtime::detached
 [1 task]

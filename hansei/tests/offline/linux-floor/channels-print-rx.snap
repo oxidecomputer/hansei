@@ -10,12 +10,12 @@ tokio::sync::mpsc::bounded::Receiver<u32> {
         20,
     ],
     tx: tokio::sync::mpsc::list::Tx<u32> {
-        block_tail: 0xADDR,
+        block_tail: 0xA1,
         tail_position: 2,
     },
     rx_waker: tokio::sync::task::atomic_waker::AtomicWaker {
         state: 0,
-        waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR,
+        waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xA2,
     },
     notify_rx_closed: tokio::sync::notify::Notify {
         state: state=idle, generation=0,
@@ -32,7 +32,7 @@ tokio::sync::mpsc::bounded::Receiver<u32> {
     tx_count: 1,
     tx_weak_count: 0,
     rx_fields: tokio::sync::mpsc::chan::RxFields<u32> {
-        list: tokio::sync::mpsc::list::Rx<u32> { .. } @ 0xADDR,
+        list: tokio::sync::mpsc::list::Rx<u32> { .. } @ 0xA3,
         rx_closed: false,
     },
 }

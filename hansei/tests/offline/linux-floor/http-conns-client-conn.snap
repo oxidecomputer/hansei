@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`tasks --with type execute<Pin --exec up print conn` over linux-floor/http-conns"
 ---
-task 4
-#1  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
+task 2013
+#1  future  hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
       defined at hyper-1.10.1/src/client/conn/http1.rs:622 (Some, 0 locals)
 hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, bytes::bytes::Bytes, hyper::proto::h1::role::Client> {
     version: http::version::Version = Http::Http11,
@@ -15,15 +15,15 @@ hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::str
     read_buf_cap: 8192,
 }
 
-task 9
-#1  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
+task 2014
+#1  future  hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
       defined at hyper-1.10.1/src/client/conn/http1.rs:622 (Some, 0 locals)
 hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, bytes::bytes::Bytes, hyper::proto::h1::role::Client> {
     version: http::version::Version = Http::Http11,
     keep_alive: hyper::proto::h1::conn::KA = Busy,
     reading: hyper::proto::h1::conn::Reading = Init,
     writing: hyper::proto::h1::conn::Writing = KeepAlive,
-    method: core::option::Option<http::method::Method> = Some(http::method::Inner { .. } @ 0xADDR),
+    method: core::option::Option<http::method::Method> = Some(http::method::Inner { .. } @ 0xA1),
     read_buf_len: 0,
     read_buf_cap: 8192,
 }

@@ -2,10 +2,6 @@
 source: hansei/src/offline.rs
 description: "`locals` over linux-floor/delegation-cases"
 ---
-gate: delegation_cases::Gate = false
-child: delegation_cases::Probe<1> {
-      case: 0,
-      ready: core::option::Option<std::sync::mpsc::Sender<usize>> = None,
-      tag: 1,
-  }
-ready: std::sync::mpsc::Sender<usize> = std::sync::mpmc::SenderFlavor<usize> = List(0xADDR -> std::sync::mpmc::counter::Counter<std::sync::mpmc::list::Channel<usize>> { .. })
+case: usize = 6
+ready: core::option::Option<std::sync::mpsc::Sender<usize>> = Some(SenderFlavor<usize>::List(0xA1 -> std::sync::mpmc::counter::Counter<std::sync::mpmc::list::Channel<usize>> { .. }))
+tag: u64 = 7

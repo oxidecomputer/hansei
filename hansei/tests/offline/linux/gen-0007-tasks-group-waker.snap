@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waker` over linux/gen-0007"
 ---
-COUNT  WAITING ON                            TASKS
-    2  unarmed: unknown at gen_0007::GfSel2  6, 7
-    1  notify rx                             4
-    1  timer                                 5
-    1  unarmed: unknown at gen_0007::GfSel3  3
+COUNT  WAITING ON  TASKS
+    2  unarmed: unknown at gen_0007::GfSel2  2003, 2004
+    1  notify rx  2001
+    1  timer  2002
+    1  unarmed: unknown at gen_0007::GfSel3  2005
 [4 groups]

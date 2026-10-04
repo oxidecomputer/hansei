@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over illumos/ct-runtime"
 ---
-ID  STATE  FUT  AWAITING AT               WAITING ON  TYPE
-1   idle     0  src/bin/ct-runtime.rs:17  timer       async fn ct_runtime::sleeper
-2   idle     0  src/bin/ct-runtime.rs:24  semaphore   async fn ct_runtime::acquirer
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2001  idle  0  src/bin/ct-runtime.rs:17  timer  async fn ct_runtime::sleeper
+2002  idle  0  src/bin/ct-runtime.rs:24  semaphore  async fn ct_runtime::acquirer
 [2 tasks]

@@ -2,5 +2,5 @@
 source: hansei/src/offline.rs
 description: "`sync` over illumos/channels"
 ---
-notify 0xADDR: waiting
-    rx: task 3
+notify 0xA1: waiting
+    rx: task 2001

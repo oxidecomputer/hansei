@@ -1,12 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x10d9580` over illumos/local-set-timer"
+description: "`whatis 0xA1` over illumos/local-set-timer"
 ---
 Status: live
-Size:   272 byte block
-Offset: +16 in block
+Size:  256 bytes
 
-Task 1: async fn local_set_timer::local_sleeper
-    At: offset 0xADDR in the task's allocation (header 0xADDR)
+Task 2001: async fn local_set_timer::local_sleeper
+    At: offset 0xA1 in the task's allocation (header 0xA2)
     State: idle
     Spawned at: src/bin/local-set-timer.rs:62:20

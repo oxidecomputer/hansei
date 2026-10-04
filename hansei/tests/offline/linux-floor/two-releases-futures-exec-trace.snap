@@ -2,24 +2,24 @@
 source: hansei/src/offline.rs
 description: "`futures --exec trace -l 1` over linux-floor/two-releases"
 ---
-future 0xADDR
-future 0xADDR: future event_listener::EventListener
-Held by: task 4 — async fn two_releases::old_waiter (frame 0, `listener`)
+future 0xA1
+future 0xA1: future event_listener::EventListener
+Held by: task 2001 — async fn two_releases::old_waiter (frame 0, `listener`)
 
-#0  future        event_listener::EventListener
+#0  future  event_listener::EventListener
       defined at event-listener-2.5.3/src/lib.rs:667 (<no_state>, 2 locals)
 
-future 0xADDR
-future 0xADDR: future event_listener_strategy::FutureWrapper<async_channel::RecvInner<u32>>
-Held by: task 5 — async fn two_releases::new_waiter (frame 0, `_inner`)
+future 0xA2
+future 0xA2: future event_listener_strategy::FutureWrapper<async_channel::RecvInner<u32>>
+Held by: task 2002 — async fn two_releases::new_waiter (frame 0, `_inner`)
 
-#0  future        event_listener_strategy::FutureWrapper<async_channel::RecvInner<u32>>
+#0  future  event_listener_strategy::FutureWrapper<async_channel::RecvInner<u32>>
       defined at event-listener-strategy-0.5.4/src/lib.rs:385 (<no_state>, 1 local; holds 1 pending future)
 
-future 0xADDR
-future 0xADDR: future event_listener::EventListener<()>
-Held by: task 5 — async fn two_releases::new_waiter (frame 0, `inner`, via held future at 0xADDR)
+future 0xA3
+future 0xA3: future event_listener::EventListener<()>
+Held by: task 2002 — async fn two_releases::new_waiter (frame 0, `inner`, via held future at 0xA2)
 
-#0  future        event_listener::EventListener<()>
+#0  future  event_listener::EventListener<()>
       defined at event-listener-5.4.2/src/lib.rs:898 (<no_state>, 1 local)
 [Executed against 3 futures, 0 failed]

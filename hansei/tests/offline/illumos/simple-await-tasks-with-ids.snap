@@ -1,7 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over illumos/simple-await"
+description: "`tasks --with id 2003,2006` over illumos/simple-await"
 ---
-ID  STATE  FUT  AWAITING AT                 WAITING ON  TYPE
-3   idle     0  src/bin/simple-await.rs:51  oneshot rx  async fn simple_await::work
-[1 task]
+[0 tasks]

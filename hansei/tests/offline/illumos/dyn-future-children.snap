@@ -3,6 +3,4 @@ source: hansei/src/offline.rs
 description: "`children` over illumos/dyn-future"
 ---
 held futures: 0
-join sets: 1 (1 task)
-    - tokio::task::join_set::JoinSet<u32> at 0xADDR (frame 3, `set`): 1 task
-        task 5  async fn dyn_future::set_member  idle
+join sets: 0

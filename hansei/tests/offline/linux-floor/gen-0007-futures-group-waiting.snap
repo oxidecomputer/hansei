@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over linux-floor/gen-0007"
 ---
 COUNT  WAITING ON  FUTURES
-    7  <empty>     0xADDR, 0xADDR, 0xADDR, …
+    7  <empty>  0xA1, 0xA1, 0xA2, …
 [1 group]

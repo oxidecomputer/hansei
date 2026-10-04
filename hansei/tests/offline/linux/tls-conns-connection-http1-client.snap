@@ -1,13 +1,13 @@
 ---
 source: hansei/src/offline.rs
-description: "`connection 0x55eb4bd6fbd8` over linux/tls-conns"
+description: "`connection 0xA1` over linux/tls-conns"
 ---
-connection 0xADDR
+connection 0xA1
     proto: http1
-    driven by: task 17
+    driven by: task 2015
     http: client, idle
-        dispatcher: 0xADDR hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::io::util::mem::DuplexStream>, hyper::proto::h1::role::Client>
-        conn: 0xADDR
+        dispatcher: 0xA1 hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::io::util::mem::DuplexStream>, hyper::proto::h1::role::Client>
+        conn: 0xA1
         keep-alive: busy
         reading: init
         writing: init

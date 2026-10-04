@@ -1,14 +1,14 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 3` over illumos/gen-0007"
+description: "`task 2001` over illumos/gen-0007"
 ---
-task 3
+task 2001
     state: idle
     thread: <none>
-    type: async fn gen_0007::driver_00
-    awaiting at: src/bin/gen-0007.rs:129
-    awaiting on: unarmed: unknown at gen_0007::GfSel3
-    spawned at: src/bin/gen-0007.rs:223:19
-    type defined at: src/bin/gen-0007.rs:111
+    type: async fn gen_0007::member_02
+    awaiting at: src/bin/gen-0007.rs:148
+    awaiting on: notify rx 0xA1 (waiting, 1 queued)
+    spawned at: src/bin/gen-0007.rs:121:12
+    type defined at: src/bin/gen-0007.rs:141
     held futures: 0
-    join sets: 2 (2 tasks and 3 futures)
+    join sets: 0

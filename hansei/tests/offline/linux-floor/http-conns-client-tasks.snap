@@ -2,29 +2,29 @@
 source: hansei/src/offline.rs
 description: "`tasks --with type execute<Pin --exec task` over linux-floor/http-conns"
 ---
-task 4
+task 2013
     state: idle
     thread: <none>
     type: async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
     awaiting at: src/bin/http-conns.rs:76
-    awaiting on: http1 client 0xADDR fd 11 (idle, keep-alive)
-        via: mpsc rx 0xADDR (1 sender, 0 unread)
-        io 0xADDR read
+    awaiting on: http1 client 0xA1 fd N (idle, keep-alive)
+        via: mpsc rx 0xA2 (1 sender, 0 unread)
+        io 0xA3 read
             waker: the read-waiter slot, awaiting readable, ready: writable
     spawned at: src/bin/http-conns.rs:75:9
     type defined at: src/bin/http-conns.rs:75
     held futures: 0
     join sets: 0
 
-task 9
+task 2014
     state: idle
     thread: <none>
     type: async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
     awaiting at: src/bin/http-conns.rs:76
-    awaiting on: http1 client 0xADDR fd 13 (GET sent, awaiting response headers)
-        via: oneshot tx 0xADDR (nothing sent, receiver alive)
-        caller: task 7
-        io 0xADDR read
+    awaiting on: http1 client 0xA4 fd N (GET sent, awaiting response headers)
+        via: oneshot tx 0xA5 (nothing sent, receiver alive)
+        caller: task 2010
+        io 0xA6 read
             waker: the read-waiter slot, awaiting readable, ready: writable
     spawned at: src/bin/http-conns.rs:75:9
     type defined at: src/bin/http-conns.rs:75

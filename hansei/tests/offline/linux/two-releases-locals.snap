@@ -2,4 +2,15 @@
 source: hansei/src/offline.rs
 description: "`locals` over linux/two-releases"
 ---
-inner: core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>> = Some(0xADDR -> alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>> { .. })
+receiver: &async_channel::Receiver<u32> = 0xA1 (task 2001) -> async_channel::Receiver<u32> {
+          channel: alloc::sync::Arc<async_channel::Channel<u32>, alloc::alloc::Global> {
+              ptr: 0xA2 -> alloc::sync::ArcInner<async_channel::Channel<u32>> { .. },
+          },
+          listener: core::option::Option<event_listener::EventListener> { .. } @ 0xA3 (task 2001),
+      }
+listener: core::option::Option<event_listener::EventListener> = Some {
+      inner: alloc::sync::Arc<event_listener::Inner, alloc::alloc::Global> {
+          ptr: 0xA4 -> alloc::sync::ArcInner<event_listener::Inner> { .. },
+      },
+      entry: core::option::Option<core::ptr::non_null::NonNull<event_listener::Entry>> = Some(0xA5 -> event_listener::Entry { .. }),
+  }

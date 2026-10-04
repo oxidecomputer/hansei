@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with id 3,6` over illumos/tls-conns"
+description: "`tasks --with id 2003,2006` over illumos/tls-conns"
 ---
-ID  STATE  FUT  AWAITING AT               WAITING ON  TYPE
-3   idle     0  src/bin/tls-conns.rs:181  io          async fn tls_conns::plain_client
-6   idle     0  src/bin/tls-conns.rs:232  io          async fn tls_conns::buffered_server
+ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
+2003  idle  2  src/bin/tls-conns.rs:218  io  async fn tls_conns::split_client
+2006  idle  0  src/bin/tls-conns.rs:263  io  async fn tls_conns::tcp_server
 [2 tasks]
