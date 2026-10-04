@@ -67,14 +67,38 @@ pub const CAPTURED: &[&str] = if cfg!(target_os = "linux") {
     &[]
 };
 
-/// The sets a run reads cores of: on a system that captures, its own
-/// and any other already in [`dir`]; elsewhere every set, each of which
-/// must be there.
+/// Names the sets a run reads, comma-separated, in place of the ones
+/// [`sets`] would choose. For a run that holds only some sets' cores on
+/// purpose: CI's macOS checks each read the sets one capturing system
+/// took, so a failure names the system whose cores it was.
+pub const SETS: &str = "HANSEI_SETS";
+
+/// The sets a run reads cores of: those [`SETS`] names, if it names
+/// any; otherwise, on a system that captures, its own and any other
+/// already in [`dir`], and elsewhere every set. Each set read must be
+/// there, or be one this system captures.
 pub fn sets(dir: &Path) -> Vec<&'static str> {
+    if let Some(named) = std::env::var(SETS).ok().filter(|named| !named.is_empty()) {
+        return named_sets(&named);
+    }
     FIXTURE_SETS
         .iter()
         .copied()
         .filter(|set| CAPTURED.is_empty() || CAPTURED.contains(set) || dir.join(set).is_dir())
+        .collect()
+}
+
+/// The sets a [`SETS`] value names, in [`FIXTURE_SETS`] order. Panics
+/// on a name that is no set, rather than read fewer sets than meant.
+fn named_sets(named: &str) -> Vec<&'static str> {
+    let named: Vec<&str> = named.split(',').map(str::trim).collect();
+    if let Some(unknown) = named.iter().find(|set| !FIXTURE_SETS.contains(set)) {
+        panic!("{SETS} names {unknown:?}, which is not one of {FIXTURE_SETS:?}");
+    }
+    FIXTURE_SETS
+        .iter()
+        .copied()
+        .filter(|set| named.contains(set))
         .collect()
 }
 
@@ -445,7 +469,7 @@ pub fn binary_args(core: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FIXTURE_SETS, PROGRAMS, record, record_in};
+    use super::{FIXTURE_SETS, PROGRAMS, named_sets, record, record_in};
 
     use testrun::fixture::test_programs_dir;
 
@@ -505,5 +529,28 @@ mod tests {
         fs::write(&source, text).unwrap();
         assert_ne!(record_in(&alone, "linux", changed), before.0);
         assert_eq!(record_in(&alone, "linux", other), before.1);
+    }
+
+    /// A run told which sets to read reads those, in the usual order,
+    /// however the value lists them.
+    #[test]
+    fn test_named_sets_are_read_in_set_order() {
+        assert_eq!(named_sets("illumos"), ["illumos"]);
+        assert_eq!(
+            named_sets("linux-floor, linux,linux"),
+            ["linux", "linux-floor"]
+        );
+        assert_eq!(
+            named_sets("linux-floor,illumos,linux"),
+            ["illumos", "linux", "linux-floor"]
+        );
+    }
+
+    /// A name that is no set fails the run rather than leave a set
+    /// unread.
+    #[test]
+    #[should_panic(expected = "names \"linux-flor\"")]
+    fn test_a_named_set_that_does_not_exist_fails() {
+        named_sets("linux,linux-flor");
     }
 }

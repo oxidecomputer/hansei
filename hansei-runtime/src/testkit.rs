@@ -485,9 +485,10 @@ fn first_seen(s: &str) -> String {
         .into_owned()
 }
 
-/// The sets this run reads, in [`FIXTURE_SETS`] order: the ones this
-/// system captures plus any other copied in beside them ([`cores`]) —
-/// on a system that captures none, all of them, each of which must be
+/// The sets this run reads, in [`FIXTURE_SETS`] order: the ones
+/// `HANSEI_SETS` names ([`cores::SETS`]), or else the ones this system
+/// captures plus any other copied in beside them ([`cores`]) — on a
+/// system that captures none, all of them, each of which must be
 /// there. A test walking the sets walks these.
 pub fn fixture_sets() -> &'static [&'static str] {
     static SETS: OnceLock<Vec<&'static str>> = OnceLock::new();
