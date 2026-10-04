@@ -85,14 +85,29 @@ pub fn run_builder<T>(builder: &mut Builder, main: impl std::future::Future<Outp
 pub fn quiesce() {
     let mine = sleeping::self_id();
     // A pass is not an atomic snapshot of the process: a thread seen
-    // asleep early could in principle wake before the last is read.
-    // Nothing in a parked fixture wakes one, which is the property the
-    // whole handshake rests on, so a pass that finds them all asleep
-    // is the state the core is taken in.
-    while !sleeping::thread_ids()
-        .into_iter()
-        .all(|id| id == mine || sleeping::asleep(id))
-    {
+    // asleep early can wake before the last is read, and a runtime
+    // settling its last work does wake one — a worker unparks another
+    // on its way to parking itself — so one pass that finds every
+    // thread asleep can leave an unpark the core then catches undone.
+    // Two passes in a row must find every thread asleep, each having
+    // left the CPU no further times between them: nothing ran in the
+    // interval, so nothing was set in motion in it either.
+    let pass = || -> Option<Vec<(u32, u64)>> {
+        sleeping::thread_ids()
+            .into_iter()
+            .filter(|&id| id != mine)
+            .map(|id| {
+                let switches = sleeping::switches(id);
+                sleeping::asleep(id).then_some((id, switches))
+            })
+            .collect()
+    };
+    let mut last = None;
+    loop {
+        match pass() {
+            Some(now) if last.as_ref() == Some(&now) => return,
+            now => last = now,
+        }
         std::thread::yield_now();
     }
 }
@@ -158,6 +173,23 @@ mod sleeping {
         after_comm.split_whitespace().next() == Some("S")
     }
 
+    /// How many times the thread has left the CPU, either way: its
+    /// `status` counts the voluntary and the involuntary switches.
+    pub fn switches(id: u32) -> u64 {
+        let Ok(status) = std::fs::read_to_string(format!("{TASKS}/{id}/status")) else {
+            return 0;
+        };
+        status
+            .lines()
+            .filter_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.ends_with("voluntary_ctxt_switches")
+                    .then(|| value.trim().parse::<u64>().ok())
+                    .flatten()
+            })
+            .sum()
+    }
+
     pub fn thread_ids() -> Vec<u32> {
         super::listed_ids(TASKS)
     }
@@ -190,6 +222,24 @@ mod sleeping {
         flags & PR_ASLEEP != 0
     }
 
+    /// `pr_vctx` and `pr_ictx` of the lwp's `prusage_t`, its voluntary
+    /// and involuntary context switches, at their offsets in the 64-bit
+    /// layout of `<procfs.h>`.
+    const PR_VCTX: usize = 392;
+    const PR_ICTX: usize = 400;
+
+    /// How many times the lwp has left the CPU, either way.
+    pub fn switches(id: u32) -> u64 {
+        let Ok(bytes) = std::fs::read(format!("{LWPS}/{id}/lwpusage")) else {
+            return 0;
+        };
+        let word = |at: usize| {
+            let b = bytes.get(at..at + 8).expect("lwpusage holds a prusage_t");
+            u64::from_ne_bytes(b.try_into().expect("eight bytes are a ulong"))
+        };
+        word(PR_VCTX) + word(PR_ICTX)
+    }
+
     pub fn thread_ids() -> Vec<u32> {
         super::listed_ids(LWPS)
     }
@@ -205,6 +255,10 @@ mod sleeping {
 
     pub fn asleep(_id: u32) -> bool {
         true
+    }
+
+    pub fn switches(_id: u32) -> u64 {
+        0
     }
 
     pub fn thread_ids() -> Vec<u32> {
