@@ -286,7 +286,10 @@ fn build(recipe: &Recipe, programs: &[&str]) -> PathBuf {
                 lock.lock().expect("failed to take the cell lock");
                 lock
             });
-            let mut command = std::process::Command::new(dir.join("regen.sh"));
+            // Through bash rather than by its mode bit, which a copy of
+            // the tree need not keep: cargo-mutants' reflink copies drop it.
+            let mut command = std::process::Command::new("bash");
+            command.arg(dir.join("regen.sh"));
             command.args(recipe.regen_args()).args(stale);
             command.env("REGEN_BIN_DIR", &bin);
             if let Some(target) = &target {

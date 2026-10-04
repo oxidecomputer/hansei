@@ -250,7 +250,9 @@ impl Cell {
                 inputs.finish()
             },
             || {
-                let status = Command::new(dir.join("regen.sh"))
+                // Through bash: a copied tree need not keep the mode bit.
+                let status = Command::new("bash")
+                    .arg(dir.join("regen.sh"))
                     .arg("--tokio")
                     .arg(&self.tokio)
                     .arg("--toolchain")

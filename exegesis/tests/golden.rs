@@ -87,7 +87,9 @@ fn ensure_dwp_fixture(program: &str) {
             .join(format!("dwp-{program}")),
         || recipe.inputs(&test_programs_dir(), &matrix, program),
         || {
-            let status = Command::new(test_programs_dir().join("regen.sh"))
+            // Through bash: a copied tree need not keep the mode bit.
+            let status = Command::new("bash")
+                .arg(test_programs_dir().join("regen.sh"))
                 .arg("--dwp")
                 .arg(program)
                 .status()

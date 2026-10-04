@@ -76,7 +76,9 @@ fn fixture() -> &'static Path {
             &test_programs.join("fixtures/.built").join(PROGRAM),
             || built_from(&test_programs),
             || {
-                let status = Command::new(test_programs.join("regen.sh"))
+                // Through bash: a copied tree need not keep the mode bit.
+                let status = Command::new("bash")
+                    .arg(test_programs.join("regen.sh"))
                     .arg(PROGRAM)
                     .status()
                     .expect("failed to run regen.sh");
