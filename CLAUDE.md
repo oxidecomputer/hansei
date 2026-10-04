@@ -1,6 +1,6 @@
 # hansei
 
-`hansei` reifies the runtime state of a cored (or snapshotted) Rust/tokio
+`hansei` reifies the runtime state of a cored Rust/tokio
 process:
 `exegesis` reads DWARF and emits a self-contained *bundle* describing types;
 `hansei-bundle` is that bundle's wire format, and the only thing the read
@@ -54,10 +54,9 @@ await sites — so reflowing a single statement shifts every line below it and
 fails that program's golden. Re-bless it
 (`INSTA_UPDATE=always cargo nextest run -p exegesis --test golden`) and confirm
 the diff
-is *only* the shift. The checked-in `hansei-runtime/tests/fixtures/*.tinfo`
-pairs record those line numbers too, but are not rebuilt from source, so they
-will not fail — they go quietly stale against the fixture they came from.
-Regenerating them is the *Format bumps* loop below.
+is *only* the shift.
+
+WILLTODO: Add documentation
 
 ## Adding a new type formatter
 
@@ -145,9 +144,7 @@ follow it rather than re-deriving the steps. Two facts worth knowing
 even outside that flow: the floor and primary pins advance deliberately,
 by hand — `add` refuses to touch them — and retiring a version deletes
 its lockfile and golden dirs in the same change that edits the manifest.
-Advancing the floor also means recapturing the `linux-floor` fixture
-set at the new floor (`capture-snapshots.sh --tokio <floor>`, Linux
-capture host); its SOURCES check fails loudly until that happens.
+WILLTODO: Add documentation
 
 ### 3. Only if no node can express it: add a node kind
 
@@ -161,12 +158,7 @@ version bump breaks compatibility silently.
 
 ### Format bumps
 
-Bumping `FORMAT_VERSION` invalidates the checked-in binary fixtures in
-`hansei-runtime/tests/fixtures/`, so a `-p hansei-runtime` run fails to
-load them until they are regenerated — which needs an illumos or Linux
-host, not macOS. The regeneration loop (land, push, regenerate, `--amend` +
-force-push so `main` is never red) is the `format-bump` skill. Never
-weigh the bump itself in a design trade-off; the loop is its only cost.
+WILLTODO: Add documentation
 
 ### Testing
 
@@ -259,11 +251,7 @@ check:
     `format!("{}", value.display_from_target(&mem, depth))`. Byte helpers:
     `u32s`, `u64s`, `node_bytes`, `sync_waiter`, `btree_leaf`, `mpsc_block`;
     selector/expr helpers: `sel`, `ebf`/`ubf`, `vread`/`vconst`/`vadd`/….
-- **Offline two-binary fixtures** (`hansei-runtime/tests/fixtures/*.tinfo`) are
-  checked-in *binary* bundles with a version header, so **any `FORMAT_VERSION`
-  bump makes a `-p hansei-runtime` run fail to load them** — see *Format
-  bumps* above for the regeneration loop, which needs an illumos or Linux
-  host.
+- **Offline two-binary fixtures**: WILLTODO: Add documentation
 - **Version-matrix goldens** (`hansei-runtime/tests/matrix.rs`, opt-in) build
   every cell `test-programs/matrix.toml` declares (tokio × toolchain ×
   tokio_unstable) via `regen.sh`, extract every tokio fixture per cell, and

@@ -103,17 +103,10 @@ that family's module and enum variant are deleted — a mechanical sweep,
 since every version-specific spelling is family-keyed, not buried in
 fallbacks.
 
-**Advancing the floor also stales the `linux-floor` fixture set** — the
-checked-in snapshot pairs that *execute* the walks at the floor
-(`testkit::FIXTURE_SETS`), captured against the old floor's lockfile.
-The staleness is loud, not silent: `two_binary.rs`'s SOURCES check
-derives the floor set's lockfile from `matrix.toml`, so the first test
-run after the manifest edit fails naming the mismatch. Recapture on the
-Linux capture host in the same change:
-
-```
-test-programs/capture-snapshots.sh --tokio <new floor>
-```
-
-then re-bless the `@linux-floor` goldens (`two_binary`, `value_render`)
-and review that the diff is only what the classification predicts.
+**Advancing the floor also moves the `linux-floor` fixture set** — the
+cores that *execute* the walks at the floor (`testkit::FIXTURE_SETS`).
+They are captured fresh on every Linux run from the floor named in
+`matrix.toml`, so the first run after the manifest edit reads cores of
+the new floor. Re-bless the `@linux-floor` goldens on a Linux host in
+the same change and review that the diff is only what the
+classification predicts.

@@ -228,7 +228,7 @@ coverage is the inline assertion:
 
 1. Add or extend a fixture in `test-programs/src/bin/` that instantiates
    the type and reaches a steady parked state (the existing programs print
-   a marker line — e.g. `READY` — once parked; see `capture-snapshots.sh`).
+   a marker line — e.g. `READY` — once parked; see `testkit::cores::Parked`).
    Mind CLAUDE.md *Before every commit*: fixture line numbers are pinned by
    the goldens, so reflow means re-blessing and reviewing the shift.
 2. Add an `assert_format(program, bundle, "<fq type name>", "<expected>")`
@@ -310,8 +310,7 @@ check that it hides only what you meant.
 
 ## 5. Only if no node can express it: add a node kind
 
-The exceptional path: six sites plus a format bump (and a format bump means
-the `format-bump` skill's fixture-regeneration loop).
+The exceptional path: six sites plus a format bump.
 
 1. `hansei-bundle/src/schema.rs` — the `DisplayNode` variant. Document it
    thoroughly; the doc comment is the contract for the rest.
