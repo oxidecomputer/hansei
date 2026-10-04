@@ -796,7 +796,7 @@ fn no_such_runtime<T: proc::Target>(
 }
 
 /// Offline listing tests: the groups a real extracted bundle joined
-/// against a real captured snapshot resolves to.
+/// against a fresh core of a fixture program resolves to.
 #[cfg(test)]
 mod runtimes_tests {
     use super::{
@@ -823,9 +823,9 @@ mod runtimes_tests {
 
     /// The rows over a fixture, for the tests that filter them.
     fn rows_of(program: &str) -> Vec<Group> {
-        let (bundle, snapshot) = testkit::load_any(program);
-        let ctx = testkit::context(&bundle, &snapshot);
-        let mut e = testkit::enumerate(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any(program);
+        let ctx = testkit::context(&bundle, &core);
+        let mut e = testkit::enumerate(&ctx, &core);
         let sets = e.discover(&ctx, &[]);
         let owners = bundle::OwnerIndex::new(&e.runtimes, &sets);
         let (runtimes, list) = (e.runtimes, e.list);
@@ -844,9 +844,9 @@ mod runtimes_tests {
         let mut set_owned = 0;
         for set in testkit::fixture_sets() {
             for program in testkit::PROGRAMS {
-                let (bundle, snapshot) = testkit::load(set, program);
-                let ctx = testkit::context(&bundle, &snapshot);
-                let mut e = testkit::enumerate(&ctx, &snapshot);
+                let (bundle, core) = testkit::load(set, program);
+                let ctx = testkit::context(&bundle, &core);
+                let mut e = testkit::enumerate(&ctx, &core);
                 let sets = e.discover(&ctx, &[]);
                 let owners = bundle::OwnerIndex::new(&e.runtimes, &sets);
                 let list = e.list;
@@ -892,9 +892,9 @@ mod runtimes_tests {
     /// live set children attributed to their owners.
     #[test]
     fn test_futures_count_the_censuss_finds() {
-        let (bundle, snapshot) = testkit::load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let mut e = testkit::enumerate(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let mut e = testkit::enumerate(&ctx, &core);
         let sets = e.discover(&ctx, &[]);
         let owners = bundle::OwnerIndex::new(&e.runtimes, &sets);
         let (runtimes, list) = (e.runtimes, e.list);

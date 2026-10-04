@@ -2278,7 +2278,7 @@ pub(crate) mod tests {
     /// Everything else here lays metadata at addresses of its own
     /// choosing and reads it back, which is what a test of the *walk*
     /// wants. A test of a **consumer** cannot: the values it gates are
-    /// wherever its own fixture put them — a captured snapshot's heap,
+    /// wherever its own fixture put them — a fixture core's heap,
     /// megabytes from anything a fake target could hold — and no walk
     /// can be made to answer for those. So this states the verdicts
     /// directly, as one arena's free segments, and what it answers

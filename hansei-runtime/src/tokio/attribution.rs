@@ -3001,9 +3001,9 @@ mod tests {
     }
 
     impl<'b> Over<'b> {
-        fn new(bundle: &'b hansei_bundle::Bundle, snapshot: &'b Fixture) -> Self {
-            let ctx = testkit::context(bundle, snapshot);
-            let mut e = testkit::enumerate(&ctx, snapshot);
+        fn new(bundle: &'b hansei_bundle::Bundle, core: &'b Fixture) -> Self {
+            let ctx = testkit::context(bundle, core);
+            let mut e = testkit::enumerate(&ctx, core);
             e.discover(&ctx, &[]);
             let extents = ctx.task_extents(&e.list);
             let census = testkit::census(&ctx, &e.list);
@@ -3075,8 +3075,8 @@ mod tests {
     /// `Notified` the holder keeps is not.
     #[test]
     fn test_armed_select_slots_are_named_by_what_holds_them() {
-        let (bundle, snapshot) = load_any("armed-select");
-        let over = Over::new(&bundle, &snapshot);
+        let (bundle, core) = load_any("armed-select");
+        let over = Over::new(&bundle, &core);
         let attributed = over.attribute();
         assert!(attributed.stale.is_empty(), "{:#?}", attributed.stale);
         assert_eq!(attributed.audit(&over.e.list), Vec::<String>::new());
@@ -3209,8 +3209,7 @@ mod tests {
                 } => {
                     // The `Notified` is on one of the watch channel's
                     // `Notify`s: the slot is the watch's, named by its
-                    // `Shared` — which the capture read on the slot's
-                    // behalf, so the snapshot holds it.
+                    // `Shared`, which the core holds.
                     assert_eq!((holder.as_str(), member.as_str()), ("Notified", "waiter"));
                     assert_eq!(*validity, Validity::SelfDescribing);
                     // Never sent to, one handle on each side.
@@ -3453,8 +3452,8 @@ mod tests {
         use crate::tokio::assess::WaitAssessment;
         use crate::tokio::waitset::{MemberRoute, SlotRef};
 
-        let (bundle, snapshot) = load_any("armed-select");
-        let over = Over::new(&bundle, &snapshot);
+        let (bundle, core) = load_any("armed-select");
+        let over = Over::new(&bundle, &core);
         let attributed = over.attribute();
         let mut analysis = analyze(
             &over.ctx,
@@ -3551,8 +3550,8 @@ mod tests {
     /// fold adds no note beside either.
     #[test]
     fn test_registry_slots_are_accounted_for_by_the_verified_wait() {
-        let (bundle, snapshot) = load_any("sleep-join");
-        let over = Over::new(&bundle, &snapshot);
+        let (bundle, core) = load_any("sleep-join");
+        let over = Over::new(&bundle, &core);
         let attributed = over.attribute();
         let size_of = |ty: BundleTypeId| over.ctx.view.ty(ty).map(|t| t.size());
         let sleeper = over.task("sleeper");
@@ -3624,8 +3623,8 @@ mod tests {
     /// `Acquire`'s queue node inside its own `send` future.
     #[test]
     fn test_channels_slots_name_their_primitives() {
-        let (bundle, snapshot) = load_any("channels");
-        let over = Over::new(&bundle, &snapshot);
+        let (bundle, core) = load_any("channels");
+        let over = Over::new(&bundle, &core);
         let attributed = over.attribute();
         let mut kinds: Vec<OwnerKind> = Vec::new();
         let mut typed: Vec<(String, String)> = Vec::new();
@@ -3662,8 +3661,8 @@ mod tests {
     #[test]
     fn test_the_callers_slot_joins_the_connections_callback() {
         use crate::tokio::bundle::{HttpCaller, HttpPhase};
-        let (bundle, snapshot) = load_any("http-conns");
-        let over = Over::new(&bundle, &snapshot);
+        let (bundle, core) = load_any("http-conns");
+        let over = Over::new(&bundle, &core);
         let attributed = over.attribute();
         let requester = over.task("http_conns::requester");
         let slots: Vec<&AttributedSlot> = attributed.of_task(requester.addr.0).collect();
@@ -3776,7 +3775,7 @@ mod tests {
     #[test]
     fn test_a_ghost_callback_joins_nothing() {
         use crate::tokio::observe::OneshotObservation;
-        let (bundle, snapshot) = load_any("http-conns");
+        let (bundle, core) = load_any("http-conns");
         let requester = |over: &Over<'_>| over.task("http_conns::requester").addr.0;
         for (what, ghost) in [
             (
@@ -3787,7 +3786,7 @@ mod tests {
             ),
             ("another Inner", |callback| callback.inner += 8),
         ] {
-            let mut over = Over::new(&bundle, &snapshot);
+            let mut over = Over::new(&bundle, &core);
             for wait in &mut over.analysis.waits {
                 if let Some(ResourceObservation::HttpConn(http)) = &mut wait.observation
                     && let Some(callback) = http
@@ -4440,9 +4439,9 @@ mod join_tests {
     #[test]
     fn test_roots_come_innermost_first_a_find_ahead_of_a_frame() {
         use crate::testkit::load_any;
-        let (bundle, snapshot) = load_any("sleep-join");
-        let ctx = crate::testkit::context(&bundle, &snapshot);
-        let list = crate::testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("sleep-join");
+        let ctx = crate::testkit::context(&bundle, &core);
+        let list = crate::testkit::tasks(&ctx, &core);
         // Any two typed values of different sizes will do: a task's
         // header and its whole cell.
         let task = &list.tasks[0];
@@ -4961,7 +4960,7 @@ mod synthetic_tests {
         b
     }
 
-    /// A fixture snapshot with one anonymous, writable mapping planted
+    /// A fixture core with one anonymous, writable mapping planted
     /// beside it, holding the bytes a test lays down.
     pub(super) struct Planted<'a> {
         inner: &'a Fixture,
@@ -5147,9 +5146,9 @@ mod synthetic_tests {
     /// of a variant the value is not in.
     #[test]
     fn test_the_offset_walk_lands_on_a_waker_and_nowhere_else() {
-        let (_, snapshot) = load_any("sleep-join");
+        let (_, core) = load_any("sleep-join");
         let bundle = bundle();
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         let (some, none) = (BASE, BASE + 0x100);
         planted.word(some, 7);
         planted.pair(some + 8);
@@ -5186,9 +5185,9 @@ mod synthetic_tests {
     /// one, and the trail names the array step.
     #[test]
     fn test_the_offset_walk_indexes_arrays() {
-        let (_, snapshot) = load_any("sleep-join");
+        let (_, core) = load_any("sleep-join");
         let bundle = bundle();
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         let boxed = BASE;
         planted.word(boxed, 3);
         for i in 0..3 {
@@ -5235,9 +5234,9 @@ mod synthetic_tests {
     /// for the struct holding it.
     #[test]
     fn test_the_holder_is_the_innermost_wide_aggregate_that_is_no_wrapper() {
-        let (_, snapshot) = load_any("sleep-join");
+        let (_, core) = load_any("sleep-join");
         let bundle = bundle();
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         let (boxed, chan) = (BASE, BASE + 0x100);
         planted.pair(boxed + 8 + 32);
         planted.pair(chan + 8);
@@ -5361,9 +5360,9 @@ mod synthetic_tests {
     /// to the same edges.
     #[test]
     fn test_a_hop_corroborates_only_a_slot_inside_the_pointee() {
-        let (_, snapshot) = load_any("sleep-join");
+        let (_, core) = load_any("sleep-join");
         let bundle = bundle();
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         let (frame, holder, none) = (BASE, BASE + 0x100, BASE + 0x200);
         planted.word(frame, holder);
         planted.word(holder, 7);
@@ -5456,9 +5455,9 @@ mod synthetic_tests {
     /// to the `Shared` among the owner's, is not.
     #[test]
     fn test_a_notify_inside_a_watch_shared_is_the_watchs() {
-        let (_, snapshot) = load_any("sleep-join");
+        let (_, core) = load_any("sleep-join");
         let bundle = bundle();
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         let (arc, holder) = (BASE, BASE + 0x800);
         let shared = arc + 16;
         // Version 5, open: the closed bit is clear.
@@ -5550,9 +5549,9 @@ mod synthetic_tests {
     /// read out of it.
     #[test]
     fn test_a_dead_local_holds_no_slot_and_an_uncertain_one_is_unchecked() {
-        let (_, snapshot) = load_any("sleep-join");
+        let (_, core) = load_any("sleep-join");
         let bundle = bundle();
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         let (coro, holder) = (BASE, BASE + 0x100);
         planted.word(coro, 3);
         planted.pair(coro + 8);
@@ -5622,9 +5621,9 @@ mod synthetic_tests {
     /// its end, is no slot. What it finds through a union is unchecked.
     #[test]
     fn test_the_walk_enters_a_union_through_its_value_and_within_it() {
-        let (_, snapshot) = load_any("sleep-join");
+        let (_, core) = load_any("sleep-join");
         let bundle = bundle();
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         let holder = BASE;
         planted.word(holder, 7);
         planted.pair(holder + 8 + 8);
@@ -5654,9 +5653,9 @@ mod synthetic_tests {
     /// to something sized: a `*const ()` is left out even when set.
     #[test]
     fn test_pointer_members_leave_out_pointers_to_nothing() {
-        let (_, snapshot) = load_any("sleep-join");
+        let (_, core) = load_any("sleep-join");
         let bundle = bundle();
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         let (frame, holder) = (BASE, BASE + 0x100);
         planted.word(frame, holder);
         planted.word(frame + 8, holder + 0x40);
@@ -5677,9 +5676,9 @@ mod synthetic_tests {
     /// answers nothing.
     #[test]
     fn test_option_presence_reads_the_active_variant() {
-        let (_, snapshot) = load_any("sleep-join");
+        let (_, core) = load_any("sleep-join");
         let bundle = bundle();
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         let (some, none) = (BASE, BASE + 0x20);
         planted.pair(some);
         let empty = Empty::new(&bundle);
@@ -5699,9 +5698,9 @@ mod synthetic_tests {
     /// type.
     #[test]
     fn test_a_hops_aliases_are_the_same_member_of_the_same_type() {
-        let (_, snapshot) = load_any("sleep-join");
+        let (_, core) = load_any("sleep-join");
         let bundle = bundle();
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         let holder = BASE + 0x100;
         let (frame_a, frame_b, unit) = (BASE, BASE + 0x20, BASE + 0x40);
         // `two_a` holds the resource in `first`, `two_b` in `second`,
@@ -5784,9 +5783,9 @@ mod synthetic_tests {
     /// branch a reader asks about rather than from a copy of it.
     #[test]
     fn test_a_branch_outranks_a_root_tied_with_it() {
-        let (_, snapshot) = load_any("sleep-join");
+        let (_, core) = load_any("sleep-join");
         let bundle = bundle();
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         let (ghost, live) = (BASE, BASE + 0x20);
         planted.word(ghost, BASE + 0x100);
         planted.word(live, BASE + 0x100);
@@ -5836,7 +5835,7 @@ mod synthetic_tests {
     /// in the same buffer does not.
     #[test]
     fn test_a_hop_reaches_only_from_the_slots_own_buffer() {
-        let (_, snapshot) = load_any("sleep-join");
+        let (_, core) = load_any("sleep-join");
         let bundle = bundle();
         let mut f = fake();
         cache(
@@ -5855,7 +5854,7 @@ mod synthetic_tests {
         // The slot is the first word of the second buffer; the frame
         // holding the pointers sits past the slabs.
         let (slot, frame) = (BUFFERS + 64, BUFFERS + 0x1000);
-        let mut planted = Planted::at(&snapshot, BUFFERS);
+        let mut planted = Planted::at(&core, BUFFERS);
         planted.word(frame, slot);
         planted.pair(slot);
         let empty = Empty::new(&bundle);
@@ -6148,10 +6147,10 @@ mod reach_tests {
     /// written.
     #[test]
     fn test_a_hit_in_another_tasks_dead_storage_is_stale() {
-        let (_, snapshot) = crate::testkit::load_any("sleep-join");
+        let (_, core) = crate::testkit::load_any("sleep-join");
         let bundle = bundle();
         let coro = BASE + 0x300;
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         // Suspended at its one await: `live` and `lp` initialized,
         // `unsure` of uncertain initialization, `dead` not.
         planted.word(coro, 3);
@@ -6261,10 +6260,10 @@ mod reach_tests {
     /// container.
     #[test]
     fn test_a_borrow_from_an_inner_frame_makes_a_slot_awaited() {
-        let (_, snapshot) = crate::testkit::load_any("sleep-join");
+        let (_, core) = crate::testkit::load_any("sleep-join");
         let bundle = bundle();
         let (frame0, holder, other, coro) = (BASE, BASE + 0x100, BASE + 0x200, BASE + 0x300);
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         planted.word(holder, 7);
         planted.pair(holder + 8);
         planted.word(other, 7);
@@ -6323,10 +6322,10 @@ mod reach_tests {
     /// frame inside that one borrows the find.
     #[test]
     fn test_a_slot_in_a_find_is_held_where_the_census_found_it() {
-        let (_, snapshot) = crate::testkit::load_any("sleep-join");
+        let (_, core) = crate::testkit::load_any("sleep-join");
         let bundle = bundle();
         let (frame0, coro, holder, nested) = (BASE, BASE + 0x100, BASE + 0x200, BASE + 0x300);
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         planted.word(coro, 3);
         planted.word(holder, 7);
         planted.pair(holder + 8);

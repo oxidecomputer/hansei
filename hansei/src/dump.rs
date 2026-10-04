@@ -563,9 +563,9 @@ mod tests {
         use crate::offline::session_args;
         use crate::{TraceTarget, cursor};
         use hansei_runtime::testkit;
-        let (bundle, snapshot) = testkit::load(testkit::set_or_any("illumos"), "simple-await");
+        let (bundle, core) = testkit::load(testkit::set_or_any("illumos"), "simple-await");
         let args = session_args(testkit::set_or_any("illumos"), "simple-await");
-        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let session = Session::attach(&core, &bundle, &args).expect("the pair attaches");
         let id = session.tasks.tasks[0]
             .task_id
             .expect("the fixture's tasks carry ids");
@@ -632,9 +632,9 @@ mod tests {
         use crate::offline::session_args;
         use crate::{TraceTarget, cursor};
         use hansei_runtime::testkit;
-        let (bundle, snapshot) = testkit::load(testkit::set_or_any("illumos"), "simple-await");
+        let (bundle, core) = testkit::load(testkit::set_or_any("illumos"), "simple-await");
         let args = session_args(testkit::set_or_any("illumos"), "simple-await");
-        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let session = Session::attach(&core, &bundle, &args).expect("the pair attaches");
         let id = session.tasks.tasks[0]
             .task_id
             .expect("the fixture's tasks carry ids");

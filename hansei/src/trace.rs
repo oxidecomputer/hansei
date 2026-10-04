@@ -2336,7 +2336,7 @@ mod variable_format_tests {
 
 /// Offline future-trace tests: what `trace <0x-address>` resolves an
 /// address to, and the chain it renders from there, over a real
-/// extracted bundle joined against a real captured snapshot.
+/// extracted bundle joined against a fresh core of a fixture program.
 #[cfg(test)]
 mod future_trace_tests {
     use super::{FutureAt, TraceOpts, frame_holds, future_at, observed_wait, print_await_chain};
@@ -2373,9 +2373,9 @@ mod future_trace_tests {
         program: &str,
         check: impl FnOnce(&Context<'_, Fixture>, &TaskList, &TaskExtents, &FutureCensus),
     ) {
-        let (bundle, snapshot) = testkit::load_any(program);
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any(program);
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let extents = ctx.task_extents(&list);
         let census = census::census(&ctx, &list);
         check(&ctx, &list, &extents, &census);
@@ -3047,8 +3047,8 @@ mod future_trace_tests {
 }
 
 /// Offline trace-rendering tests: the flat await chain as `trace`
-/// prints it, driven from a real extracted bundle joined against a real
-/// captured snapshot.
+/// prints it, driven from a real extracted bundle joined against a fresh
+/// core of a fixture program.
 ///
 /// The acceptance suite covers the same rendering end to end, but only
 /// where a process can be cored; these run in plain `cargo test` on any
@@ -3105,17 +3105,17 @@ mod trace_render_tests {
         limit: Option<usize>,
         fit: Option<usize>,
     ) -> String {
-        let (bundle, snapshot) = testkit::load_any(program);
-        let ctx = testkit::context(&bundle, &snapshot);
-        trace_ctx(&ctx, &bundle, &snapshot, future, verbose, theme, limit, fit)
+        let (bundle, core) = testkit::load_any(program);
+        let ctx = testkit::context(&bundle, &core);
+        trace_ctx(&ctx, &bundle, &core, future, verbose, theme, limit, fit)
     }
 
     /// The id of the task running `future` in `program`'s pair, which
     /// [`trace`] renders: a wait target names it as a reader would.
     fn task_id(program: &str, future: &str) -> u64 {
-        let (bundle, snapshot) = testkit::load_any(program);
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any(program);
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         testkit::task_id_running(ctx.view, &list, future)
     }
 
@@ -3125,14 +3125,14 @@ mod trace_render_tests {
     fn trace_ctx(
         ctx: &hansei_runtime::tokio::bundle::Context<'_, hansei_runtime::testkit::Fixture>,
         bundle: &hansei_bundle::Bundle,
-        snapshot: &hansei_runtime::testkit::Fixture,
+        core: &hansei_runtime::testkit::Fixture,
         future: &str,
         verbose: bool,
         theme: output::Theme,
         limit: Option<usize>,
         fit: Option<usize>,
     ) -> String {
-        let list = testkit::tasks(ctx, snapshot);
+        let list = testkit::tasks(ctx, core);
 
         let (index, task) = list
             .tasks
@@ -3243,10 +3243,10 @@ mod trace_render_tests {
 "
         );
 
-        let (bundle, snapshot) = testkit::load_any("walk-shapes");
+        let (bundle, core) = testkit::load_any("walk-shapes");
         let (bindings, rules) = testkit::walk_shapes_bindings(&bundle);
         let bound = hansei_runtime::tokio::bundle::Context::with_test_bindings(
-            &snapshot,
+            &core,
             hansei_bundle::BundleView::new(&bundle),
             &bindings,
             &rules,
@@ -3256,7 +3256,7 @@ mod trace_render_tests {
             trace_ctx(
                 &bound,
                 &bundle,
-                &snapshot,
+                &core,
                 "walk_shapes::chained::{async_fn_env#0}",
                 false,
                 output::Theme::plain(),
@@ -3407,9 +3407,9 @@ mod trace_render_tests {
     /// which must name the task a reader would trace next.
     #[test]
     fn test_verbose_labels_pointers_into_other_tasks() {
-        let (bundle, snapshot) = testkit::load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
 
         let joiner_id =
             testkit::task_id_running(ctx.view, &list, "sleep_join::joiner::{async_fn_env#0}");

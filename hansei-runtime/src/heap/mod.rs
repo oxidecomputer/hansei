@@ -103,8 +103,8 @@ mod tests {
     /// to reading ungated.
     #[test]
     fn test_a_claimed_index_that_cannot_be_rebuilt_is_refused() {
-        let (_, snapshot) = testkit::load(testkit::set_or_any("linux"), "simple-await");
-        let claimed = Recorder::new(&snapshot)
+        let (_, core) = testkit::load(testkit::set_or_any("linux"), "simple-await");
+        let claimed = Recorder::new(&core)
             .snapshot(RecordedHeapEvidence::Available)
             .unwrap();
         let err = prepare(&claimed).expect_err("the claim is not honored");

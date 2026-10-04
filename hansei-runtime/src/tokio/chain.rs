@@ -763,9 +763,9 @@ mod tests {
     #[test]
     fn test_task_roots_are_the_entrys_nominal_type() {
         for (program, boxed) in [("sleep-join", false), ("delegation-cases", true)] {
-            let (bundle, snapshot) = load_any(program);
-            let ctx = testkit::context(&bundle, &snapshot);
-            let list = testkit::tasks(&ctx, &snapshot);
+            let (bundle, core) = load_any(program);
+            let ctx = testkit::context(&bundle, &core);
+            let list = testkit::tasks(&ctx, &core);
             for task in &list.tasks {
                 let FutureInfo::Known(known) = &task.future else {
                     panic!("every fixture task's future is known");
@@ -799,10 +799,10 @@ mod tests {
     fn test_the_engine_walks_the_delegation_cases_by_their_programs() {
         use crate::testkit::delegation::read_from;
         for set in fixture_sets() {
-            let (bundle, snapshot) = load(set, "delegation-cases");
-            let ctx = testkit::context(&bundle, &snapshot);
-            let list = testkit::tasks(&ctx, &snapshot);
-            let cases = read_from(&snapshot).unwrap().unwrap();
+            let (bundle, core) = load(set, "delegation-cases");
+            let ctx = testkit::context(&bundle, &core);
+            let list = testkit::tasks(&ctx, &core);
+            let cases = read_from(&core).unwrap().unwrap();
             let mut reached = std::collections::BTreeSet::new();
             for task in &list.tasks {
                 let inspection = inspect(&ctx, task);
@@ -929,9 +929,9 @@ mod tests {
     /// however much of a socket it holds.
     #[test]
     fn test_chains_end_at_primitives_and_at_the_first_unknown_rule() {
-        let (bundle, snapshot) = load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let sleeper = inspect(&ctx, task_named(&list, ctx.view, "sleeper"));
         assert!(
             matches!(sleeper.chain.end, ChainEnd::Primitive),
@@ -969,9 +969,9 @@ mod tests {
         assert_eq!(state.phase, Some(hansei_bundle::CoroutinePhase::Suspended));
         assert!(state.await_loc.is_some());
 
-        let (bundle, snapshot) = load_any("futurelock");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("futurelock");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let parked = list
             .tasks
             .iter()
@@ -986,9 +986,9 @@ mod tests {
         );
         assert!(names(&parked.chain).iter().any(|n| n.contains("mutex")));
 
-        let (bundle, snapshot) = load_any("local-set-io");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("local-set-io");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let gated = inspect(&ctx, task_named(&list, ctx.view, "local_gated_reader"));
         let ChainEnd::UnknownContinuation { at, reason } = &gated.chain.end else {
             panic!("the gated reader ends unknown: {:?}", gated.chain.end);
@@ -1020,9 +1020,9 @@ mod tests {
     /// discriminants say. A held value walks the same storage whole.
     #[test]
     fn test_a_running_root_stops_at_itself() {
-        let (bundle, snapshot) = load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let root = root_of(&ctx, task_named(&list, ctx.view, "sleeper"));
         let running = ctx.inspect_future(
             root,
@@ -1072,28 +1072,28 @@ mod tests {
     /// The address in a task's own vtable poll slot — a monomorphized
     /// `raw::poll`, which joins the task table and not the dyn-future
     /// one, and so stands in for a leaf's poll under a patched vtable.
-    fn task_poll_fn(ctx: &Context<'_, Fixture>, snapshot: &Fixture, task: &Task) -> u64 {
+    fn task_poll_fn(ctx: &Context<'_, Fixture>, core: &Fixture, task: &Task) -> u64 {
         let header_ty = ctx
             .infra_ty(ctx.view.bundle().infra.header, "task Header")
             .unwrap();
-        let header = Value::read(snapshot, header_ty, task.addr.0).unwrap();
+        let header = Value::read(core, header_ty, task.addr.0).unwrap();
         let task_vtable: u64 = ctx.walk(WalkRole::HeaderVtable).read(header).unwrap();
         let vtable_ty = ctx
             .infra_ty(ctx.view.bundle().infra.vtable, "task Vtable")
             .unwrap();
         ctx.walk(WalkRole::VtablePoll)
-            .read(Value::read(snapshot, vtable_ty, task_vtable).unwrap())
+            .read(Value::read(core, vtable_ty, task_vtable).unwrap())
             .unwrap()
     }
 
     fn corrupted<'a>(
         bundle: &'a Bundle,
-        snapshot: &'a Fixture,
+        core: &'a Fixture,
         patch: impl FnOnce(
             crate::testkit::corrupt::Corrupt<'a, Fixture>,
         ) -> crate::testkit::corrupt::Corrupt<'a, Fixture>,
     ) -> (crate::testkit::corrupt::Corrupt<'a, Fixture>, TaskList) {
-        let corrupt = patch(crate::testkit::corrupt::Corrupt::new(snapshot));
+        let corrupt = patch(crate::testkit::corrupt::Corrupt::new(core));
         let ctx = Context::new(&corrupt, BundleView::new(bundle)).unwrap();
         let list = testkit::tasks(&ctx, &corrupt);
         drop(ctx);
@@ -1109,9 +1109,9 @@ mod tests {
     /// symbols resolve nothing ends it unknown, with nothing guessed.
     #[test]
     fn test_the_dynamic_join_checks_every_vtable_word() {
-        let (bundle, snapshot) = load_any("dyn-future");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("dyn-future");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         // The driver, the boxed trait object, the leaf it names, and
         // the oneshot receiver the leaf awaits — a reviewed primitive.
         let healthy = inspect(&ctx, task_named(&list, ctx.view, "driver"));
@@ -1138,22 +1138,22 @@ mod tests {
         };
         // Alignment: three is no power of two; a real one the data
         // pointer does not honor is caught the same way.
-        let (corrupt, list) = corrupted(&bundle, &snapshot, |c| c.patch(slot(2), 3));
+        let (corrupt, list) = corrupted(&bundle, &core, |c| c.patch(slot(2), 3));
         assert!(end_of(&corrupt, &list).contains("not a power of two"));
-        let (corrupt, list) = corrupted(&bundle, &snapshot, |c| c.patch(slot(2), 1 << 20));
+        let (corrupt, list) = corrupted(&bundle, &core, |c| c.patch(slot(2), 1 << 20));
         assert!(end_of(&corrupt, &list).contains("is not aligned to"));
         // Size: the vtable's word must be the layout's.
-        let (corrupt, list) = corrupted(&bundle, &snapshot, |c| c.patch(slot(1), 7));
+        let (corrupt, list) = corrupted(&bundle, &core, |c| c.patch(slot(1), 7));
         assert!(end_of(&corrupt, &list).contains("records a size of 7"));
         // The referent: unmapped data is refused before it is read.
-        let (corrupt, list) = corrupted(&bundle, &snapshot, |c| c.patch(data_at, NOWHERE));
+        let (corrupt, list) = corrupted(&bundle, &core, |c| c.patch(data_at, NOWHERE));
         assert!(end_of(&corrupt, &list).contains("unmapped"));
         // The vtable pointer itself.
-        let (corrupt, list) = corrupted(&bundle, &snapshot, |c| c.patch(vtable_at, NOWHERE));
+        let (corrupt, list) = corrupted(&bundle, &core, |c| c.patch(vtable_at, NOWHERE));
         assert!(end_of(&corrupt, &list).contains("vtable pointer"));
         // Symbols that resolve nothing: the poll slot pointing at no
         // symbol and the drop slot null leave the type unknown.
-        let (corrupt, list) = corrupted(&bundle, &snapshot, |c| {
+        let (corrupt, list) = corrupted(&bundle, &core, |c| {
             c.patch(slot(3), NOWHERE).patch(slot(0), 0)
         });
         let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
@@ -1169,7 +1169,7 @@ mod tests {
         assert!(pointee.contains("Future"), "{pointee}");
         assert!(poll_symbol.is_none());
         // A null poll slot is no vtable.
-        let (corrupt, list) = corrupted(&bundle, &snapshot, |c| c.patch(slot(3), 0));
+        let (corrupt, list) = corrupted(&bundle, &core, |c| c.patch(slot(3), 0));
         assert!(end_of(&corrupt, &list).contains("null poll slot"));
     }
 
@@ -1185,12 +1185,12 @@ mod tests {
     /// future, while the drop glue still names the leaf.
     #[test]
     fn test_the_poll_slot_outranks_conflicting_drop_glue() {
-        let (bundle, snapshot) = load_any("dyn-future");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("dyn-future");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let (_, _, vtable) = wide_pointer(&ctx, &list);
         let member = task_named(&list, ctx.view, "set_member");
-        let member_poll = task_poll_fn(&ctx, &snapshot, member);
+        let member_poll = task_poll_fn(&ctx, &core, member);
         let symbol = ctx
             .symbol_at(member_poll)
             .expect("the task poll is a symbol");
@@ -1204,8 +1204,7 @@ mod tests {
         ));
         // The glue still names the leaf and is overruled: a chain
         // that stopped here before now runs on through the member.
-        let (corrupt, list) =
-            corrupted(&bundle, &snapshot, |c| c.patch(vtable + 3 * 8, member_poll));
+        let (corrupt, list) = corrupted(&bundle, &core, |c| c.patch(vtable + 3 * 8, member_poll));
         let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
         let inspection = inspect(&ctx, task_named(&list, ctx.view, "driver"));
         let resolved = &inspection.chain.frames[2];
@@ -1223,7 +1222,7 @@ mod tests {
         // A poll slot that resolves nothing hands the lead back to the
         // glue, which names the leaf — the supertrait object's case,
         // where the ABI records no poll slot to lead with.
-        let (corrupt, list) = corrupted(&bundle, &snapshot, |c| c.patch(vtable + 3 * 8, NOWHERE));
+        let (corrupt, list) = corrupted(&bundle, &core, |c| c.patch(vtable + 3 * 8, NOWHERE));
         let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
         let inspection = inspect(&ctx, task_named(&list, ctx.view, "driver"));
         assert!(
@@ -1237,7 +1236,7 @@ mod tests {
         );
         // With the drop glue's constraint gone, the task table alone
         // names the member's future: the sibling fallback resolves it.
-        let (corrupt, list) = corrupted(&bundle, &snapshot, |c| {
+        let (corrupt, list) = corrupted(&bundle, &core, |c| {
             c.patch(vtable + 3 * 8, member_poll).patch(vtable, 0)
         });
         let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
@@ -1256,9 +1255,9 @@ mod tests {
     /// the chain with an error, whatever the landed value looks like.
     #[test]
     fn test_a_route_landing_off_its_recorded_target_is_an_error() {
-        let (mut bundle, snapshot) = load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (mut bundle, core) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let root_ty = root_of(&ctx, task_named(&list, ctx.view, "sleeper"))
             .ty
             .id();
@@ -1291,8 +1290,8 @@ mod tests {
             }
         }
         assert!(retargeted > 0);
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let inspection = inspect(&ctx, task_named(&list, ctx.view, "sleeper"));
         assert_eq!(inspection.chain.frames.len(), 1);
         assert!(inspection.chain.edges.is_empty());
@@ -1310,16 +1309,16 @@ mod tests {
     /// name one type.
     #[test]
     fn test_task_entries_of_one_future_are_one_identity() {
-        let (mut bundle, snapshot) = load_any("dyn-future");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (mut bundle, core) = load_any("dyn-future");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let (_, _, vtable) = wide_pointer(&ctx, &list);
         let member = task_named(&list, ctx.view, "set_member");
         let FutureInfo::Known(known) = &member.future else {
             unreachable!()
         };
         let entry_id = known.entry;
-        let member_poll = task_poll_fn(&ctx, &snapshot, member);
+        let member_poll = task_poll_fn(&ctx, &core, member);
         drop(ctx);
         // A second entry of the same future under the same symbol.
         let twin = bundle.tasks.entries[entry_id.0 as usize].clone();
@@ -1337,7 +1336,7 @@ mod tests {
         assert!(keyed > 0, "the member's symbols are in the task table");
         bundle.tasks.by_normalized_symbol =
             hansei_bundle::symbols::normalized_candidate_index(&bundle.tasks.by_symbol);
-        let (corrupt, list) = corrupted(&bundle, &snapshot, |c| {
+        let (corrupt, list) = corrupted(&bundle, &core, |c| {
             c.patch(vtable + 3 * 8, member_poll).patch(vtable, 0)
         });
         let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
@@ -1374,16 +1373,16 @@ mod tests {
         // the leaf the drop glue names: the poll naming it too leaves
         // one type standing, the poll naming two others leaves none.
         for narrows in [true, false] {
-            let (mut bundle, snapshot) = load_any("dyn-future");
-            let ctx = testkit::context(&bundle, &snapshot);
-            let list = testkit::tasks(&ctx, &snapshot);
+            let (mut bundle, core) = load_any("dyn-future");
+            let ctx = testkit::context(&bundle, &core);
+            let list = testkit::tasks(&ctx, &core);
             let (_, _, vtable) = wide_pointer(&ctx, &list);
             let member = task_named(&list, ctx.view, "set_member");
             let FutureInfo::Known(known) = &member.future else {
                 panic!("the member's identity is its task entry");
             };
             let entry_id = known.entry;
-            let member_poll = task_poll_fn(&ctx, &snapshot, member);
+            let member_poll = task_poll_fn(&ctx, &core, member);
             let symbol = ctx.symbol_at(member_poll).unwrap();
             let healthy = inspect(&ctx, task_named(&list, ctx.view, "driver"));
             // The leaf the glue names, and a type it does not.
@@ -1404,7 +1403,7 @@ mod tests {
             // Only the poll slot is patched: the glue still names the
             // leaf, and leads nothing.
             let (corrupt, list) =
-                corrupted(&bundle, &snapshot, |c| c.patch(vtable + 3 * 8, member_poll));
+                corrupted(&bundle, &core, |c| c.patch(vtable + 3 * 8, member_poll));
             let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
             assert!(
                 matches!(ctx.task_ids_memoized(&symbol), SymbolLookup::Ambiguous(_)),
@@ -1446,9 +1445,9 @@ mod tests {
         use crate::tokio::pairing::{Pairing, crate_hashes};
         use hansei_bundle::{CrateLabel, ReleaseSize, StringInterner};
 
-        let (bundle, snapshot) = load_any("dyn-future");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("dyn-future");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let healthy = inspect(&ctx, task_named(&list, ctx.view, "driver"));
         let leaf_frame = &healthy.chain.frames[2];
         let leaf = leaf_frame.future.ty.id();
@@ -1509,12 +1508,12 @@ mod tests {
         }];
 
         let driver_chain = |pairing: Option<Pairing>| {
-            let ctx = Context::new(&snapshot, BundleView::new(&twinned)).unwrap();
+            let ctx = Context::new(&core, BundleView::new(&twinned)).unwrap();
             let ctx = match pairing {
                 Some(p) => ctx.with_pairing(p),
                 None => ctx,
             };
-            let list = testkit::tasks(&ctx, &snapshot);
+            let list = testkit::tasks(&ctx, &core);
             let inspection = inspect(&ctx, task_named(&list, ctx.view, "driver"));
             (
                 inspection.chain.frames.get(2).map(|f| f.future.ty.id()),
@@ -1544,9 +1543,9 @@ mod tests {
         use hansei_bundle::{
             AccessBinding, AccessKind, SemanticRule, SemanticRuleId, SemanticRuleKind,
         };
-        let (bundle, snapshot) = load_any("walk-shapes");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let chained = task_named(&list, ctx.view, "chained");
         let (helper, mut rules) = testkit::walk_shapes_bindings(&bundle);
         let [wrap_s, wrap_e] = helper.as_slice() else {
@@ -1578,9 +1577,8 @@ mod tests {
             target,
         });
         let bindings = vec![wrap_s_record, wrap_e_record];
-        let bound =
-            Context::with_test_bindings(&snapshot, BundleView::new(&bundle), &bindings, &rules)
-                .expect("the bindings validate");
+        let bound = Context::with_test_bindings(&core, BundleView::new(&bundle), &bindings, &rules)
+            .expect("the bindings validate");
         let chain = inspect(&bound, chained).chain;
         let names = names(&chain);
         assert_eq!(names.len(), 5, "{names:#?}");
@@ -1607,9 +1605,9 @@ mod tests {
     /// lands on the future inside, named by its vtable.
     #[test]
     fn test_an_access_only_dynamic_route_resolves_its_trait_object() {
-        let (bundle, snapshot) = load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let chain = inspect(&ctx, task_named(&list, ctx.view, "driver")).chain;
         let frame = chain
             .frames
@@ -1629,9 +1627,8 @@ mod tests {
                 .starts_with("core::pin::Pin<alloc::boxed::Box<(dyn ")
         );
         let bindings = testkit::access_only(&bundle, boxed.ty.id());
-        let bound =
-            Context::with_test_bindings(&snapshot, BundleView::new(&bundle), &bindings, &[])
-                .expect("the bindings validate");
+        let bound = Context::with_test_bindings(&core, BundleView::new(&bundle), &bindings, &[])
+            .expect("the bindings validate");
         // The record is access only under the bound context — what
         // the crossing is being tested against.
         assert!(

@@ -49,15 +49,15 @@ use std::fmt::Write;
 /// Run the full offline pipeline — fingerprint, discovery, enumeration,
 /// stage decode, await chains, and the dependency analysis — and render
 /// it as a golden-friendly summary.
-fn interpret(bundle: &Bundle, snapshot: &Fixture) -> String {
+fn interpret(bundle: &Bundle, core: &Fixture) -> String {
     let view = BundleView::new(bundle);
-    let ctx = Context::new(snapshot, view).expect("snapshot has mappings");
+    let ctx = Context::new(core, view).expect("the core has mappings");
 
     let mut out = String::new();
     let fp = ctx.validate_fingerprint();
     writeln!(out, "fingerprint {}/{}", fp.matched, fp.total).unwrap();
 
-    let lwps = snapshot.lwps().unwrap();
+    let lwps = core.lwps().unwrap();
     let workers = ctx.find_workers(&lwps).expect("TLS-key discovery works");
     writeln!(out, "workers {}", workers.len()).unwrap();
 
@@ -248,8 +248,8 @@ fn render_chain(out: &mut String, view: BundleView<'_>, chain: &AwaitChain<'_>) 
 #[track_caller]
 fn assert_summary(program: &str) {
     for set in fixture_sets() {
-        let (bundle, snapshot) = load(set, program);
-        let actual = interpret(&bundle, &snapshot);
+        let (bundle, core) = load(set, program);
+        let actual = interpret(&bundle, &core);
         let mut settings = insta::Settings::clone_current();
         settings.set_snapshot_path("two_binary");
         settings.set_prepend_module_to_snapshot(false);
@@ -319,9 +319,9 @@ fn test_blocking_pool_offline() {
 #[test]
 fn test_blocking_pool_records_reconcile_handle_and_queue() {
     for set in fixture_sets() {
-        let (bundle, snapshot) = load(set, "blocking-pool");
-        let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
-        let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+        let (bundle, core) = load(set, "blocking-pool");
+        let ctx = hansei_runtime::testkit::context(&bundle, &core);
+        let mut e = hansei_runtime::testkit::enumerate(&ctx, &core);
         e.discover(&ctx, &[]);
         let list = &e.list;
         assert!(list.errors.is_empty(), "[{set}] {:?}", list.errors);
@@ -397,9 +397,9 @@ fn test_blocking_pool_records_reconcile_handle_and_queue() {
 #[test]
 fn test_delegation_cases_offline() {
     for set in fixture_sets() {
-        let (bundle, snapshot) = load(set, "delegation-cases");
-        let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
-        let tasks = hansei_runtime::testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load(set, "delegation-cases");
+        let ctx = hansei_runtime::testkit::context(&bundle, &core);
+        let tasks = hansei_runtime::testkit::tasks(&ctx, &core);
         assert_eq!(tasks.tasks.len(), 12);
         assert!(
             tasks
@@ -407,7 +407,7 @@ fn test_delegation_cases_offline() {
                 .iter()
                 .all(|task| task.state.lifecycle() == Lifecycle::Idle)
         );
-        let cases = hansei_runtime::testkit::delegation::read_from(&snapshot)
+        let cases = hansei_runtime::testkit::delegation::read_from(&core)
             .expect("fixture registry symbol")
             .expect("post-poll ground truth");
         assert_eq!(cases.len(), 12);
@@ -604,9 +604,9 @@ fn exegesis_free_origin_check(bundle: &Bundle) {
 fn test_io_resource_fd_member_shapes() {
     use hansei_runtime::tokio::bundle::WaitTarget;
 
-    let (bundle, snapshot) = load_any("local-set-io");
-    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
-    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+    let (bundle, core) = load_any("local-set-io");
+    let ctx = hansei_runtime::testkit::context(&bundle, &core);
+    let mut e = hansei_runtime::testkit::enumerate(&ctx, &core);
     let _sets = e.discover(&ctx, &[]);
     let read = ReadContext::none();
     let analysis = graph::analyze(&ctx, &e.list, &e.registries, &read);
@@ -663,8 +663,8 @@ fn test_io_resource_fd_member_shapes() {
 /// it waits on.
 #[test]
 fn test_futurelock_census_offline() {
-    let (bundle, snapshot) = load_any("futurelock");
-    let (ctx, list, census) = census_of(&bundle, &snapshot);
+    let (bundle, core) = load_any("futurelock");
+    let (ctx, list, census) = census_of(&bundle, &core);
     let future1 = census
         .held
         .iter()
@@ -732,8 +732,8 @@ fn test_futurelock_census_offline() {
 fn test_the_census_matches_what_the_fixtures_registered() {
     for program in PROGRAMS {
         for set in fixture_sets() {
-            let (bundle, snapshot) = load(set, program);
-            let r = hansei_runtime::testkit::run(&bundle, &snapshot);
+            let (bundle, core) = load(set, program);
+            let r = hansei_runtime::testkit::run(&bundle, &core);
             let healthy = r.healthy_problems();
             assert!(healthy.is_empty(), "{program} [{set}]:\n{healthy:#?}");
             let problems = r.registry_problems();
@@ -771,8 +771,8 @@ fn test_the_corpus_still_exercises_every_census_outcome() {
     let mut hit_by: std::collections::BTreeMap<&'static str, bool> = Default::default();
     for program in PROGRAMS {
         for set in fixture_sets() {
-            let (bundle, snapshot) = load(set, program);
-            let (_ctx, _list, census) = census_of(&bundle, &snapshot);
+            let (bundle, core) = load(set, program);
+            let (_ctx, _list, census) = census_of(&bundle, &core);
             for (name, hit) in hansei_runtime::testkit::outcomes(&census) {
                 *hit_by.entry(name).or_default() |= hit;
             }
@@ -825,10 +825,7 @@ fn test_joinset_offline() {
     assert_summary("joinset");
 }
 
-/// The waker sweep over the fixture built for it. A snapshot holds
-/// only what its capture read, so the hits here are the pairs the
-/// harvests, the protocols and the capture's value renderer reached:
-/// the selector's wheel entry and `Notified` node sit in its own frame,
+/// The waker sweep over the fixture built for it: the selector's wheel entry and `Notified` node sit in its own frame,
 /// its channel's receiver slot in the channel's heap block; the
 /// waiter's node in its frame; and the holder's one slot is its
 /// oneshot's `rx_task`, in the `Inner` the renderer dereferenced —
@@ -838,9 +835,9 @@ fn test_joinset_offline() {
 #[test]
 fn test_armed_select_offline() {
     for set in fixture_sets() {
-        let (bundle, snapshot) = load(set, "armed-select");
-        let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
-        let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+        let (bundle, core) = load(set, "armed-select");
+        let ctx = hansei_runtime::testkit::context(&bundle, &core);
+        let mut e = hansei_runtime::testkit::enumerate(&ctx, &core);
         e.discover(&ctx, &[]);
         let extents = ctx.task_extents(&e.list);
         let census = hansei_runtime::testkit::census(&ctx, &e.list);
@@ -1033,8 +1030,8 @@ fn test_the_census_accounting_is_exact_per_program() {
     assert_eq!(named, PROGRAMS, "every program is accounted for");
     for set in fixture_sets() {
         for &(program, uncertain, chain_hits, descend_finds, enum_finds, dedup_hits) in ACCOUNTING {
-            let (bundle, snapshot) = load(set, program);
-            let (_ctx, _list, census) = census_of(&bundle, &snapshot);
+            let (bundle, core) = load(set, program);
+            let (_ctx, _list, census) = census_of(&bundle, &core);
             assert_eq!(
                 (
                     census.uncertain,
@@ -1064,13 +1061,13 @@ fn test_the_census_accounting_is_exact_per_program() {
 /// (the total audit panics inside `run`; the rest reports here).
 fn census_of<'a>(
     bundle: &'a Bundle,
-    snapshot: &'a Fixture,
+    core: &'a Fixture,
 ) -> (
     Context<'a, Fixture>,
     hansei_runtime::tokio::bundle::TaskList,
     census::FutureCensus,
 ) {
-    let r = hansei_runtime::testkit::run(bundle, snapshot);
+    let r = hansei_runtime::testkit::run(bundle, core);
     let problems = r.healthy_problems();
     assert!(problems.is_empty(), "{problems:#?}");
     (r.ctx, r.list, r.census)
@@ -1085,8 +1082,8 @@ fn census_of<'a>(
 /// which is what tracing a child node by address rests on.
 #[test]
 fn test_unordered_census_offline() {
-    let (bundle, snapshot) = load_any("unordered");
-    let (ctx, _list, census) = census_of(&bundle, &snapshot);
+    let (bundle, core) = load_any("unordered");
+    let (ctx, _list, census) = census_of(&bundle, &core);
 
     let set = census.sets.first().expect("the driver's set");
     let root = set.children[0].root.as_ref().expect("a decoded child");
@@ -1139,8 +1136,8 @@ fn node_size(bundle: &Bundle, set_ty: &str) -> u64 {
 /// wrong child, or none.
 #[test]
 fn test_a_node_address_locates_the_set_child_that_owns_it() {
-    let (bundle, snapshot) = load_any("unordered");
-    let (_ctx, _list, census) = census_of(&bundle, &snapshot);
+    let (bundle, core) = load_any("unordered");
+    let (_ctx, _list, census) = census_of(&bundle, &core);
 
     let mut nodes = Vec::new();
     for (set_index, set) in census.sets.iter().enumerate() {
@@ -1194,8 +1191,8 @@ fn test_a_node_address_locates_the_set_child_that_owns_it() {
 /// population.
 #[test]
 fn test_joinset_census_offline() {
-    let (bundle, snapshot) = load_any("joinset");
-    let (_ctx, list, census) = census_of(&bundle, &snapshot);
+    let (bundle, core) = load_any("joinset");
+    let (_ctx, list, census) = census_of(&bundle, &core);
 
     let unlisted: Vec<_> = census
         .join_sets
@@ -1223,10 +1220,10 @@ fn test_joinset_census_offline() {
 /// re-quoting line numbers.
 #[test]
 fn test_ct_runtime_offline() {
-    let (bundle, snapshot) = load_any("ct-runtime");
-    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+    let (bundle, core) = load_any("ct-runtime");
+    let ctx = hansei_runtime::testkit::context(&bundle, &core);
 
-    let e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+    let e = hansei_runtime::testkit::enumerate(&ctx, &core);
     let [runtime] = e.runtimes.as_slice() else {
         panic!("expected one runtime, got {}", e.runtimes.len());
     };
@@ -1267,7 +1264,7 @@ fn test_ct_runtime_offline() {
 }
 
 /// The `LocalSet` pair: tasks bound into a set's own list are found and
-/// enumerated offline, from a snapshot of a parked target — the whole
+/// enumerated offline, from a core of a parked target — the whole
 /// discovery chain, replayed on any platform.
 ///
 /// The set is reached by the cell bootstrap alone: nothing polls it in
@@ -1282,10 +1279,10 @@ fn test_ct_runtime_offline() {
 /// across recaptures without re-quoting addresses.
 #[test]
 fn test_local_set_offline() {
-    let (bundle, snapshot) = load_any("local-set");
-    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+    let (bundle, core) = load_any("local-set");
+    let ctx = hansei_runtime::testkit::context(&bundle, &core);
 
-    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+    let mut e = hansei_runtime::testkit::enumerate(&ctx, &core);
 
     // Before discovery the scheduler owns one task, and the one it
     // joins is not in any list this session can show.
@@ -1400,10 +1397,10 @@ fn test_local_set_offline() {
 /// wheel names, and its externally invisible sibling comes with it.
 #[test]
 fn test_local_set_timer_offline() {
-    let (bundle, snapshot) = load_any("local-set-timer");
-    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+    let (bundle, core) = load_any("local-set-timer");
+    let ctx = hansei_runtime::testkit::context(&bundle, &core);
 
-    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+    let mut e = hansei_runtime::testkit::enumerate(&ctx, &core);
 
     // Before discovery: the scheduler owns one task, and it points at
     // nothing outside its own list — it is parked on a timer of its
@@ -1492,10 +1489,10 @@ fn test_local_set_timer_offline() {
 /// member it names.
 #[test]
 fn test_local_set_io_offline() {
-    let (bundle, snapshot) = load_any("local-set-io");
-    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+    let (bundle, core) = load_any("local-set-io");
+    let ctx = hansei_runtime::testkit::context(&bundle, &core);
 
-    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+    let mut e = hansei_runtime::testkit::enumerate(&ctx, &core);
 
     // Before discovery: the scheduler owns one task, parked on a socket
     // of its own — so its own waker sits on a registration the harvest
@@ -1507,7 +1504,7 @@ fn test_local_set_io_offline() {
     // member parked in each. All three are candidates: a harvest that
     // walked only the waiter list, or only one direction slot, would
     // still find the set — and would yield fewer here.
-    let candidates = hansei_runtime::testkit::io_candidates(&ctx, &snapshot);
+    let candidates = hansei_runtime::testkit::io_candidates(&ctx, &core);
     assert_eq!(candidates.len(), 3, "{candidates:#x?}");
     assert!(
         !candidates.contains(&scheduler_task.0),
@@ -1587,10 +1584,10 @@ fn test_local_set_io_offline() {
 /// stayed hidden.
 #[test]
 fn test_foreign_runtime_offline() {
-    let (bundle, snapshot) = load_any("foreign-runtime");
-    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+    let (bundle, core) = load_any("foreign-runtime");
+    let ctx = hansei_runtime::testkit::context(&bundle, &core);
 
-    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+    let mut e = hansei_runtime::testkit::enumerate(&ctx, &core);
 
     // Before discovery: one runtime, one task — the joiner — and the
     // task it awaits is in no list, classified from its cell as a task
@@ -1731,12 +1728,12 @@ fn test_foreign_runtime_offline() {
 /// to discovery, which declines to admit it.
 #[test]
 fn test_excluded_runtime_stays_excluded() {
-    let (bundle, snapshot) = load_any("foreign-runtime");
-    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+    let (bundle, core) = load_any("foreign-runtime");
+    let ctx = hansei_runtime::testkit::context(&bundle, &core);
 
     // Discovery once, over a probe enumeration of its own, to learn
     // the hidden runtime's handle.
-    let mut probe = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+    let mut probe = hansei_runtime::testkit::enumerate(&ctx, &core);
     probe.discover(&ctx, &[]);
     let hidden = probe.runtimes[1].handle.addr;
 
@@ -1744,7 +1741,7 @@ fn test_excluded_runtime_stays_excluded() {
     // selection would run it: nothing is admitted, and the set inside
     // it stays out of reach too, since only that runtime's own wheel
     // names it.
-    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+    let mut e = hansei_runtime::testkit::enumerate(&ctx, &core);
     let sets = e.discover(&ctx, &[hidden]);
     assert_eq!(e.runtimes.len(), 1, "{:#?}", e.runtimes);
     assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
@@ -1760,9 +1757,9 @@ fn test_excluded_runtime_stays_excluded() {
 #[test]
 fn test_mismatched_bundle_is_detected() {
     let (bundle, _) = load_any("futurelock");
-    let (_, snapshot) = load_any("simple-await");
+    let (_, core) = load_any("simple-await");
     let view = BundleView::new(&bundle);
-    let ctx = Context::new(&snapshot, view).unwrap();
+    let ctx = Context::new(&core, view).unwrap();
 
     let fp = ctx.validate_fingerprint();
     assert!(!fp.is_complete(), "wrong bundle must not fingerprint clean");

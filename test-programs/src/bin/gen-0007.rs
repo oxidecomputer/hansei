@@ -11,8 +11,8 @@
 //!
 //! A frozen genfix output (seed 7 of the generator as first landed);
 //! the generator moves on, so regeneration is not expected to
-//! reproduce it — treat it as an ordinary fixture: edit if needed,
-//! then recapture its pairs.
+//! reproduce it — treat it as an ordinary fixture and edit it if
+//! needed.
 #![allow(dead_code)]
 
 use std::future::Future;

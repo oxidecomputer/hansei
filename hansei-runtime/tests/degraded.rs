@@ -7,8 +7,8 @@
 //! Every guard in the task, chain, and census walks — the per-shard
 //! error containment, the cycle checks, the unmapped-pointer ensures —
 //! exists for a torn or damaged core, which no healthy fixture can
-//! produce. These tests make one: a [`Corrupt`] target replays a real
-//! captured snapshot with chosen faults layered on top — address
+//! produce. These tests make one: a [`Corrupt`] target serves a fresh
+//! core of a fixture program with chosen faults layered on top — address
 //! ranges that no longer read, ranges that read as nothing but zeros,
 //! and words that lie — and the walks are held to their contract:
 //! degrade, contain, and say what happened, never crash and never
@@ -16,8 +16,8 @@
 //!
 //! The corruptions are aimed with addresses the healthy run reports
 //! (task headers, set nodes, join set entries, the semaphore), so they
-//! land on the exact structures the guards watch, whatever the
-//! snapshot's layout.
+//! land on the exact structures the guards watch, whatever the core's
+//! layout.
 
 use hansei_bundle::{Bundle, BundleType, BundleTypeId, BundleView, DiscrValue, WalkRole};
 use hansei_runtime::testkit::corrupt::Corrupt;
@@ -40,9 +40,9 @@ const NOWHERE: u64 = 0xdead_beef_0000;
 
 /// The healthy pipeline, run first to learn the addresses a corruption
 /// should land on.
-fn healthy<'a>(bundle: &'a Bundle, snapshot: &'a Fixture) -> (Context<'a, Fixture>, TaskList) {
-    let ctx = Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings");
-    let list = tasks_of(&ctx, snapshot);
+fn healthy<'a>(bundle: &'a Bundle, core: &'a Fixture) -> (Context<'a, Fixture>, TaskList) {
+    let ctx = Context::new(core, BundleView::new(bundle)).expect("the core has mappings");
+    let list = tasks_of(&ctx, core);
     assert!(list.errors.is_empty(), "{:?}", list.errors);
     (ctx, list)
 }
@@ -59,9 +59,9 @@ fn healthy<'a>(bundle: &'a Bundle, snapshot: &'a Fixture) -> (Context<'a, Fixtur
 /// A session over a truncated core still attaches.
 #[test]
 fn test_a_blank_worker_context_drops_only_that_thread() {
-    let (bundle, snapshot) = load_any("channels");
-    let ctx = Context::new(&snapshot, BundleView::new(&bundle)).expect("snapshot has mappings");
-    let lwps = snapshot.lwps().expect("the snapshot records lwps");
+    let (bundle, core) = load_any("channels");
+    let ctx = Context::new(&core, BundleView::new(&bundle)).expect("the core has mappings");
+    let lwps = core.lwps().expect("the core records lwps");
     let workers = ctx.find_workers(&lwps).expect("the fixture runs tokio");
     let runtimes = ctx.find_runtimes(&workers).expect("a runtime");
     let reaching: Vec<u32> = runtimes
@@ -77,8 +77,8 @@ fn test_a_blank_worker_context_drops_only_that_thread() {
 
     // Only the handle has to go: it is the member whose zeroed bytes
     // read back as a live variant.
-    let corrupt = Corrupt::new(&snapshot).blank(context_addr..context_addr + 0x40);
-    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).expect("snapshot has mappings");
+    let corrupt = Corrupt::new(&core).blank(context_addr..context_addr + 0x40);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).expect("the core has mappings");
     let workers = ctx
         .find_workers(&lwps)
         .expect("the other threads still hold Contexts");
@@ -114,11 +114,11 @@ fn test_a_blank_worker_context_drops_only_that_thread() {
 /// discovery's, for the same header it then cannot follow home.
 #[test]
 fn test_an_unreadable_task_degrades_only_its_shard() {
-    let (bundle, snapshot) = load_any("joinset");
-    let (_ctx, list) = healthy(&bundle, &snapshot);
+    let (bundle, core) = load_any("joinset");
+    let (_ctx, list) = healthy(&bundle, &core);
     let victim = list.tasks.last().expect("the fixture has tasks").addr.0;
 
-    let corrupt = Corrupt::new(&snapshot).deny(victim..victim + 0x40);
+    let corrupt = Corrupt::new(&core).deny(victim..victim + 0x40);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let degraded = tasks_of(&ctx, &corrupt);
 
@@ -161,11 +161,11 @@ fn test_an_unreadable_task_degrades_only_its_shard() {
 /// check before anything reads through it, and contained the same way.
 #[test]
 fn test_an_unmapped_task_pointer_is_reported() {
-    let (bundle, snapshot) = load_any("joinset");
-    let (_ctx, list) = healthy(&bundle, &snapshot);
+    let (bundle, core) = load_any("joinset");
+    let (_ctx, list) = healthy(&bundle, &core);
     let victim = list.tasks.last().unwrap().addr.0;
 
-    let corrupt = Corrupt::new(&snapshot).patch_words_equal(victim, NOWHERE);
+    let corrupt = Corrupt::new(&core).patch_words_equal(victim, NOWHERE);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let degraded = tasks_of(&ctx, &corrupt);
 
@@ -182,15 +182,15 @@ fn test_an_unmapped_task_pointer_is_reported() {
 /// rather than listing forever.
 #[test]
 fn test_a_task_list_cycle_is_caught() {
-    let (bundle, snapshot) = load_any("joinset");
-    let (_ctx, list) = healthy(&bundle, &snapshot);
+    let (bundle, core) = load_any("joinset");
+    let (_ctx, list) = healthy(&bundle, &core);
     let victim = list.tasks.last().unwrap().addr.0;
     let decoy = list.tasks.first().unwrap().addr.0;
     assert_ne!(victim, decoy);
 
     // Every pointer at the victim now points at the decoy: whichever
     // list reaches it second sees a task it has already walked.
-    let corrupt = Corrupt::new(&snapshot).patch_words_equal(victim, decoy);
+    let corrupt = Corrupt::new(&core).patch_words_equal(victim, decoy);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let degraded = tasks_of(&ctx, &corrupt);
 
@@ -215,11 +215,11 @@ fn test_a_task_list_cycle_is_caught() {
 /// warning.
 #[test]
 fn test_an_unreadable_cell_fails_the_stage_read() {
-    let (bundle, snapshot) = load_any("simple-await");
-    let (_ctx, list) = healthy(&bundle, &snapshot);
+    let (bundle, core) = load_any("simple-await");
+    let (_ctx, list) = healthy(&bundle, &core);
     let task = &list.tasks[0];
 
-    let corrupt = Corrupt::new(&snapshot).deny(task.addr.0..task.addr.0 + 0x2000);
+    let corrupt = Corrupt::new(&core).deny(task.addr.0..task.addr.0 + 0x2000);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     assert!(ctx.task_root(task, &ReadContext::none()).is_err());
 }
@@ -229,8 +229,8 @@ fn test_an_unreadable_cell_fails_the_stage_read() {
 /// stand.
 #[test]
 fn test_a_corrupted_dyn_box_ends_the_chain_with_an_error() {
-    let (bundle, snapshot) = load_any("dyn-future");
-    let (ctx, list) = healthy(&bundle, &snapshot);
+    let (bundle, core) = load_any("dyn-future");
+    let (ctx, list) = healthy(&bundle, &core);
     let id = hansei_runtime::testkit::task_id_running(
         ctx.view,
         &list,
@@ -255,7 +255,7 @@ fn test_a_corrupted_dyn_box_ends_the_chain_with_an_error() {
     let wide = state.payload.addr + awaitee.offset();
 
     // Both words of the wide pointer now point nowhere.
-    let corrupt = Corrupt::new(&snapshot)
+    let corrupt = Corrupt::new(&core)
         .patch(wide, NOWHERE)
         .patch(wide + 8, NOWHERE);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
@@ -280,14 +280,14 @@ fn test_a_corrupted_dyn_box_ends_the_chain_with_an_error() {
 /// something fabricated.
 #[test]
 fn test_an_unreadable_semaphore_degrades_the_analysis() {
-    let (bundle, snapshot) = load_any("futurelock");
-    let (ctx, list) = healthy(&bundle, &snapshot);
+    let (bundle, core) = load_any("futurelock");
+    let (ctx, list) = healthy(&bundle, &core);
     let analysis = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     assert!(!analysis.behind().is_empty(), "{:#?}", analysis.barriers);
     let semaphore = analysis.barriers[0].acquire.semaphore.addr;
 
-    let corrupt = Corrupt::new(&snapshot).deny(semaphore..semaphore + 0x100);
+    let corrupt = Corrupt::new(&core).deny(semaphore..semaphore + 0x100);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let degraded = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
 
@@ -319,12 +319,12 @@ fn test_an_unreadable_semaphore_degrades_the_analysis() {
 /// incomplete.
 #[test]
 fn test_an_unreadable_set_node_keeps_the_walked_prefix() {
-    let (bundle, snapshot) = load_any("unordered");
-    let (ctx, list) = healthy(&bundle, &snapshot);
+    let (bundle, core) = load_any("unordered");
+    let (ctx, list) = healthy(&bundle, &core);
     let baseline = testkit::census(&ctx, &list);
     let node = baseline.sets[0].children[1].node;
 
-    let corrupt = Corrupt::new(&snapshot).deny(node..node + 0x10);
+    let corrupt = Corrupt::new(&core).deny(node..node + 0x10);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let degraded = testkit::census(&ctx, &list);
 
@@ -339,9 +339,9 @@ fn test_an_unreadable_set_node_keeps_the_walked_prefix() {
 /// in the frame the census found it in, and the address the census
 /// recorded for it — the same place for a future held by value, the
 /// slot and the boxed future behind it for a `Pin<Box<dyn Future>>`.
-fn held_slot(bundle: &Bundle, snapshot: &Fixture, local: &str) -> (u64, u64) {
-    let ctx = Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings");
-    let list = tasks_of(&ctx, snapshot);
+fn held_slot(bundle: &Bundle, core: &Fixture, local: &str) -> (u64, u64) {
+    let ctx = Context::new(core, BundleView::new(bundle)).expect("the core has mappings");
+    let list = tasks_of(&ctx, core);
     let census = testkit::census(&ctx, &list);
     let held = census
         // The task's own find, since the frame is looked up through its
@@ -409,10 +409,10 @@ fn held_row<'b>(
 /// future invented behind the dead pointer.
 #[test]
 fn test_a_held_future_with_an_unmapped_box_is_listed_as_its_slot() {
-    let (bundle, snapshot) = load_any("futurelock");
-    let (wide, _) = held_slot(&bundle, &snapshot, "future1");
+    let (bundle, core) = load_any("futurelock");
+    let (wide, _) = held_slot(&bundle, &core, "future1");
 
-    let corrupt = Corrupt::new(&snapshot).patch(wide, NOWHERE);
+    let corrupt = Corrupt::new(&core).patch(wide, NOWHERE);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
@@ -437,14 +437,14 @@ fn test_a_held_future_with_an_unmapped_box_is_listed_as_its_slot() {
 /// there is an error naming the vtable, never a guessed type.
 #[test]
 fn test_a_held_future_with_a_garbage_vtable_is_listed_with_the_error() {
-    let (bundle, snapshot) = load_any("futurelock");
-    let (wide, boxed) = held_slot(&bundle, &snapshot, "future1");
+    let (bundle, core) = load_any("futurelock");
+    let (wide, boxed) = held_slot(&bundle, &core, "future1");
 
     // The vtable word now names the boxed future's own allocation,
     // whose words are a future's, not a vtable's. Both pointers stay
     // mapped, which is what makes this the ABI check's refusal rather
     // than a read failure.
-    let corrupt = Corrupt::new(&snapshot).patch(wide + 8, boxed);
+    let corrupt = Corrupt::new(&core).patch(wide + 8, boxed);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
@@ -478,17 +478,17 @@ fn test_a_held_future_with_a_garbage_vtable_is_listed_with_the_error() {
 /// name one future rather than one address twice.
 #[test]
 fn test_a_second_reference_to_one_future_is_not_a_second_row() {
-    let (bundle, snapshot) = load_any("unordered");
-    let (wide, _) = held_slot(&bundle, &snapshot, "boxed");
-    let (by_value, root) = held_slot(&bundle, &snapshot, "held");
+    let (bundle, core) = load_any("unordered");
+    let (wide, _) = held_slot(&bundle, &core, "boxed");
+    let (by_value, root) = held_slot(&bundle, &core, "held");
     // Held by value: the slot the census found it in is the future it
     // recorded, which is what the alias below points at.
     assert_eq!(by_value, root);
 
-    let (ctx, list) = healthy(&bundle, &snapshot);
+    let (ctx, list) = healthy(&bundle, &core);
     let healthy_census = testkit::census(&ctx, &list);
 
-    let corrupt = Corrupt::new(&snapshot).patch(wide, root);
+    let corrupt = Corrupt::new(&core).patch(wide, root);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &corrupt);
     let aliased = testkit::census(&ctx, &list);
@@ -523,9 +523,9 @@ fn joined_set(census: &census::FutureCensus) -> &census::JoinSet {
 /// The join set's entry list, walked healthy, so a corruption can be
 /// aimed at one of its entries: the entry addresses in walk order and
 /// the length the set keeps for itself.
-fn join_set_entries(bundle: &Bundle, snapshot: &Fixture) -> (Vec<u64>, u64) {
-    let ctx = Context::new(snapshot, BundleView::new(bundle)).expect("snapshot has mappings");
-    let list = tasks_of(&ctx, snapshot);
+fn join_set_entries(bundle: &Bundle, core: &Fixture) -> (Vec<u64>, u64) {
+    let ctx = Context::new(core, BundleView::new(bundle)).expect("the core has mappings");
+    let list = tasks_of(&ctx, core);
     let census = testkit::census(&ctx, &list);
     let set = joined_set(&census);
     (set.children.iter().map(|c| c.entry).collect(), set.length)
@@ -538,13 +538,13 @@ fn join_set_entries(bundle: &Bundle, snapshot: &Fixture) -> (Vec<u64>, u64) {
 /// only in the error.
 #[test]
 fn test_an_unreadable_join_set_entry_keeps_the_walked_prefix() {
-    let (bundle, snapshot) = load_any("joinset");
-    let (entries, length) = join_set_entries(&bundle, &snapshot);
+    let (bundle, core) = load_any("joinset");
+    let (entries, length) = join_set_entries(&bundle, &core);
     let [first, second, _] = entries.as_slice() else {
         panic!("the fixture set holds three tasks");
     };
 
-    let corrupt = Corrupt::new(&snapshot).deny(*second..*second + 0x10);
+    let corrupt = Corrupt::new(&core).deny(*second..*second + 0x10);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
@@ -566,15 +566,15 @@ fn test_an_unreadable_join_set_entry_keeps_the_walked_prefix() {
 /// the whole walk, not just the list it happened in.
 #[test]
 fn test_a_join_set_entry_cycle_is_bounded() {
-    let (bundle, snapshot) = load_any("joinset");
-    let (entries, length) = join_set_entries(&bundle, &snapshot);
+    let (bundle, core) = load_any("joinset");
+    let (entries, length) = join_set_entries(&bundle, &core);
     let [first, _, third] = entries.as_slice() else {
         panic!("the fixture set holds three tasks");
     };
 
     // Every pointer to the third entry now names the first, which the
     // walk has already seen by the time it reaches it.
-    let corrupt = Corrupt::new(&snapshot).patch_words_equal(*third, *first);
+    let corrupt = Corrupt::new(&core).patch_words_equal(*third, *first);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
@@ -595,11 +595,11 @@ fn test_a_join_set_entry_cycle_is_bounded() {
 /// still says three.
 #[test]
 fn test_an_unmapped_join_set_entry_is_reported() {
-    let (bundle, snapshot) = load_any("joinset");
-    let (entries, length) = join_set_entries(&bundle, &snapshot);
+    let (bundle, core) = load_any("joinset");
+    let (entries, length) = join_set_entries(&bundle, &core);
     let first = entries[0];
 
-    let corrupt = Corrupt::new(&snapshot).patch_words_equal(first, NOWHERE);
+    let corrupt = Corrupt::new(&core).patch_words_equal(first, NOWHERE);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
@@ -623,8 +623,8 @@ fn test_an_unmapped_join_set_entry_is_reported() {
 /// silently.
 #[test]
 fn test_a_join_set_listing_against_its_own_count_is_reported() {
-    let (bundle, snapshot) = load_any("joinset");
-    let (ctx, list) = healthy(&bundle, &snapshot);
+    let (bundle, core) = load_any("joinset");
+    let (ctx, list) = healthy(&bundle, &core);
     let baseline = testkit::census(&ctx, &list);
     let kept = baseline
         .join_sets
@@ -637,7 +637,7 @@ fn test_a_join_set_listing_against_its_own_count_is_reported() {
     // Every link to the kept set's last entry now names the joined
     // set's first, so the kept walk runs on through that set's chain:
     // more entries than its length, each of them valid.
-    let corrupt = Corrupt::new(&snapshot).patch_words_equal(victim, graft);
+    let corrupt = Corrupt::new(&core).patch_words_equal(victim, graft);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
@@ -680,8 +680,8 @@ fn test_a_join_set_listing_against_its_own_count_is_reported() {
 /// ever sees.
 #[test]
 fn test_a_reaped_set_slot_lists_without_a_future() {
-    let (bundle, snapshot) = load_any("unordered");
-    let (ctx, list) = healthy(&bundle, &snapshot);
+    let (bundle, core) = load_any("unordered");
+    let (ctx, list) = healthy(&bundle, &core);
     let baseline = testkit::census(&ctx, &list);
 
     // The child holding a set of its own, so that what the reaping
@@ -729,7 +729,7 @@ fn test_a_reaped_set_slot_lists_without_a_future() {
         .expect("Some carries the future")
         .offset();
     let base = root.addr - some.offset - held;
-    let corrupt = Corrupt::new(&snapshot).patch(base + discr.offset, none);
+    let corrupt = Corrupt::new(&core).patch(base + discr.offset, none);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let degraded = testkit::census(&ctx, &list);
 
@@ -771,8 +771,8 @@ fn test_a_reaped_set_slot_lists_without_a_future() {
 /// the prefix kept the same way.
 #[test]
 fn test_a_set_node_cycle_is_bounded() {
-    let (bundle, snapshot) = load_any("unordered");
-    let (ctx, list) = healthy(&bundle, &snapshot);
+    let (bundle, core) = load_any("unordered");
+    let (ctx, list) = healthy(&bundle, &core);
     let baseline = testkit::census(&ctx, &list);
     let children: Vec<u64> = baseline.sets[0].children.iter().map(|c| c.node).collect();
     let [first, _, third] = children.as_slice() else {
@@ -781,7 +781,7 @@ fn test_a_set_node_cycle_is_bounded() {
 
     // Every link to the third node now points back at the first: the
     // walk sees a node it has already visited.
-    let corrupt = Corrupt::new(&snapshot).patch_words_equal(*third, *first);
+    let corrupt = Corrupt::new(&core).patch_words_equal(*third, *first);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let degraded = testkit::census(&ctx, &list);
 
@@ -855,11 +855,11 @@ impl Drop for SeedGuard {
 }
 
 /// Every extent the healthy pipeline reads, learned by replaying it
-/// through the production [`Recorder`] — the same wrapper snapshot
-/// capture uses. Faults aimed anywhere else would never be seen.
-fn healthy_read_set(bundle: &Bundle, snapshot: &Fixture) -> Vec<Range<u64>> {
-    let recorder = Recorder::new(snapshot);
-    let ctx = Context::new(&recorder, BundleView::new(bundle)).expect("snapshot has mappings");
+/// through the production [`Recorder`]. Faults aimed anywhere else
+/// would never be seen.
+fn healthy_read_set(bundle: &Bundle, core: &Fixture) -> Vec<Range<u64>> {
+    let recorder = Recorder::new(core);
+    let ctx = Context::new(&recorder, BundleView::new(bundle)).expect("the core has mappings");
     let list = tasks_of(&ctx, &recorder);
     let _ = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     let _ = testkit::census(&ctx, &list);
@@ -892,13 +892,13 @@ fn pick_word(rng: &mut Rng, reads: &[Range<u64>]) -> Option<u64> {
 fn campaign_run(
     program: &'static str,
     bundle: &Bundle,
-    snapshot: &Fixture,
+    core: &Fixture,
     reads: &[Range<u64>],
     seed: u64,
 ) -> bool {
     let _guard = SeedGuard { program, seed };
     let mut rng = Rng::new(seed);
-    let mut corrupt = Corrupt::new(snapshot);
+    let mut corrupt = Corrupt::new(core);
     for _ in 0..1 + rng.below(4) {
         match rng.below(4) {
             // A hole where pages were never dumped.
@@ -944,8 +944,8 @@ fn campaign_run(
 }
 
 fn campaign(program: &'static str) {
-    let (bundle, snapshot) = load_any(program);
-    let reads = healthy_read_set(&bundle, &snapshot);
+    let (bundle, core) = load_any(program);
+    let reads = healthy_read_set(&bundle, &core);
     assert!(!reads.is_empty(), "the healthy pipeline read something");
 
     let seeds: Vec<u64> = match std::env::var("HANSEI_CAMPAIGN_SEED") {
@@ -959,7 +959,7 @@ fn campaign(program: &'static str) {
     };
     let reached = seeds
         .iter()
-        .filter(|&&seed| campaign_run(program, &bundle, &snapshot, &reads, seed))
+        .filter(|&&seed| campaign_run(program, &bundle, &core, &reads, seed))
         .count();
     // Faults that fail discovery itself are contained earlier and prove
     // nothing about the census; a sweep whose every seed died there has
@@ -1016,17 +1016,17 @@ fn ty_by_name<'b>(bundle: &'b Bundle, pred: impl Fn(&str) -> bool) -> BundleType
 /// held acquire's wait line is read back.
 #[test]
 fn test_a_patched_permit_word_decodes_count_and_closed_bit() {
-    let (bundle, snapshot) = load_any("futurelock");
-    let (ctx, list) = healthy(&bundle, &snapshot);
+    let (bundle, core) = load_any("futurelock");
+    let (ctx, list) = healthy(&bundle, &core);
     let analysis = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     let sem_addr = analysis.barriers[0].acquire.semaphore.addr;
     let sem_ty = ty_by_name(&bundle, |n| {
         n.starts_with("tokio::sync::batch_semaphore::Semaphore")
     });
-    let sem = reify::Value::read(&snapshot, sem_ty, sem_addr).unwrap();
+    let sem = reify::Value::read(&core, sem_ty, sem_addr).unwrap();
     let word = ctx.walk(WalkRole::SemaphorePermits).walk_at(sem).unwrap();
 
-    let corrupt = Corrupt::new(&snapshot).patch(word.addr, (5 << 1) | 1);
+    let corrupt = Corrupt::new(&core).patch(word.addr, (5 << 1) | 1);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &corrupt);
     let census = testkit::census(&ctx, &list);
@@ -1046,8 +1046,8 @@ fn test_a_patched_permit_word_decodes_count_and_closed_bit() {
 /// construction, so the vtable's word is made to lie here.
 #[test]
 fn test_a_lying_vtable_offset_is_a_loud_mismatch() {
-    let (bundle, snapshot) = load_any("futurelock");
-    let (ctx, list) = healthy(&bundle, &snapshot);
+    let (bundle, core) = load_any("futurelock");
+    let (ctx, list) = healthy(&bundle, &core);
     let task = list
         .tasks
         .iter()
@@ -1060,17 +1060,17 @@ fn test_a_lying_vtable_offset_is_a_loud_mismatch() {
         .expect("the fixture has resolved tasks");
     let view = BundleView::new(&bundle);
     let header_ty = view.ty(bundle.infra.header).expect("the header type");
-    let header = reify::Value::read(&snapshot, header_ty, task.addr.0).unwrap();
+    let header = reify::Value::read(&core, header_ty, task.addr.0).unwrap();
     let vtable_addr: u64 = ctx.walk(WalkRole::HeaderVtable).read(header).unwrap();
     let vtable_ty = view.ty(bundle.infra.vtable).expect("the vtable type");
-    let info = reify::Value::read(&snapshot, vtable_ty, vtable_addr).unwrap();
+    let info = reify::Value::read(&core, vtable_ty, vtable_addr).unwrap();
     let word = ctx
         .walk(WalkRole::VtableTrailerOffset)
         .walk_at(info)
         .unwrap();
-    let honest: u64 = word.parse(&snapshot).unwrap();
+    let honest: u64 = word.parse(&core).unwrap();
 
-    let corrupt = Corrupt::new(&snapshot).patch(word.addr, honest + 8);
+    let corrupt = Corrupt::new(&core).patch(word.addr, honest + 8);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &corrupt);
     let errs: Vec<String> = list.errors.iter().map(|e| format!("{e:#}")).collect();
@@ -1087,13 +1087,13 @@ fn test_a_lying_vtable_offset_is_a_loud_mismatch() {
 /// and a read that collapses the two slots together resolves nothing.
 #[test]
 fn test_a_dyn_box_resolves_through_its_poll_slot_alone() {
-    let (bundle, snapshot) = load_any("futurelock");
-    let (wide, _) = held_slot(&bundle, &snapshot, "future1");
-    let vtable = snapshot
+    let (bundle, core) = load_any("futurelock");
+    let (wide, _) = held_slot(&bundle, &core, "future1");
+    let vtable = core
         .read_u64(wide + 8)
         .expect("the wide pointer's vtable word");
 
-    let corrupt = Corrupt::new(&snapshot).patch(vtable, 0);
+    let corrupt = Corrupt::new(&core).patch(vtable, 0);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &corrupt);
     let census = testkit::census(&ctx, &list);
@@ -1120,16 +1120,16 @@ fn test_a_dyn_box_resolves_through_its_poll_slot_alone() {
 /// zeroed, so the reported name can only have come from slot 3.
 #[test]
 fn test_an_unjoined_dyn_reports_the_poll_slots_symbol() {
-    let (bundle, snapshot) = load_any("futurelock");
-    let (wide, _) = held_slot(&bundle, &snapshot, "future1");
-    let vtable = snapshot
+    let (bundle, core) = load_any("futurelock");
+    let (wide, _) = held_slot(&bundle, &core, "future1");
+    let vtable = core
         .read_u64(wide + 8)
         .expect("the wide pointer's vtable word");
-    let main_fn = snapshot
+    let main_fn = core
         .lookup_symbol_by_name("main")
         .expect("the fixture binary names main");
 
-    let corrupt = Corrupt::new(&snapshot)
+    let corrupt = Corrupt::new(&core)
         .patch(vtable + 24, main_fn.st_value)
         .patch(vtable, 0);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();

@@ -782,7 +782,7 @@ pub fn run<'a, T: Target>(bundle: &'a Bundle, target: &'a T) -> Run<'a, T> {
 
 /// What [`run`] reads of `fixture`, recorded as a snapshot through the
 /// production [`Recorder`](proc::snapshot::Recorder): for a test whose
-/// subject is a snapshot, whichever kind of target the run reads.
+/// subject is a recorded snapshot.
 pub fn record(bundle: &Bundle, fixture: &Fixture) -> Snapshot {
     use proc::RecordedHeapEvidence;
     use proc::snapshot::Recorder;
@@ -840,7 +840,7 @@ pub fn healthy_problems(census: &FutureCensus, list: &TaskList) -> Vec<String> {
 
 /// Just the task population [`enumerate`] and a full discovery sweep
 /// leave behind — generic so a fault-injecting wrapper over the
-/// snapshot can drive it too.
+/// fixture can drive it too.
 pub fn tasks<T: Target>(ctx: &Context<'_, T>, target: &T) -> TaskList {
     let mut e = enumerate(ctx, target);
     e.discover(ctx, &[]);
@@ -849,8 +849,8 @@ pub fn tasks<T: Target>(ctx: &Context<'_, T>, target: &T) -> TaskList {
 
 /// The id of the one task in `list` running a future named exactly
 /// `future`: how a test names a task, by what it runs. The id itself is
-/// not the fixture's to fix — a snapshot keeps whatever tokio handed
-/// out, and a fresh core is renamed canonically ([`Canonical`]).
+/// not the fixture's to fix — a core is renamed canonically
+/// ([`Canonical`]), but which id lands on which task is tokio's.
 pub fn task_id_running(view: BundleView<'_>, list: &TaskList, future: &str) -> u64 {
     let ids: Vec<Option<u64>> = list
         .tasks
@@ -926,7 +926,7 @@ pub fn census_with<T: Target>(
 /// Deliberately absent, so their loss is not mistaken for an
 /// oversight: a reaped set slot and the `<undecoded>` /
 /// `<unresolved: …>` summaries are producible only by damage, and
-/// `degraded.rs` pins each by patching a healthy snapshot. The
+/// `degraded.rs` pins each by patching a healthy core. The
 /// hand-written corpus also shows no Timer or Task wait — every held
 /// fixture future there is unresumed (an unpolled future waits on
 /// nothing) — but a generated fixture that parks a polled body on a
@@ -1013,13 +1013,11 @@ pub fn print_outcomes(census: &FutureCensus) {
 /// The fixture programs' ground-truth registry: reading back what a
 /// fixture registered about the state it built (`test-programs`'
 /// `census_expect` module — the write side, whose plain-old-data layout
-/// this module re-spells by hand; the two must move together), and
+/// this module restates by hand; the two must move together), and
 /// diffing a census against it in both directions.
 ///
 /// The registry is one `#[no_mangle]` static found by symbol name, so
-/// no DWARF is involved; the snapshot command reads it through its
-/// recording target at capture time, which is what makes the same
-/// bytes replayable from the offline pairs.
+/// no DWARF is involved.
 pub mod expect {
     use crate::tokio::bundle::{FutureInfo, TaskList};
     use crate::tokio::census::{FutureCensus, Via};
@@ -1063,9 +1061,7 @@ pub mod expect {
 
     /// Read the registry through any target: `None` where the target
     /// carries no registry symbol at all (any real, non-fixture
-    /// target), the parsed entries otherwise. The snapshot command
-    /// calls this through its `Recorder` purely for the reads it
-    /// makes, which is what puts the bytes into the capture.
+    /// target), the parsed entries otherwise.
     pub fn read_from<T: Target>(target: &T) -> Option<Result<Vec<Expectation>>> {
         let sym = target.lookup_symbol_by_name(SYMBOL)?;
         Some(parse(target, sym.st_value))

@@ -9,7 +9,7 @@
 //! future census walks, registering its own ground truth through
 //! `census_expect` as it builds. The soak loop
 //! (`test-programs/genfix/soak.sh`) writes it into
-//! `test-programs/src/bin/`, captures a snapshot pair from it, and
+//! `test-programs/src/bin/`, takes a fresh core of it, and
 //! diffs the census against the registry; a deterministically failing
 //! seed's source is checked in as a quarantined fixture.
 //!

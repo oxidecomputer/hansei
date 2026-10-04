@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! Shapes that pin the walk's internals, quarantined like `gen-0007`:
-//! this program is in the snapshot-pair suite and the capture list
+//! this program is in the two-binary suite and the capture list
 //! only — the golden, matrix, and acceptance lists enumerate
 //! explicitly and do not carry it.
 //!

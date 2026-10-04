@@ -856,8 +856,8 @@ mod executor_tests {
     }
 
     impl<'a> Pointer<'a> {
-        fn new(bundle: &'a Bundle, snapshot: &'a Fixture) -> Self {
-            let ctx = testkit::context(bundle, snapshot);
+        fn new(bundle: &'a Bundle, core: &'a Fixture) -> Self {
+            let ctx = testkit::context(bundle, core);
             let header = bundle.infra.header;
             let ty = bundle
                 .types
@@ -866,7 +866,7 @@ mod executor_tests {
                 .position(|def| matches!(def, TypeDef::Pointer { target, .. } if *target == header))
                 .map(|i| BundleTypeId(i as u32))
                 .expect("the bundle has a pointer to the task Header");
-            let target = testkit::tasks(&ctx, snapshot).tasks[0].addr.0;
+            let target = testkit::tasks(&ctx, core).tasks[0].addr.0;
             let size = bundle.types.size_of(header).expect("the Header is sized");
             Pointer {
                 ctx,
@@ -901,8 +901,8 @@ mod executor_tests {
     /// at all permits the read uncorroborated.
     #[test]
     fn test_a_dereference_is_held_to_the_allocator_and_the_typed_range() {
-        let (bundle, snapshot) = testkit::load_any("unordered");
-        let p = Pointer::new(&bundle, &snapshot);
+        let (bundle, core) = testkit::load_any("unordered");
+        let p = Pointer::new(&bundle, &core);
         let (target, size) = (p.target, p.size);
 
         let Walked::At(value) = p.deref(&ReadContext::none()).unwrap() else {
@@ -938,11 +938,11 @@ mod executor_tests {
     /// The same refusal through the real bridge over the real index.
     #[test]
     fn test_a_dereference_refuses_through_the_umem_bridge() {
-        let (bundle, snapshot) = testkit::load_any("unordered");
-        let p = Pointer::new(&bundle, &snapshot);
+        let (bundle, core) = testkit::load_any("unordered");
+        let p = Pointer::new(&bundle, &core);
         let heap = freeing(p.target..p.target + 1);
         let gates = GateCounts::default();
-        let view = HeapView::new(&heap, &snapshot, &gates);
+        let view = HeapView::new(&heap, &core, &gates);
         let err = refused(p.deref(&ReadContext::with_heap(&view)));
         assert!(format!("{err:#}").contains("taken back"), "{err:#}");
         assert!(p.deref(&ReadContext::none()).is_ok());
@@ -952,8 +952,8 @@ mod executor_tests {
     /// refusal or a read.
     #[test]
     fn test_a_null_pointer_is_null_under_any_evidence() {
-        let (bundle, snapshot) = testkit::load_any("unordered");
-        let mut p = Pointer::new(&bundle, &snapshot);
+        let (bundle, core) = testkit::load_any("unordered");
+        let mut p = Pointer::new(&bundle, &core);
         p.bytes = [0; 8];
         let freed = FakeHeap::new().freed(0..0x10000);
         for read in [ReadContext::none(), ReadContext::with_heap(&freed)] {
@@ -966,11 +966,11 @@ mod executor_tests {
     /// address that would overflow doing so is an error, not a wrap.
     #[test]
     fn test_member_steps_keep_typed_offsets_and_check_their_arithmetic() {
-        let (bundle, snapshot) = testkit::load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
+        let (bundle, core) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
         let header_ty = ctx.view.ty(bundle.infra.header).unwrap();
-        let addr = testkit::tasks(&ctx, &snapshot).tasks[0].addr.0;
-        let header = Value::read(&snapshot, header_ty, addr).unwrap();
+        let addr = testkit::tasks(&ctx, &core).tasks[0].addr.0;
+        let header = Value::read(&core, header_ty, addr).unwrap();
         let bound = ctx.walk(WalkRole::HeaderVtable);
         let offset = bound
             .member_offset(header_ty)
@@ -1146,8 +1146,8 @@ mod tests {
     }
 
     fn walk_ctx() -> Context<'static, Fixture> {
-        let (bundle, snapshot) = fixture();
-        Context::new(snapshot, BundleView::new(bundle)).expect("the fixture pair attaches")
+        let (bundle, core) = fixture();
+        Context::new(core, BundleView::new(bundle)).expect("the fixture pair attaches")
     }
 
     /// The first bundle type satisfying `pred`, scanned in id order so
@@ -1343,7 +1343,7 @@ mod tests {
     #[test]
     fn test_deref_outcomes() {
         let ctx = walk_ctx();
-        let (_, snapshot) = fixture();
+        let (_, core) = fixture();
         let ptr = pointer_ty(&ctx);
         let target = ptr.pointer_target().unwrap();
 
@@ -1355,10 +1355,10 @@ mod tests {
         ));
 
         // A pointer into recorded memory dereferences to its pointee.
-        let addr = crate::testkit::corrupt::runs(snapshot)
+        let addr = crate::testkit::corrupt::runs(core)
             .into_iter()
             .find(|r| r.end - r.start >= target.size())
-            .expect("the snapshot recorded memory")
+            .expect("the core has readable memory")
             .start;
         let bytes = addr.to_le_bytes();
         let root = Value::new(ptr, 0x1000, &bytes);

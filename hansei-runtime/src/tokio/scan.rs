@@ -1006,9 +1006,9 @@ mod tests {
     /// suspended state's awaitee, and the scan is complete.
     #[test]
     fn test_a_held_join_handle_references_its_task() {
-        let (bundle, snapshot) = testkit::load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let joiner = task_named(&list, ctx.view, "joiner");
         let sleeper = task_named(&list, ctx.view, "sleeper");
         let (completion, sink) = scan_task(&ctx, joiner);
@@ -1047,9 +1047,9 @@ mod tests {
     /// names, and nothing else.
     #[test]
     fn test_a_resource_behind_an_adapter_is_observed_as_an_origin() {
-        let (bundle, snapshot) = testkit::load_any("delegation-cases");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("delegation-cases");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let handle = task_named(&list, ctx.view, "delegation_cases::Handle");
         let holder = task_named(&list, ctx.view, "delegation_cases::Holder<");
         let (completion, sink) = scan_task(&ctx, handle);
@@ -1070,9 +1070,9 @@ mod tests {
     /// and the reference is found whether or not anything awaits it.
     #[test]
     fn test_a_reference_survives_the_referenced_tasks_completion() {
-        let (bundle, snapshot) = testkit::load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let joiner = task_named(&list, ctx.view, "joiner");
         let sleeper = task_named(&list, ctx.view, "sleeper");
         let header_ty = ctx.view.ty(bundle.infra.header).unwrap();
@@ -1080,7 +1080,7 @@ mod tests {
             .walk(WalkRole::HeaderState)
             .member_offset(header_ty)
             .unwrap();
-        let done = Corrupt::new(&snapshot).patch(sleeper.addr.0 + state_at, (1 << 6) | 0b10);
+        let done = Corrupt::new(&core).patch(sleeper.addr.0 + state_at, (1 << 6) | 0b10);
         let ctx = Context::new(&done, BundleView::new(&bundle)).unwrap();
         let (completion, sink) = scan_task(&ctx, joiner);
         assert!(completion.complete, "{:?}", sink.issues);
@@ -1099,9 +1099,9 @@ mod tests {
     /// that hands its waker over.
     #[test]
     fn test_a_sleep_references_nothing() {
-        let (bundle, snapshot) = testkit::load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let sleeper = task_named(&list, ctx.view, "sleeper");
         let (completion, sink) = scan_task(&ctx, sleeper);
         assert!(completion.complete, "{:?}", sink.issues);
@@ -1116,9 +1116,9 @@ mod tests {
     /// target, so a second walk with no budget left still names them.
     #[test]
     fn test_a_receiver_and_a_notified_reference_their_registered_wakers() {
-        let (bundle, snapshot) = testkit::load_any("channels");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("channels");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         for (name, source) in [
             ("recv_waiter", ReferenceSource::ChannelWaker),
             ("notify_waiter", ReferenceSource::NotifyWaker),
@@ -1172,9 +1172,9 @@ mod tests {
     /// capture; the `Arc` on the way is a silent stop.
     #[test]
     fn test_an_acquire_references_the_queued_wakers() {
-        let (bundle, snapshot) = testkit::load_any("futurelock");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("futurelock");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "futurelock::main");
         let (completion, sink) = scan_task(&ctx, task);
         assert!(!completion.complete);
@@ -1221,8 +1221,8 @@ mod tests {
     /// value, through the cell and `ManuallyDrop` around it.
     #[test]
     fn test_a_join_set_references_its_members_through_its_entries() {
-        let (bundle, snapshot) = testkit::load_any("joinset");
-        let run = testkit::run(&bundle, &snapshot);
+        let (bundle, core) = testkit::load_any("joinset");
+        let run = testkit::run(&bundle, &core);
         let driver = task_named(&run.list, run.ctx.view, "driver");
         let (completion, sink) = scan_task(&run.ctx, driver);
         assert!(completion.complete, "{:?}", sink.issues);
@@ -1255,13 +1255,13 @@ mod tests {
         {
             let set = &run.census.join_sets[0];
             let set_ty = run.ctx.view.ty(set.ty).unwrap();
-            let set_value = Value::read(&snapshot, set_ty, set.addr).unwrap();
+            let set_value = Value::read(&core, set_ty, set.addr).unwrap();
             let length = run
                 .ctx
                 .walk(WalkRole::JoinSetLength)
                 .walk_at(set_value)
                 .unwrap();
-            let lying = Corrupt::new(&snapshot).patch(length.addr, set.length + 1);
+            let lying = Corrupt::new(&core).patch(length.addr, set.length + 1);
             let ctx = Context::new(&lying, BundleView::new(&bundle)).unwrap();
             let (completion, sink) = scan_task(&ctx, driver);
             assert!(!completion.complete);
@@ -1299,7 +1299,7 @@ mod tests {
             .map(|s| s.ty)
             .unwrap();
         let set_ty = run.ctx.view.ty(set_ty).unwrap();
-        let set_value = Value::read(&snapshot, set_ty, set).unwrap();
+        let set_value = Value::read(&core, set_ty, set).unwrap();
         let lists = run
             .ctx
             .walk(WalkRole::JoinSetLists)
@@ -1319,7 +1319,7 @@ mod tests {
                     .optional()
             })
             .unwrap();
-        let entry_value = Value::read(&snapshot, head.ty.pointer_target().unwrap(), entry).unwrap();
+        let entry_value = Value::read(&core, head.ty.pointer_target().unwrap(), entry).unwrap();
         let mut sink = CollectedReferences::default();
         let mut budget = ScanBudget::default();
         let completion = run.ctx.scan_references(
@@ -1377,8 +1377,8 @@ mod tests {
     /// keeps the children unscanned and says so.
     #[test]
     fn test_a_set_walks_its_children_as_new_origins() {
-        let (bundle, snapshot) = testkit::load_any("unordered");
-        let run = testkit::run(&bundle, &snapshot);
+        let (bundle, core) = testkit::load_any("unordered");
+        let run = testkit::run(&bundle, &core);
         let driver = task_named(&run.list, run.ctx.view, "driver");
         let nodes: Vec<Vec<u64>> = run
             .census
@@ -1436,7 +1436,7 @@ mod tests {
         let victim = outer[1];
         let node_ty = {
             let set_ty = run.ctx.view.ty(run.census.sets[0].ty).unwrap();
-            let set = Value::read(&snapshot, set_ty, run.census.sets[0].addr).unwrap();
+            let set = Value::read(&core, set_ty, run.census.sets[0].addr).unwrap();
             run.ctx
                 .walk(WalkRole::SetHeadAll)
                 .walk_at(set)
@@ -1465,9 +1465,9 @@ mod tests {
 
         // Looped: the first node's link back to itself.
         let first = outer[0];
-        let node = Value::read(&snapshot, node_ty, first).unwrap();
+        let node = Value::read(&core, node_ty, first).unwrap();
         let next = run.ctx.walk(WalkRole::SetNodeNext).walk_at(node).unwrap();
-        let looped = Corrupt::new(&snapshot).patch(next.addr, first);
+        let looped = Corrupt::new(&core).patch(next.addr, first);
         let ctx = Context::new(&looped, BundleView::new(&bundle)).unwrap();
         let (completion, sink) = scan_task(&ctx, driver);
         assert!(!completion.complete);
@@ -1480,7 +1480,7 @@ mod tests {
         );
 
         // Cut: the link runs off the map.
-        let cut = Corrupt::new(&snapshot).patch(next.addr, NOWHERE);
+        let cut = Corrupt::new(&core).patch(next.addr, NOWHERE);
         let ctx = Context::new(&cut, BundleView::new(&bundle)).unwrap();
         let (completion, sink) = scan_task(&ctx, driver);
         assert!(!completion.complete);
@@ -1541,7 +1541,7 @@ mod tests {
             .find(|h| h.local == "nested_hold")
             .expect("the fixture holds `nested_hold`");
         let holder_ty = run.ctx.view.ty(holder.ty).unwrap();
-        let holder_value = Value::read(&snapshot, holder_ty, holder.addr).unwrap();
+        let holder_value = Value::read(&core, holder_ty, holder.addr).unwrap();
         let scan_holder = |limit: u16| {
             let mut sink = CollectedReferences::default();
             let mut budget = ScanBudget::new(ScanLimits {
@@ -1595,9 +1595,9 @@ mod tests {
     /// locals, and a visit budget of one stops after the root.
     #[test]
     fn test_the_inline_limits_stop_where_they_say() {
-        let (bundle, snapshot) = testkit::load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let joiner = task_named(&list, ctx.view, "joiner");
 
         let (completion, sink) = scan_task_with(
@@ -1639,9 +1639,9 @@ mod tests {
     /// reference at all.
     #[test]
     fn test_unavailable_storage_stops_with_a_diagnostic() {
-        let (bundle, snapshot) = testkit::load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let joiner = task_named(&list, ctx.view, "joiner");
         let root = root_of(&ctx, joiner);
         let mut unbound = bundle.clone();
@@ -1656,7 +1656,7 @@ mod tests {
             detail: None,
         });
         record.coroutine = None;
-        let ctx = testkit::context(&unbound, &snapshot);
+        let ctx = testkit::context(&unbound, &core);
         let (completion, sink) = scan_task(&ctx, joiner);
         assert!(!completion.complete);
         assert!(sink.references.is_empty(), "{:?}", sink.references);
@@ -1683,7 +1683,7 @@ mod tests {
             detail: None,
         });
         record.coroutine = None;
-        let ctx = testkit::context(&foreign, &snapshot);
+        let ctx = testkit::context(&foreign, &core);
         let (_, sink) = scan_task(&ctx, joiner);
         assert_eq!(kinds(&sink.issues), [WalkIssueKind::UnknownInitialization]);
         let detail = sink.issues[0].detail.as_deref().unwrap_or("");
@@ -1695,9 +1695,9 @@ mod tests {
     /// deltas, and the budget holds their sum.
     #[test]
     fn test_the_completion_reports_deltas_against_a_charged_budget() {
-        let (bundle, snapshot) = testkit::load_any("joinset");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("joinset");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let driver = task_named(&list, ctx.view, "driver");
         let mut budget = ScanBudget::default();
         let mut sink = CollectedReferences::default();
@@ -1728,9 +1728,9 @@ mod tests {
     /// holds, followed through its box.
     #[test]
     fn test_the_chain_depth_limit_bounds_a_deep_await_chain() {
-        let (bundle, snapshot) = testkit::load_any("futurelock");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("futurelock");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "futurelock::main");
         let (completion, sink) = scan_task_with(
             &ctx,
@@ -1779,8 +1779,8 @@ mod tests {
     /// zeros, is a struct of scalars beside a 64-slot array.
     #[test]
     fn test_arrays_of_aggregates_are_reported_and_depth_stops_first() {
-        let (bundle, snapshot) = testkit::load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
+        let (bundle, core) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
         let level = ctx
             .view
             .find_by_name("tokio::runtime::time::wheel::level::Level")
@@ -1844,8 +1844,8 @@ mod tests {
         if !testkit::reads("illumos") {
             return;
         }
-        let (bundle, snapshot) = testkit::load("illumos", "http-conns");
-        let ctx = testkit::context(&bundle, &snapshot);
+        let (bundle, core) = testkit::load("illumos", "http-conns");
+        let ctx = testkit::context(&bundle, &core);
         let node = ctx
             .view
             .find_by_name("publicsuffix::Node")
@@ -1878,8 +1878,8 @@ mod tests {
     /// where the bytes in hand do not cover the type.
     #[test]
     fn test_storage_that_cannot_hold_a_reference_is_not_visited() {
-        let (bundle, snapshot) = testkit::load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
+        let (bundle, core) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
         let types: Vec<_> = (0..bundle.types.types.len() as u32)
             .filter_map(|i| ctx.view.ty(hansei_bundle::BundleTypeId(i)))
             .collect();
@@ -1950,8 +1950,8 @@ mod tests {
     /// `Duration` stands in for each.
     #[test]
     fn test_a_binding_alone_keeps_scalar_storage_visited() {
-        let (bundle, snapshot) = testkit::load_any("sleep-join");
-        let duration_id = testkit::context(&bundle, &snapshot)
+        let (bundle, core) = testkit::load_any("sleep-join");
+        let duration_id = testkit::context(&bundle, &core)
             .view
             .find_by_name("core::time::Duration")
             .next()
@@ -2001,7 +2001,7 @@ mod tests {
             bound
         };
         let scan = |bundle: &Bundle| {
-            let ctx = testkit::context(bundle, &snapshot);
+            let ctx = testkit::context(bundle, &core);
             let duration = ctx.view.ty(duration_id).unwrap();
             let zeros = vec![0u8; duration.size() as usize];
             let mut sink = CollectedReferences::default();
@@ -2067,9 +2067,9 @@ mod tests {
     /// gated reader, which reaches no registration, names nobody.
     #[test]
     fn test_io_operations_reference_the_parked_wakers() {
-        let (bundle, snapshot) = testkit::load_any("local-set-io");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("local-set-io");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         // The registration is one dereference; a readiness await's
         // listed node is one more, while the direction slots are in
         // no list at all.
@@ -2102,9 +2102,9 @@ mod tests {
     /// stops on its first entry and says so.
     #[test]
     fn test_a_stream_map_roots_each_entry_under_the_limits() {
-        let (bundle, snapshot) = testkit::load_any("watch-stream");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let mapper = task_named(&list, ctx.view, "mapper");
         let map = testkit::frame_local(&ctx, mapper, "mapper", "map");
         let map_key = ValueKey::of(map);
@@ -2162,9 +2162,9 @@ mod tests {
     /// no referent budget the table's walk stops at the map and says so.
     #[test]
     fn test_a_hash_table_is_scanned_through_its_buckets() {
-        let (bundle, snapshot) = testkit::load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let driver = task_named(&list, ctx.view, "driver");
         let map = testkit::frame_local(&ctx, driver, "driver", "keyed");
         let map_key = ValueKey::of(map);
@@ -2267,10 +2267,10 @@ mod tests {
             .unwrap()
             .optional()
             .unwrap();
-        let whole = testkit::corrupt::Corrupt::new(&snapshot);
+        let whole = testkit::corrupt::Corrupt::new(&core);
         let ctx = Context::new(&whole, hansei_bundle::BundleView::new(&bundle)).unwrap();
         let (counted, _) = scan_task(&ctx, driver);
-        let cut = testkit::corrupt::Corrupt::new(&snapshot).patch(items.addr, 3);
+        let cut = testkit::corrupt::Corrupt::new(&core).patch(items.addr, 3);
         let ctx = Context::new(&cut, hansei_bundle::BundleView::new(&bundle)).unwrap();
         let (miscounted, sink) = scan_task(&ctx, driver);
         assert!(!miscounted.complete);
@@ -2305,9 +2305,9 @@ mod tests {
                 self.1 += 1;
             }
         }
-        let (bundle, snapshot) = testkit::load_any("joinset");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("joinset");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let driver = task_named(&list, ctx.view, "driver");
         let (_, collected) = scan_task(&ctx, driver);
         let mut count = Count(0, 0);

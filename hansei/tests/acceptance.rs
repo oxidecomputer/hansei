@@ -48,7 +48,8 @@
 //! spells `gcore` the same way but hands back a Mach-O core of a Mach-O
 //! binary, which nothing downstream can read. The portable coverage of
 //! the same analysis is `hansei-runtime/tests/two_binary.rs`, which
-//! replays captured snapshots instead of coring anything.
+//! reads the cores through testkit rather than through the binary, and
+//! so runs on macOS too, over copies of them.
 
 #![cfg(any(target_os = "linux", target_os = "illumos"))]
 
@@ -1786,8 +1787,8 @@ fn test_local_set_acceptance() {
 }
 
 /// The blocking pool's cells as rows against a real core: the claimed
-/// cell running on a nameable lwp — the poll-symbol stack join, which
-/// no snapshot can exercise — the queued cell behind it, and each
+/// cell running on a nameable lwp — the poll-symbol stack join — the
+/// queued cell behind it, and each
 /// waiter's join edge pointing at a listed row rather than the old
 /// "no task list carries those" caveat.
 #[test]
@@ -4054,7 +4055,7 @@ fn test_armed_select_acceptance() {
         let rows = list_tasks(&bundle, core);
         let selector = task_with_future(&rows, "async fn armed_select::selector");
         // A real core holds the watch's `Shared`, so its `Notified` is
-        // the watch's, where a snapshot could only say `notify`. Each
+        // the watch's. Each
         // slot carries its primitive's words: the one sender kept in
         // `main` and the bound of four, the leaked oneshot sender, the
         // watch never sent to. The set's cell is its lines, which

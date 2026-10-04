@@ -1609,10 +1609,9 @@ fn after_move<T: Target>(
 pub struct Session<'b, T: Target> {
     ctx: bundle::Context<'b, T>,
     proc: &'b T,
-    /// Read again under a recording target when a snapshot is captured.
     bundle: &'b Bundle,
-    /// How the session attached: the capture attaches the same way,
-    /// and the launch-time worker's own context walks under it.
+    /// How the session attached: the launch-time worker's own context
+    /// walks under it.
     policy: contract::WalkPolicy,
     core: &'b Path,
     bundle_source: BundleSource<'b>,

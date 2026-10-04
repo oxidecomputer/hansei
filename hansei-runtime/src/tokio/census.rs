@@ -3222,13 +3222,13 @@ mod tests {
     /// refused node *is* an error on the census: the list it was in
     /// runs short and the error is what says so.
     fn unordered_census_with(bounds: Bounds, heap: Option<&UmemHeap>) -> FutureCensus {
-        let (bundle, snapshot) = testkit::load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         // Through the same bridge a session hands the walk: the real
         // adapter, over the real index.
         let gates = GateCounts::default();
-        let view = heap.map(|heap| HeapView::new(heap, &snapshot, &gates));
+        let view = heap.map(|heap| HeapView::new(heap, &core, &gates));
         let read = ReadContext {
             heap: view.as_ref().map(|view| view as &dyn reify::Heap),
         };
@@ -3290,9 +3290,9 @@ mod tests {
     /// finds as well — and walk-shapes withholds some.
     #[test]
     fn test_uncertain_locals_are_summed_over_the_frames() {
-        let (bundle, snapshot) = testkit::load_any("walk-shapes");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let census = census(&ctx, &list);
         let mut expected = 0;
         for task in &list.tasks {
@@ -3318,9 +3318,9 @@ mod tests {
     /// the locals they withhold, drop out.
     #[test]
     fn test_a_running_task_still_holds_its_sets() {
-        let (bundle, snapshot) = testkit::load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let parked = census(&ctx, &list);
         let owner = parked
             .sets
@@ -3385,9 +3385,9 @@ mod tests {
         let stale = held_at(&full, "nested_hold").addr;
         let real = unordered_census_with(Bounds::default(), Some(&freeing(stale..stale + 1)));
 
-        let (bundle, snapshot) = testkit::load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let double = testkit::heap::FakeHeap::new().freed(stale..stale + 1);
         let faked = census_bounded(
             &ctx,
@@ -3494,15 +3494,15 @@ mod tests {
     fn delegation_census(
         heap: Option<&testkit::heap::FakeHeap>,
     ) -> (FutureCensus, Vec<testkit::delegation::Case>) {
-        let (bundle, snapshot) = testkit::load_any("delegation-cases");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("delegation-cases");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let read = match heap {
             Some(heap) => ReadContext::with_heap(heap),
             None => ReadContext::none(),
         };
         let census = census_bounded(&ctx, &list, Bounds::default(), &read);
-        let cases = testkit::delegation::read_from(&snapshot)
+        let cases = testkit::delegation::read_from(&core)
             .expect("the fixture registers its cases")
             .expect("the registry is post-poll ground truth");
         (census, cases)
@@ -3555,9 +3555,9 @@ mod tests {
     #[test]
     fn test_a_box_pointing_off_the_map_is_neither_listed_nor_refused() {
         const NOWHERE: u64 = 0xdead_beef_0000;
-        let (bundle, snapshot) = testkit::load_any("delegation-cases");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("delegation-cases");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let holder = list
             .tasks
             .iter()
@@ -3576,7 +3576,7 @@ mod tests {
         };
         let slot = holder.addr + holder.ty.member("held").expect("Holder::held").offset();
 
-        let cut = testkit::corrupt::Corrupt::new(&snapshot).patch(slot, NOWHERE);
+        let cut = testkit::corrupt::Corrupt::new(&core).patch(slot, NOWHERE);
         let ctx = Context::new(&cut, BundleView::new(&bundle)).unwrap();
         let census = census_bounded(&ctx, &list, Bounds::default(), &ReadContext::none());
         assert!(
@@ -3702,9 +3702,9 @@ mod tests {
     /// and the error says why they differ.
     #[test]
     fn test_a_join_set_stops_at_an_entry_the_allocator_took_back() {
-        let (bundle, snapshot) = testkit::load_any("joinset");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("joinset");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
 
         let full = census(&ctx, &list);
         assert!(full.errors.is_empty(), "{:?}", full.errors);
@@ -3717,7 +3717,7 @@ mod tests {
 
         let heap = freeing(stale..stale + 1);
         let gates = GateCounts::default();
-        let view = HeapView::new(&heap, &snapshot, &gates);
+        let view = HeapView::new(&heap, &core, &gates);
         let census = census_bounded(
             &ctx,
             &list,
@@ -3922,9 +3922,9 @@ mod tests {
     /// healthy fixture reaches one future through two slots.
     #[test]
     fn test_a_re_reached_find_is_dropped_and_counted() {
-        let (bundle, snapshot) = testkit::load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let census = census(&ctx, &list);
         let held = census.held.first().expect("the fixture holds a future");
         let ty = ctx
@@ -3965,9 +3965,9 @@ mod tests {
     /// its slot — and that drop is counted like the other.
     #[test]
     fn test_a_second_slot_to_one_future_is_deduped_by_its_root() {
-        let (bundle, snapshot) = testkit::load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let census = census(&ctx, &list);
         let held = census
             .held
@@ -5029,8 +5029,8 @@ mod tests {
     /// doctored census is what pins the delegation itself.
     #[test]
     fn test_a_run_reports_problems_through_its_methods() {
-        let (bundle, snapshot) = testkit::load_any("simple-await");
-        let mut r = testkit::run(&bundle, &snapshot);
+        let (bundle, core) = testkit::load_any("simple-await");
+        let mut r = testkit::run(&bundle, &core);
         r.census.errors.push(anyhow!("the walk broke at 0xf00d"));
         // A held row the fixture never registered: a fabrication the
         // registry diff must flag.
@@ -5078,9 +5078,9 @@ mod fanout_tests {
     /// the entries are held in is the one the route names.
     #[test]
     fn test_the_map_walk_hands_over_each_entry_up_to_the_cap() {
-        let (bundle, snapshot) = load_any("watch-stream");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let map = mapper_map(&ctx, &list);
         let read = ReadContext::none();
         let mut seen: Vec<(usize, String)> = Vec::new();
@@ -5129,9 +5129,9 @@ mod fanout_tests {
     /// allocation; a block covering exactly the three admits it.
     #[test]
     fn test_the_map_walk_holds_the_buffer_to_the_allocator() {
-        let (bundle, snapshot) = load_any("watch-stream");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let map = mapper_map(&ctx, &list);
         let entries = ctx.walk(WalkRole::StreamMapEntries).walk_at(map).unwrap();
         let elements = entries.elements(ctx.proc).unwrap();
@@ -5221,9 +5221,9 @@ mod table_tests {
     /// a find; one of plain data would not be walked at all.
     #[test]
     fn test_the_table_walk_hands_over_each_full_bucket() {
-        let (bundle, snapshot) = load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let (_, map) = keyed(&ctx, &list);
         let table = ctx
             .scanned_table(map.ty.id())
@@ -5271,9 +5271,9 @@ mod table_tests {
     /// control byte admits it.
     #[test]
     fn test_the_table_walk_holds_the_table_to_the_allocator() {
-        let (bundle, snapshot) = load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let (_, map) = keyed(&ctx, &list);
         let table = ctx
             .scanned_table(map.ty.id())
@@ -5333,9 +5333,9 @@ mod table_tests {
     /// map's local and the entry's place among the full buckets.
     #[test]
     fn test_the_census_finds_the_futures_a_map_holds() {
-        let (bundle, snapshot) = load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let census = census(&ctx, &list);
         let mut locals: Vec<&str> = census
             .held
@@ -5355,9 +5355,9 @@ mod table_tests {
     /// them.
     #[test]
     fn test_a_table_whose_count_disagrees_is_reported() {
-        let (bundle, snapshot) = load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let (_, map) = keyed(&ctx, &list);
         let table = ctx
             .scanned_table(map.ty.id())
@@ -5366,7 +5366,7 @@ mod table_tests {
             .unwrap()
             .optional()
             .unwrap();
-        let cut = testkit::corrupt::Corrupt::new(&snapshot).patch(items.addr, 3);
+        let cut = testkit::corrupt::Corrupt::new(&core).patch(items.addr, 3);
         let ctx = Context::new(&cut, hansei_bundle::BundleView::new(&bundle)).unwrap();
         let census = census(&ctx, &list);
         let reports: Vec<String> = census.errors.iter().map(|e| format!("{e:#}")).collect();
@@ -5389,9 +5389,9 @@ mod table_tests {
     /// reads a bucket; a count of every bucket is a full table, walked.
     #[test]
     fn test_the_table_walk_refuses_more_items_than_buckets() {
-        let (bundle, snapshot) = load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let (_, map) = keyed(&ctx, &list);
         let table = ctx
             .scanned_table(map.ty.id())
@@ -5402,7 +5402,7 @@ mod table_tests {
             .optional()
             .unwrap();
         let walk = |count: u64| {
-            let cut = testkit::corrupt::Corrupt::new(&snapshot).patch(items.addr, count);
+            let cut = testkit::corrupt::Corrupt::new(&core).patch(items.addr, count);
             let ctx = Context::new(&cut, hansei_bundle::BundleView::new(&bundle)).unwrap();
             let map = Value::read(ctx.proc, map.ty, map.addr).unwrap();
             let mut n = 0;
@@ -5465,7 +5465,7 @@ mod far_end_tests {
         function: &str,
         states: impl Fn(&Bundle, BundleType<'_>) -> Vec<FarEndState>,
     ) -> (Bundle, Fixture, BundleTypeId) {
-        let (mut bundle, snapshot) = testkit::load(set, "tls-conns");
+        let (mut bundle, core) = testkit::load(set, "tls-conns");
         let mut strings = StringInterner::new();
         for s in bundle.strings.iter() {
             strings.intern(s);
@@ -5514,7 +5514,7 @@ mod far_end_tests {
             .unwrap_or_else(|| panic!("{set}: the coroutine has no record"));
         record.far_end = Some(FarEndBinding { rule, states });
         bundle.validate().unwrap();
-        (bundle, snapshot, coroutine)
+        (bundle, core, coroutine)
     }
 
     /// The TLS stream the wait of the task running `function` reaches,
@@ -5548,7 +5548,7 @@ mod far_end_tests {
     #[test]
     fn test_a_handshake_frame_is_found_by_the_stream_its_wait_reaches() {
         for set in fixture_sets() {
-            let (bundle, snapshot, server) = bound(set, "exact_server", |_, server| {
+            let (bundle, core, server) = bound(set, "exact_server", |_, server| {
                 server
                     .variants()
                     .filter_map(|variant| {
@@ -5567,8 +5567,8 @@ mod far_end_tests {
                     })
                     .collect()
             });
-            let ctx = testkit::context(&bundle, &snapshot);
-            let list = testkit::tasks(&ctx, &snapshot);
+            let ctx = testkit::context(&bundle, &core);
+            let list = testkit::tasks(&ctx, &core);
             let census = testkit::census(&ctx, &list);
             let stream = waited_stream(&ctx, &list, "exact_server");
             assert_eq!(
@@ -5598,7 +5598,7 @@ mod far_end_tests {
     #[test]
     fn test_a_frame_awaiting_its_handshake_is_found_by_the_handshakes_stream() {
         for set in fixture_sets() {
-            let (bundle, snapshot, server) = bound(set, "handshaking_server", |bundle, server| {
+            let (bundle, core, server) = bound(set, "handshaking_server", |bundle, server| {
                 let record_of =
                     |ty: BundleTypeId| bundle.semantics.types.iter().find(|record| record.ty == ty);
                 server
@@ -5637,8 +5637,8 @@ mod far_end_tests {
                     })
                     .collect()
             });
-            let ctx = testkit::context(&bundle, &snapshot);
-            let list = testkit::tasks(&ctx, &snapshot);
+            let ctx = testkit::context(&bundle, &core);
+            let list = testkit::tasks(&ctx, &core);
             let census = testkit::census(&ctx, &list);
             let stream = waited_stream(&ctx, &list, "handshaking_server");
             assert_eq!(

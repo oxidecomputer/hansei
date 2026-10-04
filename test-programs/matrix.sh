@@ -330,7 +330,7 @@ cmd_add_tokio() {
         || die "tokio $ver is below the floor ($T_FLOOR)"
     if [ "$(minor_of "$ver")" = "$(minor_of "$T_FLOOR")" ] \
         || [ "$(minor_of "$ver")" = "$(minor_of "$P_TOKIO")" ]; then
-        die "the floor/primary pins ($T_FLOOR/$P_TOKIO) advance deliberately — edit matrix.toml by hand (a floor advance also means recapturing the linux-floor fixture set; see the header)"
+        die "the floor/primary pins ($T_FLOOR/$P_TOKIO) advance deliberately — edit matrix.toml by hand (a floor advance also means re-blessing the linux-floor goldens; see the header)"
     fi
     for lv in "${TOKIO_VERSIONS[@]}"; do
         [ "$(minor_of "$lv")" = "$(minor_of "$ver")" ] && old=$lv

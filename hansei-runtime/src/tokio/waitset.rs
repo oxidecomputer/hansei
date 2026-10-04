@@ -1548,9 +1548,9 @@ mod tests {
     /// is past the branch's own stop, so nothing here reaches it.
     #[test]
     fn test_a_stop_whose_branch_holds_no_slot_is_held_not_a_set() {
-        let (bundle, snapshot) = load_any("walk-shapes");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "chained");
         let Branches::Held { members, capped } =
             branches_of(&ctx, &list, task, &Registries::default())
@@ -1588,9 +1588,9 @@ mod tests {
     /// member.
     #[test]
     fn test_a_wheel_entry_inside_a_branch_arms_it() {
-        let (bundle, snapshot) = load_any("walk-shapes");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "chained");
         let Branches::Held { members, .. } = branches_of(&ctx, &list, task, &Registries::default())
         else {
@@ -1635,9 +1635,9 @@ mod tests {
     /// task, and a listed node inside a branch arms the branch.
     #[test]
     fn test_a_slot_in_no_branch_is_a_member_on_its_own() {
-        let (bundle, snapshot) = load_any("walk-shapes");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "chained");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
@@ -1716,9 +1716,9 @@ mod tests {
     /// other direction, which no branch verified, stays on its own.
     #[test]
     fn test_a_direction_slot_arms_the_branch_that_verified_it() {
-        let (bundle, snapshot) = load_any("tls-conns");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let mut e = testkit::enumerate(&ctx, &snapshot);
+        let (bundle, core) = load_any("tls-conns");
+        let ctx = testkit::context(&bundle, &core);
+        let mut e = testkit::enumerate(&ctx, &core);
         e.discover(&ctx, &[]);
         let task = task_named(&e.list, ctx.view, "owned_split_client");
         let Branches::Set(set) = branches_of(&ctx, &e.list, task, &e.registries) else {
@@ -1786,9 +1786,9 @@ mod tests {
     /// set to compute, whatever the registries hold.
     #[test]
     fn test_only_an_unknown_continuation_has_a_set() {
-        let (bundle, snapshot) = load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "sleeper");
         let registries = Registries::new(vec![wheel(0x4000, task)], Vec::new());
         assert!(matches!(
@@ -1803,9 +1803,9 @@ mod tests {
     /// on a task awaiting a timer.
     #[test]
     fn test_a_slot_outside_a_verified_wait_is_a_diagnostic() {
-        let (bundle, snapshot) = load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "sleeper");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
@@ -1923,8 +1923,8 @@ mod tests {
 
         let (mut borrowed, mut unavailable, mut plain, mut tables) = (0, 0, 0, 0);
         for program in testkit::PROGRAMS {
-            let (bundle, snapshot) = load_any(program);
-            let ctx = testkit::context(&bundle, &snapshot);
+            let (bundle, core) = load_any(program);
+            let ctx = testkit::context(&bundle, &core);
             let facts = Branching(&ctx);
             for id in (0..bundle.types.types.len() as u32).map(BundleTypeId) {
                 let record = ctx.type_semantics(id);
@@ -2004,9 +2004,9 @@ mod tests {
     /// not.
     #[test]
     fn test_adapters_are_followed_to_their_future() {
-        let (bundle, snapshot) = load_any("delegation-cases");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("delegation-cases");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let access = |ty: BundleTypeId| {
             ctx.type_semantics(ty)
                 .and_then(|r| r.access.as_ref())
@@ -2057,9 +2057,9 @@ mod tests {
     /// past its end is not.
     #[test]
     fn test_containment_is_half_open() {
-        let (bundle, snapshot) = load_any("walk-shapes");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "chained");
         let root = ctx
             .inspect_task(task, &ReadContext::none())
@@ -2081,9 +2081,9 @@ mod tests {
     /// on its own — nothing places it, since nothing was inspected.
     #[test]
     fn test_the_cap_counts_what_it_does_not_inspect() {
-        let (bundle, snapshot) = load_any("walk-shapes");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "chained");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
@@ -2126,9 +2126,9 @@ mod tests {
     /// borrow is a borrowed member whatever its own chain says.
     #[test]
     fn test_members_dedup_and_keep_the_borrow() {
-        let (bundle, snapshot) = load_any("walk-shapes");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "chained");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
@@ -2280,9 +2280,9 @@ mod tests {
     /// counted.
     #[test]
     fn test_select_branches_past_the_cap_are_counted() {
-        let (bundle, snapshot) = load_any("armed-select");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("armed-select");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "selector");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
@@ -2333,9 +2333,9 @@ mod tests {
     /// and its wait lists no entry.
     #[test]
     fn test_a_stream_map_fans_out_to_the_task_own_branches() {
-        let (bundle, snapshot) = load_any("watch-stream");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "mapper");
         let Branches::Set(set) = branches_of(&ctx, &list, task, &Registries::default()) else {
             panic!("a set");
@@ -2406,9 +2406,9 @@ mod tests {
         );
         assert_eq!(set.group_label(), "oneshot rx, watch rx");
 
-        let (bundle, snapshot) = load_any("armed-select");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("armed-select");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let driver = task_named(&list, ctx.view, "driver");
         let members = match branches_of(&ctx, &list, driver, &Registries::default()) {
             Branches::Set(set) => set.members,
@@ -2430,7 +2430,7 @@ mod tests {
     /// by the receiver's own protocol.
     #[test]
     fn test_a_borrowed_access_only_route_keeps_the_borrow() {
-        let (bundle, snapshot) = load_any("armed-select");
+        let (bundle, core) = load_any("armed-select");
         let view = hansei_bundle::BundleView::new(&bundle);
         let reference = (0..bundle.types.types.len() as u32)
             .map(BundleTypeId)
@@ -2440,7 +2440,7 @@ mod tests {
             })
             .expect("the selector borrows its oneshot");
         let bindings = testkit::access_only(&bundle, reference);
-        let bound = Context::with_test_bindings(&snapshot, view, &bindings, &[])
+        let bound = Context::with_test_bindings(&core, view, &bindings, &[])
             .expect("the bindings validate");
         assert!(
             bound
@@ -2448,7 +2448,7 @@ mod tests {
                 .is_some_and(|r| r.future.is_none() && r.access.is_some()),
             "the borrow is access only under the bound context"
         );
-        let list = testkit::tasks(&bound, &snapshot);
+        let list = testkit::tasks(&bound, &core);
         let task = task_named(&list, bound.view, "selector");
         let inspection = bound
             .inspect_task(task, &ReadContext::none())
@@ -2483,9 +2483,9 @@ mod tests {
     /// A stop with no branch and no slot has no set and nothing held.
     #[test]
     fn test_a_bare_stop_has_nothing() {
-        let (bundle, snapshot) = load_any("delegation-cases");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("delegation-cases");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "Retained");
         assert!(matches!(
             branches_of(&ctx, &list, task, &Registries::default()),
@@ -2497,9 +2497,9 @@ mod tests {
     /// notes.
     #[test]
     fn test_the_analysis_notes_a_slot_beside_a_verified_wait() {
-        let (bundle, snapshot) = load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "sleeper");
         let registries = Registries::new(vec![wheel(0x4000, task)], Vec::new());
         let analysis = crate::tokio::graph::analyze(&ctx, &list, &registries, &ReadContext::none());
@@ -2529,9 +2529,9 @@ mod tests {
     fn test_a_wheel_entrys_deadline_agrees_with_its_sleep() {
         use crate::tokio::observe::ResourceObservation;
 
-        let (bundle, snapshot) = load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let mut e = testkit::enumerate(&ctx, &snapshot);
+        let (bundle, core) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let mut e = testkit::enumerate(&ctx, &core);
         e.discover(&ctx, &[]);
         let task = task_named(&e.list, ctx.view, "sleeper");
         let inspection = ctx
@@ -2880,9 +2880,9 @@ mod tests {
     /// listed in branch order and nothing armed.
     #[test]
     fn test_a_select_over_never_ready_branches_is_never_ready() {
-        let (bundle, snapshot) = load_any("armed-select");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("armed-select");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = task_named(&list, ctx.view, "forever");
         let Branches::NeverReady { members, capped } =
             branches_of(&ctx, &list, task, &Registries::default())
@@ -3178,9 +3178,9 @@ mod fanout_tests {
     /// chain says.
     #[test]
     fn test_a_map_held_by_the_stop_is_one_member_for_its_entries() {
-        let (bundle, snapshot) = load_any("watch-stream");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = named(&list, ctx.view, "mapper");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())
@@ -3281,9 +3281,9 @@ mod fanout_tests {
     /// the other two counted.
     #[test]
     fn test_a_stop_that_is_the_map_lists_entries_as_its_branches() {
-        let (bundle, snapshot) = load_any("watch-stream");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let map = testkit::frame_local(&ctx, named(&list, ctx.view, "mapper"), "mapper", "map");
         let frame = AwaitFrame {
             future: map,
@@ -3324,9 +3324,9 @@ mod fanout_tests {
     /// its three and says three.
     #[test]
     fn test_entries_past_the_cap_are_counted_in_the_fan_out() {
-        let (bundle, snapshot) = load_any("watch-stream");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let task = named(&list, ctx.view, "mapper");
         let inspection = ctx
             .inspect_task(task, &ReadContext::none())

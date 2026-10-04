@@ -501,7 +501,7 @@ pub(crate) fn via_suffix(census: &census::FutureCensus, via: Option<census::Via>
 }
 
 /// Offline `whatis` tests: what an address resolves to over a real
-/// extracted bundle joined against a real captured snapshot.
+/// extracted bundle joined against a fresh core of a fixture program.
 #[cfg(test)]
 mod whatis_tests {
     use super::{Allocation, Size, VtableAt, report_whatis, separate, vtable_at};
@@ -525,9 +525,9 @@ mod whatis_tests {
     }
 
     fn with_tasks(program: &str, check: impl FnOnce(&Target<'_>)) {
-        let (bundle, snapshot) = testkit::load_any(program);
-        let ctx = testkit::context(&bundle, &snapshot);
-        let mut e = testkit::enumerate(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any(program);
+        let ctx = testkit::context(&bundle, &core);
+        let mut e = testkit::enumerate(&ctx, &core);
         let local_sets = e.discover(&ctx, &[]);
         let (runtimes, list) = (e.runtimes, e.list);
         let extents = ctx.task_extents(&list);
@@ -546,10 +546,9 @@ mod whatis_tests {
         reported(target, None, None, None, addr)
     }
 
-    /// The report over everything an attach can hand it, including the
-    /// two probes a fixture cannot supply: the checked-in snapshots
-    /// were captured under a plain malloc and hold no vtable this test
-    /// knows the address of, so both are staged rather than found.
+    /// The report over everything an attach can hand it, with the
+    /// allocation and vtable probes staged rather than found, so each
+    /// test chooses what they say.
     fn reported(
         target: &Target<'_>,
         alloc: Option<Allocation>,
@@ -727,9 +726,9 @@ mod whatis_tests {
                  no task's allocation and no future the census found contains 0x10\n"
             );
 
-            // A target whose allocator keeps no account hansei can read
-            // — every fixture snapshot, captured under a plain malloc —
-            // says nothing rather than "unknown".
+            // No allocation answer — a target whose allocator keeps no
+            // account hansei can read — says nothing rather than
+            // "unknown".
             let shown = report(t, task);
             assert!(!shown.contains("Status:"), "{shown}");
             assert!(!shown.contains("Size:"), "{shown}");
@@ -949,9 +948,9 @@ mod whatis_tests {
     /// being the empty slots, not the sum of everything.
     #[test]
     fn test_a_sets_children_count_the_reaped() {
-        let (bundle, snapshot) = testkit::load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let mut e = testkit::enumerate(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let mut e = testkit::enumerate(&ctx, &core);
         let local_sets = e.discover(&ctx, &[]);
         let (runtimes, list) = (e.runtimes, e.list);
         let extents = ctx.task_extents(&list);
@@ -996,9 +995,9 @@ mod whatis_tests {
     /// the route, and a find in the task's own frames adds nothing.
     #[test]
     fn test_the_via_suffix_names_the_route() {
-        let (bundle, snapshot) = testkit::load_any("futurelock");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = testkit::load_any("futurelock");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let census = census::census(&ctx, &list);
         assert!(!census.held.is_empty(), "the fixture holds a future");
 

@@ -86,9 +86,9 @@ fn chain_of<'a>(ctx: &Context<'a, Fixture>, task: &Task) -> AwaitChain<'a> {
 /// own validator; a route landing off its recorded target would refuse.
 #[test]
 fn test_the_chain_steps_through_hand_written_wrappers() {
-    let (bundle, snapshot) = pair();
-    let ctx = testkit::context(&bundle, &snapshot);
-    let list = tasks_of(&ctx, &snapshot);
+    let (bundle, core) = pair();
+    let ctx = testkit::context(&bundle, &core);
+    let list = tasks_of(&ctx, &core);
     let chained = &list.tasks[task_by_name(&list, ctx.view, "chained")];
 
     // Production: the chain ends at the struct wrapper, unknown.
@@ -126,7 +126,7 @@ fn test_the_chain_steps_through_hand_written_wrappers() {
         n.starts_with("walk_shapes::WrapS<") && !n.contains(">::")
     });
     let deep = type_by_name(&bundle, |n| n.contains("::deep::") && n.ends_with('}'));
-    let bound = Context::with_test_bindings(&snapshot, BundleView::new(&bundle), &bindings, &rules)
+    let bound = Context::with_test_bindings(&core, BundleView::new(&bundle), &bindings, &rules)
         .expect("the test bindings validate");
     let chain = chain_of(&bound, chained);
     // Through both wrappers to the coroutine inside, and on to the
@@ -205,9 +205,7 @@ fn test_the_chain_steps_through_hand_written_wrappers() {
         steps: vec![Step::Member(MemberRef::Named(s_inner))],
         target: deep.id(),
     });
-    assert!(
-        Context::with_test_bindings(&snapshot, BundleView::new(&bundle), &wrong, &rules).is_err()
-    );
+    assert!(Context::with_test_bindings(&core, BundleView::new(&bundle), &wrong, &rules).is_err());
 }
 
 /// The acquire held *by value* in the abandoner's frame is a polling
@@ -222,9 +220,9 @@ fn test_the_chain_steps_through_hand_written_wrappers() {
 /// member reaches independently.
 #[test]
 fn test_a_by_value_acquire_behind_a_notified_chain_is_a_barrier() {
-    let (bundle, snapshot) = pair();
-    let ctx = testkit::context(&bundle, &snapshot);
-    let list = tasks_of(&ctx, &snapshot);
+    let (bundle, core) = pair();
+    let ctx = testkit::context(&bundle, &core);
+    let list = tasks_of(&ctx, &core);
     let analysis = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     let abandoner = &list.tasks[task_by_name(&list, ctx.view, "abandoner")];
@@ -331,9 +329,9 @@ fn test_a_by_value_acquire_behind_a_notified_chain_is_a_barrier() {
 /// local block into a runtime's group.
 #[test]
 fn test_local_blocks_group_past_the_runtimes() {
-    let (bundle, snapshot) = pair();
-    let ctx = testkit::context(&bundle, &snapshot);
-    let mut e = testkit::enumerate(&ctx, &snapshot);
+    let (bundle, core) = pair();
+    let ctx = testkit::context(&bundle, &core);
+    let mut e = testkit::enumerate(&ctx, &core);
     let sets = e.discover(&ctx, &[]);
     let index = OwnerIndex::new(&e.runtimes, &sets);
     let list = &e.list;
@@ -352,9 +350,9 @@ fn test_local_blocks_group_past_the_runtimes() {
 /// local task in the listing is the TLS probe's doing, end to end.
 #[test]
 fn test_the_tls_anchored_set_is_discovered() {
-    let (bundle, snapshot) = pair();
-    let ctx = testkit::context(&bundle, &snapshot);
-    let list = tasks_of(&ctx, &snapshot);
+    let (bundle, core) = pair();
+    let ctx = testkit::context(&bundle, &core);
+    let list = tasks_of(&ctx, &core);
     task_by_name(&list, ctx.view, "side_parker");
 }
 
@@ -365,8 +363,8 @@ fn test_the_tls_anchored_set_is_discovered() {
 /// problems.
 #[test]
 fn test_the_walk_shapes_census_is_healthy() {
-    let (bundle, snapshot) = pair();
-    let run = testkit::run(&bundle, &snapshot);
+    let (bundle, core) = pair();
+    let run = testkit::run(&bundle, &core);
     let problems = run.healthy_problems();
     assert!(problems.is_empty(), "{problems:#?}");
 }
@@ -377,9 +375,9 @@ fn test_the_walk_shapes_census_is_healthy() {
 /// fail on the missing task; this pins the route it came through.
 #[test]
 fn test_the_wake_queue_is_the_hidden_runtimes_only_edge() {
-    let (bundle, snapshot) = pair();
-    let ctx = testkit::context(&bundle, &snapshot);
-    let mut e = testkit::enumerate(&ctx, &snapshot);
+    let (bundle, core) = pair();
+    let ctx = testkit::context(&bundle, &core);
+    let mut e = testkit::enumerate(&ctx, &core);
     let enumerated = e.runtimes.len();
     assert!(
         !e.list

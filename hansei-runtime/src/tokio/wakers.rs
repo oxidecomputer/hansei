@@ -832,13 +832,13 @@ mod tests {
     /// own extent, and the audit over the registries is clean.
     #[test]
     fn test_the_sweep_finds_the_registries_wakers() {
-        let (bundle, snapshot) = load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let mut e = testkit::enumerate(&ctx, &snapshot);
+        let (bundle, core) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let mut e = testkit::enumerate(&ctx, &core);
         e.discover(&ctx, &[]);
         let extents = ctx.task_extents(&e.list);
         let census = testkit::census(&ctx, &e.list);
-        let lwps = snapshot.lwps().unwrap();
+        let lwps = core.lwps().unwrap();
         let slots = ctx.sweep_wakers(&Territory {
             list: &e.list,
             extents: &extents,
@@ -897,7 +897,7 @@ mod planted_tests {
     /// a record shaped like a vtable is not one.
     const ANON: u64 = 0x5f00_0001_0000;
 
-    /// A snapshot with one writable file-backed mapping planted beside
+    /// A fixture core with one writable file-backed mapping planted beside
     /// it, holding whatever bytes a test lays down, and four function
     /// symbols named as futures-util's set-waker entries.
     struct Planted<'a> {
@@ -1057,16 +1057,16 @@ mod planted_tests {
     /// names nothing; one on the decoy is no hit at all.
     #[test]
     fn test_set_vtables_are_found_by_their_entries_and_name_set_children() {
-        let (bundle, snapshot) = load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let census = testkit::census(&ctx, &list);
         let extents = ctx.task_extents(&list);
-        let lwps = snapshot.lwps().unwrap();
+        let lwps = core.lwps().unwrap();
         let node = census.sets[0].children[0].node;
         let (set, child, _) = census.locate(node).expect("a listed child node");
 
-        let mut planted = Planted::new(&snapshot);
+        let mut planted = Planted::new(&core);
         let layout = ctx.raw_waker_layout().expect("the RawWaker layout");
         let offsets = ctx.raw_waker_vtable_layout().expect("the vtable layout");
         for (record, drop) in [(VTABLE, DROP), (BAD_VTABLE, DECOY), (ANON + 0x100, DROP)] {
@@ -1119,7 +1119,7 @@ mod planted_tests {
         assert!(slots.stats.set_hits >= 2);
     }
 
-    /// A snapshot whose symtab has no copy of tokio's static: the sweep
+    /// A fixture core whose symtab has no copy of tokio's static: the sweep
     /// admits nothing and says why, and the audit says it did not run.
     struct Nameless<'a>(&'a Fixture);
 
@@ -1158,13 +1158,13 @@ mod planted_tests {
 
     #[test]
     fn test_no_copy_of_the_static_means_an_absent_sweep() {
-        let (bundle, snapshot) = load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let census = testkit::census(&ctx, &list);
         let extents = ctx.task_extents(&list);
-        let lwps = snapshot.lwps().unwrap();
-        let nameless = Nameless(&snapshot);
+        let lwps = core.lwps().unwrap();
+        let nameless = Nameless(&core);
         let nctx = Context::new(&nameless, BundleView::new(&bundle)).unwrap();
         assert_eq!(nctx.task_waker_vtables().unwrap(), Vec::<u64>::new());
         let slots = nctx.sweep_wakers(&Territory {
@@ -1188,9 +1188,9 @@ mod planted_tests {
     /// each find's address to its type's size.
     #[test]
     fn test_held_spans_are_the_finds_storage() {
-        let (bundle, snapshot) = load_any("unordered");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let census = testkit::census(&ctx, &list);
         let mut expected: Vec<(u64, u64, usize)> = census
             .held

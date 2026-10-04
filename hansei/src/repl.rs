@@ -2136,9 +2136,9 @@ mod tests {
     fn test_target_values_read_the_connection_rows() {
         use crate::offline::session_args;
         use hansei_runtime::testkit;
-        let (bundle, snapshot) = testkit::load(testkit::set_or_any("illumos"), "http-conns");
+        let (bundle, core) = testkit::load(testkit::set_or_any("illumos"), "http-conns");
         let args = session_args(testkit::set_or_any("illumos"), "http-conns");
-        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let session = Session::attach(&core, &bundle, &args).expect("the pair attaches");
         let ask = Ask::Values {
             command: "connections".to_string(),
             field: "role".to_string(),
@@ -2154,9 +2154,9 @@ mod tests {
     fn test_target_values_read_each_listings_rows() {
         use crate::offline::session_args;
         use hansei_runtime::testkit;
-        let (bundle, snapshot) = testkit::load(testkit::set_or_any("illumos"), "blocking-pool");
+        let (bundle, core) = testkit::load(testkit::set_or_any("illumos"), "blocking-pool");
         let args = session_args(testkit::set_or_any("illumos"), "blocking-pool");
-        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let session = Session::attach(&core, &bundle, &args).expect("the pair attaches");
         let spelled = |command: &str, field: &str| -> Vec<(String, String)> {
             let ask = Ask::Values {
                 command: command.to_string(),

@@ -9,25 +9,16 @@
 //! structural decline.
 
 use hansei_bundle::{Bundle, BundleView, WalkOutcome, WalkRole};
+use hansei_runtime::testkit::PROGRAMS;
 use hansei_runtime::tokio::contract::{Class, verify_walk_contract};
-
-/// The fixture programs whose bundles these check, a subset of
-/// `testkit::PROGRAMS`.
-const PROGRAMS: &[&str] = &[
-    "simple-await",
-    "nested-await",
-    "dyn-future",
-    "futurelock",
-    "sleep-join",
-    "channels",
-];
 
 /// A bundle of the primary cell, read without a target.
 ///
 /// What these pin is how the binder read the primary cell's DWARF, so
 /// one bundle per program serves: the sets differ in their cores, not
-/// in the build a bundle is extracted from. The per-version half of this coverage is the matrix suite's, where
-/// binding runs against every cell.
+/// in the build a bundle is extracted from. The per-version half of
+/// this coverage is the matrix suite's, where binding runs against
+/// every cell.
 fn fixture_bundle(program: &str) -> Bundle {
     hansei_runtime::testkit::bundle(program)
 }

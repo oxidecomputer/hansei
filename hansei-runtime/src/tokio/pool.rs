@@ -278,9 +278,9 @@ mod tests {
     #[test]
     fn test_the_census_names_idle_and_checked_out_connections() {
         for set in fixture_sets() {
-            let (bundle, snapshot) = testkit::load(set, "http-conns");
-            let ctx = testkit::context(&bundle, &snapshot);
-            let list = testkit::tasks(&ctx, &snapshot);
+            let (bundle, core) = testkit::load(set, "http-conns");
+            let ctx = testkit::context(&bundle, &core);
+            let list = testkit::tasks(&ctx, &core);
             let census = census(&ctx, &list);
             let peers = &census.pool_peers.0;
             assert_eq!(peers.len(), 3, "{set}: {peers:?}");
@@ -308,9 +308,9 @@ mod tests {
     #[test]
     fn test_the_census_reads_each_pooled_connections_info() {
         for set in fixture_sets() {
-            let (bundle, snapshot) = testkit::load(set, "http-conns");
-            let ctx = testkit::context(&bundle, &snapshot);
-            let list = testkit::tasks(&ctx, &snapshot);
+            let (bundle, core) = testkit::load(set, "http-conns");
+            let ctx = testkit::context(&bundle, &core);
+            let list = testkit::tasks(&ctx, &core);
             let census = census(&ctx, &list);
             let infos = &census.pool_infos.0;
             assert_eq!(

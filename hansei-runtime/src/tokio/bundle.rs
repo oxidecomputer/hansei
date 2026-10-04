@@ -5533,9 +5533,9 @@ mod tests {
     #[test]
     fn test_a_socket_address_reads_off_the_enum() {
         use crate::testkit::{self, load_any};
-        let (bundle, snapshot) = load_any("http-conns");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let e = testkit::enumerate(&ctx, &snapshot);
+        let (bundle, core) = load_any("http-conns");
+        let ctx = testkit::context(&bundle, &core);
+        let e = testkit::enumerate(&ctx, &core);
         // The peer the service captured, reached through the server
         // dispatcher's frame on a connection that has chosen HTTP/1.
         let read = ReadContext::none();
@@ -5657,13 +5657,13 @@ mod tests {
     }
 
     fn unordered_ctx() -> Context<'static, Fixture> {
-        let (bundle, snapshot) = unordered();
-        testkit::context(bundle, snapshot)
+        let (bundle, core) = unordered();
+        testkit::context(bundle, core)
     }
 
     #[test]
     fn test_exact_task_collision_can_resolve_through_a_vtable_sibling() {
-        let (original, snapshot) = unordered();
+        let (original, core) = unordered();
         let mut bundle = original.clone();
         let first = TaskEntryId(0);
         let second = TaskEntryId(
@@ -5685,7 +5685,7 @@ mod tests {
         bundle.tasks.by_normalized_symbol =
             hansei_bundle::symbols::normalized_candidate_index(&bundle.tasks.by_symbol);
         bundle.validate().unwrap();
-        let ctx = testkit::context(&bundle, snapshot);
+        let ctx = testkit::context(&bundle, core);
         ctx.symbols
             .get_or(&1, || Some("shared_poll.llvm.123".to_owned()));
         ctx.symbols.get_or(&2, || Some("unique_dealloc".to_owned()));
@@ -5727,8 +5727,8 @@ mod tests {
     #[test]
     fn test_unavailable_storage_is_read_from_the_record() {
         use hansei_bundle::{SemanticIssue, SemanticIssueKind, StoragePolicy};
-        let (bundle, snapshot) = unordered();
-        let ctx = testkit::context(bundle, snapshot);
+        let (bundle, core) = unordered();
+        let ctx = testkit::context(bundle, core);
         assert!(
             bundle
                 .semantics
@@ -5770,7 +5770,7 @@ mod tests {
             }
         }
         bundle.validate().unwrap();
-        let ctx = testkit::context(&bundle, snapshot);
+        let ctx = testkit::context(&bundle, core);
         assert!(ctx.storage_unavailable(ty));
         assert!(!ctx.recognized_future(ty));
         assert_eq!(
@@ -5812,9 +5812,9 @@ mod tests {
         use crate::testkit::corrupt::Corrupt;
         use crate::testkit::heap::FakeHeap;
 
-        let (bundle, snapshot) = sleep_join();
-        let ctx = testkit::context(bundle, snapshot);
-        let list = testkit::tasks(&ctx, snapshot);
+        let (bundle, core) = sleep_join();
+        let ctx = testkit::context(bundle, core);
+        let list = testkit::tasks(&ctx, core);
         let task = task_named(&list, ctx.view, "sleeper");
         let healthy = ctx
             .read_task_header(task.addr, &ReadContext::none())
@@ -5827,7 +5827,7 @@ mod tests {
         let trailer = task.addr.0 + healthy.trailer_offset;
         assert!(ctx.owned_next(trailer).is_ok());
 
-        let torn = Corrupt::new(snapshot).deny(trailer..trailer + trailer_ty.size());
+        let torn = Corrupt::new(core).deny(trailer..trailer + trailer_ty.size());
         let ctx = Context::new(&torn, BundleView::new(bundle)).unwrap();
         let header = ctx
             .read_task_header(task.addr, &ReadContext::none())
@@ -5866,8 +5866,8 @@ mod tests {
     #[test]
     fn test_an_unknown_futures_task_extent_reaches_the_trailers_end() {
         let ctx = unordered_ctx();
-        let (_, snapshot) = unordered();
-        let list = testkit::tasks(&ctx, snapshot);
+        let (_, core) = unordered();
+        let list = testkit::tasks(&ctx, core);
         let known = list
             .tasks
             .iter()
@@ -5919,8 +5919,8 @@ mod tests {
     /// whole route.
     #[test]
     fn test_walk_root_ty_reports_a_bound_roles_root() {
-        let (bundle, snapshot) = local_set_io();
-        let ctx = testkit::context(bundle, snapshot);
+        let (bundle, core) = local_set_io();
+        let ctx = testkit::context(bundle, core);
         let ty = ctx
             .walk_root_ty(WalkRole::LocalTlsCtx)
             .expect("the role is bound in the local-set-io bundle");
@@ -5933,9 +5933,9 @@ mod tests {
     /// something was.
     #[test]
     fn test_a_discovered_population_lists_in_task_order() {
-        let (bundle, snapshot) = local_set_io();
-        let ctx = testkit::context(bundle, snapshot);
-        let list = testkit::tasks(&ctx, snapshot);
+        let (bundle, core) = local_set_io();
+        let ctx = testkit::context(bundle, core);
+        let list = testkit::tasks(&ctx, core);
         let keys: Vec<_> = list
             .tasks
             .iter()
@@ -6024,9 +6024,9 @@ mod tests {
     fn test_a_join_handle_observes_its_header_without_a_task_list() {
         use crate::testkit::corrupt::Corrupt;
 
-        let (bundle, snapshot) = sleep_join();
-        let ctx = testkit::context(bundle, snapshot);
-        let list = testkit::tasks(&ctx, snapshot);
+        let (bundle, core) = sleep_join();
+        let ctx = testkit::context(bundle, core);
+        let list = testkit::tasks(&ctx, core);
         let joiner = task_named(&list, ctx.view, "joiner");
         let sleeper = task_named(&list, ctx.view, "sleeper");
         let handle = leaf_of(&ctx, joiner);
@@ -6055,7 +6055,7 @@ mod tests {
             .expect("Header.state is a member path");
         const COMPLETE: u64 = 0b0010;
         const REF_ONE: u64 = 1 << 6;
-        let done = Corrupt::new(snapshot).patch(sleeper.addr.0 + state_at, REF_ONE | COMPLETE);
+        let done = Corrupt::new(core).patch(sleeper.addr.0 + state_at, REF_ONE | COMPLETE);
         let ctx = Context::new(&done, BundleView::new(bundle)).unwrap();
         let handle = leaf_of(&ctx, joiner);
         let observed = ctx.observe_resource(handle, &ReadContext::none());
@@ -6083,9 +6083,9 @@ mod tests {
     /// tick, the one the wheel harvest reads off the same entry.
     #[test]
     fn test_a_sleep_observes_its_deadline_and_registration() {
-        let (bundle, snapshot) = sleep_join();
-        let ctx = testkit::context(bundle, snapshot);
-        let list = testkit::tasks(&ctx, snapshot);
+        let (bundle, core) = sleep_join();
+        let ctx = testkit::context(bundle, core);
+        let list = testkit::tasks(&ctx, core);
         let sleeper = task_named(&list, ctx.view, "sleeper");
         let sleep = leaf_of(&ctx, sleeper);
         let observed = ctx.observe_resource(sleep, &ReadContext::none());
@@ -6103,7 +6103,7 @@ mod tests {
         };
         assert!(tick < timer::STATE_MIN_VALUE);
         // The wheel harvest read the same word off the same entry.
-        let mut e = testkit::enumerate(&ctx, snapshot);
+        let mut e = testkit::enumerate(&ctx, core);
         e.discover(&ctx, &[]);
         let armed: Vec<u64> = e
             .registries
@@ -6117,7 +6117,7 @@ mod tests {
         // state, never a tick.
         use crate::testkit::corrupt::Corrupt;
         let word = ctx.walk(WalkRole::SleepTimerState).walk_at(sleep).unwrap();
-        let fired = Corrupt::new(snapshot).patch(word.addr, timer::STATE_DEREGISTERED);
+        let fired = Corrupt::new(core).patch(word.addr, timer::STATE_DEREGISTERED);
         let ctx_fired = Context::new(&fired, BundleView::new(bundle)).unwrap();
         let sleep_fired = leaf_of(&ctx_fired, sleeper);
         let Some(ResourceObservation::Timer(timer)) = ctx_fired
@@ -6127,7 +6127,7 @@ mod tests {
             unreachable!()
         };
         assert_eq!(timer.state, TimerRegistrationState::Deregistered);
-        let pending = Corrupt::new(snapshot).patch(word.addr, timer::STATE_PENDING_FIRE);
+        let pending = Corrupt::new(core).patch(word.addr, timer::STATE_PENDING_FIRE);
         let ctx_pending = Context::new(&pending, BundleView::new(bundle)).unwrap();
         let sleep_pending = leaf_of(&ctx_pending, sleeper);
         let Some(ResourceObservation::Timer(timer)) = ctx_pending
@@ -6146,9 +6146,9 @@ mod tests {
     /// what places it.
     #[test]
     fn test_an_acquire_observes_its_words_and_the_queue_on_demand() {
-        let (bundle, snapshot) = futurelock();
-        let ctx = testkit::context(bundle, snapshot);
-        let list = testkit::tasks(&ctx, snapshot);
+        let (bundle, core) = futurelock();
+        let ctx = testkit::context(bundle, core);
+        let list = testkit::tasks(&ctx, core);
         let (task, acquire) = task_parked_on(&ctx, &list, "tokio::sync::batch_semaphore::Acquire");
         let observed = ctx.observe_resource(acquire, &ReadContext::none());
         assert!(observed.issues.is_empty(), "{:?}", observed.issues);
@@ -6202,7 +6202,7 @@ mod tests {
                 ),
                 (5 << semaphore::PERMIT_SHIFT, 5, false),
             ] {
-                let patched = Corrupt::new(snapshot).patch(permits.addr, word);
+                let patched = Corrupt::new(core).patch(permits.addr, word);
                 let ctx = Context::new(&patched, BundleView::new(bundle)).unwrap();
                 let queue = ctx.observe_semaphore_queue(
                     acq.semaphore,
@@ -6264,9 +6264,9 @@ mod tests {
         use crate::testkit::heap::FakeHeap;
         use crate::tokio::observe::ScanLimits;
 
-        let (bundle, snapshot) = futurelock();
-        let ctx = testkit::context(bundle, snapshot);
-        let list = testkit::tasks(&ctx, snapshot);
+        let (bundle, core) = futurelock();
+        let ctx = testkit::context(bundle, core);
+        let list = testkit::tasks(&ctx, core);
         let (_, acquire) = task_parked_on(&ctx, &list, "tokio::sync::batch_semaphore::Acquire");
         let Some(ResourceObservation::Acquire(acq)) =
             ctx.observe_resource(acquire, &ReadContext::none()).value
@@ -6297,7 +6297,7 @@ mod tests {
         assert_eq!(queue.position(granted), None);
 
         // Locked: everything reads, nothing is placed.
-        let locked = Corrupt::new(snapshot).patch_byte(lock_byte, 0b01);
+        let locked = Corrupt::new(core).patch_byte(lock_byte, 0b01);
         let ctx_locked = Context::new(&locked, BundleView::new(bundle)).unwrap();
         let queue = ctx_locked.observe_semaphore_queue(
             acq.semaphore,
@@ -6314,7 +6314,7 @@ mod tests {
 
         // Cut: the node's link runs off the map, the prefix is kept,
         // and nothing beyond it is placed or declared absent.
-        let cut = Corrupt::new(snapshot).patch(first_next, NOWHERE);
+        let cut = Corrupt::new(core).patch(first_next, NOWHERE);
         let ctx_cut = Context::new(&cut, BundleView::new(bundle)).unwrap();
         let queue = ctx_cut.observe_semaphore_queue(
             acq.semaphore,
@@ -6333,7 +6333,7 @@ mod tests {
         assert_eq!(queue.contains(granted), None);
 
         // Looped: the node links back to itself.
-        let looped = Corrupt::new(snapshot).patch(first_next, first);
+        let looped = Corrupt::new(core).patch(first_next, first);
         let ctx_looped = Context::new(&looped, BundleView::new(bundle)).unwrap();
         let queue = ctx_looped.observe_semaphore_queue(
             acq.semaphore,
@@ -6422,9 +6422,9 @@ mod tests {
     /// over a socket observes as nothing.
     #[test]
     fn test_io_operations_observe_their_registrations() {
-        let (bundle, snapshot) = local_set_io();
-        let ctx = testkit::context(bundle, snapshot);
-        let mut e = testkit::enumerate(&ctx, snapshot);
+        let (bundle, core) = local_set_io();
+        let ctx = testkit::context(bundle, core);
+        let mut e = testkit::enumerate(&ctx, core);
         e.discover(&ctx, &[]);
         let list = &e.list;
         let registered = |task: &Task| -> Vec<(u64, IoWaiterInfo)> {
@@ -6569,7 +6569,7 @@ mod tests {
                 .walk_at(io_value)
                 .unwrap();
             let head = ctx.walk(WalkRole::IoWaiterHead).walk_at(waiters).unwrap();
-            let cut = Corrupt::new(snapshot).patch(head.addr, NOWHERE);
+            let cut = Corrupt::new(core).patch(head.addr, NOWHERE);
             let ctx_cut = Context::new(&cut, BundleView::new(bundle)).unwrap();
             let registration = ctx_cut.observe_io_registration(
                 io.scheduled_io,
@@ -6597,7 +6597,7 @@ mod tests {
                 (2, IoFutureState::Done),
                 (7, IoFutureState::Unknown(7)),
             ] {
-                let patched = Corrupt::new(snapshot).patch_byte(word.addr, byte);
+                let patched = Corrupt::new(core).patch_byte(word.addr, byte);
                 let ctx = Context::new(&patched, BundleView::new(bundle)).unwrap();
                 let readiness = leaf_of(&ctx, watcher);
                 let Some(ResourceObservation::Io(io)) =
@@ -6634,9 +6634,9 @@ mod tests {
     fn test_an_io_route_is_held_to_the_allocator() {
         use crate::testkit::heap::FakeHeap;
 
-        let (bundle, snapshot) = local_set_io();
-        let ctx = testkit::context(bundle, snapshot);
-        let list = testkit::tasks(&ctx, snapshot);
+        let (bundle, core) = local_set_io();
+        let ctx = testkit::context(bundle, core);
+        let list = testkit::tasks(&ctx, core);
         let task = task_named(&list, ctx.view, "local_reader");
         let read = leaf_of(&ctx, task);
         // The operation's `&mut`: its stream path short of the final
@@ -6702,15 +6702,15 @@ mod tests {
     /// so a range computed any other way fails.
     #[test]
     fn test_poll_symbol_range_is_the_polls_symtab_extent() {
-        let (_, snapshot) = unordered();
+        let (_, core) = unordered();
         let ctx = unordered_ctx();
-        let list = testkit::tasks(&ctx, snapshot);
+        let list = testkit::tasks(&ctx, core);
         let task = list.tasks.first().expect("the fixture owns tasks");
         let range = ctx
             .poll_symbol_range(task)
             .expect("the header and vtable read back")
             .expect("a symbol covers the poll fn");
-        let sym = snapshot
+        let sym = core
             .lookup_symbol_by_addr(range.start)
             .expect("the range starts inside a symbol");
         assert_eq!(range, sym.st_value..sym.st_value + sym.st_size);
@@ -6718,8 +6718,7 @@ mod tests {
         // The v0 spelling of `task::raw::poll`, however the future type
         // parameter mangles — or, where `raw::poll` is a trampoline and
         // the target carries its text, of the `Harness::poll` it jumps
-        // into. A snapshot captured no text, so the range stays on the
-        // trampoline there; a core follows it.
+        // into.
         let name = &sym.name;
         assert!(
             name.contains("3raw4poll") || (name.contains("7Harness") && name.contains("4poll")),
@@ -6737,8 +6736,8 @@ mod tests {
     /// address.
     #[test]
     fn test_frame_members_slice_each_member_at_its_offset() {
-        let (bundle, snapshot) = sleep_join();
-        let ctx = testkit::context(bundle, snapshot);
+        let (bundle, core) = sleep_join();
+        let ctx = testkit::context(bundle, core);
         // Any struct with a sized, non-pointer member well past its
         // start (past 8, so offset and size cannot coincide).
         let (frame_ty, member) = (0..bundle.types.types.len() as u32)
@@ -6776,15 +6775,15 @@ mod tests {
     fn test_notify_state_reads_the_word() {
         use crate::testkit::corrupt::Corrupt;
         use hansei_bundle::tokio::notify;
-        let (bundle, snapshot) = armed_select();
-        let ctx = testkit::context(bundle, snapshot);
+        let (bundle, core) = armed_select();
+        let ctx = testkit::context(bundle, core);
         let notify_ty = ctx
             .view
             .find_by_name("tokio::sync::notify::Notify")
             .next()
             .expect("the fixture's bundle carries Notify");
         // Somewhere readable to lay one: the first task's header.
-        let list = testkit::tasks(&ctx, snapshot);
+        let list = testkit::tasks(&ctx, core);
         let addr = list.tasks[0].addr.0;
         let key = ValueKey {
             addr,
@@ -6796,7 +6795,7 @@ mod tests {
             panic!("the state role walks");
         };
         let word = notify::NOTIFIED | (2 << notify::CALLS_SHIFT);
-        let patched = Corrupt::new(snapshot).patch(state.addr, word);
+        let patched = Corrupt::new(core).patch(state.addr, word);
         let ctx = Context::new(&patched, BundleView::new(bundle)).unwrap();
         assert_eq!(ctx.notify_state(key, &read), Some(word));
     }
@@ -6824,9 +6823,9 @@ mod discovery_scan_tests {
     #[test]
     fn test_the_scan_offers_the_referenced_owner() {
         for set in testkit::fixture_sets() {
-            let (bundle, snapshot) = testkit::load(set, "foreign-runtime");
-            let ctx = testkit::context(&bundle, &snapshot);
-            let mut e = testkit::enumerate(&ctx, &snapshot);
+            let (bundle, core) = testkit::load(set, "foreign-runtime");
+            let ctx = testkit::context(&bundle, &core);
+            let mut e = testkit::enumerate(&ctx, &core);
             let listed = e.list.tasks.len();
             let read = ReadContext::none();
 
@@ -6842,7 +6841,7 @@ mod discovery_scan_tests {
 
             // The scan above marked every record scanned, so the
             // sweep is driven over a fresh enumeration.
-            let mut e = testkit::enumerate(&ctx, &snapshot);
+            let mut e = testkit::enumerate(&ctx, &core);
             e.discover(&ctx, &[]);
             let joined = named(&e.list, ctx.view, "foreign_runtime::joined").addr.0;
             assert_eq!(
@@ -6891,10 +6890,10 @@ mod discovery_scan_tests {
     /// nothing is spent and nothing is said.
     #[test]
     fn test_a_spent_scan_budget_is_reported() {
-        let (bundle, snapshot) = testkit::load_any("foreign-runtime");
-        let ctx = testkit::context(&bundle, &snapshot);
+        let (bundle, core) = testkit::load_any("foreign-runtime");
+        let ctx = testkit::context(&bundle, &core);
         let discover = |limits: ScanLimits| {
-            let mut e = testkit::enumerate(&ctx, &snapshot);
+            let mut e = testkit::enumerate(&ctx, &core);
             let (sets, _) = ctx.discover_hidden_tasks_with(
                 &e.lwps,
                 &e.workers,

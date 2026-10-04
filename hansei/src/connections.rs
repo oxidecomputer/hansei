@@ -2223,9 +2223,9 @@ mod tests {
     fn test_fields_offer_their_values_over_a_pair() {
         use crate::offline::session_args;
         use hansei_runtime::testkit;
-        let (bundle, snapshot) = testkit::load(testkit::set_or_any("illumos"), "http-conns");
+        let (bundle, core) = testkit::load(testkit::set_or_any("illumos"), "http-conns");
         let args = session_args(testkit::set_or_any("illumos"), "http-conns");
-        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let session = Session::attach(&core, &bundle, &args).expect("the pair attaches");
         assert_eq!(
             field_values(&session, "role"),
             Some((vec!["server".to_string(), "client".to_string()], true))

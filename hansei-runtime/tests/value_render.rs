@@ -3,18 +3,17 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! Offline value-render tests: join a real extracted bundle against a
-//! real captured snapshot and assert on reify's *rendered* output.
+//! fresh core of a fixture program and assert on reify's *rendered*
+//! output.
 //!
 //! `two_binary.rs` proves the task/await analysis; the golden tests in
 //! `exegesis` prove a detector resolves the right member paths. Neither
 //! feeds a real extracted bundle to the value renderer, so a detector
 //! that emits a valid-but-wrong offset the renderer then reads
-//! "successfully" is invisible to both. These tests close that loop: the
-//! `channels` snapshot was captured with the value renderer driven over
-//! every frame's locals (`hansei snapshot` warms them), so the pages
-//! behind the formatted values — the bounded mpsc channel, `Notify`,
-//! `Semaphore`, and `watch` — are recorded and replay here, in plain
-//! `cargo test` on any platform.
+//! "successfully" is invisible to both. These tests close that loop over
+//! a core of `channels`, rendering the formatted values behind its
+//! frames' locals — the bounded mpsc channel, `Notify`, `Semaphore`, and
+//! `watch` — in plain `cargo test` on any platform.
 //!
 //! The expected render is a golden in `tests/value_render/`; regenerate
 //! after an intended change with `INSTA_UPDATE=always cargo test -p
@@ -44,7 +43,7 @@ fn mask(s: &str) -> String {
 /// `task_id`'s outermost frame, pretty-printed and address-masked.
 fn render_local(
     ctx: &Context<'_, Fixture>,
-    snapshot: &Fixture,
+    core: &Fixture,
     list: &hansei_runtime::tokio::bundle::TaskList,
     task_id: u64,
     local: &str,
@@ -80,15 +79,15 @@ fn render_local(
     // compact form); peeling would strip `bounded::Receiver` down to its
     // inner `Arc<Chan>` and defeat it.
     let v = Value::new(m.ty(), payload.addr + m.offset(), bytes);
-    mask(&format!("{:#}", v.display_from_target(snapshot, depth)))
+    mask(&format!("{:#}", v.display_from_target(core, depth)))
 }
 
 /// Render one local per formatter into a single golden-friendly summary,
 /// every one of them from the task running `channels::hold`, parked
 /// owning every primitive.
-fn interpret(bundle: &Bundle, snapshot: &Fixture) -> String {
-    let ctx = hansei_runtime::testkit::context(bundle, snapshot);
-    let list = hansei_runtime::testkit::tasks(&ctx, snapshot);
+fn interpret(bundle: &Bundle, core: &Fixture) -> String {
+    let ctx = hansei_runtime::testkit::context(bundle, core);
+    let list = hansei_runtime::testkit::tasks(&ctx, core);
     assert!(
         list.errors.is_empty(),
         "task walk errors: {:?}",
@@ -116,7 +115,7 @@ fn interpret(bundle: &Bundle, snapshot: &Fixture) -> String {
         writeln!(
             out,
             "{}",
-            render_local(&ctx, snapshot, &list, task_id, local, depth)
+            render_local(&ctx, core, &list, task_id, local, depth)
         )
         .unwrap();
         writeln!(out).unwrap();
@@ -127,8 +126,8 @@ fn interpret(bundle: &Bundle, snapshot: &Fixture) -> String {
 #[track_caller]
 fn assert_golden(program: &str) {
     for set in hansei_runtime::testkit::fixture_sets() {
-        let (bundle, snapshot) = load(set, program);
-        let actual = interpret(&bundle, &snapshot);
+        let (bundle, core) = load(set, program);
+        let actual = interpret(&bundle, &core);
         let mut settings = insta::Settings::clone_current();
         settings.set_snapshot_path("value_render");
         settings.set_snapshot_suffix(*set);

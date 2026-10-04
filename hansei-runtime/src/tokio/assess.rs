@@ -2583,9 +2583,9 @@ mod tests {
     #[test]
     fn test_a_wrapper_that_chose_its_version_is_not_negotiating() {
         use crate::tokio::observe::ResourceObservation;
-        let (bundle, snapshot) = load_any("http-conns");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let e = testkit::enumerate(&ctx, &snapshot);
+        let (bundle, core) = load_any("http-conns");
+        let ctx = testkit::context(&bundle, &core);
+        let e = testkit::enumerate(&ctx, &core);
         let read = ReadContext::none();
         let (mut chosen, mut negotiating) = (0, 0);
         for task in e
@@ -2728,9 +2728,9 @@ mod tests {
     /// each the target the assessment verified.
     #[test]
     fn test_the_observed_connection_names_its_primitive() {
-        let (bundle, snapshot) = load_any("http-conns");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let e = testkit::enumerate(&ctx, &snapshot);
+        let (bundle, core) = load_any("http-conns");
+        let ctx = testkit::context(&bundle, &core);
+        let e = testkit::enumerate(&ctx, &core);
         let read = ReadContext::none();
         let mut pass = AssessmentPass::new();
         let mut seen = 0;
@@ -2832,12 +2832,12 @@ mod tests {
     /// A target where `task`'s state word carries `bits` in place of
     /// its lifecycle bits, the reference count kept.
     fn with_state<'a>(
-        snapshot: &'a Fixture,
+        core: &'a Fixture,
         ctx: &Context<'_, Fixture>,
         task: &Task,
         bits: u64,
     ) -> Corrupt<'a, Fixture> {
-        Corrupt::new(snapshot).patch(state_word(ctx, task), (task.state.0 & !STATE_BITS) | bits)
+        Corrupt::new(core).patch(state_word(ctx, task), (task.state.0 & !STATE_BITS) | bits)
     }
 
     fn primitive_of<'a, T: Target>(ctx: &Context<'a, T>, task: &Task) -> Value<'a> {
@@ -2855,16 +2855,16 @@ mod tests {
     /// running task keeps only its root.
     #[test]
     fn test_the_state_word_decides_before_the_chain_is_read() {
-        let (bundle, snapshot) = load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let joiner = task_named(&list, ctx.view, "joiner");
         for (bits, expected) in [
             (COMPLETE, "NotWaiting(Complete)"),
             (NOTIFIED, "Runnable(Scheduled)"),
             (RUNNING, "Runnable(ActivePoll)"),
         ] {
-            let patched = with_state(&snapshot, &ctx, joiner, bits);
+            let patched = with_state(&core, &ctx, joiner, bits);
             let ctx = Context::new(&patched, BundleView::new(&bundle)).unwrap();
             let (list, rows, _) = assessed(&ctx, &patched);
             let row = row(&rows, task_named(&list, ctx.view, "joiner"));
@@ -2902,9 +2902,9 @@ mod tests {
     /// contradiction.
     #[test]
     fn test_the_join_protocol_reads_the_joined_header_and_trailer() {
-        let (bundle, snapshot) = load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let (list, rows, barriers) = assessed(&ctx, &snapshot);
+        let (bundle, core) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let (list, rows, barriers) = assessed(&ctx, &core);
         assert!(barriers.is_empty());
         let joiner = task_named(&list, ctx.view, "joiner");
         let sleeper = task_named(&list, ctx.view, "sleeper");
@@ -2935,7 +2935,7 @@ mod tests {
 
         // The sleeper complete: the join is ready, not a wait.
         let done = with_state(
-            &snapshot,
+            &core,
             &ctx,
             sleeper,
             sleeper.state.0 & STATE_BITS | COMPLETE,
@@ -2950,7 +2950,7 @@ mod tests {
         // No join waker stored: the handle's poll may not have reached
         // the header, and nothing is proved.
         let unset = with_state(
-            &snapshot,
+            &core,
             &ctx,
             sleeper,
             sleeper.state.0 & STATE_BITS & !JOIN_WAKER,
@@ -2976,12 +2976,8 @@ mod tests {
         let trailer_ty = ctx
             .infra_ty(ctx.view.bundle().infra.trailer, "task Trailer")
             .unwrap();
-        let trailer = Value::read(
-            &snapshot,
-            trailer_ty,
-            sleeper.addr.0 + header.trailer_offset,
-        )
-        .unwrap();
+        let trailer =
+            Value::read(&core, trailer_ty, sleeper.addr.0 + header.trailer_offset).unwrap();
         let raw = ctx
             .walk(WalkRole::TrailerWaker)
             .walk(trailer)
@@ -2993,7 +2989,7 @@ mod tests {
             u64::from_le_bytes(data.bytes.try_into().unwrap()),
             joiner.addr.0
         );
-        let other = Corrupt::new(&snapshot).patch(data.addr, sleeper.addr.0);
+        let other = Corrupt::new(&core).patch(data.addr, sleeper.addr.0);
         let ctx4 = Context::new(&other, BundleView::new(&bundle)).unwrap();
         let (list4, rows4, _) = assessed(&ctx4, &other);
         let row4 = row(&rows4, task_named(&list4, ctx.view, "joiner"));
@@ -3008,9 +3004,9 @@ mod tests {
     /// sentinels are the wake on its way or already delivered.
     #[test]
     fn test_the_timer_protocol_reads_the_entrys_sentinels() {
-        let (bundle, snapshot) = load_any("sleep-join");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let (list, rows, _) = assessed(&ctx, &snapshot);
+        let (bundle, core) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &core);
+        let (list, rows, _) = assessed(&ctx, &core);
         let sleeper = task_named(&list, ctx.view, "sleeper");
         let slept = row(&rows, sleeper);
         let WaitAssessment::Waiting(wait) = &slept.assessment else {
@@ -3027,7 +3023,7 @@ mod tests {
             (timer::STATE_DEREGISTERED, ReadyReason::TimerFired),
             (timer::STATE_PENDING_FIRE, ReadyReason::TimerPendingFire),
         ] {
-            let patched = Corrupt::new(&snapshot).patch(word.addr, sentinel);
+            let patched = Corrupt::new(&core).patch(word.addr, sentinel);
             let ctx = Context::new(&patched, BundleView::new(&bundle)).unwrap();
             let (list, rows, _) = assessed(&ctx, &patched);
             let row = row(&rows, task_named(&list, ctx.view, "sleeper"));
@@ -3068,9 +3064,9 @@ mod tests {
     /// from an empty queue, and permits free beside a waiter.
     #[test]
     fn test_the_acquire_protocol_and_the_polling_barrier() {
-        let (bundle, snapshot) = load_any("futurelock");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let (list, rows, barriers) = assessed(&ctx, &snapshot);
+        let (bundle, core) = load_any("futurelock");
+        let ctx = testkit::context(&bundle, &core);
+        let (list, rows, barriers) = assessed(&ctx, &core);
         let holder = list
             .tasks
             .iter()
@@ -3132,32 +3128,32 @@ mod tests {
         let cases: Vec<(&str, Corrupt<'_, Fixture>, &str)> = vec![
             (
                 "granted before the wake is consumed",
-                Corrupt::new(&snapshot).patch(needed.addr, 0),
+                Corrupt::new(&core).patch(needed.addr, 0),
                 "ResourceReady(PermitsGranted)",
             ),
             (
                 "closed",
-                Corrupt::new(&snapshot).patch(permits, hansei_bundle::tokio::semaphore::CLOSED),
+                Corrupt::new(&core).patch(permits, hansei_bundle::tokio::semaphore::CLOSED),
                 "ResourceReady(SemaphoreClosed)",
             ),
             (
                 "never queued",
-                Corrupt::new(&snapshot).patch_byte(queued.addr, 0),
+                Corrupt::new(&core).patch_byte(queued.addr, 0),
                 "Unknown(ConflictingEvidence)",
             ),
             (
                 "read under its lock",
-                Corrupt::new(&snapshot).patch_byte(lock, 0b01),
+                Corrupt::new(&core).patch_byte(lock, 0b01),
                 "Unknown(ResourceStateUnproven)",
             ),
             (
                 "absent from an empty queue",
-                Corrupt::new(&snapshot).patch(head, 0),
+                Corrupt::new(&core).patch(head, 0),
                 "Unknown(ConflictingEvidence)",
             ),
             (
                 "permits free beside a waiter",
-                Corrupt::new(&snapshot).patch(permits, 2 << 1),
+                Corrupt::new(&core).patch(permits, 2 << 1),
                 "Unknown(ConflictingEvidence)",
             ),
         ];
@@ -3178,7 +3174,7 @@ mod tests {
         // The barrier's own acquire never queued: it holds nothing, and
         // no barrier is made of it. Its owner's wait is untouched.
         let candidate = Value::read(
-            &snapshot,
+            &core,
             ctx.view.ty(barrier.acquire.future.ty).unwrap(),
             barrier.acquire.future.addr,
         )
@@ -3187,7 +3183,7 @@ mod tests {
             .walk(WalkRole::AcquireQueued)
             .walk_at(candidate)
             .unwrap();
-        let patched = Corrupt::new(&snapshot).patch_byte(held_queued.addr, 0);
+        let patched = Corrupt::new(&core).patch_byte(held_queued.addr, 0);
         let ctx = Context::new(&patched, BundleView::new(&bundle)).unwrap();
         let (list, rows, barriers) = assessed(&ctx, &patched);
         assert!(barriers.is_empty(), "{barriers:#?}");
@@ -3261,9 +3257,9 @@ mod tests {
     #[test]
     fn test_the_recv_protocol_reads_the_channel_and_its_head_block() {
         use hansei_bundle::tokio::{atomic_waker, mpsc};
-        let (bundle, snapshot) = load_any("channels");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let (list, rows, _) = assessed(&ctx, &snapshot);
+        let (bundle, core) = load_any("channels");
+        let ctx = testkit::context(&bundle, &core);
+        let (list, rows, _) = assessed(&ctx, &core);
         let waiter = task_named(&list, ctx.view, "recv_waiter");
         let parked = row(&rows, waiter);
         let WaitAssessment::Waiting(wait) = &parked.assessment else {
@@ -3301,13 +3297,13 @@ mod tests {
             .addr;
         let index_word = ctx.walk(WalkRole::ChanRxIndex).walk_at(chan).unwrap();
         let tail_word = ctx.walk(WalkRole::ChanTailPosition).walk_at(chan).unwrap();
-        let index: u64 = index_word.parse(&snapshot).unwrap();
+        let index: u64 = index_word.parse(&core).unwrap();
         assert_eq!(index, 0, "the fixture's receiver has read nothing");
         let (data, vtable) = raw_waker_words(&ctx, WalkRole::ChanRxWaker, chan);
         let head = ctx.walk(WalkRole::ChanRxHead).walk_at(chan).unwrap();
         let block_ty = head.ty.pointer_target().unwrap();
-        let head: u64 = head.parse(&snapshot).unwrap();
-        let block = Value::read(&snapshot, block_ty, head).unwrap();
+        let head: u64 = head.parse(&core).unwrap();
+        let block = Value::read(&core, block_ty, head).unwrap();
         let start: u64 = ctx.walk(WalkRole::BlockStartIndex).read(block).unwrap();
         assert_eq!(
             start,
@@ -3315,7 +3311,7 @@ mod tests {
             "the head block holds the index"
         );
         let ready = ctx.walk(WalkRole::BlockReadySlots).walk_at(block).unwrap();
-        let ready_word: u64 = ready.parse(&snapshot).unwrap();
+        let ready_word: u64 = ready.parse(&core).unwrap();
         assert_eq!(
             ready_word & (1 << (index & mpsc::SLOT_MASK)),
             0,
@@ -3328,7 +3324,7 @@ mod tests {
         let cases: Vec<(&str, Corrupt<'_, Fixture>, &str, &str)> = vec![
             (
                 "a message at the read index",
-                Corrupt::new(&snapshot)
+                Corrupt::new(&core)
                     .patch(index_word.addr, 1)
                     .patch(tail_word.addr, 2)
                     .patch(ready.addr, ready_word | (1 << 1)),
@@ -3337,7 +3333,7 @@ mod tests {
             ),
             (
                 "two slots claimed and neither written",
-                Corrupt::new(&snapshot)
+                Corrupt::new(&core)
                     .patch(index_word.addr, 1)
                     .patch(tail_word.addr, 3),
                 "Waiting(",
@@ -3345,13 +3341,13 @@ mod tests {
             ),
             (
                 "the read index past the claimed tail",
-                Corrupt::new(&snapshot).patch(index_word.addr, 1),
+                Corrupt::new(&core).patch(index_word.addr, 1),
                 "Unknown(ConflictingEvidence)",
                 "past the claimed tail",
             ),
             (
                 "the last sender gone, the close marker set",
-                Corrupt::new(&snapshot)
+                Corrupt::new(&core)
                     .patch(tx_count, 0)
                     .patch(ready.addr, ready_word | mpsc::TX_CLOSED),
                 "ResourceReady(ChannelClosed)",
@@ -3359,19 +3355,19 @@ mod tests {
             ),
             (
                 "the last sender gone before its close marker",
-                Corrupt::new(&snapshot).patch(tx_count, 0),
+                Corrupt::new(&core).patch(tx_count, 0),
                 "Unknown(ConflictingEvidence)",
                 "no sender is left",
             ),
             (
                 "the receiver closed with every permit back",
-                Corrupt::new(&snapshot).patch_byte(rx_closed, 1),
+                Corrupt::new(&core).patch_byte(rx_closed, 1),
                 "ResourceReady(ChannelClosed)",
                 "",
             ),
             (
                 "the receiver closed with a permit out",
-                Corrupt::new(&snapshot)
+                Corrupt::new(&core)
                     .patch_byte(rx_closed, 1)
                     .patch(permits, 3 << 1),
                 "Waiting(",
@@ -3379,25 +3375,25 @@ mod tests {
             ),
             (
                 "the waker cell mid-registration",
-                Corrupt::new(&snapshot).patch(waker_state, atomic_waker::REGISTERING),
+                Corrupt::new(&core).patch(waker_state, atomic_waker::REGISTERING),
                 "Unknown(ResourceStateUnproven)",
                 "being registered",
             ),
             (
                 "the waker cell mid-wake",
-                Corrupt::new(&snapshot).patch(waker_state, atomic_waker::WAKING),
+                Corrupt::new(&core).patch(waker_state, atomic_waker::WAKING),
                 "Unknown(ResourceStateUnproven)",
                 "being taken",
             ),
             (
                 "another task's waker",
-                Corrupt::new(&snapshot).patch(data, holder.addr.0),
+                Corrupt::new(&core).patch(data, holder.addr.0),
                 "Unknown(ConflictingEvidence)",
                 "not this one",
             ),
             (
                 "no waker registered",
-                Corrupt::new(&snapshot).patch(vtable, 0),
+                Corrupt::new(&core).patch(vtable, 0),
                 "Unknown(ConflictingEvidence)",
                 "registered no waker",
             ),
@@ -3425,7 +3421,7 @@ mod tests {
             (open.semaphore_closed, open.capacity),
             (Some(false), Some(4))
         );
-        let closed = Corrupt::new(&snapshot).patch(
+        let closed = Corrupt::new(&core).patch(
             permits,
             (4 << hansei_bundle::tokio::semaphore::PERMIT_SHIFT)
                 | hansei_bundle::tokio::semaphore::CLOSED,
@@ -3443,9 +3439,9 @@ mod tests {
     /// waits take the five positions once each.
     #[test]
     fn test_notify_waiters_take_distinct_wake_positions() {
-        let (bundle, snapshot) = load_any("joinset");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let (_, rows, _) = assessed(&ctx, &snapshot);
+        let (bundle, core) = load_any("joinset");
+        let ctx = testkit::context(&bundle, &core);
+        let (_, rows, _) = assessed(&ctx, &core);
         let mut positions: Vec<usize> = rows
             .iter()
             .filter_map(|r| r.assessment.verified())
@@ -3479,9 +3475,9 @@ mod tests {
     #[test]
     fn test_the_oneshot_protocol_reads_the_receivers_inner() {
         use hansei_bundle::tokio::oneshot;
-        let (bundle, snapshot) = load_any("armed-select");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let (list, rows, _) = assessed(&ctx, &snapshot);
+        let (bundle, core) = load_any("armed-select");
+        let ctx = testkit::context(&bundle, &core);
+        let (list, rows, _) = assessed(&ctx, &core);
         let holder = task_named(&list, ctx.view, "armed_select::holder");
         let parked = row(&rows, holder);
         let WaitAssessment::Waiting(wait) = &parked.assessment else {
@@ -3518,29 +3514,29 @@ mod tests {
         assert_eq!(observed.tx_task_at, cell("tx_task"));
         assert!(!state.tx_task_set() && observed.tx_waker.is_none());
         let state_at = ctx.walk(WalkRole::OneshotState).walk_at(arc).unwrap();
-        let word: u64 = state_at.parse(&snapshot).unwrap();
+        let word: u64 = state_at.parse(&core).unwrap();
         assert_eq!(word, state.word);
         let (data, _) = raw_waker_words(&ctx, WalkRole::OneshotRxTask, arc);
         let selector = task_named(&list, ctx.view, "armed_select::selector");
         let cases: Vec<(&str, Corrupt<'_, Fixture>, &str)> = vec![
             (
                 "the sender completed",
-                Corrupt::new(&snapshot).patch(state_at.addr, word | oneshot::VALUE_SENT),
+                Corrupt::new(&core).patch(state_at.addr, word | oneshot::VALUE_SENT),
                 "ResourceReady(OneshotComplete)",
             ),
             (
                 "the receiver closed",
-                Corrupt::new(&snapshot).patch(state_at.addr, word | oneshot::CLOSED),
+                Corrupt::new(&core).patch(state_at.addr, word | oneshot::CLOSED),
                 "ResourceReady(OneshotClosed)",
             ),
             (
                 "no waker stored",
-                Corrupt::new(&snapshot).patch(state_at.addr, word & !oneshot::RX_TASK_SET),
+                Corrupt::new(&core).patch(state_at.addr, word & !oneshot::RX_TASK_SET),
                 "Unknown(ConflictingEvidence)",
             ),
             (
                 "another task's waker",
-                Corrupt::new(&snapshot).patch(data, selector.addr.0),
+                Corrupt::new(&core).patch(data, selector.addr.0),
                 "Unknown(ConflictingEvidence)",
             ),
         ];
@@ -3584,9 +3580,9 @@ mod tests {
     #[test]
     fn test_the_notified_protocol_reads_the_future_and_the_notify() {
         use hansei_bundle::tokio::notify;
-        let (bundle, snapshot) = load_any("channels");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let (list, rows, _) = assessed(&ctx, &snapshot);
+        let (bundle, core) = load_any("channels");
+        let ctx = testkit::context(&bundle, &core);
+        let (list, rows, _) = assessed(&ctx, &core);
         let waiter = task_named(&list, ctx.view, "notify_waiter");
         let parked = row(&rows, waiter);
         let WaitAssessment::Waiting(wait) = &parked.assessment else {
@@ -3646,7 +3642,7 @@ mod tests {
             .walk(WalkRole::NotifyState)
             .walk_at(notify_value)
             .unwrap();
-        let state_word: u64 = notify_state.parse(&snapshot).unwrap();
+        let state_word: u64 = notify_state.parse(&core).unwrap();
         assert_eq!(state_word & notify::STATE_MASK, notify::WAITING);
         let lock = ctx
             .walk(WalkRole::NotifyLock)
@@ -3658,43 +3654,43 @@ mod tests {
         let cases: Vec<(&str, Corrupt<'_, Fixture>, &str)> = vec![
             (
                 "done",
-                Corrupt::new(&snapshot).patch_byte(state, 2),
+                Corrupt::new(&core).patch_byte(state, 2),
                 "ResourceReady(Notified)",
             ),
             (
                 "the node notified",
-                Corrupt::new(&snapshot).patch(notification, notify::NOTIFICATION_ONE),
+                Corrupt::new(&core).patch(notification, notify::NOTIFICATION_ONE),
                 "ResourceReady(Notified)",
             ),
             (
                 "never polled",
-                Corrupt::new(&snapshot).patch_byte(state, 0),
+                Corrupt::new(&core).patch_byte(state, 0),
                 "Unknown(ConflictingEvidence)",
             ),
             (
                 "the Notify claims no waiters",
-                Corrupt::new(&snapshot).patch(notify_state.addr, state_word & !notify::STATE_MASK),
+                Corrupt::new(&core).patch(notify_state.addr, state_word & !notify::STATE_MASK),
                 "Unknown(ConflictingEvidence)",
             ),
             (
                 "notify_waiters ran since",
-                Corrupt::new(&snapshot)
+                Corrupt::new(&core)
                     .patch(notify_state.addr, state_word + (1 << notify::CALLS_SHIFT)),
                 "Unknown(ConflictingEvidence)",
             ),
             (
                 "read under its lock",
-                Corrupt::new(&snapshot).patch_byte(lock, 0b01),
+                Corrupt::new(&core).patch_byte(lock, 0b01),
                 "Unknown(ResourceStateUnproven)",
             ),
             (
                 "absent from an empty list",
-                Corrupt::new(&snapshot).patch(head, 0),
+                Corrupt::new(&core).patch(head, 0),
                 "Unknown(ConflictingEvidence)",
             ),
             (
                 "another task's waker",
-                Corrupt::new(&snapshot).patch(data, holder.addr.0),
+                Corrupt::new(&core).patch(data, holder.addr.0),
                 "Unknown(ConflictingEvidence)",
             ),
         ];
@@ -3716,9 +3712,9 @@ mod tests {
     /// pin the other way round.
     #[test]
     fn test_a_notified_chain_proves_the_by_value_barrier() {
-        let (bundle, snapshot) = load_any("walk-shapes");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let (list, rows, barriers) = assessed(&ctx, &snapshot);
+        let (bundle, core) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &core);
+        let (list, rows, barriers) = assessed(&ctx, &core);
         let abandoner = row(&rows, task_named(&list, ctx.view, "abandoner"));
         let WaitAssessment::Waiting(wait) = &abandoner.assessment else {
             panic!("{:?} {:?}", abandoner.assessment, abandoner.notes);
@@ -3759,9 +3755,9 @@ mod tests {
     /// locked, an exhausted write.
     #[test]
     fn test_the_io_protocol_reads_the_registration_and_the_slots() {
-        let (bundle, snapshot) = load_any("local-set-io");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let (list, rows, barriers) = assessed(&ctx, &snapshot);
+        let (bundle, core) = load_any("local-set-io");
+        let ctx = testkit::context(&bundle, &core);
+        let (list, rows, barriers) = assessed(&ctx, &core);
         assert!(barriers.is_empty());
         let expect_io = |name: &str, interest: crate::tokio::bundle::Interest| {
             let task = task_named(&list, ctx.view, name);
@@ -3826,32 +3822,32 @@ mod tests {
         let cases: Vec<(&str, Corrupt<'_, Fixture>, &str)> = vec![
             (
                 "readable delivered",
-                Corrupt::new(&snapshot).patch(readiness.addr, ready::READABLE),
+                Corrupt::new(&core).patch(readiness.addr, ready::READABLE),
                 "ResourceReady(IoReady)",
             ),
             (
                 "read closed delivered",
-                Corrupt::new(&snapshot).patch(readiness.addr, ready::READ_CLOSED),
+                Corrupt::new(&core).patch(readiness.addr, ready::READ_CLOSED),
                 "ResourceReady(IoReady)",
             ),
             (
                 "writable delivered is not the reader's",
-                Corrupt::new(&snapshot).patch(readiness.addr, ready::WRITABLE),
+                Corrupt::new(&core).patch(readiness.addr, ready::WRITABLE),
                 "Waiting",
             ),
             (
                 "shut down",
-                Corrupt::new(&snapshot).patch(readiness.addr, ready::SHUTDOWN),
+                Corrupt::new(&core).patch(readiness.addr, ready::SHUTDOWN),
                 "ResourceReady(IoShutdown)",
             ),
             (
                 "another task's waker in the slot",
-                Corrupt::new(&snapshot).patch(data.addr, other),
+                Corrupt::new(&core).patch(data.addr, other),
                 "Unknown(ConflictingEvidence)",
             ),
             (
                 "locked",
-                Corrupt::new(&snapshot).patch_byte(lock.addr, 0b01),
+                Corrupt::new(&core).patch_byte(lock.addr, 0b01),
                 "Unknown(ResourceStateUnproven)",
             ),
         ];
@@ -3885,7 +3881,7 @@ mod tests {
             .walk(WalkRole::ReadinessWaiterReady)
             .walk_at(node)
             .unwrap();
-        let patched = Corrupt::new(&snapshot).patch_byte(flag.addr, 1);
+        let patched = Corrupt::new(&core).patch_byte(flag.addr, 1);
         let ctx2 = Context::new(&patched, BundleView::new(&bundle)).unwrap();
         let (list2, rows2, _) = assessed(&ctx2, &patched);
         assert!(matches!(
@@ -3901,7 +3897,7 @@ mod tests {
             .optional()
             .expect("the node is armed");
         let data = ctx.walk(WalkRole::WakerData).walk_at(raw).unwrap();
-        let patched = Corrupt::new(&snapshot).patch(data.addr, other);
+        let patched = Corrupt::new(&core).patch(data.addr, other);
         let ctx5 = Context::new(&patched, BundleView::new(&bundle)).unwrap();
         let (list5, rows5, _) = assessed(&ctx5, &patched);
         let row5 = row(&rows5, task_named(&list5, ctx.view, "local_watcher"));
@@ -3919,7 +3915,7 @@ mod tests {
                 state.ty.enumerator_name(&bytes) == Some("Done")
             })
             .expect("Done has a small discriminant");
-        let patched = Corrupt::new(&snapshot).patch_byte(state.addr, done);
+        let patched = Corrupt::new(&core).patch_byte(state.addr, done);
         let ctx3 = Context::new(&patched, BundleView::new(&bundle)).unwrap();
         let (list3, rows3, _) = assessed(&ctx3, &patched);
         assert!(matches!(
@@ -3945,7 +3941,7 @@ mod tests {
         .unwrap()
         .at("the buffer's length")
         .unwrap();
-        let patched = Corrupt::new(&snapshot).patch(len.addr, 0);
+        let patched = Corrupt::new(&core).patch(len.addr, 0);
         let ctx4 = Context::new(&patched, BundleView::new(&bundle)).unwrap();
         let (list4, rows4, _) = assessed(&ctx4, &patched);
         let row4 = row(&rows4, task_named(&list4, ctx.view, "local_writer"));
@@ -4040,9 +4036,9 @@ mod tests {
     /// unread — each before the registration is consulted.
     #[test]
     fn test_a_readiness_awaits_state_word_is_assessed_first() {
-        let (bundle, snapshot) = load_any("local-set-io");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("local-set-io");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let watcher = task_named(&list, ctx.view, "local_watcher");
         let await_ = primitive_of(&ctx, watcher);
         let observed = ctx.observe_resource(await_, &ReadContext::none());
@@ -4086,9 +4082,9 @@ mod tests {
     /// abandoner, says so.
     #[test]
     fn test_a_queued_node_must_carry_this_tasks_waker() {
-        let (bundle, snapshot) = load_any("walk-shapes");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        let (bundle, core) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &core);
+        let list = testkit::tasks(&ctx, &core);
         let victim = task_named(&list, ctx.view, "victim");
         let other = task_named(&list, ctx.view, "abandoner").addr.0;
         let acquire = primitive_of(&ctx, victim);
@@ -4104,7 +4100,7 @@ mod tests {
             u64::from_le_bytes(data.bytes.try_into().unwrap()),
             victim.addr.0
         );
-        let patched = Corrupt::new(&snapshot).patch(data.addr, other);
+        let patched = Corrupt::new(&core).patch(data.addr, other);
         let ctx = Context::new(&patched, BundleView::new(&bundle)).unwrap();
         let (list, rows, _) = assessed(&ctx, &patched);
         let row = row(&rows, task_named(&list, ctx.view, "victim"));
@@ -4126,9 +4122,9 @@ mod tests {
     /// latter case. And a barrier's grant is its counter's.
     #[test]
     fn test_a_barrier_needs_an_idle_owner_and_an_exclusive_pending_terminal() {
-        let (mut bundle, snapshot) = load_any("futurelock");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let (list, rows, barriers) = assessed(&ctx, &snapshot);
+        let (mut bundle, core) = load_any("futurelock");
+        let ctx = testkit::context(&bundle, &core);
+        let (list, rows, barriers) = assessed(&ctx, &core);
         assert_eq!(barriers.len(), 1);
         let holder = list
             .tasks
@@ -4141,7 +4137,7 @@ mod tests {
             WaitAssessment::Waiting(_)
         ));
 
-        let scheduled = with_state(&snapshot, &ctx, holder, NOTIFIED);
+        let scheduled = with_state(&core, &ctx, holder, NOTIFIED);
         let ctx2 = Context::new(&scheduled, BundleView::new(&bundle)).unwrap();
         let (_, rows2, barriers2) = assessed(&ctx2, &scheduled);
         assert!(barriers2.is_empty(), "{barriers2:#?}");
@@ -4162,8 +4158,8 @@ mod tests {
             .find(|r| r.ty == acquire_ty)
             .unwrap();
         record.resource.as_mut().unwrap().exclusive_pending = false;
-        let ctx3 = testkit::context(&bundle, &snapshot);
-        let (list3, rows3, barriers3) = assessed(&ctx3, &snapshot);
+        let ctx3 = testkit::context(&bundle, &core);
+        let (list3, rows3, barriers3) = assessed(&ctx3, &core);
         assert!(barriers3.is_empty(), "{barriers3:#?}");
         let holder3 = list3.tasks.iter().find(|t| t.addr == holder.addr).unwrap();
         assert!(matches!(

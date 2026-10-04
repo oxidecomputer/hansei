@@ -911,9 +911,9 @@ mod tests {
     /// the byte past an object's end is not that object's.
     #[test]
     fn test_every_object_of_a_row_claims_it() {
-        let (bundle, snapshot) = testkit::load(testkit::set_or_any("illumos"), "tls-conns");
+        let (bundle, core) = testkit::load(testkit::set_or_any("illumos"), "tls-conns");
         let args = session_args(testkit::set_or_any("illumos"), "tls-conns");
-        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let session = Session::attach(&core, &bundle, &args).expect("the pair attaches");
         let view = session.ctx.view;
         let rows = connections::rows(&session);
         assert!(!rows.is_empty());
@@ -950,9 +950,9 @@ mod tests {
     /// holds selects nothing.
     #[test]
     fn test_any_byte_of_a_rows_objects_selects_it() {
-        let (bundle, snapshot) = testkit::load(testkit::set_or_any("illumos"), "tls-conns");
+        let (bundle, core) = testkit::load(testkit::set_or_any("illumos"), "tls-conns");
         let args = session_args(testkit::set_or_any("illumos"), "tls-conns");
-        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let session = Session::attach(&core, &bundle, &args).expect("the pair attaches");
         let view = session.ctx.view;
         let rows = connections::rows(&session);
         assert!(!rows.is_empty());
@@ -1022,9 +1022,9 @@ mod tests {
     /// where no listed task has that header.
     #[test]
     fn test_a_wakers_owner_falls_back_to_the_task_it_names() {
-        let (bundle, snapshot) = testkit::load(testkit::set_or_any("illumos"), "tls-conns");
+        let (bundle, core) = testkit::load(testkit::set_or_any("illumos"), "tls-conns");
         let args = session_args(testkit::set_or_any("illumos"), "tls-conns");
-        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let session = Session::attach(&core, &bundle, &args).expect("the pair attaches");
         let list = &session.tasks;
         assert!(list.tasks.len() > 2);
         let header = |index: usize| list.tasks[index].addr.0;

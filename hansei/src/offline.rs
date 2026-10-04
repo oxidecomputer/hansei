@@ -210,10 +210,7 @@ fn commands<T: proc::Target>(
         // that holds connections, where the rows read the phases, the
         // requests and the buffers, and a grouping tallies the phases.
         ("connections", "connections".to_owned()),
-        // The info summary and each section. A snapshot records no
-        // process notes and no fd table, so the goldens pin the
-        // degraded spellings; objects rows come from the recorded
-        // mappings, with every CFI read declined by the capture.
+        // The info summary and each section.
         ("info", "info".to_owned()),
     ];
     // The by-value fallback's hit: a joined task's header is held
@@ -552,9 +549,9 @@ fn first_frame_member<T: proc::Target>(
 /// one snapshot per (program, set, command).
 fn golden(program: &str) {
     for set in fixture_sets() {
-        let (bundle, snapshot) = testkit::load(set, program);
+        let (bundle, core) = testkit::load(set, program);
         let args = session_args(set, program);
-        let session = Session::attach(&snapshot, &bundle, &args)
+        let session = Session::attach(&core, &bundle, &args)
             .unwrap_or_else(|e| panic!("[{set}] {program}: attach failed: {e:#}"));
         let mut settings = insta::Settings::clone_current();
         settings.set_snapshot_path(Path::new("../tests/offline").join(set));
@@ -564,8 +561,8 @@ fn golden(program: &str) {
             let command = repl::parse_line(&line)
                 .unwrap_or_else(|e| panic!("`{line}` does not parse: {e:#}"));
             let mut out = Vec::new();
-            // A command that fails over a snapshot is a fact about
-            // what a snapshot can answer, not a broken test: the
+            // A command that fails over a core is a fact about what
+            // the core can answer, not a broken test: the
             // error text joins whatever the command printed first
             // (`--exec` prints its loop before failing), and the
             // whole is the golden.
@@ -817,9 +814,9 @@ fn test_every_program_has_a_command_golden() {
 /// the sweep over the same pair admits every one of them.
 #[test]
 fn test_registered_wakers_name_the_registries_and_the_joins() {
-    let (bundle, snapshot) = testkit::load(testkit::set_or_any("illumos"), "sleep-join");
+    let (bundle, core) = testkit::load(testkit::set_or_any("illumos"), "sleep-join");
     let args = session_args(testkit::set_or_any("illumos"), "sleep-join");
-    let session = Session::attach(&snapshot, &bundle, &args).unwrap();
+    let session = Session::attach(&core, &bundle, &args).unwrap();
     let registered: Vec<(&str, u64, u64)> = crate::registered_wakers(&session).collect();
     let of = |what: &str| registered.iter().filter(|r| r.0 == what).count();
     assert_eq!(
