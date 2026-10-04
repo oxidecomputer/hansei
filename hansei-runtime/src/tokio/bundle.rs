@@ -6715,9 +6715,16 @@ mod tests {
             .expect("the range starts inside a symbol");
         assert_eq!(range, sym.st_value..sym.st_value + sym.st_size);
         assert!(range.start < range.end);
-        // The v0 spelling of `task::raw::poll`, however the future
-        // type parameter mangles.
-        assert!(sym.name.contains("3raw4poll"), "{}", sym.name);
+        // The v0 spelling of `task::raw::poll`, however the future type
+        // parameter mangles — or, where `raw::poll` is a trampoline and
+        // the target carries its text, of the `Harness::poll` it jumps
+        // into. A snapshot captured no text, so the range stays on the
+        // trampoline there; a core follows it.
+        let name = &sym.name;
+        assert!(
+            name.contains("3raw4poll") || (name.contains("7Harness") && name.contains("4poll")),
+            "{name}"
+        );
     }
 
     fn armed_select() -> &'static (Bundle, Fixture) {

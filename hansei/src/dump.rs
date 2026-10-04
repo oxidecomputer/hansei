@@ -625,9 +625,8 @@ mod tests {
         assert!(err.to_string().contains("failed to read 0x10"), "{err}");
     }
 
-    /// A snapshot holds only what its capture touched, so a dump that
-    /// runs past that shows what the target holds and says where the
-    /// rest failed.
+    /// A dump that runs past the end of readable memory shows what the
+    /// target holds and says where the rest failed.
     #[test]
     fn test_dump_shows_the_readable_prefix() {
         use crate::offline::session_args;
@@ -643,8 +642,21 @@ mod tests {
         session.cursor.borrow_mut().frame = 1;
         let frame = cursor::frame_value(&session).expect("the frame reads");
         let (buffer, _) = frame.member("values").unwrap().buffer().unwrap().unwrap();
-        let readable = proc::Target::readable_len(session.ctx.proc, buffer, 1 << 20);
-        let words = vec![format!("{buffer:#x}")];
+        // Where readable memory past the buffer ends. `readable_len`
+        // answers one run at a time, and a core's heap goes on across
+        // the boundary between two of its segments, so walk them.
+        let mut end = buffer;
+        loop {
+            match proc::Target::readable_len(session.ctx.proc, end, 1 << 20) {
+                0 => break,
+                n => end += n,
+            }
+        }
+        // From a little short of it, so the dump stays small however
+        // far the heap runs.
+        let start = end.saturating_sub(64).max(buffer);
+        let readable = end - start;
+        let words = vec![format!("{start:#x}")];
         let opts = DumpOpts {
             length: Some(readable + 64),
             ..opts(1, false)
@@ -658,10 +670,7 @@ mod tests {
             format!("{readable} of {} bytes shown", readable + 64),
             "{out}"
         );
-        assert!(
-            last.contains(&format!("failed to read {:#x}", buffer + readable)),
-            "{out}"
-        );
+        assert!(last.contains(&format!("failed to read {end:#x}")), "{out}");
     }
 
     /// Lengths are decimal or 0x-hex; a group is a number's width.

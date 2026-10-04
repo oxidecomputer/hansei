@@ -3397,10 +3397,51 @@ mod tests {
         ));
         assert!(!attributed.find_armed(find("spare")));
         assert!(!attributed.find_armed(find("spare_tick")));
+        // The set's two children each park on a oneshot whose receiver
+        // slot holds the set's waker, not the task's: one owner-typed
+        // slot per child. A snapshot never captured those cells, and a
+        // core carries them.
+        let children: Vec<&AttributedSlot> = attributed
+            .slots
+            .iter()
+            .filter(|s| matches!(s.owner, Owner::Child { .. }))
+            .collect();
+        let expected = match snapshot {
+            Fixture::Core(_) => 2,
+            Fixture::Snapshot(_) => 0,
+        };
+        assert_eq!(children.len(), expected, "{children:#?}");
+        let mut seen: Vec<usize> = Vec::new();
+        for slot in &children {
+            let Owner::Child { set: 0, child } = slot.owner else {
+                panic!("{:?}", slot.owner)
+            };
+            seen.push(child);
+            assert!(
+                matches!(
+                    slot.attribution,
+                    Attribution::Owner {
+                        kind: OwnerKind::OneshotRx,
+                        ..
+                    }
+                ),
+                "{:?}",
+                slot.attribution
+            );
+            assert!(
+                slot.entry(stopped)
+                    .ends_with("(nothing sent, sender alive)"),
+                "{}",
+                slot.entry(stopped)
+            );
+        }
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), children.len(), "one slot per child");
         // The interval tasks add the ticker's oneshot slot to the
         // owner-typed count and their two registered `Sleep`s' wheel
         // entries to the registry's, beside the selector's.
-        assert_eq!(attributed.stats.owner, 6);
+        assert_eq!(attributed.stats.owner, 6 + children.len());
         assert_eq!(attributed.stats.registry, 3);
         assert_eq!(attributed.stats.typed, 1);
         assert_eq!(attributed.stats.unknown, 0);
@@ -3643,6 +3684,12 @@ mod tests {
         else {
             panic!("{:?}", slots[0].attribution);
         };
+        // The connection awaiting the response this requester asked for:
+        // other client connections may be awaiting theirs too.
+        let ours = Some(HttpCaller::Task(TaskRef {
+            addr: requester.addr,
+            task_id: requester.task_id,
+        }));
         let busy = over
             .analysis
             .waits
@@ -3652,11 +3699,12 @@ mod tests {
                     wait.verified().map(|v| v.target()),
                     Some(WaitTarget::HttpConn {
                         phase: HttpPhase::AwaitingResponse,
+                        caller,
                         ..
-                    })
+                    }) if *caller == ours
                 )
             })
-            .expect("a client awaiting its response");
+            .expect("the requester's connection awaiting its response");
         let WaitTarget::HttpConn {
             addr,
             via: Some(via),
