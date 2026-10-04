@@ -114,8 +114,6 @@ struct Dumped {
     /// Thread id -> where that thread's copy of the thread-local was
     /// and what it held, as the thread itself saw them.
     slots: BTreeMap<u32, Slot>,
-    /// Kept so the core outlives the test that reads it.
-    _dir: tempfile::TempDir,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -126,43 +124,62 @@ struct Slot {
 
 /// Run the fixture to its abort under gdb and dump it there.
 ///
-/// Produced once for the whole suite: every test here reads the same
-/// core, and the target has nothing to say that changes between runs.
+/// Produced once for the whole suite run: every test here reads the
+/// same core, and the target has nothing to say that changes between
+/// runs. Once per *run*, under `testrun`'s stamp, rather than once per
+/// process in a tempdir: nextest runs each test in a process of its
+/// own, and a tempdir held by a static is never dropped, so each of
+/// them dumped a core of its own and left it behind.
 fn dumped() -> &'static Dumped {
     static DUMPED: OnceLock<Dumped> = OnceLock::new();
     DUMPED.get_or_init(|| {
-        let dir = tempfile::tempdir().expect("failed to create a tempdir");
-        let core = dir.path().join("core");
-
-        // gdb runs the target, stops when it aborts, and dumps it where
-        // it stands. One arena keeps glibc from reserving 64MiB per
-        // thread that gdb would then write out in full; the kernel
-        // skips those pages, gdb does not.
-        let out = Command::new("gdb")
-            // gdb stops the target on SIGUSR1 by default; the fixture's
-            // signalled worker needs it delivered.
-            .args(["-batch", "-nx"])
-            .args(["-ex", "handle SIGUSR1 nostop noprint pass"])
-            .args(["-ex", "run", "-ex"])
-            .arg(format!("gcore {}", core.display()))
-            .args(["-ex", "kill", "--args"])
-            .arg(fixture())
-            .env("MALLOC_ARENA_MAX", "1")
-            .output()
-            .unwrap_or_else(|e| {
-                panic!(
-                    "failed to run gdb ({e}); this suite dumps the target with \
-                     gcore, so gdb has to be on PATH. The unit tests in \
-                     src/linux.rs cover the reader itself and need nothing."
-                )
-            });
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(
-            core.exists(),
-            "gdb wrote no core to {}:\n{stdout}\n{}",
-            core.display(),
-            String::from_utf8_lossy(&out.stderr)
+        let test_programs = workspace_root().join("test-programs");
+        let dir = test_programs.join("fixtures/dumps/proc");
+        let core = dir.join("core");
+        // What gdb printed while it dumped, the target's own lines with
+        // it, which every process reads back.
+        let printed = dir.join("stdout");
+        let fixture = fixture();
+        testrun::once_per_run(
+            &dir.join(".stamp"),
+            || built_from(&test_programs),
+            || {
+                std::fs::create_dir_all(&dir).expect("failed to create the dump dir");
+                let _ = std::fs::remove_file(&core);
+                // gdb runs the target, stops when it aborts, and dumps it
+                // where it stands. One arena keeps glibc from reserving
+                // 64MiB per thread that gdb would then write out in full;
+                // the kernel skips those pages, gdb does not.
+                let out = Command::new("gdb")
+                    // gdb stops the target on SIGUSR1 by default; the
+                    // fixture's signalled worker needs it delivered.
+                    .args(["-batch", "-nx"])
+                    .args(["-ex", "handle SIGUSR1 nostop noprint pass"])
+                    .args(["-ex", "run", "-ex"])
+                    .arg(format!("gcore {}", core.display()))
+                    .args(["-ex", "kill", "--args"])
+                    .arg(fixture)
+                    .env("MALLOC_ARENA_MAX", "1")
+                    .output()
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "failed to run gdb ({e}); this suite dumps the target \
+                             with gcore, so gdb has to be on PATH. The unit tests \
+                             in src/linux.rs cover the reader itself and need \
+                             nothing."
+                        )
+                    });
+                assert!(
+                    core.exists(),
+                    "gdb wrote no core to {}:\n{}\n{}",
+                    core.display(),
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                std::fs::write(&printed, &out.stdout).expect("failed to keep gdb's output");
+            },
         );
+        let stdout = std::fs::read_to_string(&printed).expect("failed to read gdb's output");
 
         // gdb passes the target's stdout through with its own; the
         // target's lines are the ones that say whose they are.
@@ -192,11 +209,7 @@ fn dumped() -> &'static Dumped {
             "not every thread reported in:\n{stdout}"
         );
 
-        Dumped {
-            core,
-            slots,
-            _dir: dir,
-        }
+        Dumped { core, slots }
     })
 }
 

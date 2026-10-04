@@ -48,52 +48,62 @@ fn workspace_root() -> &'static Path {
 /// turns that test's mapped path into a deleted file. The stamp and
 /// digest match proc's for the same program, so whichever suite gets
 /// there first builds and every other caller skips.
+///
+/// The dump goes once per run too, into a directory under the fixtures
+/// rather than a tempdir: a tempdir held by a static is never dropped,
+/// so each test process dumped a core of its own and left it behind.
 fn core() -> &'static Path {
-    static CORE: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
-    &CORE
-        .get_or_init(|| {
-            let test_programs = workspace_root().join("test-programs");
-            testrun::once_per_run(
-                &test_programs.join("fixtures/.built").join(PROGRAM),
-                || built_from(&test_programs),
-                || {
-                    // Through bash: a copied tree need not keep the mode bit.
-                    let status = Command::new("bash")
-                        .arg(test_programs.join("regen.sh"))
-                        .arg(PROGRAM)
-                        .status()
-                        .expect("failed to run regen.sh");
-                    assert!(
-                        status.success(),
-                        "regen.sh failed; is the pinned toolchain installed?"
-                    );
-                },
-            );
-            let fixture = test_programs.join("fixtures/bin").join(PROGRAM);
+    static CORE: OnceLock<PathBuf> = OnceLock::new();
+    CORE.get_or_init(|| {
+        let test_programs = workspace_root().join("test-programs");
+        testrun::once_per_run(
+            &test_programs.join("fixtures/.built").join(PROGRAM),
+            || built_from(&test_programs),
+            || {
+                // Through bash: a copied tree need not keep the mode bit.
+                let status = Command::new("bash")
+                    .arg(test_programs.join("regen.sh"))
+                    .arg(PROGRAM)
+                    .status()
+                    .expect("failed to run regen.sh");
+                assert!(
+                    status.success(),
+                    "regen.sh failed; is the pinned toolchain installed?"
+                );
+            },
+        );
+        let fixture = test_programs.join("fixtures/bin").join(PROGRAM);
 
-            let dir = tempfile::tempdir().expect("failed to create a tempdir");
-            let core = dir.path().join("core");
-            let out = Command::new("gdb")
-                // gdb stops the target on SIGUSR1 by default; the fixture's
-                // signalled worker needs it delivered.
-                .args(["-batch", "-nx"])
-                .args(["-ex", "handle SIGUSR1 nostop noprint pass"])
-                .args(["-ex", "run", "-ex"])
-                .arg(format!("gcore {}", core.display()))
-                .args(["-ex", "kill", "--args"])
-                .arg(&fixture)
-                .env("MALLOC_ARENA_MAX", "1")
-                .output()
-                .unwrap_or_else(|e| panic!("failed to run gdb ({e}); it has to be on PATH"));
-            assert!(
-                core.exists(),
-                "gdb wrote no core:\n{}\n{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            (dir, core)
-        })
-        .1
+        let dir = test_programs.join("fixtures/dumps/unwind");
+        let core = dir.join("core");
+        testrun::once_per_run(
+            &dir.join(".stamp"),
+            || built_from(&test_programs),
+            || {
+                std::fs::create_dir_all(&dir).expect("failed to create the dump dir");
+                let _ = std::fs::remove_file(&core);
+                let out = Command::new("gdb")
+                    // gdb stops the target on SIGUSR1 by default; the
+                    // fixture's signalled worker needs it delivered.
+                    .args(["-batch", "-nx"])
+                    .args(["-ex", "handle SIGUSR1 nostop noprint pass"])
+                    .args(["-ex", "run", "-ex"])
+                    .arg(format!("gcore {}", core.display()))
+                    .args(["-ex", "kill", "--args"])
+                    .arg(&fixture)
+                    .env("MALLOC_ARENA_MAX", "1")
+                    .output()
+                    .unwrap_or_else(|e| panic!("failed to run gdb ({e}); it has to be on PATH"));
+                assert!(
+                    core.exists(),
+                    "gdb wrote no core:\n{}\n{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            },
+        );
+        core
+    })
 }
 
 /// What the fixture binary is built from — byte-identical to the proc
