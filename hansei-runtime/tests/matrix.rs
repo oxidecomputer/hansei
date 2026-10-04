@@ -37,9 +37,10 @@
 //! `INSTA_UPDATE=always` rewrites the goldens in place instead of
 //! diffing; review the diff like any golden. A plain run leaves each
 //! rejected golden beside its file as `<name>.snap.new` instead, and
-//! reports every cell that diverged rather than the first. Cells whose
-//! toolchain is not rustup-installed skip with a message, the same
-//! contract the extraction goldens have. Run it alone (`cargo test -p
+//! reports every cell that diverged rather than the first. A cell whose
+//! toolchain is not rustup-installed fails, naming the command that
+//! installs it, rather than skip: a run that skipped cells would pass
+//! without having built them. Run it alone (`cargo test -p
 //! hansei-runtime --test matrix`), not under a workspace-wide
 //! `cargo test`: the
 //! primary cell shares its fixture dirs with the extraction goldens,
@@ -216,19 +217,8 @@ impl Cell {
         if dsym.exists() { dsym } else { bin }
     }
 
-    /// Build the cell's fixtures. `false` (skip) when the toolchain is
-    /// not installed; panics on a real build failure.
-    fn build(&self) -> bool {
-        if !toolchain_installed(&self.toolchain) {
-            eprintln!(
-                "SKIP: cell {} needs toolchain {} \
-                 (rustup toolchain install {})",
-                self.name(),
-                self.toolchain,
-                self.toolchain
-            );
-            return false;
-        }
+    /// Build the cell's fixtures; panics on a build failure.
+    fn build(&self) {
         let dir = test_programs_dir();
         let matrix = Matrix::read(&dir);
         let recipe = testrun::fixture::Recipe {
@@ -270,7 +260,6 @@ impl Cell {
                 assert!(status.success(), "regen.sh failed for cell {}", self.name());
             },
         );
-        true
     }
 }
 
@@ -444,16 +433,21 @@ fn test_matrix() {
     let matrix = Matrix::load();
 
     let mut failures = Vec::new();
-    let mut ran = 0usize;
+    let mut matched = 0usize;
     for cell in cells(&matrix) {
         let name = cell.name();
         if filter != "1" && !name.contains(&filter) {
             continue;
         }
-        if !cell.build() {
+        matched += 1;
+        if !toolchain_installed(&cell.toolchain) {
+            failures.push(format!(
+                "{name}: toolchain {0} is not installed (rustup toolchain install {0})",
+                cell.toolchain
+            ));
             continue;
         }
-        ran += 1;
+        cell.build();
 
         let programs = cell.programs();
         let bundles: Vec<(&str, Bundle)> = programs
@@ -496,10 +490,10 @@ fn test_matrix() {
         eprintln!("matrix: checked cell {name}");
     }
 
-    assert!(ran > 0, "no matrix cell matched HANSEI_MATRIX={filter}");
+    assert!(matched > 0, "no matrix cell matched HANSEI_MATRIX={filter}");
     assert!(
         failures.is_empty(),
-        "{} matrix golden(s) diverged (diffs above; INSTA_UPDATE=always to re-bless):\n  {}",
+        "{} matrix check(s) failed (golden diffs above; INSTA_UPDATE=always to re-bless):\n  {}",
         failures.len(),
         failures.join("\n  ")
     );
