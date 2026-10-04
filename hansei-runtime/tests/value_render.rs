@@ -83,9 +83,9 @@ fn render_local(
     mask(&format!("{:#}", v.display_from_target(snapshot, depth)))
 }
 
-/// Render one local per formatter into a single golden-friendly summary.
-/// Task 4 is the holder parked owning every primitive; task 3 is the
-/// waiter parked in the shared `Notify`'s queue.
+/// Render one local per formatter into a single golden-friendly summary,
+/// every one of them from the task running `channels::hold`, parked
+/// owning every primitive.
 fn interpret(bundle: &Bundle, snapshot: &Fixture) -> String {
     let ctx = hansei_runtime::testkit::context(bundle, snapshot);
     let list = hansei_runtime::testkit::tasks(&ctx, snapshot);
@@ -94,15 +94,20 @@ fn interpret(bundle: &Bundle, snapshot: &Fixture) -> String {
         "task walk errors: {:?}",
         list.errors
     );
+    let holder = hansei_runtime::testkit::task_id_running(
+        ctx.view,
+        &list,
+        "channels::hold::{async_fn_env#0}",
+    );
 
     // (header, task id, local, depth) — one entry per formatter exercised.
     let cases = [
-        ("mpsc::bounded::Receiver (_rx)", 5, "_rx", 20),
-        ("Arc<Semaphore> (_sem)", 5, "_sem", 20),
-        ("Arc<Notify> (_notify)", 5, "_notify", 20),
-        ("watch::Receiver (_watch_rx)", 5, "_watch_rx", 20),
-        ("mpsc::bounded::Sender (_tx)", 5, "_tx", 20),
-        ("watch::Sender (_watch_tx)", 5, "_watch_tx", 20),
+        ("mpsc::bounded::Receiver (_rx)", holder, "_rx", 20),
+        ("Arc<Semaphore> (_sem)", holder, "_sem", 20),
+        ("Arc<Notify> (_notify)", holder, "_notify", 20),
+        ("watch::Receiver (_watch_rx)", holder, "_watch_rx", 20),
+        ("mpsc::bounded::Sender (_tx)", holder, "_tx", 20),
+        ("watch::Sender (_watch_tx)", holder, "_watch_tx", 20),
     ];
 
     let mut out = String::new();

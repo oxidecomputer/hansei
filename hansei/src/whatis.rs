@@ -767,17 +767,19 @@ mod whatis_tests {
     #[test]
     fn test_addresses_resolve_to_the_containing_task() {
         with_tasks("sleep-join", |t| {
+            let id =
+                testkit::task_id_running(t.view, &t.list, "sleep_join::sleeper::{async_fn_env#0}");
             let sleeper = t
                 .list
                 .tasks
                 .iter()
-                .find(|t| t.task_id == Some(3))
-                .expect("the sleeper is task 3");
+                .find(|t| t.task_id == Some(id))
+                .expect("the sleeper is listed");
             let header = sleeper.addr.0;
 
             let shown = report(t, header);
             assert!(
-                shown.contains("Task 3: async fn sleep_join::sleeper\n"),
+                shown.contains(&format!("Task {id}: async fn sleep_join::sleeper\n")),
                 "{shown}"
             );
             assert!(
@@ -789,7 +791,7 @@ mod whatis_tests {
             assert!(shown.contains("    State: idle"), "{shown}");
 
             let inside = report(t, header + 0x10);
-            assert!(inside.contains("Task 3: "), "{inside}");
+            assert!(inside.contains(&format!("Task {id}: ")), "{inside}");
             assert!(
                 inside.contains("    At: offset 0x10 in the task's allocation"),
                 "{inside}"

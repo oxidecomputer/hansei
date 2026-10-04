@@ -230,10 +230,15 @@ fn test_an_unreadable_cell_fails_the_stage_read() {
 fn test_a_corrupted_dyn_box_ends_the_chain_with_an_error() {
     let (bundle, snapshot) = load_any("dyn-future");
     let (ctx, list) = healthy(&bundle, &snapshot);
+    let id = hansei_runtime::testkit::task_id_running(
+        ctx.view,
+        &list,
+        "dyn_future::driver::{async_fn_env#0}",
+    );
     let driver = list
         .tasks
         .iter()
-        .find(|t| t.task_id == Some(3))
+        .find(|t| t.task_id == Some(id))
         .expect("the driver task");
 
     // The healthy chain locates the wide pointer: the driver frame's

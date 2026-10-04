@@ -3110,6 +3110,15 @@ mod trace_render_tests {
         trace_ctx(&ctx, &bundle, &snapshot, future, verbose, theme, limit, fit)
     }
 
+    /// The id of the task running `future` in `program`'s pair, which
+    /// [`trace`] renders: a wait target names it as a reader would.
+    fn task_id(program: &str, future: &str) -> u64 {
+        let (bundle, snapshot) = testkit::load_any(program);
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        testkit::task_id_running(ctx.view, &list, future)
+    }
+
     /// The same, over a context the caller attached — with test
     /// bindings, say.
     #[allow(clippy::too_many_arguments)]
@@ -3294,15 +3303,14 @@ mod trace_render_tests {
     /// futurelock tell — carries the tally on its detail line.
     #[test]
     fn test_the_leaf_frame_carries_the_wait_target() {
-        let rendered = trace(
-            "futurelock",
-            "futurelock::main::{async_block#0}::{async_block_env#0}",
-            false,
-        );
+        let future = "futurelock::main::{async_block#0}::{async_block_env#0}";
+        let rendered = trace("futurelock", future, false);
+        // The mutex's wake queue holds the traced task itself: the
+        // futurelock is that it queued and is never polled again.
         assert_eq!(
             rendered,
             "#0  future        tokio::sync::batch_semaphore::Acquire
-      waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+      waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task {traced}
 #1  async fn      tokio::sync::mutex::Mutex::acquire<()>
       awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1, 0 locals)
 #2  async block   tokio::sync::mutex::Mutex::lock::{async_fn#0}<()>
@@ -3316,6 +3324,7 @@ mod trace_render_tests {
 #6  async block   futurelock::main::{async_block#0}
       awaiting at src/bin/futurelock.rs:32 (Suspend1, 1 local)
 "
+            .replace("{traced}", &task_id("futurelock", future).to_string())
         );
     }
 
@@ -3323,9 +3332,10 @@ mod trace_render_tests {
     /// root side, and a footer counts what it left out.
     #[test]
     fn test_limit_cuts_the_root_side_and_counts() {
+        let future = "futurelock::main::{async_block#0}::{async_block_env#0}";
         let rendered = trace_with(
             "futurelock",
-            "futurelock::main::{async_block#0}::{async_block_env#0}",
+            future,
             false,
             output::Theme::plain(),
             Some(2),
@@ -3334,11 +3344,12 @@ mod trace_render_tests {
         assert_eq!(
             rendered,
             "#0  future        tokio::sync::batch_semaphore::Acquire
-      waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+      waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task {traced}
 #1  async fn      tokio::sync::mutex::Mutex::acquire<()>
       awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1, 0 locals)
 [7 frames, 2 shown]
 "
+            .replace("{traced}", &task_id("futurelock", future).to_string())
         );
     }
 
@@ -3400,11 +3411,15 @@ mod trace_render_tests {
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
 
+        let joiner_id =
+            testkit::task_id_running(ctx.view, &list, "sleep_join::joiner::{async_fn_env#0}");
+        let sleeper_id =
+            testkit::task_id_running(ctx.view, &list, "sleep_join::sleeper::{async_fn_env#0}");
         let joiner = list
             .tasks
             .iter()
-            .find(|t| t.task_id == Some(4))
-            .expect("the joiner is task 4");
+            .find(|t| t.task_id == Some(joiner_id))
+            .expect("the joiner is listed");
         let read = ReadContext::none();
         let TaskStage::Running(root) = ctx
             .task_root(joiner, &read)
@@ -3450,7 +3465,10 @@ mod trace_render_tests {
         )
         .expect("the chain renders");
         let rendered = String::from_utf8(out).expect("rendered output is UTF-8");
-        assert!(rendered.contains("(task 3)"), "{rendered}");
+        assert!(
+            rendered.contains(&format!("(task {sleeper_id})")),
+            "{rendered}"
+        );
     }
 
     /// `--verbose` adds the frame's blocks in order — the live state's
@@ -3500,8 +3518,11 @@ mod trace_render_tests {
             None,
             None,
         );
-        let target = "a tokio::sync::Mutex (semaphore 0xADDR): \
-                      1 permit requested, 0 available; wake queue: task 5";
+        let target = format!(
+            "a tokio::sync::Mutex (semaphore 0xADDR): \
+             1 permit requested, 0 available; wake queue: task {}",
+            task_id("futurelock", future)
+        );
         assert!(
             styled.contains(&format!("      waiting on \x1b[1m{target}\x1b[0m\n")),
             "{styled}"

@@ -865,7 +865,18 @@ fn test_futurelock_census_offline() {
             .contains("futurelock::do_async_thing::{async_fn_env#0}"),
         "{future1:#?}"
     );
-    assert_eq!(list.tasks[future1.owner].task_id, Some(5), "{future1:#?}");
+    // Held by the task that is futurelocked: the one running main's
+    // async block.
+    let locked = hansei_runtime::testkit::task_id_running(
+        ctx.view,
+        &list,
+        "futurelock::main::{async_block#0}::{async_block_env#0}",
+    );
+    assert_eq!(
+        list.tasks[future1.owner].task_id,
+        Some(locked),
+        "{future1:#?}"
+    );
     assert!(
         future1
             .waiting_on

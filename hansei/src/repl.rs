@@ -2199,7 +2199,17 @@ mod tests {
             ]
         );
         assert_eq!(spelled("threads", "has-task"), plain(&["yes", "no"]));
-        assert_eq!(spelled("threads", "task"), plain(&["3"]));
+        // The one task a thread is polling: the claimed blocking cell.
+        let polled = testkit::task_id_running(
+            session.ctx.view,
+            &session.tasks,
+            "tokio::runtime::blocking::task::BlockingTask<\
+             blocking_pool::main::{async_block#0}::{closure_env#0}>",
+        );
+        assert_eq!(
+            spelled("threads", "task"),
+            plain(&[polled.to_string().as_str()])
+        );
         assert_eq!(spelled("futures", "kind"), plain(&["local", "set"]));
         assert!(spelled("tasks", "holds").is_empty());
         assert!(spelled("tasks", "colour").is_empty());

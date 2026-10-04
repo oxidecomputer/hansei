@@ -893,6 +893,28 @@ pub fn tasks<T: Target>(ctx: &Context<'_, T>, target: &T) -> TaskList {
     e.list
 }
 
+/// The id of the one task in `list` running a future named exactly
+/// `future`: how a test names a task, by what it runs. The id itself is
+/// not the fixture's to fix — a snapshot keeps whatever tokio handed
+/// out, and a fresh core is renamed canonically ([`Canonical`]).
+pub fn task_id_running(view: BundleView<'_>, list: &TaskList, future: &str) -> u64 {
+    let ids: Vec<Option<u64>> = list
+        .tasks
+        .iter()
+        .filter(|t| match &t.future {
+            crate::tokio::bundle::FutureInfo::Known(known) => known.name(view) == future,
+            _ => false,
+        })
+        .map(|t| t.task_id)
+        .collect();
+    match ids[..] {
+        [Some(id)] => id,
+        [None] => panic!("the task running {future} records no id"),
+        [] => panic!("no task runs {future}"),
+        _ => panic!("{} tasks run {future}", ids.len()),
+    }
+}
+
 /// The local `local` of the frame on `task`'s chain whose future's
 /// name contains `frame`, as the census scans it — a test's way to
 /// hand a walk the very value a fixture built, without a marker.
