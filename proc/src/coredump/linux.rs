@@ -22,16 +22,16 @@
 //! Reading a Linux core away from the machine that wrote it therefore
 //! wants those files to hand; what was dumped still reads without them.
 
-use super::common::{Segment, Symbols, names_something};
+use super::common::{Segment, Symbols, elf_ctx, names_something};
 use crate::{
     BuildIds, CoreFiles, Error, FatalSignal, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags,
     Mappings, ProcessFacts, Regs, Result, Status, SymbolBuf, Target, Timespec, fault_code_name,
 };
 
-use goblin::elf::Elf;
 use goblin::elf::note::{NT_FILE, NT_PRSTATUS};
 use goblin::elf::program_header::{PF_R, PF_W, PF_X, PT_LOAD, PT_NOTE, PT_TLS};
 use goblin::elf::sym::{STT_FUNC, STT_OBJECT, STT_TLS};
+use goblin::elf::{Elf, ProgramHeader};
 use memmap2::Mmap;
 
 use std::collections::BTreeMap;
@@ -570,13 +570,50 @@ impl Core {
                 path: Some(file.path.clone()),
                 vaddr: file.range.start,
                 size: file.range.end - file.range.start,
-                // Readable and file-backed is all such an entry says;
-                // the permissions it was mapped with went unrecorded.
-                flags: MapFlags(PF_R),
+                // The core records no permissions for such an entry,
+                // but the file says how the loader mapped that part of
+                // it. Readable and file-backed is all that is known
+                // without the file.
+                flags: MapFlags(self.loaded_flags(file).unwrap_or(PF_R)),
             });
         }
         inner.sort_unstable();
         Mappings { inner }
+    }
+
+    /// The permissions the loader mapped a file-backed region with: the
+    /// flags of the backing file's own `PT_LOAD` that the region's file
+    /// offset falls in. This is what gives an object's text its
+    /// execute bit when gdb left the text out of the program headers,
+    /// which it does for every object whose code is a segment of its
+    /// own (`-z separate-code`, glibc's default build among them).
+    ///
+    /// `None` with no backing file, or no segment of it there. Only the
+    /// program headers are parsed: an executable's symtab is not worth
+    /// reading for this.
+    fn loaded_flags(&self, file: &FileMap) -> Option<u32> {
+        const PAGE: u64 = 0x1000;
+        let map = &self.backing(&file.path)?.map;
+        let header = Elf::parse_header(map).ok()?;
+        let phdrs = ProgramHeader::parse(
+            map,
+            header.e_phoff as usize,
+            usize::from(header.e_phnum),
+            elf_ctx(),
+        )
+        .ok()?;
+        // The kernel maps a segment from its page-aligned file offset,
+        // so a region starts there; the latest such start at or below
+        // the region's offset is the segment it belongs to.
+        phdrs
+            .iter()
+            .filter(|ph| ph.p_type == PT_LOAD)
+            .filter(|ph| {
+                let start = ph.p_offset & !(PAGE - 1);
+                start <= file.offset && file.offset < ph.p_offset + ph.p_filesz.max(1)
+            })
+            .max_by_key(|ph| ph.p_offset)
+            .map(|ph| ph.p_flags & (PF_R | PF_W | PF_X))
     }
 
     /// Identify the executable from `AT_PHDR`, whose runtime address
@@ -1853,6 +1890,68 @@ mod tests {
         // were reached.
         let vaddrs: Vec<u64> = maps.iter().map(|m| m.vaddr).collect();
         assert!(vaddrs.windows(2).all(|w| w[0] <= w[1]), "{vaddrs:#x?}");
+    }
+
+    /// A region the core mentions only in `NT_FILE` is mapped with the
+    /// permissions of the backing file's own segment at that offset:
+    /// gdb leaves an object's text out of the headers whenever the text
+    /// is a segment of its own, and a program counter there is still in
+    /// text. Every segment of the test binary is mapped from its
+    /// page-aligned offset, the way the loader maps it, at an address
+    /// of its own.
+    #[cfg(any(target_os = "linux", target_os = "illumos"))]
+    #[test]
+    fn test_nt_file_only_regions_take_the_files_permissions() {
+        let exe = std::env::current_exe().unwrap();
+        let image = std::fs::read(&exe).unwrap();
+        let elf = Elf::parse(&image).unwrap();
+        let loads: Vec<_> = elf
+            .program_headers
+            .iter()
+            .filter(|ph| ph.p_type == PT_LOAD)
+            .collect();
+        assert!(
+            loads.iter().any(|ph| ph.p_flags & PF_X != 0),
+            "the test binary has no text segment"
+        );
+        let at = |i: usize| 0x4000_0000 + i as u64 * 0x100_0000;
+
+        let mut core = CoreBuilder::default().thread(1, regs_at(0, 0x9000)).dumped(
+            0x9000,
+            PF_R | PF_W,
+            vec![0; PAGE as usize],
+        );
+        for (i, ph) in loads.iter().enumerate() {
+            let offset = ph.p_offset & !(PAGE - 1);
+            core = core.file(at(i)..at(i) + PAGE, offset, exe.to_str().unwrap());
+        }
+        let (_dir, p) = core.proc();
+
+        let maps = p.mappings().unwrap();
+        for (i, ph) in loads.iter().enumerate() {
+            let m = maps.get(at(i)).unwrap();
+            assert_eq!(
+                m.flags.0 & (PF_R | PF_W | PF_X),
+                ph.p_flags & (PF_R | PF_W | PF_X),
+                "the segment at file offset {:#x}",
+                ph.p_offset
+            );
+            assert_eq!(m.is_text(), ph.p_flags & PF_X != 0, "{m:?}");
+        }
+    }
+
+    /// With no file to ask, an `NT_FILE`-only region is readable and
+    /// file-backed, and nothing more.
+    #[test]
+    fn test_nt_file_only_regions_without_their_file_are_readable_only() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .file(0x40_0000..0x40_0000 + PAGE, PAGE, "/nonexistent/libfoo.so")
+            .proc();
+
+        let m = p.mappings().unwrap().get(0x40_0000).cloned().unwrap();
+        assert_eq!(m.flags.0, PF_R, "{m:?}");
     }
 
     /// A region with a program header is described by it, not by the
