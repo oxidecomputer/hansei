@@ -1,0 +1,97 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# Run the Linux suite five times over, on five separate runners, each
+# taking its own cores, against goldens a Linux host blessed on the
+# branch named. Two captures of an unchanged program have to print the
+# same goldens: every passing run is stable against the blessing, and
+# a runner passing agrees with the host that blessed it. A test that
+# fails in some runs and passes in others is instability to
+# canonicalize; one that fails alike in every run is a content change.
+# Rerun after an image bump or a change to the canonicalization in
+# hansei-runtime's testkit. Never a required check.
+
+name: stability gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The branch whose goldens a Linux host blessed
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  run:
+    name: run ${{ matrix.run }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      # Restore only: five jobs saving one key would race.
+      - id: image
+        uses: ./.github/actions/linux-image
+        with:
+          cache: linux
+          save: "false"
+
+      - uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.image.outputs.scratch }}/target
+          key: target-linux-${{ steps.image.outputs.image }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: target-linux-${{ steps.image.outputs.image }}-
+
+      - name: Build fixtures
+        run: .github/scripts/in-image.sh cargo run --locked --profile ci -p hansei-runtime --example build_fixtures
+
+      # insta writes no .snap.new under CI unless told to; the archive
+      # below collects them.
+      - name: Test
+        env:
+          INSTA_UPDATE: new
+        run: |
+          .github/scripts/in-image.sh cargo nextest run --locked --no-fail-fast --profile ci --cargo-profile ci 2>&1 \
+            | tee "$RUNNER_TEMP/test.log"
+
+      # The rejected goldens are gitignored, so they are found rather
+      # than listed by git.
+      - name: Archive failure
+        if: failure()
+        run: |
+          find . -path ./target -prune -o -name '*.snap.new' -print0 \
+            | tar --null -T - -cf "$RUNNER_TEMP/snap-new.tar"
+          sets=()
+          for set in linux linux-floor; do
+            [ -d "$HANSEI_CORES/$set" ] && sets+=("$set")
+          done
+          if [ ${#sets[@]} -gt 0 ]; then
+            tar --sparse --exclude='.*' -C "$HANSEI_CORES" -cf - "${sets[@]}" \
+              | zstd -3 -T0 -q -o "$RUNNER_TEMP/cores-linux.tar.zst"
+          fi
+
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gate-run-${{ matrix.run }}
+          path: |
+            ${{ runner.temp }}/test.log
+            ${{ runner.temp }}/snap-new.tar
+            ${{ runner.temp }}/cores-linux.tar.zst
+          compression-level: 0
+          retention-days: 14

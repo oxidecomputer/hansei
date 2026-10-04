@@ -1,0 +1,23 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+# CI's profile (`cargo nextest run --profile ci`). A test that hangs is
+# killed after five minutes and reported as a timeout, rather than
+# holding its job until the job's own limit and leaving nothing to say
+# which test it was. The fixture programs are built before the suite
+# starts (hansei-runtime's build_fixtures example), so no test spends
+# the limit waiting for a build.
+[profile.ci]
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+# Every cell of the version matrix, built and extracted in one test.
+[[profile.ci.overrides]]
+filter = "binary_id(hansei-runtime::matrix)"
+slow-timeout = { period = "60s", terminate-after = 60 }
+
+# Hundreds of seeded corruptions over a fixture, the whole pipeline
+# each; several minutes under load is normal.
+[[profile.ci.overrides]]
+filter = "binary_id(hansei-runtime::degraded) & test(/seeded_faults/)"
+slow-timeout = { period = "60s", terminate-after = 15 }
