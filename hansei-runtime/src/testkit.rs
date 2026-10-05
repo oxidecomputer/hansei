@@ -475,6 +475,11 @@ fn mask_times(s: &str) -> String {
 ///   allocator's cache and slab counts;
 /// - ephemeral ports, and file descriptor numbers, which the kernel
 ///   hands out in the order threads opening sockets at once reach it;
+/// - the tick in a `ScheduledIo`'s `readiness` word, which counts the
+///   readiness events the I/O driver delivered to that resource: whether
+///   the kernel reports a socket's events together or one at a time is
+///   timing, so a capture finds 4 one run and 5 the next. The ready bits
+///   and the shutdown bit beside it are kept;
 /// - runs of spaces inside a line, which move with the width of a
 ///   value beside them.
 pub fn mask_core(s: &str) -> String {
@@ -503,7 +508,26 @@ pub fn mask_core(s: &str) -> String {
     let s = re(r"\(\d+ caches, \d+ slabs\)").replace_all(&s, "(N caches, N slabs)");
     let s = re(r"\b(\d{1,3}(\.\d{1,3}){3}):\d+\b").replace_all(&s, "$1:PORT");
     let s = re(r"\bfd(:?) \d+\b").replace_all(&s, "fd$1 N");
+    let s = mask_io_tick(&s);
     re(r"(\S) {2,}").replace_all(&s, "$1  ").into_owned()
+}
+
+/// The bits of a `ScheduledIo`'s `readiness` word that hold its tick:
+/// bits 16 to 30, between the ready bits and the shutdown bit, in every
+/// tokio the matrix covers (`READINESS`, `TICK` and `SHUTDOWN` in
+/// tokio's `runtime/io/scheduled_io.rs`).
+const IO_TICK: u64 = 0x7fff << 16;
+
+/// Clear the tick bits of every `ScheduledIo`'s `readiness` field, the
+/// field a value of that type prints second ([`mask_core`]), and say so.
+fn mask_io_tick(s: &str) -> String {
+    regex::Regex::new(r"(scheduled_io::ScheduledIo \{\n[^\n]*\n\s*readiness: )(\d+)")
+        .unwrap()
+        .replace_all(s, |caps: &regex::Captures<'_>| {
+            let word: u64 = caps[2].parse().expect("a readiness word is a number");
+            format!("{}{} (tick masked)", &caps[1], word & !IO_TICK)
+        })
+        .into_owned()
 }
 
 /// Every `0x` address in `s`, numbered by first appearance.
@@ -1697,5 +1721,33 @@ mod tests {
             assert!(!list.is_empty(), "[cells] {name} parsed to nothing");
         }
         assert_eq!(super::matrix::floor(), m.tokio.floor);
+    }
+
+    /// Two captures whose socket saw four readiness events and five
+    /// mask alike, while the ready bits and the shutdown bit still
+    /// show, and a `readiness` field of any other type is left alone.
+    #[test]
+    fn test_the_io_tick_is_masked_and_nothing_else() {
+        let io = |word: u64| {
+            format!(
+                "0x10 -> tokio::runtime::io::scheduled_io::ScheduledIo {{\n  \
+                 linked_list_pointers: core::cell::UnsafeCell<()> {{ .. }} @ 0x10,\n  \
+                 readiness: {word},\n}}\n"
+            )
+        };
+        let four = super::mask_core(&io(4 << 16));
+        assert_eq!(four, super::mask_core(&io(5 << 16)));
+        assert!(four.contains("readiness: 0 (tick masked),"), "{four}");
+
+        let readable_shut = (1 << 31) | (7 << 16) | 1;
+        let masked = super::mask_core(&io(readable_shut));
+        let kept = (1u64 << 31) | 1;
+        assert!(
+            masked.contains(&format!("readiness: {kept} (tick masked),")),
+            "{masked}"
+        );
+
+        let other = "Other {\n  first: 1,\n  readiness: 327680,\n}\n";
+        assert_eq!(super::mask_core(other), other);
     }
 }

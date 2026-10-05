@@ -4,7 +4,7 @@ description: "`locals` over illumos/http-conns"
 ---
 scheduled_io: &tokio::runtime::io::scheduled_io::ScheduledIo = 0xA1 -> tokio::runtime::io::scheduled_io::ScheduledIo {
           linked_list_pointers: core::cell::UnsafeCell<tokio::util::linked_list::Pointers<tokio::runtime::io::scheduled_io::ScheduledIo>> { .. } @ 0xA1,
-          readiness: 327680,
+          readiness: 0 (tick masked),
           waiters: tokio::loom::std::parking_lot::Mutex<tokio::runtime::io::scheduled_io::Waiters> { .. } @ 0xA2,
       }
 state: tokio::runtime::io::scheduled_io::State = Waiting
