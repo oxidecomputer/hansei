@@ -210,6 +210,10 @@ fn missing(dir: &Path, set: &str, program: &str) -> ! {
 }
 
 /// Capture every program of `set` this run has not, once per run.
+///
+/// The programs are cored at once, as many as there are CPUs: each
+/// capture is mostly waiting, on its program reaching its marker and on
+/// `gcore`, and futurelock's alone holds its marker back for seconds.
 fn take(dir: &Path, set: &str) {
     let recipe = recipe(set);
     let stamps = dir.join(".stamps").join(set);
@@ -220,9 +224,7 @@ fn take(dir: &Path, set: &str) {
         |stale| {
             let bin_a = testrun::fixture::build_a(&recipe, PROGRAMS);
             let bin_b = testrun::fixture::build_b(&recipe, PROGRAMS);
-            for &program in stale {
-                take_one(dir, set, program, &bin_a, &bin_b);
-            }
+            super::parallel(stale, |program| take_one(dir, set, program, &bin_a, &bin_b));
         },
     );
 }
@@ -271,6 +273,9 @@ fn take_one(dir: &Path, set: &str, program: &str, bin_a: &Path, bin_b: &Path) {
 /// Copy every library `proc` maps into `sysroot` at its recorded path,
 /// replacing by rename so a reader of an earlier copy keeps its file.
 /// The executable is left out: it is read from the copy of build A.
+///
+/// A set's programs are captured at once and map the same libraries,
+/// so each copy goes through a file of its own before the rename.
 fn sysroot(proc: &Proc, sysroot: &Path) {
     let exec = proc.exec_name().expect("the core names its executable");
     let mappings = proc.mappings().expect("the core lists its mappings");
@@ -283,10 +288,12 @@ fn sysroot(proc: &Proc, sysroot: &Path) {
     files.dedup();
     for file in files {
         let to = sysroot.join(file.trim_start_matches('/'));
-        fs::create_dir_all(to.parent().unwrap()).expect("failed to create a sysroot dir");
-        let tmp = to.with_extension(format!("tmp{}", std::process::id()));
-        fs::copy(file, &tmp).unwrap_or_else(|e| panic!("failed to copy {file}: {e}"));
-        fs::rename(&tmp, &to).expect("failed to install a sysroot library");
+        let parent = to.parent().unwrap();
+        fs::create_dir_all(parent).expect("failed to create a sysroot dir");
+        let tmp = tempfile::NamedTempFile::new_in(parent).expect("failed to create a sysroot file");
+        fs::copy(file, tmp.path()).unwrap_or_else(|e| panic!("failed to copy {file}: {e}"));
+        tmp.persist(&to)
+            .expect("failed to install a sysroot library");
     }
 }
 

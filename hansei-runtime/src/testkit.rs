@@ -21,6 +21,7 @@ use proc::{LwpInfo, Target};
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub mod canonical;
 pub mod cores;
@@ -31,6 +32,25 @@ pub mod heap;
 
 pub use canonical::Canonical;
 pub use fixture::Fixture;
+
+/// Do `work` on every one of `items`, as many at once as the system
+/// has CPUs: for fixture work the suites would otherwise do one item
+/// after another under a lock — coring the programs, extracting their
+/// bundles — while every test needing it waits. A panic in any `work`
+/// is the caller's, once every item has been tried.
+pub fn parallel<T: Sync>(items: &[T], work: impl Fn(&T) + Sync) {
+    let width = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..width.min(items.len()) {
+            scope.spawn(|| {
+                while let Some(item) = items.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    work(item);
+                }
+            });
+        }
+    });
+}
 
 /// Record each of `kinds` on `bundle`'s type as the coroutine kind a
 /// rule of that kind names — what extraction records for a coroutine
