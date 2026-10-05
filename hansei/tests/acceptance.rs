@@ -337,6 +337,9 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
         // Which label the detail lines are under: `awaiting on` or
         // `will wake`, the two that carry any.
         let mut under: Option<&str> = None;
+        // Whether the task printed `awaiting on`, whose lines may all
+        // have been dropped below.
+        let mut awaited = false;
         while let Some(line) = lines.peek() {
             if line.is_empty() || line.starts_with("[Executed against ") {
                 break;
@@ -349,6 +352,15 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 .strip_prefix("    ")
                 .unwrap_or_else(|| panic!("unexpected task line {line:?}"));
             if let Some(detail) = field_line.strip_prefix("    ") {
+                // A waker slot attribution could only call unknown is
+                // not pinned, as [`mask`] does not pin it in a golden:
+                // on a Linux core, with no allocator index to tell a
+                // freed chunk from a live one, a waker a freed chunk
+                // still holds reads as a slot, and whether one is
+                // there is what the allocator reused before the core.
+                if detail.starts_with("unknown @ 0x") {
+                    continue;
+                }
                 match under {
                     Some("awaiting on") => row.wait_lines.push(detail.to_string()),
                     Some("will wake") => row.wake_lines.push(detail.to_string()),
@@ -366,6 +378,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                     .unwrap_or_else(|| panic!("unexpected task line {line:?}")),
             };
             under = matches!(label, "awaiting on" | "will wake").then_some(label);
+            awaited |= label == "awaiting on";
             let field = match label {
                 "state" => &mut row.state,
                 "thread" => &mut row.thread,
@@ -380,10 +393,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 // `will wake` carries no value of its own.
                 "will wake" => {
                     assert!(row.wake_lines.is_empty(), "repeated task field {line:?}");
-                    assert!(
-                        !row.waiting.is_empty() || !row.wait_lines.is_empty(),
-                        "will wake before awaiting on {line:?}"
-                    );
+                    assert!(awaited, "will wake before awaiting on {line:?}");
                     continue;
                 }
                 _ => panic!("unexpected task field {line:?}"),
