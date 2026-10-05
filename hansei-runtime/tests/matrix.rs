@@ -46,12 +46,14 @@
 //! primary cell shares its fixture dirs with the extraction goldens,
 //! and two test binaries rebuilding one fixture dir race.
 //!
-//! The goldens are blessed from macOS. Everything in them is meant to
-//! be LP64-portable — offsets are stripped, `futures_util` adapters are
-//! filtered where monomorphization survival is the target's call — but
-//! a platform whose type population differs may still diff; treat the
-//! checked-in files as the macOS rendering until a second platform
-//! needs them.
+//! The goldens are the rendering in the Linux test image
+//! (`.github/image/`): blessed there (`test-programs/matrix.sh bless`),
+//! and checked there by CI's matrix workflow, which is dispatched by
+//! hand. Offsets are stripped and `futures_util` adapters
+//! filtered where monomorphization survival is the target's call, but
+//! the type population is still the platform's own — its platform
+//! types, and whatever identical code its linker folds away — so a run
+//! anywhere else diffs without meaning anything.
 
 use exegesis::describe::{describe_debug_format, describe_semantics};
 use exegesis::detect::Family;
