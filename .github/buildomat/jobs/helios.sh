@@ -7,7 +7,7 @@
 #:
 #: name = "helios"
 #: variety = "basic"
-#: target = "helios-3.0-16c64gb"
+#: target = "helios-3.0"
 #: rust_toolchain = true
 #: output_rules = [
 #:	"/work/cores-illumos.tar.zst",
@@ -23,6 +23,9 @@
 # illumos fixture set. The set is published for the macOS check that
 # reads it (`macos (illumos cores)` in .github/workflows/ci.yml), which
 # fetches it by commit once this job's check run has passed.
+#
+# The default target size: the job is done minutes before that macOS
+# check finishes building, so a larger machine only reserves more.
 #
 # Buildomat publishes the first file it is given for a commit and
 # refuses every later one, even from a rerun, so the archive is built
