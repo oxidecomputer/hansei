@@ -176,8 +176,11 @@ bins=()
 for p in "${PROGRAMS[@]}"; do
     bins+=(--bin "$p")
 done
+# FEATURES is empty for the default build. macOS's /bin/bash is 3.2,
+# which under `set -u` calls an empty array unbound, so it expands
+# through the form that only expands what is there.
 (cd "$CRATE_DIR" && \
-    cargo "+$TOOLCHAIN" build --locked --release "${FEATURES[@]}" "${bins[@]}")
+    cargo "+$TOOLCHAIN" build --locked --release ${FEATURES[@]+"${FEATURES[@]}"} "${bins[@]}")
 
 mkdir -p "$BIN_DIR"
 
