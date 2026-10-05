@@ -214,7 +214,7 @@ fn missing(dir: &Path, set: &str, program: &str) -> ! {
 /// The programs are cored at once, as many as there are CPUs: each
 /// capture is mostly waiting, on its program reaching its marker and on
 /// `gcore`, and futurelock's alone holds its marker back for seconds.
-fn take(dir: &Path, set: &str) {
+pub fn take(dir: &Path, set: &str) {
     let recipe = recipe(set);
     let stamps = dir.join(".stamps").join(set);
     testrun::once_per_run_each(

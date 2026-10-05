@@ -216,10 +216,20 @@ before. It exists for `cargo mutants`, which is one nextest run per mutant
 over one scratch copy of the tree per job: with it, the acceptance suite on
 Linux is 5 s a run instead of 20 s, which is what makes a sweep on a host
 where that suite actually runs affordable at all. If you add fixture work,
-add its inputs to the digest (`compiled_from`/`extracted_from` in
-`acceptance.rs`, `built_from` in `golden.rs`) — an input left out is a stale
+add its inputs to the digest (`extracted_from` in `testkit/accept.rs`,
+`built_from` in `golden.rs`) — an input left out is a stale
 fixture reused under reuse, which is exactly the failure the run stamp exists
 to prevent.
+
+CI does the fixture work before the suite starts, in hansei-runtime's
+`build_fixtures` example: the builds, the captures, and the bundles. Inside
+the suite, the first test to need a piece does it while every other test
+needing it waits, holding a test slot nothing else can use; on a four-CPU
+runner that was over two fifths of the suite's test time.
+**`HANSEI_RUN_ID`** names the run in place of `NEXTEST_RUN_ID`, and CI sets
+it for both steps, so the suite finds the work stamped as its own. Its value
+must be new every run; nobody sets it by hand. If you add fixture work, have
+`build_fixtures` do it too.
 
 Two automated layers run in a plain test run on macOS, plus a manual real-DWARF
 check:

@@ -229,6 +229,21 @@ pub fn build_a(recipe: &Recipe, programs: &[&str]) -> PathBuf {
     build(&recipe.target_recipe(), programs)
 }
 
+/// Every fixture program, by the names of `test-programs/src/bin`, in
+/// name order: what a step building ahead of the suites builds, so no
+/// suite compiles one while its other tests wait.
+pub fn all_programs() -> Vec<String> {
+    let bin = test_programs_dir().join("src/bin");
+    let mut programs: Vec<String> = std::fs::read_dir(&bin)
+        .unwrap_or_else(|e| panic!("failed to list {}: {e}", bin.display()))
+        .map(|entry| entry.expect("failed to read a fixture source").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .map(|path| path.file_stem().unwrap().to_string_lossy().into_owned())
+        .collect();
+    programs.sort();
+    programs
+}
+
 /// The packed-split build of `program` in the primary cell (`regen.sh
 /// --dwp`), once per run, and the directory holding it: the
 /// skeleton-DWARF binary, with its `.dwp` beside it. It is stamped and

@@ -48,6 +48,10 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: "1"
+  # The fixture work each job does before its suite (build_fixtures)
+  # counts as the suite's own only under one run name; a rerun is a
+  # new one.
+  HANSEI_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
   # Its own job, so a lint failure neither stops the suite from running
@@ -113,7 +117,7 @@ jobs:
         run: .github/scripts/in-image.sh cargo nextest run --locked --no-run --cargo-profile ci
 
       # Outside the suite, so no test waits on it under the per-test
-      # limit (.config/nextest.toml).
+      # limit (.config/nextest.toml) or holds a slot while it does.
       - name: Fixtures
         run: .github/scripts/in-image.sh target/ci/examples/build_fixtures
 
@@ -237,6 +241,10 @@ jobs:
         run: |
           .github/scripts/wait-helios.sh "$HEAD_SHA" "$RUNNER_TEMP/cores"
           echo "HANSEI_CORES=$RUNNER_TEMP/cores" >>"$GITHUB_ENV"
+
+      # Again, now that there are cores: the illumos set's bundles.
+      - name: Fixtures
+        run: target/ci/examples/build_fixtures
 
       - name: Test
         run: cargo nextest run --locked --no-fail-fast --profile ci --cargo-profile ci -p hansei-runtime -p hansei

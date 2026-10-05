@@ -62,6 +62,11 @@ cargo nextest --version
 export CARGO_INCREMENTAL=0
 export RUST_BACKTRACE=1
 export HANSEI_CORES=/var/tmp/hansei-cores
+# The fixture work done before the suite counts as the suite's own only
+# under one run name. Any name new to this machine will do, and every
+# job here is a new machine.
+HANSEI_RUN_ID=helios-$(date +%s)-$$
+export HANSEI_RUN_ID
 mkdir -p "$HANSEI_CORES" /work
 
 # A build and a core per program, the dot-named bookkeeping left out:
@@ -78,7 +83,7 @@ ptime -m cargo nextest run --locked --no-run --cargo-profile ci
 
 banner fixtures
 # Outside the suite, so no test waits on it under the per-test limit
-# (.config/nextest.toml).
+# (.config/nextest.toml) or holds a slot while it does.
 ptime -m target/ci/examples/build_fixtures
 
 banner test

@@ -29,6 +29,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: "1"
+  # See ci.yml: the fixture work before each suite counts as its own.
+  HANSEI_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
   run:
