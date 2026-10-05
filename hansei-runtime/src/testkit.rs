@@ -36,11 +36,30 @@ pub use fixture::Fixture;
 
 /// Do `work` on every one of `items`, as many at once as the system
 /// has CPUs: for fixture work the suites would otherwise do one item
-/// after another under a lock — coring the programs, extracting their
-/// bundles — while every test needing it waits. A panic in any `work`
-/// is the caller's, once every item has been tried.
+/// after another under a lock, coring the programs, while every test
+/// needing it waits. A panic in any `work` is the caller's, once every
+/// item has been tried.
 pub fn parallel<T: Sync>(items: &[T], work: impl Fn(&T) + Sync) {
-    let width = std::thread::available_parallelism().map_or(1, |n| n.get());
+    parallel_at(
+        std::thread::available_parallelism().map_or(1, |n| n.get()),
+        items,
+        work,
+    );
+}
+
+/// How many bundles one process extracts at once.
+///
+/// An extraction runs a thread pool as wide as the system on its own,
+/// so a process extracting as many bundles at once as there are CPUs
+/// asks for CPUs squared threads. On a 32-CPU host, under the test
+/// image's 16 GiB address-space limit, that ran out of address space
+/// for their stacks and allocator arenas, and every extraction failed.
+/// Two at once let one's serial phases overlap the other's parallel
+/// ones.
+pub const EXTRACTIONS: usize = 2;
+
+/// [`parallel`], at most `width` at once.
+pub fn parallel_at<T: Sync>(width: usize, items: &[T], work: impl Fn(&T) + Sync) {
     let next = AtomicUsize::new(0);
     std::thread::scope(|scope| {
         for _ in 0..width.min(items.len()) {

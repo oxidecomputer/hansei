@@ -36,7 +36,7 @@
 //! Usage: `cargo run -p hansei-runtime --example build_fixtures`
 
 use hansei_runtime::testkit::cores::{self, CAPTURED, recipe};
-use hansei_runtime::testkit::{self, PROGRAMS, accept, parallel};
+use hansei_runtime::testkit::{self, EXTRACTIONS, PROGRAMS, accept, parallel, parallel_at};
 use testrun::fixture::{Matrix, all_programs, build_a, build_b};
 
 /// The program the extraction goldens compare a packed split build of
@@ -65,14 +65,16 @@ fn main() {
     testrun::fixture::build_dwp(DWP_PROGRAM);
 
     // Coring a program is mostly waiting, on its marker and on gcore,
-    // and extraction mostly computing, so the two go side by side.
+    // and extraction mostly computing, so the two go side by side. The
+    // extractions themselves go [`EXTRACTIONS`] at a time, one batch
+    // after another.
     let dir = cores::dir();
     std::thread::scope(|scope| {
         scope.spawn(|| parallel(CAPTURED, |set| cores::take(&dir, set)));
         if ACCEPTANCE {
             accept::fixtures(&primary);
         }
-        parallel(PROGRAMS, |program| {
+        parallel_at(EXTRACTIONS, PROGRAMS, |program| {
             testkit::bundle_path(program);
         });
     });
@@ -82,7 +84,7 @@ fn main() {
         .filter(|set| dir.join(set).is_dir())
         .flat_map(|set| PROGRAMS.iter().map(move |&program| (set, program)))
         .collect();
-    parallel(&pairs, |&(set, program)| {
+    parallel_at(EXTRACTIONS, &pairs, |&(set, program)| {
         cores::bundle_path(set, program, &cores::capture(&dir, set, program));
     });
 }

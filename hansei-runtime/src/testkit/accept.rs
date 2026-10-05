@@ -11,7 +11,7 @@
 //! them too. Inside the suite, the first test to want them builds and
 //! extracts all of them while every other test waits.
 
-use super::parallel;
+use super::{EXTRACTIONS, parallel_at};
 
 use testrun::fixture::{Matrix, Recipe, build_a, build_b, test_programs_dir};
 
@@ -102,7 +102,7 @@ pub fn fixtures(recipe: &Recipe) -> Fixtures {
         &bundles.join(".bundles"),
         || extracted_from(recipe),
         || {
-            parallel(PROGRAMS, |program| {
+            parallel_at(EXTRACTIONS, PROGRAMS, |program| {
                 let opts = exegesis::extract::ExtractOptions {
                     extract_args: format!("acceptance-suite extraction of {program}"),
                     ..Default::default()
