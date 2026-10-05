@@ -21,7 +21,16 @@
 #                    cell's goldens moved
 #   add rust-VER     onboard a toolchain: rustup-install it, add it to
 #                    matrix.toml, bless its cells, run the whole matrix
+#   bless [FILTER]   bless the goldens of every cell, or of the cells
+#                    whose name contains FILTER: after a change that moves
+#                    them, before pushing, so CI's matrix workflow passes
 #   cells            list the fixture cells matrix.toml declares
+#
+# The goldens are the rendering in the Linux test image (.github/image/),
+# so add and bless run every build and the matrix suite in it, through
+# .github/scripts/in-image.sh: they need an x86_64 Linux host with
+# podman, and no Rust of the host's own. Anywhere else their goldens
+# would be another platform's, so they refuse.
 #
 # add prepares the working tree and never commits. Review the manifest,
 # lockfile, and golden diffs — a respelled member is one more ordered
@@ -253,10 +262,32 @@ require_clean() {
 $dirty"
 }
 
+# Run a command in the Linux test image, from this directory.
+in_image() {
+    "$REPO/.github/scripts/in-image.sh" "$@"
+}
+
+# What add and bless need: the image, which only an x86_64 Linux host
+# runs natively. An arm64 one would build the fixtures for its own
+# architecture, whose DWARF the goldens do not describe.
+require_image_host() {
+    [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] \
+        || die "the matrix goldens are blessed in the Linux test image, which needs an x86_64 Linux host (this is $(uname -s) $(uname -m))"
+    command -v podman >/dev/null \
+        || die "podman not found: the matrix goldens are blessed in the Linux test image (see .github/scripts/in-image.sh)"
+}
+
 ensure_toolchain() {
-    rustup toolchain list | grep -q "^$1" \
-        || rustup toolchain install "$1" \
+    in_image rustup toolchain install --profile minimal "$1" \
         || die "installing toolchain $1 failed"
+}
+
+# The matrix suite in the image, over the cells whose names contain
+# $1 ("1" for all of them); further arguments are environment settings.
+run_matrix() {
+    local filter=$1; shift
+    (cd "$REPO" && in_image env HANSEI_MATRIX="$filter" "$@" \
+        cargo nextest run --profile ci --cargo-profile ci -p hansei-runtime --test matrix)
 }
 
 lock_packages() {
@@ -285,11 +316,8 @@ reconcile_cells() { # before, after (newline-separated), bless substring
     printf 'new cells:\n%s\n' "$(printf '%s\n' "$new" | sed 's/^/  /')"
 
     echo "building and blessing the new cells..."
-    (cd "$REPO" && HANSEI_MATRIX=$3 INSTA_UPDATE=always \
-        cargo test -q -p hansei-runtime --test matrix) \
-        || die "blessing the new cells failed"
-    # A cell whose toolchain is missing skips silently; goldens are the
-    # proof every new cell actually ran.
+    run_matrix "$3" INSTA_UPDATE=always || die "blessing the new cells failed"
+    # Goldens are the proof every new cell actually ran.
     missing=0
     for c in $new; do
         [ -d "$GOLDENS/$c" ] || { echo "no goldens were written for $c" >&2; missing=1; }
@@ -297,7 +325,7 @@ reconcile_cells() { # before, after (newline-separated), bless substring
     [ $missing = 0 ] || die "blessing skipped cells"
 
     echo "running the whole matrix un-blessed (no existing cell's goldens may move)..."
-    (cd "$REPO" && HANSEI_MATRIX=1 cargo test -q -p hansei-runtime --test matrix) \
+    run_matrix 1 \
         || die "the full matrix run failed — an existing cell's goldens moved, or a new golden is unstable"
 }
 
@@ -323,8 +351,7 @@ cmd_add_tokio() {
     check_semver "$ver"
     load_manifest
     require_clean
-    command -v rustup >/dev/null || die "rustup not found"
-    command -v cargo >/dev/null || die "cargo not found"
+    require_image_host
 
     [ "$(ver_cmp "$ver" "$T_FLOOR")" -ge 0 ] \
         || die "tokio $ver is below the floor ($T_FLOOR)"
@@ -349,7 +376,7 @@ cmd_add_tokio() {
     echo "deriving locks/tokio-$ver.lock from the primary lock..."
     backup=$(mktemp) || die "mktemp failed"
     cp Cargo.lock "$backup" || die "backing up Cargo.lock failed"
-    if ! cargo "+$P_TC" update -p tokio --precise "$ver"; then
+    if ! in_image cargo "+$P_TC" update -p tokio --precise "$ver"; then
         git -C "$REPO" checkout -- test-programs/Cargo.lock
         die "cargo update -p tokio --precise $ver failed (does the release exist?)"
     fi
@@ -409,7 +436,7 @@ cmd_add_rust() {
     check_semver "$ver"
     load_manifest
     require_clean
-    command -v rustup >/dev/null || die "rustup not found"
+    require_image_host
 
     [ -n "${TC_FLOOR:-}" ] && [ "$(ver_cmp "$ver" "$TC_FLOOR")" -lt 0 ] \
         && die "rust $ver is below the floor ($TC_FLOOR)"
@@ -452,6 +479,22 @@ cmd_add_rust() {
 }
 
 # ---------------------------------------------------------------------------
+# bless [FILTER]
+# ---------------------------------------------------------------------------
+
+cmd_bless() {
+    local filter=${1:-1} tc
+    load_manifest
+    require_image_host
+    for tc in "${TOOLCHAINS[@]}"; do ensure_toolchain "$tc"; done
+    echo "blessing the cells matching '$filter'..."
+    run_matrix "$filter" INSTA_UPDATE=always || die "blessing failed"
+    echo
+    echo "blessed; review before committing:"
+    git -C "$REPO" status --short -- hansei-runtime/tests/matrix | sed 's/^/  /'
+}
+
+# ---------------------------------------------------------------------------
 
 case ${1:-} in
     update)
@@ -464,6 +507,9 @@ case ${1:-} in
             rust-*) cmd_add_rust "${2#rust-}" ;;
             *) die "add takes tokio-VER or rust-VER, not '$2'" ;;
         esac ;;
+    bless)
+        [ $# -le 2 ] || die "bless takes at most one cell filter"
+        cmd_bless "${2:-}" ;;
     cells)
         [ $# -eq 1 ] || die "cells takes no arguments"
         load_manifest
