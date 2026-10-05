@@ -1,4 +1,4 @@
 # The Linux test image .github/scripts/in-image.sh runs, by digest.
 # Changed only by the second commit of the procedure in the
 # Containerfile's header; "unpinned" until the image is first built.
-unpinned
+ghcr.io/oxidecomputer/hansei-ci@sha256:f7a4bf81781c14b6b49fb272c5ac334f67e1f37ac76535fd305bd08e44b224e1
