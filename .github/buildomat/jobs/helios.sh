@@ -70,10 +70,16 @@ archive_set() {
 	gtar -C "$HANSEI_CORES" --exclude='.*' -cf - illumos | zstd -3 -T0 -q -o "$1"
 }
 
+banner build
+# The suite's build builds the fixture example with it. `cargo run -p
+# hansei-runtime --example` would resolve features for that one package
+# and compile the workspace a second time.
+ptime -m cargo nextest run --locked --no-run --cargo-profile ci
+
 banner fixtures
 # Outside the suite, so no test waits on it under the per-test limit
 # (.config/nextest.toml).
-ptime -m cargo run --locked --profile ci -p hansei-runtime --example build_fixtures
+ptime -m target/ci/examples/build_fixtures
 
 banner test
 status=0

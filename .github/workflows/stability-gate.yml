@@ -57,8 +57,11 @@ jobs:
           key: target-linux-${{ steps.image.outputs.image }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
           restore-keys: target-linux-${{ steps.image.outputs.image }}-
 
-      - name: Build fixtures
-        run: .github/scripts/in-image.sh cargo run --locked --profile ci -p hansei-runtime --example build_fixtures
+      - name: Build
+        run: .github/scripts/in-image.sh cargo nextest run --locked --no-run --cargo-profile ci
+
+      - name: Fixtures
+        run: .github/scripts/in-image.sh target/ci/examples/build_fixtures
 
       # insta writes no .snap.new under CI unless told to; the archive
       # below collects them.

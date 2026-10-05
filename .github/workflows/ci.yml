@@ -106,10 +106,16 @@ jobs:
           key: fixtures-linux-${{ steps.image.outputs.image }}-${{ hashFiles('rust-toolchain.toml', 'test-programs/matrix.toml', 'test-programs/Cargo.lock', 'test-programs/locks/*.lock') }}
           restore-keys: fixtures-linux-${{ steps.image.outputs.image }}-
 
+      # The suite's build builds the fixture example with it. `cargo run
+      # -p hansei-runtime --example` would resolve features for that
+      # one package and compile the workspace a second time.
+      - name: Build
+        run: .github/scripts/in-image.sh cargo nextest run --locked --no-run --cargo-profile ci
+
       # Outside the suite, so no test waits on it under the per-test
       # limit (.config/nextest.toml).
-      - name: Build fixtures
-        run: .github/scripts/in-image.sh cargo run --locked --profile ci -p hansei-runtime --example build_fixtures
+      - name: Fixtures
+        run: .github/scripts/in-image.sh target/ci/examples/build_fixtures
 
       - name: Test
         run: .github/scripts/in-image.sh cargo nextest run --locked --no-fail-fast --profile ci --cargo-profile ci
@@ -185,8 +191,11 @@ jobs:
           zstd -dc "$RUNNER_TEMP/cores-linux.tar.zst" | tar -xf - -C "$RUNNER_TEMP/cores"
           echo "HANSEI_CORES=$RUNNER_TEMP/cores" >>"$GITHUB_ENV"
 
-      - name: Build fixtures
-        run: cargo run --locked --profile ci -p hansei-runtime --example build_fixtures
+      - name: Build
+        run: cargo nextest run --locked --no-run --cargo-profile ci
+
+      - name: Fixtures
+        run: target/ci/examples/build_fixtures
 
       - name: Test
         run: cargo nextest run --locked --no-fail-fast --profile ci --cargo-profile ci
@@ -220,7 +229,7 @@ jobs:
       - name: Build
         run: |
           cargo nextest run --locked --no-run --cargo-profile ci -p hansei-runtime -p hansei
-          cargo run --locked --profile ci -p hansei-runtime --example build_fixtures
+          target/ci/examples/build_fixtures
 
       - name: Wait for helios
         env:
