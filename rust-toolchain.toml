@@ -3,5 +3,5 @@
 # against come from one compiler. Advancing one means advancing both in
 # the same commit; a testrun test fails while they differ.
 [toolchain]
-channel = "1.98.0"
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]

@@ -15,8 +15,8 @@ ppid:  PID
 uid:  ID
 gid:  ID
 psargs: PSARGS
-execfn: <test-programs>/fixtures/bin-a/rust-1.98.0-tokio-1.47.5-unstable/ct-runtime
-executable: <test-programs>/fixtures/bin-a/rust-1.98.0-tokio-1.47.5-unstable/ct-runtime
+execfn: <test-programs>/fixtures/bin-a/rust-1.98.1-tokio-1.47.5-unstable/ct-runtime
+executable: <test-programs>/fixtures/bin-a/rust-1.98.1-tokio-1.47.5-unstable/ct-runtime
 build id (core):  BUILDID
 build id (binary): BUILDID — agree
 argv: not recorded in a Linux core (psargs is its 80-byte spelling)

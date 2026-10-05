@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 #[cfg(not(target_os = "macos"))]
 use std::process::Command;
 
-const TOOLCHAIN: &str = "1.98.0";
+const TOOLCHAIN: &str = "1.98.1";
 
 fn test_programs_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-programs")

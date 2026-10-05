@@ -1,0 +1,88 @@
+---
+source: hansei-runtime/tests/matrix.rs
+---
+program: ct-runtime
+origin 0: rustc rustc-coroutine-1.97 (clang LLVM (rustc version 1.98.1 (48a229cea 2026-09-01)))
+origin 1: layout tokio 1.52.4 family v1_49 (ReviewedRange)
+origin 2: rustc rustc-std-refcount-1.97 (clang LLVM (rustc version 1.98.1 (48a229cea 2026-09-01)))
+origin 3: rustc rustc-std-futex-mutex-1.97 (clang LLVM (rustc version 1.98.1 (48a229cea 2026-09-01)))
+origin 4: layout hashbrown 0.17.1 family hashbrown-table-0.12.3 (ReviewedRange)
+origin 5: rustc rustc-core-pending-1.97 (clang LLVM (rustc version 1.98.1 (48a229cea 2026-09-01)))
+origin 6: rustc rustc-std-adapters-1.97 (clang LLVM (rustc version 1.98.1 (48a229cea 2026-09-01)))
+rule 0: RustcAsyncFn rev 1 origin 0
+rule 1: TokioSleep rev 1 origin 1
+rule 2: TokioSleepState rev 1 origin 1
+rule 3: StdRefcountHeader rev 1 origin 2
+rule 4: StdFutexMutex rev 1 origin 3
+rule 5: HashbrownTable rev 1 origin 4
+rule 6: TokioAcquireOwner rev 1 origin 1
+rule 7: TokioAcquire rev 1 origin 1
+rule 8: TokioAcquireState rev 1 origin 1
+rule 9: TokioOneshotRecv rev 1 origin 1
+rule 10: TokioOneshotRecvState rev 1 origin 1
+rule 11: TokioJoinHandle rev 1 origin 1
+rule 12: TokioJoinHandleState rev 1 origin 1
+rule 13: RustcAsyncBlock rev 1 origin 0
+rule 14: CorePending rev 1 origin 5
+rule 15: TokioNotified rev 1 origin 1
+rule 16: TokioNotifiedState rev 1 origin 1
+rule 17: StdMutRefAccess rev 1 origin 6
+rule 18: StdMutRefPoll rev 1 origin 6
+rule 19: StdPinMutRefAccess rev 1 origin 6
+rule 20: StdPinMutRefPoll rev 1 origin 6
+rule 21: TokioIoOperation rev 1 origin 1
+rule 22: TokioIoState rev 1 origin 1
+rule 23: StdPinBoxAccess rev 1 origin 6
+rule 24: StdPinBoxPoll rev 1 origin 6
+rule 25: StdBoxAccess rev 1 origin 6
+rule 26: TokioCurrentThreadScheduler rev 1 origin 1
+rule 27: TokioBlockingScheduler rev 1 origin 1
+ct_runtime::sleeper::{async_fn_env#0} :: states future[task 0, coroutine rule 0] continuation rule 0 match <self>@+0 -> ct_runtime::sleeper::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+8 -> tokio::time::sleep::Sleep} coroutine rule 0 {0:Unresumed[ready]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee,__1]()} kind rule 0
+tokio::time::sleep::Sleep :: members future[poll, delegated by ct_runtime::sleeper::{async_fn_env#0}, delegated by core::pin::Pin<alloc::boxed::Box<tokio::time::sleep::Sleep, alloc::alloc::Global>>] continuation rule 1 primitive resource Sleep rule 1 state rule 2 exclusive-pending
+alloc::sync::ArcInner<tokio::sync::oneshot::Inner<()>> :: members refcount rule 3 value data
+alloc::sync::ArcInner<tokio::runtime::scheduler::current_thread::Handle> :: members refcount rule 3 value data
+std::sys::sync::mutex::futex::Mutex :: members lock rule 4 word 0+4 mask 0xffffffff
+alloc::sync::ArcInner<tokio::runtime::blocking::pool::Inner> :: members refcount rule 3 value data
+alloc::sync::ArcInner<tokio::runtime::park::Inner> :: members refcount rule 3 value data
+alloc::sync::ArcInner<(dyn core::ops::function::Fn<(&tokio::runtime::task_hooks::TaskMeta), Output=()> + core::marker::Send + core::marker::Sync)> :: members refcount rule 3 value data
+alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=()> + core::marker::Send + core::marker::Sync)> :: members refcount rule 3 value data
+std::collections::hash::map::HashMap<usize, std::thread::join_handle::JoinHandle<()>, std::hash::random::RandomState, alloc::alloc::Global> :: members table rule 5 mask base.table.table.bucket_mask@+8 -> usize ctrl base.table.table.ctrl.pointer@+0 -> *const u8 items base.table.table.items@+24 -> usize bucket (usize, std::thread::join_handle::JoinHandle<()>)
+alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=alloc::string::String> + core::marker::Send + core::marker::Sync)> :: members refcount rule 3 value data
+hashbrown::map::HashMap<usize, std::thread::join_handle::JoinHandle<()>, std::hash::random::RandomState, alloc::alloc::Global> :: members table rule 5 mask table.table.bucket_mask@+8 -> usize ctrl table.table.ctrl.pointer@+0 -> *const u8 items table.table.items@+24 -> usize bucket (usize, std::thread::join_handle::JoinHandle<()>)
+alloc::sync::ArcInner<tokio::runtime::io::scheduled_io::ScheduledIo> :: members refcount rule 3 value data
+alloc::sync::ArcInner<tokio::sync::oneshot::Sender<()>> :: members refcount rule 3 value data
+alloc::sync::ArcInner<std::thread::lifecycle::Packet<()>> :: members refcount rule 3 value data
+alloc::sync::ArcInner<std::thread::thread::Inner> :: members refcount rule 3 value data
+alloc::sync::ArcInner<std::thread::scoped::ScopeData> :: members refcount rule 3 value data
+ct_runtime::acquirer::{async_fn_env#0} :: states future[task 1, coroutine rule 0] continuation rule 0 match <self>@+0 -> ct_runtime::acquirer::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+8 -> tokio::sync::semaphore::{impl#0}::acquire::{async_fn_env#0}} coroutine rule 0 {0:Unresumed[ready,semaphore]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee,__1]()} kind rule 0
+tokio::sync::semaphore::{impl#0}::acquire::{async_fn_env#0} :: states future[coroutine rule 0, delegated by ct_runtime::acquirer::{async_fn_env#0}] continuation rule 0 match <self>@+0 -> tokio::sync::semaphore::{impl#0}::acquire::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+16 -> tokio::sync::batch_semaphore::Acquire} coroutine rule 0 {0:Unresumed[self]() 1:Returned[]() 2:Panicked[]() 3:Suspended[self,__awaitee]()} acquires-for rule 6 tokio::sync::Semaphore kind rule 0
+tokio::sync::batch_semaphore::Acquire :: members future[poll, delegated by tokio::sync::semaphore::{impl#0}::acquire::{async_fn_env#0}] continuation rule 7 primitive resource SemaphoreAcquire rule 7 state rule 8 exclusive-pending
+tokio::runtime::blocking::task::BlockingTask<tokio::net::addr::{impl#17}::to_socket_addrs::{closure_env#0}> :: members future[task 2, poll] continuation unknown (NoRule)
+tokio::runtime::blocking::task::BlockingTask<tokio::net::addr::{impl#19}::to_socket_addrs::{closure_env#0}> :: members future[task 3, poll] continuation unknown (NoRule)
+tokio::sync::oneshot::Receiver<()> :: members future[poll, poll, delegated by ct_runtime::main::{async_block_env#0}, delegated by &mut tokio::sync::oneshot::Receiver<()>] continuation rule 9 primitive resource OneshotRecv rule 9 state rule 10 exclusive-pending
+tokio::runtime::task::join::JoinHandle<core::result::Result<alloc::vec::into_iter::IntoIter<core::net::socket_addr::SocketAddr, alloc::alloc::Global>, core::io::error::Error>> :: members future[poll] continuation rule 11 primitive resource JoinHandle rule 11 state rule 12 exclusive-pending
+ct_runtime::main::{async_block_env#0} :: states future[coroutine rule 13, delegated by core::pin::Pin<&mut ct_runtime::main::{async_block_env#0}>] continuation rule 13 match <self>@+0 -> ct_runtime::main::{async_block_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+32 -> tokio::sync::oneshot::Receiver<()>} {4: delegate (exclusive) {4}.__awaitee@+24 -> tokio::sync::oneshot::Receiver<()>} {5: delegate (exclusive) {5}.__awaitee@+24 -> core::future::pending::Pending<()>} coroutine rule 13 {0:Unresumed[]() 1:Returned[]() 2:Panicked[]() 3:Suspended[ready_b_rx,_sleeper,_acquirer,__awaitee,__4,__5,__6,__7]() 4:Suspended[_sleeper,_acquirer,__awaitee,__3,__4,__5,__6]() 5:Suspended[_sleeper,_acquirer,__awaitee,__3,__4,__5,__6]()} kind rule 13
+tokio::runtime::task::join::JoinHandle<u32> :: members resource JoinHandle rule 11 state rule 12 exclusive-pending
+core::future::pending::Pending<()> :: members future[delegated by ct_runtime::main::{async_block_env#0}] continuation rule 14 never ready
+tokio::sync::notify::Notified :: members future[poll] continuation rule 15 primitive resource Notified rule 15 state rule 16 exclusive-pending
+&mut tokio::sync::oneshot::Receiver<()> :: members future[poll] continuation rule 18 delegate (exclusive) *@+0 -> tokio::sync::oneshot::Receiver<()> access Borrowed rule 17 *@+0 -> tokio::sync::oneshot::Receiver<()>
+tokio::net::addr::sealed::MaybeReady :: members future[poll] continuation unknown (NoRule)
+core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<ct_runtime::main::{async_block_env#0}>> :: members future[poll] continuation unknown (NoRule)
+&mut core::pin::Pin<&mut tokio::sync::notify::Notified> :: members access Borrowed rule 17 *@+0 -> core::pin::Pin<&mut tokio::sync::notify::Notified>
+&mut core::pin::Pin<&mut ct_runtime::main::{async_block_env#0}> :: members access Borrowed rule 17 *@+0 -> core::pin::Pin<&mut ct_runtime::main::{async_block_env#0}>
+core::pin::Pin<&mut tokio::sync::notify::Notified> :: members access Borrowed rule 19 pointer.*@+0 -> tokio::sync::notify::Notified
+core::pin::Pin<&mut ct_runtime::main::{async_block_env#0}> :: members future[poll] continuation rule 20 delegate (exclusive) pointer.*@+0 -> ct_runtime::main::{async_block_env#0} access Borrowed rule 19 pointer.*@+0 -> ct_runtime::main::{async_block_env#0}
+&mut tokio::sync::notify::Notified :: members access Borrowed rule 17 *@+0 -> tokio::sync::notify::Notified
+&mut ct_runtime::main::{async_block_env#0} :: members access Borrowed rule 17 *@+0 -> ct_runtime::main::{async_block_env#0}
+tokio::task::local::LocalSet :: members future[poll] continuation unknown (NoRule)
+alloc::rc::RcInner<tokio::task::local::Context> :: members refcount rule 3 value value
+alloc::sync::ArcInner<tokio::task::local::Shared> :: members refcount rule 3 value data
+tokio::runtime::io::scheduled_io::Readiness :: members future[poll] continuation rule 21 primitive resource IoOperation(Readiness) rule 21 state rule 22 exclusive-pending
+core::pin::Pin<alloc::boxed::Box<tokio::time::sleep::Sleep, alloc::alloc::Global>> :: members future[poll] continuation rule 24 delegate (exclusive) pointer.*@+0 -> tokio::time::sleep::Sleep access Owned rule 23 pointer.*@+0 -> tokio::time::sleep::Sleep
+alloc::boxed::Box<tokio::time::sleep::Sleep, alloc::alloc::Global> :: members access Owned rule 25 *@+0 -> tokio::time::sleep::Sleep
+tokio::sync::notify::OwnedNotified :: members future[poll] continuation unknown (NoRule)
+alloc::sync::ArcInner<tokio::sync::notify::Notify> :: members refcount rule 3 value data
+task 0: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 26
+task 1: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 26
+task 2: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocking rule 27
+task 3: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocking rule 27
