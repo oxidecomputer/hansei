@@ -22,8 +22,7 @@
 # test runs, and a test that builds a scratch crate reads that crate's
 # own target/. HANSEI_IMAGE_SCRATCH moves both the build dirs — that
 # one and test-programs/fixtures, where the fixture programs build —
-# out of the checkout the same way, by mounting them from there; CI
-# keeps them in one directory with its cores and toolchains.
+# out of the checkout the same way, by mounting them from there.
 #
 # Toolchains and the crates cargo downloads persist across runs in
 # host directories mounted over RUSTUP_HOME and CARGO_HOME's registry

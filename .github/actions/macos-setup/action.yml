@@ -43,26 +43,15 @@ runs:
         tar -xzf "$RUNNER_TEMP/nextest.tar.gz" -C "$HOME/.cargo/bin" cargo-nextest
         cargo nextest --version
 
-    # The workspace build, and the Mach-O fixture builds; bundles are
-    # extracted afresh each run.
-    - if: inputs.save == 'true'
-      uses: actions/cache@v6
+    # The dependency builds of the workspace and of the Mach-O fixture
+    # builds, and the crates downloaded for them. rust-cache drops the
+    # workspace's crates, test binaries and the fixture programs
+    # themselves, which a checkout's fresh mtimes rebuild every run.
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
-        path: |
-          target
-          test-programs/fixtures
-          !test-programs/fixtures/bundles
-          !test-programs/fixtures/dumps
-        key: build-macos-${{ env.DEVELOPER_DIR }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'test-programs/matrix.toml', 'test-programs/Cargo.lock', 'test-programs/locks/*.lock') }}
-        restore-keys: build-macos-${{ env.DEVELOPER_DIR }}-
-
-    - if: inputs.save != 'true'
-      uses: actions/cache/restore@v6
-      with:
-        path: |
-          target
-          test-programs/fixtures
-          !test-programs/fixtures/bundles
-          !test-programs/fixtures/dumps
-        key: build-macos-${{ env.DEVELOPER_DIR }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'test-programs/matrix.toml', 'test-programs/Cargo.lock', 'test-programs/locks/*.lock') }}
-        restore-keys: build-macos-${{ env.DEVELOPER_DIR }}-
+        shared-key: macos-${{ env.DEVELOPER_DIR }}-${{ hashFiles('test-programs/matrix.toml', 'test-programs/locks/*.lock') }}
+        save-if: ${{ inputs.save }}
+        cache-bin: "false"
+        workspaces: |
+          . -> target
+          test-programs -> fixtures/target

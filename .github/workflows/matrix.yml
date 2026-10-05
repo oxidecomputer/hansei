@@ -46,7 +46,7 @@ jobs:
       # test binary, and the cells are what take the time.
       - uses: actions/cache@v6
         with:
-          path: ${{ steps.image.outputs.scratch }}/fixtures/cells
+          path: test-programs/fixtures/cells
           key: cells-${{ steps.image.outputs.image }}-${{ hashFiles('test-programs/matrix.toml', 'test-programs/Cargo.lock', 'test-programs/locks/*.lock') }}
           restore-keys: cells-${{ steps.image.outputs.image }}-
 

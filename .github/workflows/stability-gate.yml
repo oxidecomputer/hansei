@@ -53,11 +53,10 @@ jobs:
           cache: linux
           save: "false"
 
-      - uses: actions/cache/restore@v6
+      - uses: ./.github/actions/linux-rust-cache
         with:
-          path: ${{ steps.image.outputs.scratch }}/target
-          key: target-linux-${{ steps.image.outputs.image }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-          restore-keys: target-linux-${{ steps.image.outputs.image }}-
+          image: ${{ steps.image.outputs.image }}
+          save: "false"
 
       - name: Build
         run: .github/scripts/in-image.sh cargo nextest run --locked --no-run --cargo-profile ci

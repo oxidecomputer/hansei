@@ -93,22 +93,10 @@ jobs:
         with:
           cache: linux
 
-      - uses: actions/cache@v6
+      # The workspace's and the fixture programs' dependency builds.
+      - uses: ./.github/actions/linux-rust-cache
         with:
-          path: ${{ steps.image.outputs.scratch }}/target
-          key: target-linux-${{ steps.image.outputs.image }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-          restore-keys: target-linux-${{ steps.image.outputs.image }}-
-
-      # The fixture programs' build dirs. The bundles and dumps beside
-      # them are taken afresh by every run.
-      - uses: actions/cache@v6
-        with:
-          path: |
-            ${{ steps.image.outputs.scratch }}/fixtures
-            !${{ steps.image.outputs.scratch }}/fixtures/bundles
-            !${{ steps.image.outputs.scratch }}/fixtures/dumps
-          key: fixtures-linux-${{ steps.image.outputs.image }}-${{ hashFiles('rust-toolchain.toml', 'test-programs/matrix.toml', 'test-programs/Cargo.lock', 'test-programs/locks/*.lock') }}
-          restore-keys: fixtures-linux-${{ steps.image.outputs.image }}-
+          image: ${{ steps.image.outputs.image }}
 
       # The suite's build builds the fixture example with it. `cargo run
       # -p hansei-runtime --example` would resolve features for that

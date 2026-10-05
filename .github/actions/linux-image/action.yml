@@ -4,9 +4,9 @@
 
 name: linux image
 description: >
-  Gather the build dirs, cores and toolchains in one directory, pull
-  the pinned Linux test image, and restore the toolchains and crate
-  downloads .github/scripts/in-image.sh mounts into it.
+  Gather the cores and toolchains in one directory, pull the pinned
+  Linux test image, and restore the toolchains and crate downloads
+  .github/scripts/in-image.sh mounts into it.
 
 inputs:
   cache:
@@ -25,24 +25,24 @@ outputs:
     value: ${{ steps.pinned.outputs.image }}
   scratch:
     description: >
-      The directory holding the build dirs (target/, fixtures/), the
-      cores and the toolchain cache.
+      The directory holding the cores and the toolchain cache.
     value: ${{ steps.scratch.outputs.dir }}
 
 runs:
   using: composite
   steps:
-    # One directory for everything a run writes besides the image — the
-    # workspace and fixture builds, the cores, the toolchains — so the
-    # caches name it whole and the disk report covers it. The
-    # environment it sets reaches in-image.sh in every later step.
+    # One directory for what a run writes outside the checkout — the
+    # cores, the toolchains — so the disk report covers it. The
+    # workspace and fixture builds stay in the checkout, where
+    # in-image.sh builds by default, because Swatinem/rust-cache finds a
+    # workspace's target dir only beneath it. The environment this sets
+    # reaches in-image.sh in every later step.
     - id: scratch
       shell: bash
       run: |
         dir=$RUNNER_TEMP/hansei
         mkdir -p "$dir"
         {
-          echo "HANSEI_IMAGE_SCRATCH=$dir"
           echo "HANSEI_IMAGE_CACHE=$dir/image-cache"
           echo "HANSEI_CORES=$dir/cores"
         } >>"$GITHUB_ENV"
