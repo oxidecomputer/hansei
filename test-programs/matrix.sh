@@ -19,8 +19,11 @@
 #                    orphans, build and bless the new cells' goldens, then
 #                    run the whole matrix un-blessed to prove no existing
 #                    cell's goldens moved
-#   add rust-VER     onboard a toolchain: rustup-install it, add it to
-#                    matrix.toml, bless its cells, run the whole matrix
+#   add rust-VER     onboard a toolchain: rustup-install it, update
+#                    matrix.toml the same way (a new minor is inserted; a
+#                    newer patch of a listed minor replaces its pin),
+#                    delete golden dirs the edit orphans, bless its cells,
+#                    run the whole matrix
 #   bless [FILTER]   bless the goldens of every cell, or of the cells
 #                    whose name contains FILTER: after a change that moves
 #                    them, before pushing, so CI's matrix workflow passes
@@ -38,10 +41,13 @@
 # exegesis/src/detect/tokio_v<floor> family module, with every existing
 # cell's goldens showing zero diff — then run the per-cell acceptance
 # suite on a host that can take cores (HANSEI_CELL=<cell> cargo test -p
-# hansei --test acceptance) and commit. The floor and primary pins
-# advance deliberately, by hand; add refuses to touch them. Advancing
-# the floor also moves the linux-floor set, whose cores are captured at
-# the floor: re-bless its @linux-floor goldens on a Linux host.
+# hansei --test acceptance) and commit. The floor and primary pins, of
+# tokio and of Rust alike, advance deliberately, by hand; add refuses to
+# touch them, and update names a new patch of either Rust pin's minor
+# as a pin to advance. Advancing the primary toolchain edits
+# rust-toolchain.toml in the same change. Advancing the tokio floor also
+# moves the linux-floor set, whose cores are captured at the floor:
+# re-bless its @linux-floor goldens on a Linux host.
 
 set -uo pipefail
 
@@ -233,13 +239,23 @@ cmd_update() {
         }
     ')
     [ -n "$stable" ] || die "no stable version parsed from the channel manifest"
-    local listed=0 newer=1 tc
+    # The channel names only the newest release, so this sees a new
+    # minor, or a new patch of the newest listed one.
+    local newer=1 tc
+    have=""
     for tc in "${TOOLCHAINS[@]}"; do
-        [ "$tc" = "$stable" ] && listed=1
+        [ "$(minor_of "$tc")" = "$(minor_of "$stable")" ] && have=$tc
         [ "$(ver_cmp "$stable" "$tc")" -gt 0 ] || newer=0
     done
-    if [ $listed = 0 ] && [ $newer = 1 ]; then
-        echo "matrix is behind: Rust $stable is stable — run \`test-programs/matrix.sh add rust-$stable\`"
+    if [ -n "$have" ] && [ "$(ver_cmp "$have" "$stable")" -lt 0 ]; then
+        if [ "$have" = "$P_TC" ] || [ "$have" = "${TC_FLOOR:-}" ]; then
+            echo "matrix is behind: Rust $stable released ($have is pinned) — advance that pin by hand, in matrix.toml and rust-toolchain.toml"
+        else
+            echo "matrix is behind: Rust $stable released ($have is pinned) — run \`test-programs/matrix.sh add rust-$stable\`"
+        fi
+        behind=1
+    elif [ -z "$have" ] && [ $newer = 1 ]; then
+        echo "matrix is behind: Rust $stable is stable (new minor) — run \`test-programs/matrix.sh add rust-$stable\`"
         behind=1
     fi
 
@@ -432,7 +448,7 @@ cmd_add_tokio() {
 # ---------------------------------------------------------------------------
 
 cmd_add_rust() {
-    local ver=$1 tc before after newlist inserted count
+    local ver=$1 old="" tc before after newlist inserted
     check_semver "$ver"
     load_manifest
     require_clean
@@ -440,18 +456,32 @@ cmd_add_rust() {
 
     [ -n "${TC_FLOOR:-}" ] && [ "$(ver_cmp "$ver" "$TC_FLOOR")" -lt 0 ] \
         && die "rust $ver is below the floor ($TC_FLOOR)"
+    if [ "$(minor_of "$ver")" = "$(minor_of "${TC_FLOOR:-}")" ] \
+        || [ "$(minor_of "$ver")" = "$(minor_of "$P_TC")" ]; then
+        die "the floor/primary toolchain pins (${TC_FLOOR:-}/$P_TC) advance deliberately — edit matrix.toml by hand (the primary with rust-toolchain.toml; see the header)"
+    fi
+    # The matrix holds one patch per minor, the latest: a newer patch
+    # replaces its minor's pin.
     for tc in "${TOOLCHAINS[@]}"; do
-        [ "$tc" = "$ver" ] && die "rust $ver is already in the matrix"
+        [ "$(minor_of "$tc")" = "$(minor_of "$ver")" ] && old=$tc
     done
+    [ "$old" = "$ver" ] && die "rust $ver is already in the matrix"
+    if [ -n "$old" ] && [ "$(ver_cmp "$ver" "$old")" -lt 0 ]; then
+        die "refusing to downgrade the $(minor_of "$ver") pin ($old); retirement is a deliberate edit"
+    fi
 
     ensure_toolchain "$ver"
     for tc in "${TOOLCHAINS[@]}"; do ensure_toolchain "$tc"; done
     before=$(enumerate_cells)
 
+    # The manifest edit: replace the old patch in place, or insert the
+    # new minor in version order.
     newlist=""
     inserted=0
     for tc in "${TOOLCHAINS[@]}"; do
-        if [ $inserted = 0 ] && [ "$(ver_cmp "$ver" "$tc")" -lt 0 ]; then
+        if [ "$tc" = "$old" ]; then
+            newlist="$newlist $ver"; inserted=1
+        elif [ -z "$old" ] && [ $inserted = 0 ] && [ "$(ver_cmp "$ver" "$tc")" -lt 0 ]; then
             newlist="$newlist $ver $tc"; inserted=1
         else
             newlist="$newlist $tc"
@@ -464,17 +494,6 @@ cmd_add_rust() {
     load_manifest
     after=$(enumerate_cells)
     reconcile_cells "$before" "$after" "rust-$ver-"
-
-    # Retirement keeps at most two patches per supported minor.
-    count=0
-    for tc in "${TOOLCHAINS[@]}"; do
-        [ "$(minor_of "$tc")" = "$(minor_of "$ver")" ] && count=$((count + 1))
-    done
-    if [ "$count" -gt 2 ]; then
-        echo
-        echo "note: $count patches of $(minor_of "$ver") are now listed; policy keeps at"
-        echo "most two — retire the oldest once $ver has been green for a full cycle."
-    fi
     report
 }
 
