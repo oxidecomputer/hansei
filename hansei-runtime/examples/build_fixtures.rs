@@ -21,9 +21,12 @@
 
 use hansei_runtime::testkit::PROGRAMS;
 use hansei_runtime::testkit::cores::{CAPTURED, recipe};
-use testrun::fixture::{Matrix, build_a, build_b, test_programs_dir};
+use testrun::fixture::{Matrix, build_a, build_b};
 
-use std::process::Command;
+/// The program the extraction goldens compare a packed split build of
+/// against its unsplit build (`exegesis/tests/golden.rs`).
+#[cfg(target_os = "linux")]
+const DWP_PROGRAM: &str = "select-combinator";
 
 fn main() {
     build_b(&Matrix::load().primary_recipe(), PROGRAMS);
@@ -32,15 +35,6 @@ fn main() {
         build_a(&recipe, PROGRAMS);
         build_b(&recipe, PROGRAMS);
     }
-    // The packed build lives in a target dir of its own. One program is
-    // enough to warm it: the time is in the dependencies, which every
-    // program shares.
-    if cfg!(target_os = "linux") {
-        let status = Command::new("bash")
-            .arg(test_programs_dir().join("regen.sh"))
-            .args(["--dwp", PROGRAMS[0]])
-            .status()
-            .expect("failed to run regen.sh");
-        assert!(status.success(), "regen.sh --dwp failed");
-    }
+    #[cfg(target_os = "linux")]
+    testrun::fixture::build_dwp(DWP_PROGRAM);
 }

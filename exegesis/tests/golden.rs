@@ -28,13 +28,9 @@ use exegesis::extract::{DebugSources, ExtractOptions, ExtractStats, extract_sour
 use exegesis::summary::{portable_summary, walk_entry_line};
 use testrun::fixture::Matrix;
 
-#[cfg(target_os = "linux")]
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 #[cfg(not(target_os = "macos"))]
 use std::process::Command;
-#[cfg(target_os = "linux")]
-use std::sync::Mutex;
 
 const TOOLCHAIN: &str = "1.98.0";
 
@@ -59,49 +55,6 @@ fn fixture_dsym(program: &str) -> PathBuf {
         .with_extension("dSYM")
         .join("Contents/Resources/DWARF")
         .join(program)
-}
-
-/// The packed-split build of a fixture: the skeleton-DWARF binary, with
-/// its `.dwp` sitting beside it (`regen.sh --dwp`).
-#[cfg(target_os = "linux")]
-fn dwp_binary(program: &str) -> PathBuf {
-    test_programs_dir().join("fixtures/bin/dwp").join(program)
-}
-
-/// [`ensure_fixture`], for the packed-split build of a program: built
-/// once per run by `regen.sh --dwp` into its own bin dir, stamped and
-/// digested separately from the unsplit build of the same sources.
-#[cfg(target_os = "linux")]
-fn ensure_dwp_fixture(program: &str) {
-    static BUILT: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
-    let mut built = BUILT.lock().unwrap();
-    if built.contains(program) {
-        return;
-    }
-    let matrix = Matrix::load();
-    let mut recipe = matrix.primary_recipe();
-    recipe.dwp = true;
-    testrun::once_per_run(
-        &test_programs_dir()
-            .join("fixtures/.built")
-            .join(format!("dwp-{program}")),
-        || recipe.inputs(&test_programs_dir(), &matrix, program),
-        || {
-            // Through bash: a copied tree need not keep the mode bit.
-            let status = Command::new("bash")
-                .arg(test_programs_dir().join("regen.sh"))
-                .arg("--dwp")
-                .arg(program)
-                .status()
-                .expect("failed to run regen.sh");
-            assert!(status.success(), "regen.sh --dwp failed for {program}");
-        },
-    );
-    assert!(
-        dwp_binary(program).exists(),
-        "regen.sh --dwp succeeded but the {program} binary is still missing"
-    );
-    built.insert(program.to_string());
 }
 
 /// Extract a fixture the way an operator would: the binary as the
@@ -6176,7 +6129,7 @@ fn test_a_split_pair_extracts_the_same_bundle() {
 fn test_a_packed_dwp_pair_extracts_the_same_bundle() {
     let program = "select-combinator";
     ensure_fixture(program);
-    ensure_dwp_fixture(program);
+    let bin = testrun::fixture::build_dwp(program).join(program);
 
     let opts = ExtractOptions::default();
     let (mut unsplit, _) = extract_sources(
@@ -6187,7 +6140,6 @@ fn test_a_packed_dwp_pair_extracts_the_same_bundle() {
         &opts,
     )
     .expect("unsplit extraction");
-    let bin = dwp_binary(program);
     let dwp = bin.with_extension("dwp");
     let (mut split, _) = extract_sources(
         &DebugSources {
