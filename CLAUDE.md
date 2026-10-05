@@ -56,7 +56,10 @@ fails that program's golden. Re-bless it
 the diff
 is *only* the shift.
 
-WILLTODO: Add documentation
+Nothing generated is checked in but goldens: bundles are extracted and
+cores taken at test time, so an exegesis change or a `FORMAT_VERSION` bump
+needs no regeneration step. Goldens a change moves are re-blessed where
+they are rendered (see *Testing*).
 
 ## Adding a new type formatter
 
@@ -144,7 +147,9 @@ follow it rather than re-deriving the steps. Two facts worth knowing
 even outside that flow: the floor and primary pins advance deliberately,
 by hand — `add` refuses to touch them — and retiring a version deletes
 its lockfile and golden dirs in the same change that edits the manifest.
-WILLTODO: Add documentation
+Advancing the tokio floor also moves the `linux-floor` core set, which is
+built at the floor: re-bless its goldens (`hansei/tests/offline/linux-floor/`,
+`*@linux-floor.snap`) on a Linux host, in the image, in the same change.
 
 ### 3. Only if no node can express it: add a node kind
 
@@ -158,7 +163,10 @@ version bump breaks compatibility silently.
 
 ### Format bumps
 
-WILLTODO: Add documentation
+Bump `hansei-bundle`'s `FORMAT_VERSION` whenever the wire format changes;
+loading a bundle written under another version is refused. A bump costs
+nothing else: no bundle is checked in, since every test extracts its
+bundles from build B at test time.
 
 ### Testing
 
@@ -251,7 +259,24 @@ check:
     `format!("{}", value.display_from_target(&mem, depth))`. Byte helpers:
     `u32s`, `u64s`, `node_bytes`, `sync_waiter`, `btree_leaf`, `mpsc_block`;
     selector/expr helpers: `sel`, `ebf`/`ubf`, `vread`/`vconst`/`vadd`/….
-- **Offline two-binary fixtures**: WILLTODO: Add documentation
+- **Fresh-core suites** (`hansei/src/offline.rs`'s goldens,
+  `hansei-runtime/tests/two_binary.rs`, and every test reading a fixture
+  through `hansei_runtime::testkit`): each program is built twice — build A
+  without debug info, which runs and is cored, and build B with DWARF, which
+  the bundle is extracted from — and the core is read through the production
+  reader, canonicalized and masked so two captures print the same.
+  - Linux and illumos take their own sets every run (`linux` and
+    `linux-floor`; `illumos`) into `HANSEI_CORES` (default
+    `test-programs/fixtures/cores`). macOS takes none and reads copies:
+    `check-all.sh`'s local leg copies the hosts', and
+    `gh run download <run>` fetches CI's. A set whose cores are missing
+    fails every test reading it, with one message saying how to get them.
+    `HANSEI_SETS=linux,linux-floor` limits a run to the sets named.
+  - Their goldens are blessed only on the host that captures the set:
+    Linux in the test image
+    (`INSTA_UPDATE=always .github/scripts/in-image.sh cargo nextest run …`),
+    illumos natively. Never on macOS: a diff only macOS shows is a reader
+    bug.
 - **Version-matrix goldens** (`hansei-runtime/tests/matrix.rs`, opt-in) build
   every cell `test-programs/matrix.toml` declares (tokio × toolchain ×
   tokio_unstable) via `regen.sh`, extract every tokio fixture per cell, and
@@ -260,16 +285,21 @@ check:
   why), the detector catalog (every attached format's member-name chains,
   offsets stripped), and the portable extraction summary. This is what turns
   a fail-safe layer's silent declines into loud diffs when a tokio or
-  toolchain release moves a layout. Run with `HANSEI_MATRIX=1 cargo nextest
-  run -p hansei-runtime --test matrix` (any other value filters cells by substring;
-  `INSTA_UPDATE=always` re-blesses), **alone, not under a workspace-wide
-  workspace-wide run** — the primary cell shares fixture dirs with the extraction
-  goldens. Cells whose toolchain is not installed skip with a message. A
-  full sweep is ~2 minutes cold, ~40 s warm, ~2 GB of gitignored build dirs.
-  Onboarding or retiring a version is the `onboard-tokio-release` skill
-  (mechanized by `test-programs/matrix.sh`; see *tokio version families*
-  above for what a red diff means).
-  WILLTODO: Add documentation
+  toolchain release moves a layout.
+  - The goldens are the Linux test image's rendering. Bless them with
+    `test-programs/matrix.sh bless [FILTER]` (FILTER: a cell-name substring)
+    on an x86_64 Linux host with podman; it runs in the image. A run
+    anywhere else diffs without meaning anything.
+  - To check without blessing: `.github/scripts/in-image.sh env
+    HANSEI_MATRIX=1 cargo nextest run -p hansei-runtime --test matrix`
+    (any other value filters cells), **alone, not under a workspace-wide
+    run** — the primary cell shares fixture dirs with the extraction
+    goldens. A cell whose toolchain is missing fails.
+  - CI runs it only when the `matrix` workflow is dispatched by hand. A
+    cold run is ~6 minutes on 32 cores, most of an hour on a runner.
+  - Onboarding or retiring a version is the `onboard-tokio-release` skill
+    (mechanized by `test-programs/matrix.sh`; see *tokio version families*
+    above for what a red diff means).
 
 **Mutation testing** (`cargo mutants`, configured in `.cargo/mutants.toml`)
 is what tells a test that *pins* behavior from one that merely runs the
