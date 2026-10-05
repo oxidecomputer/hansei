@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+pub mod accept;
 pub mod canonical;
 pub mod cores;
 pub mod corrupt;
