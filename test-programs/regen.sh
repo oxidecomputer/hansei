@@ -190,10 +190,21 @@ mkdir -p "$BIN_DIR"
 # bytes under another process's live mapping, which reads as a corrupt
 # binary or a parse that disagrees with itself. A rename replaces the
 # directory entry instead, so a reader keeps the file it opened.
+#
+# The file renamed in is a hard link to the build, not a copy, which
+# would double the disk every fixture build takes. That is the same
+# file only until the next build: cargo and the linkers write each
+# output as a new file and then replace the old one (checked on Linux,
+# illumos and macOS), so a rebuild leaves an installed link holding the
+# bytes it was installed with. A copy remains the fallback, for a
+# target dir on another filesystem. A build that did not change is
+# still the installed file, and is left alone: renaming a link onto
+# the file it links is an error to mv.
 install() {
     local src="$1" dst="$2"
+    [ "$src" -ef "$dst" ] && return
     mkdir -p "$(dirname "$dst")"
-    cp -f "$src" "$dst.tmp$$"
+    ln -f "$src" "$dst.tmp$$" 2>/dev/null || cp -f "$src" "$dst.tmp$$"
     mv -f "$dst.tmp$$" "$dst"
 }
 
