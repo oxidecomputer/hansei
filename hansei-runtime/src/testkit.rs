@@ -458,11 +458,13 @@ fn mask_times(s: &str) -> String {
 ///   the runtime's clock origin to registration rounded up, plus the
 ///   duration: whether registration fell in the first millisecond is a
 ///   race no readiness wait controls;
-/// - `r11` in a register block, which the `syscall` instruction
-///   overwrites with the flags: a thread parked in a syscall records
-///   either that or the value its previous call left, as the kernel
-///   saves it at whatever point the stop caught the thread, and the
-///   register is caller-saved, so neither is the program's state;
+/// - every register in a register block but `rip` and `rsp`, value and
+///   annotation both: what a parked thread's other registers hold is
+///   whatever the code before its stop left there — `r11` is the flags
+///   or an older value, as the `syscall` instruction caught it — and a
+///   value that is no address can still land in a mapping ASLR placed
+///   under it, so its annotation varies too. Where the thread stopped
+///   (`rip`) and on whose stack (`rsp`) are kept;
 /// - the process's own facts: its pid and parent, the user and group it
 ///   ran as (whoever took the core), start time, the checkout its
 ///   binary ran from (truncated at a length that moves with that path,
@@ -495,8 +497,9 @@ pub fn mask_core(s: &str) -> String {
     let s = re(r"\b[0-9a-f]{40}\b").replace_all(s, "BUILDID");
     let s = re(r"(?m)^(psargs:\s+).*$").replace_all(&s, "${1}PSARGS");
     let s = re(r"\S*/test-programs/").replace_all(&s, "<test-programs>/");
-    // Before the numbering, so a varying r11 moves no other number.
-    let s = re(r"(?m)^(\s*r11\s+)0x[0-9a-f]+.*$").replace_all(&s, "${1}R11");
+    // Before the numbering, so a varying register moves no other number.
+    let s = re(r"(?m)^(\s*(?:rax|rbx|rcx|rdx|rsi|rdi|rbp|r8|r9|r1[0-5])\s+)0x[0-9a-f]+.*$")
+        .replace_all(&s, "${1}REG");
     let s = first_seen(&s);
     let s = mask_times(&s);
     let s = re(r"\bdeadline: \d+\.\d{3}s").replace_all(&s, "deadline: TS");
@@ -1794,6 +1797,29 @@ mod tests {
         assert_eq!(
             masked,
             "tls client, established, 1 record read, N written, 1 unsent (N bytes)"
+        );
+    }
+
+    /// Two stops in one place whose scratch registers differ — a
+    /// leftover that lands in the heap one run and nowhere the next —
+    /// mask alike; where the thread stopped and on whose stack stay.
+    #[test]
+    fn test_a_register_block_keeps_only_where_the_thread_stopped() {
+        let regs = |r8: &str| {
+            format!(
+                "registers:\n  rip  0x7f00aa10  — __lwp_park +0x14\n  \
+                 rsp  0x7ffe0010  — [ stack tid=1001 ]\n  \
+                 rbx  0x1234  — [ anon ]\n  r8   0x1000000  — {r8}\n  \
+                 r11  0x246\n  r14  0x2000  — [ heap ]\n"
+            )
+        };
+        let one = super::mask_core(&regs("unmapped"));
+        assert_eq!(one, super::mask_core(&regs("[ heap ]")));
+        assert_eq!(
+            one,
+            "registers:\n  rip  0xA1  — __lwp_park +0xA2\n  \
+             rsp  0xA3  — [ stack tid=1001 ]\n  rbx  REG\n  r8  REG\n  \
+             r11  REG\n  r14  REG\n"
         );
     }
 }
