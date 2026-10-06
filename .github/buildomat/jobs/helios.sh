@@ -20,9 +20,9 @@
 #: from_output = "/work/cores-illumos.tar.zst"
 #
 # The whole suite on illumos, acceptance included, capturing the
-# illumos fixture set. The set is published for the macOS check that
-# reads it (`macos (illumos cores)` in .github/workflows/ci.yml), which
-# fetches it by commit once this job's check run has passed.
+# illumos fixture set. The set is published for the macOS job that
+# reads it (`macos` in .github/workflows/ci.yml), which fetches it by
+# commit once this job's check run has passed.
 #
 # The default target size: the job is done minutes before that macOS
 # check finishes building, so a larger machine only reserves more.
