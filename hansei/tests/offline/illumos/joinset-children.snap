@@ -9,6 +9,6 @@ join sets: 2 (6 tasks)
         task 2003  async fn joinset::member  idle
         task 2002  async fn joinset::member  idle
     - tokio::task::join_set::JoinSet<u32> at 0xA2 (frame 2, `kept`): 3 tasks
-        task 9  <complete, awaiting join>
+        task 2009  <complete, awaiting join>
         task 2006  async fn joinset::member  idle
         task 2005  async fn joinset::member  idle
