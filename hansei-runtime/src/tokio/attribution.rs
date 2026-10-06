@@ -3026,8 +3026,19 @@ mod tests {
             }
         }
 
+        /// The attribution over the pair, less the slots it could only
+        /// call unknown where the core has no allocator index.
+        ///
+        /// glibc hands a chunk out again without clearing what an
+        /// earlier occupant left in it, so a waker that occupant held
+        /// reads as a hit in a buffer no value reaches, and whether
+        /// one is there depends on what the allocator reused before
+        /// the core was taken. Nothing tells such bytes from a live
+        /// slot without a model of the heap, which only an illumos
+        /// core's index gives: over one, every unknown slot stays and
+        /// counts.
         fn attribute(&self) -> Attributed {
-            self.ctx.attribute_slots(
+            let attributed = self.ctx.attribute_slots(
                 &self.wakers,
                 &Sources {
                     list: &self.e.list,
@@ -3038,7 +3049,28 @@ mod tests {
                     heap: self.e.heap.as_ref(),
                     impls: &self.impls,
                 },
-            )
+            );
+            if self.e.heap.is_some() {
+                return attributed;
+            }
+            let Attributed {
+                slots,
+                stale,
+                stats,
+                ..
+            } = attributed;
+            let mut known = Attributed {
+                slots: slots
+                    .into_iter()
+                    .filter(|slot| !matches!(slot.attribution, Attribution::Unknown))
+                    .collect(),
+                stale,
+                ..Attributed::default()
+            };
+            known.index();
+            known.stats.owners = stats.owners;
+            known.stats.elapsed = stats.elapsed;
+            known
         }
 
         fn task(&self, name: &str) -> &Task {
