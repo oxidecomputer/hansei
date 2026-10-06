@@ -21,6 +21,10 @@ test-programs/matrix.sh update            # exit 1 + report when behind
 test-programs/matrix.sh add tokio-<ver>   # or add rust-<ver>
 ```
 
+`update` reports every release no review has read: a new minor or patch
+of tokio (the floor's and primary's minors too), a new stable Rust, and
+a point release of a Rust minor the matrix lists.
+
 **Review before `add`.** Every review in `exegesis/src/detect/semantics.rs`
 reads tokio and rustc release by release — `TOKIO_RELEASES` and
 `RUSTC_RELEASES`, one span per minor through the matrix's newest pin —

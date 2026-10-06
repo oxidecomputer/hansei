@@ -9,9 +9,12 @@
 #
 # Usage: matrix.sh COMMAND [ARG]
 #
-#   update           check crates.io and the Rust stable channel for
-#                    releases the matrix does not cover and print the add
-#                    command for each; exits 1 when behind, 0 when current
+#   update           check crates.io and the Rust channels for releases
+#                    the matrix does not cover — a new tokio minor or
+#                    patch (the floor's and primary's included, whose
+#                    pins advance by hand), a new stable Rust, a point
+#                    release of a listed Rust minor — and print what to
+#                    do for each; exits 1 when behind, 0 when current
 #   add tokio-VER    onboard a tokio version: derive locks/tokio-VER.lock
 #                    from the primary Cargo.lock, update matrix.toml (a
 #                    new minor is inserted; a newer patch of a listed
@@ -220,11 +223,23 @@ cmd_update() {
     [ -n "$latest_per_minor" ] || die "no tokio versions parsed from the index"
 
     for v in $latest_per_minor; do
-        # Below the floor, or the floor/primary minor itself: those pins
-        # advance deliberately, not by release-tracking.
         [ "$(ver_cmp "$v" "$T_FLOOR")" -lt 0 ] && continue
-        [ "$(minor_of "$v")" = "$(minor_of "$T_FLOOR")" ] && continue
-        [ "$(minor_of "$v")" = "$(minor_of "$P_TOKIO")" ] && continue
+        # The floor and primary pins advance deliberately, by hand, but
+        # a patch to either minor is as unreviewed as any other: the
+        # reviews read each minor only through its pin.
+        local pin="" role=""
+        if [ "$(minor_of "$v")" = "$(minor_of "$T_FLOOR")" ]; then
+            pin=$T_FLOOR role=floor
+        elif [ "$(minor_of "$v")" = "$(minor_of "$P_TOKIO")" ]; then
+            pin=$P_TOKIO role=primary
+        fi
+        if [ -n "$role" ]; then
+            if [ "$(ver_cmp "$pin" "$v")" -lt 0 ]; then
+                echo "matrix is behind: tokio $v released ($pin is the $role pin) — advance the $role pin by hand (see this script's header)"
+                behind=1
+            fi
+            continue
+        fi
         have=""
         for lv in "${TOKIO_VERSIONS[@]}"; do
             [ "$(minor_of "$lv")" = "$(minor_of "$v")" ] && have=$lv
@@ -267,6 +282,34 @@ cmd_update() {
         echo "matrix is behind: Rust $stable is stable (new minor) — run \`test-programs/matrix.sh add rust-$stable\`"
         behind=1
     fi
+    # A point release of a minor the matrix lists, which stable may
+    # already have moved past: each minor's own channel names its
+    # newest patch.
+    local minors m newest have_patch
+    minors=$(for tc in "${TOOLCHAINS[@]}"; do minor_of "$tc"; done | sort -u)
+    for m in $minors; do
+        # awk reads to the end: leaving early would break curl's pipe.
+        newest=$(curl -fsS --max-time 30 "${CHANNEL_URL%stable.toml}$m.toml" | awk '
+            /^\[pkg\.rust\]/ { in_rust = 1; next }
+            /^\[/ { in_rust = 0 }
+            in_rust && /^version = / && !found {
+                split($0, q, "\""); split(q[2], w, " "); print w[1]; found = 1
+            }
+        ') || die "fetching the Rust $m channel failed"
+        [ -n "$newest" ] || continue
+        have_patch=""
+        for tc in "${TOOLCHAINS[@]}"; do
+            [ "$(minor_of "$tc")" = "$m" ] && have_patch=$tc
+        done
+        if [ "$(ver_cmp "$have_patch" "$newest")" -lt 0 ] && [ "$newest" != "$stable" ]; then
+            if [ "$have_patch" = "$P_TC" ] || [ "$have_patch" = "${TC_FLOOR:-}" ]; then
+                echo "matrix is behind: Rust $newest released ($have_patch is pinned) — advance that pin by hand, in matrix.toml and rust-toolchain.toml"
+            else
+                echo "matrix is behind: Rust $newest released ($have_patch is the newest $m listed) — run \`test-programs/matrix.sh add rust-$newest\`"
+            fi
+            behind=1
+        fi
+    done
 
     if [ $behind = 0 ]; then
         echo "matrix is current (tokio ${TOKIO_VERSIONS[*]}; rust ${TOOLCHAINS[*]}; stable is $stable)"
