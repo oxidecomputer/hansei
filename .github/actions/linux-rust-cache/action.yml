@@ -49,10 +49,13 @@ runs:
     # every run anyway. cargo runs in the image, so the dependency lists
     # come from the lockfiles the builds used. The registry it would
     # also cache is the runner's own ~/.cargo, which nothing here uses:
-    # the image's crate downloads are linux-image's cache.
+    # the image's crate downloads are linux-image's cache. A failing test
+    # leaves those builds as good as a passing one, so a red run saves
+    # them too.
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
         shared-key: linux-${{ inputs.image }}-${{ hashFiles('test-programs/matrix.toml', 'test-programs/locks/*.lock') }}
         save-if: ${{ inputs.save }}
+        cache-on-failure: "true"
         cmd-format: ${{ github.workspace }}/.github/scripts/in-image.sh {0}
         workspaces: ${{ steps.dirs.outputs.workspaces }}

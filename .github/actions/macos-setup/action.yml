@@ -46,11 +46,14 @@ runs:
     # The dependency builds of the workspace and of the Mach-O fixture
     # builds, and the crates downloaded for them. rust-cache drops the
     # workspace's crates, test binaries and the fixture programs
-    # themselves, which a checkout's fresh mtimes rebuild every run.
+    # themselves, which a checkout's fresh mtimes rebuild every run. A
+    # failing test leaves those builds as good as a passing one, so a
+    # red run saves them too.
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
         shared-key: macos-${{ env.DEVELOPER_DIR }}-${{ hashFiles('test-programs/matrix.toml', 'test-programs/locks/*.lock') }}
         save-if: ${{ inputs.save }}
+        cache-on-failure: "true"
         cache-bin: "false"
         workspaces: |
           . -> target
