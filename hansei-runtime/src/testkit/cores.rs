@@ -43,6 +43,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 
+mod settle;
+
 /// Where the fixture-reading tests keep their cores, the sets this
 /// system takes captured into it first: the directory this names, or
 /// `test-programs/fixtures/cores` in the tree under test when it names
@@ -391,15 +393,22 @@ pub fn marker(program: &str) -> &'static str {
     }
 }
 
+/// The fixtures that spin on purpose, a task caught mid-poll forever:
+/// no thread of theirs ever sleeps through two passes, so they are
+/// cored at their marker, which they print from inside the spin.
+const SPINNING: &[&str] = &["spin-poll", "ct-spin"];
+
 /// A fixture program from build A, running at its parked steady state.
 pub struct Parked {
     child: Child,
 }
 
 impl Parked {
-    /// Launch `binary`, the build of `program`, and block on its stdout
-    /// until the readiness marker: from that line on, the state under
-    /// inspection is stable. There are no timing sleeps anywhere.
+    /// Launch `binary`, the build of `program`, block on its stdout
+    /// until the readiness marker, and then until every one of its
+    /// threads is asleep ([`settle::settle`]), the marker's own among
+    /// them: from then on, the state under inspection is stable. There
+    /// are no timing sleeps anywhere.
     pub fn spawn(binary: &Path, program: &str) -> Self {
         let marker = marker(program);
         // An empty environment: the target's is in its core, and the
@@ -422,9 +431,13 @@ impl Parked {
             }
         }
         // Keep draining stdout so the child can never block on a full
-        // pipe.
+        // pipe, the wait below included.
         thread::spawn(move || lines.for_each(drop));
-        Self { child }
+        let parked = Self { child };
+        if !SPINNING.contains(&program) {
+            settle::settle(parked.pid(), program);
+        }
+        parked
     }
 
     pub fn pid(&self) -> u32 {
