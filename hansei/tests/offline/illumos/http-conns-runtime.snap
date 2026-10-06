@@ -20,7 +20,7 @@ runtime 0 @ 0xA1
                   },
               },
               registrations: tokio::runtime::io::registration_set::RegistrationSet {
-                  num_pending_release: 0,
+                  num_pending_release: N,
               },
               synced: tokio::loom::std::parking_lot::Mutex<tokio::runtime::io::registration_set::Synced> { .. } @ 0xA2,
               waker: mio::waker::Waker {

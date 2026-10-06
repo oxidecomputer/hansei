@@ -93,7 +93,7 @@ task 2013
 task 2014
 #0  future  tokio::io::util::read::Read<tokio_rustls::client::TlsStream<tokio::net::tcp::stream::TcpStream>>
       waiting on io fd N (readable)
-      tls client, TLSv1_3, established, 1 record read, 8 written, 1 unsent (184 bytes)
+      tls client, TLSv1_3, established, 1 record read, N written, 1 unsent (N bytes)
 #1  async fn  tls_conns::unflushed_client
       awaiting at src/bin/tls-conns.rs:382 (Suspend1, 3 locals)
 

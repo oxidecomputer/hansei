@@ -471,8 +471,16 @@ fn mask_times(s: &str) -> String {
 /// - the worker index: which worker held the driver is a race no
 ///   readiness wait controls, so the state is kept and the number not;
 /// - what scheduling and stale stack contents decide: the runtime's
-///   metric counters, the waker sweep's extent and hit counts, the
+///   metric counters, a current-thread scheduler's `MetricsBatch`
+///   counts among them, the waker sweep's extent and hit counts, the
 ///   allocator's cache and slab counts;
+/// - how many I/O registrations wait to be released
+///   (`num_pending_release`): a resource dropped after the driver's
+///   last turn began stays counted until a turn that may never come;
+/// - how much of a stalled TLS writer's output the kernel took before
+///   it refused more (`N written, 1 unsent (N bytes)`): the send buffer
+///   grows by autotuning, at a pace the acknowledgments set, to a size
+///   the host's memory sets. The one unsent record is kept;
 /// - ephemeral ports, and file descriptor numbers, which the kernel
 ///   hands out in the order threads opening sockets at once reach it;
 /// - the tick in a `ScheduledIo`'s `readiness` word, which counts the
@@ -501,8 +509,14 @@ pub fn mask_core(s: &str) -> String {
     let s = re(r"(?m)^(start:\s+).*$").replace_all(&s, "${1}TIME");
     let s = re(r"\bworker \d+\b").replace_all(&s, "worker N");
     let s = re(r"(MetricAtomic\w+ \{\n\s*value: )\d+").replace_all(&s, "${1}N");
-    let s = re(r"\b(busy_duration_total|tick|park_count|park_unpark_count|noop_count): \d+")
-        .replace_all(&s, "$1: N");
+    let s = re(concat!(
+        r"\b(busy_duration_total|tick|park_count|park_unpark_count|noop_count",
+        r"|steal_count|steal_operations|poll_count|poll_count_on_last_park",
+        r"|local_schedule_count|overflow_count|num_pending_release): \d+"
+    ))
+    .replace_all(&s, "$1: N");
+    let s = re(r"\b\d+ written, (\d+) unsent \(\d+ bytes\)")
+        .replace_all(&s, "N written, $1 unsent (N bytes)");
     let s = re(r"[\d.]+ [KMG]?i?B swept in \d+ chunks").replace_all(&s, "N swept in N chunks");
     let s = re(r"(?m)^(\s*(hits|by class|attributed):).*$").replace_all(&s, "$1 N");
     let s = re(r"\(\d+ caches, \d+ slabs\)").replace_all(&s, "(N caches, N slabs)");
@@ -1749,5 +1763,37 @@ mod tests {
 
         let other = "Other {\n  first: 1,\n  readiness: 327680,\n}\n";
         assert_eq!(super::mask_core(other), other);
+    }
+
+    /// What scheduling and the kernel decide masks alike from one
+    /// capture to the next, and what the program decides beside it
+    /// stays: the batch's `global_queue_interval`, a TLS connection's
+    /// record counts and its one unsent record.
+    #[test]
+    fn test_scheduler_counts_and_a_stalled_writer_are_masked() {
+        let batch = |polls: u64, schedules: u64, pending: u64| {
+            format!(
+                "metrics: MetricsBatch {{\n  steal_count: 0,\n  steal_operations: 0,\n  \
+                 poll_count: {polls},\n  poll_count_on_last_park: {polls},\n  \
+                 local_schedule_count: {schedules},\n  overflow_count: 0,\n}}\n\
+                 global_queue_interval: 31,\nnum_pending_release: {pending},\n"
+            )
+        };
+        let one = super::mask_core(&batch(2, 2, 0));
+        assert_eq!(one, super::mask_core(&batch(3, 1, 1)));
+        assert!(one.contains("poll_count_on_last_park: N,"), "{one}");
+        assert!(one.contains("global_queue_interval: 31,"), "{one}");
+
+        let tls = |written: u64, bytes: u64| {
+            format!(
+                "tls client, established, 1 record read, {written} written, 1 unsent ({bytes} bytes)"
+            )
+        };
+        let masked = super::mask_core(&tls(156, 3432));
+        assert_eq!(masked, super::mask_core(&tls(8, 184)));
+        assert_eq!(
+            masked,
+            "tls client, established, 1 record read, N written, 1 unsent (N bytes)"
+        );
     }
 }
