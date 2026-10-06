@@ -239,12 +239,17 @@ fn release_outside<'r>(
         .iter()
         .filter(|r| r.subject.name() == subject)
         .filter_map(|r| {
-            let relation = match r.place(version)? {
+            let (placement, range) = r.place(version)?;
+            let relation = match placement {
                 Placement::Inside => return None,
                 Placement::Below => "below",
                 Placement::Above => "above",
             };
-            Some(Outside::new(relation, r))
+            Some(Outside {
+                relation,
+                covers: range,
+                family: r.family,
+            })
         })
         .collect()
 }
@@ -298,8 +303,9 @@ fn lockfile_findings(text: &str, reviews: &[Review]) -> Result<Vec<String>> {
 }
 
 /// The toolchain file's channel held to rustc's reviews. A channel that
-/// names no release (`stable`, a nightly) is a finding of its own: no
-/// review can place it.
+/// names no release (`stable`, a nightly, a bare minor such as `1.98`,
+/// which rustup resolves to its newest patch) is a finding of its own:
+/// no review can place it.
 fn toolchain_findings(text: &str, reviews: &[Review]) -> Vec<String> {
     let channel = match text.parse::<toml::Table>() {
         Ok(table) => table
@@ -311,9 +317,7 @@ fn toolchain_findings(text: &str, reviews: &[Review]) -> Vec<String> {
         // The legacy `rust-toolchain` file is the bare channel.
         Err(_) => text.trim().to_string(),
     };
-    let release = semver::Version::parse(&channel)
-        .or_else(|_| semver::Version::parse(&format!("{channel}.0")));
-    let Ok(release) = release else {
+    let Ok(release) = semver::Version::parse(&channel) else {
         return vec![format!(
             "rustc {channel}: not a release any review can place"
         )];
@@ -1280,26 +1284,38 @@ mod tests {
         );
     }
 
-    /// The channel is held to rustc's reviews at their granularity, a
-    /// two-part channel naming its minor; one that names no release is
-    /// its own finding; the bare legacy file reads the same.
+    /// The channel is held to rustc's reviews release by release; one
+    /// that names no release — a bare minor, which rustup resolves to
+    /// whatever patch is newest, as much as `stable` — is its own
+    /// finding; the bare legacy file reads the same.
     #[test]
     fn test_a_toolchain_is_held_to_rustcs_reviews() {
         let toml = |channel: &str| format!("[toolchain]\nchannel = \"{channel}\"\n");
         let reviews = reviews();
-        assert_eq!(
-            toolchain_findings(&toml("1.98.1"), &reviews),
-            Vec::<String>::new()
-        );
+        for channel in ["1.98.0", "1.98.1"] {
+            assert_eq!(
+                toolchain_findings(&toml(channel), &reviews),
+                Vec::<String>::new(),
+                "{channel}"
+            );
+        }
         assert_eq!(
             toolchain_findings(&toml("1.98"), &reviews),
-            Vec::<String>::new()
+            vec!["rustc 1.98: not a release any review can place".to_string()]
         );
 
-        let found = toolchain_findings(&toml("1.99.0"), &reviews);
+        let found = toolchain_findings(&toml("1.999.0"), &reviews);
         assert_eq!(found.len(), 1, "{found:#?}");
         assert!(
-            found[0].starts_with("rustc 1.99.0: above 1.97-1.98 ("),
+            found[0].starts_with("rustc 1.999.0: above 1.97.0-1.98.1 ("),
+            "{found:#?}"
+        );
+        // A patch released into a reviewed minor after its review is
+        // above what was read of that minor.
+        let found = toolchain_findings(&toml("1.97.2"), &reviews);
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert!(
+            found[0].starts_with("rustc 1.97.2: above 1.97.0-1.97.1 ("),
             "{found:#?}"
         );
         assert_eq!(found[0].matches("; ").count(), 0, "{}", found[0]);

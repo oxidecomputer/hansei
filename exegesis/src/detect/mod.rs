@@ -309,29 +309,18 @@ impl Family {
             .unwrap_or(Family::ALL[0])
     }
 
-    /// The newest tokio `(major, minor)` whose layouts have been reviewed
-    /// against the detectors: the top of the version matrix. Advances by
-    /// hand when a release is onboarded; a target above it takes the
-    /// newest family's layouts as a guess, which the semantic origin
-    /// records as [`LayoutSelection::AboveReviewedRange`] so no state
-    /// protocol can bind on it.
-    pub const REVIEWED_CEILING: (u64, u64) = (1, 53);
-
-    /// How the recovered version relates to the reviewed range, for the
-    /// bundle's library-layout origins: unknown when none was recovered,
-    /// below the floor or above the ceiling when the family is a clamp
-    /// or a guess, and reviewed in between.
+    /// How the recovered version relates to the tokio releases whose
+    /// layouts have been reviewed against the detectors
+    /// ([`semantics::TOKIO_RELEASES`], each minor through its matrix
+    /// pin), for the bundle's library-layout origins: unknown when none
+    /// was recovered, below the floor when the family is a clamp, above
+    /// when it is a guess — past the newest release, or a patch its
+    /// minor's span has not reached — and reviewed otherwise, so no
+    /// state protocol can bind on a guess.
     pub fn layout_selection(version: Option<&semver::Version>) -> LayoutSelection {
-        let Some(version) = version else {
-            return LayoutSelection::VersionUnknown;
-        };
-        let version = (version.major, version.minor);
-        if version < Family::ALL[0].floor() {
-            LayoutSelection::BelowFloor
-        } else if version > Family::REVIEWED_CEILING {
-            LayoutSelection::AboveReviewedRange
-        } else {
-            LayoutSelection::ReviewedRange
+        match version {
+            Some(version) => semantics::TOKIO_RELEASES.select(version),
+            None => LayoutSelection::VersionUnknown,
         }
     }
 
@@ -1535,9 +1524,11 @@ mod tests {
         TypeId(UnitSectionOffset(offset))
     }
 
-    /// Where a version stands against the reviewed range, for the
+    /// Where a version stands against the reviewed releases, for the
     /// layout origins: unknown without a version, below the oldest
-    /// floor, above the ceiling, and reviewed at both edges inclusive.
+    /// floor, above the ceiling or a minor's span, and reviewed at both
+    /// edges inclusive. The reviewed releases start where the oldest
+    /// family does.
     #[test]
     fn test_layout_selection_bounds() {
         use crate::bundle::LayoutSelection;
@@ -1547,7 +1538,12 @@ mod tests {
             LayoutSelection::VersionUnknown
         );
         let (floor_major, floor_minor) = Family::ALL[0].floor();
-        let (ceil_major, ceil_minor) = Family::REVIEWED_CEILING;
+        assert_eq!(
+            super::semantics::TOKIO_RELEASES.floor(),
+            (floor_major, floor_minor, 0)
+        );
+        let (ceil_major, ceil_minor, ceil_patch) = super::semantics::TOKIO_RELEASES.ceiling();
+        let (span_major, span_minor, span_patch) = super::semantics::TOKIO_RELEASES.0[0].1;
         for (version, expected) in [
             (
                 format!("{floor_major}.{}.9", floor_minor - 1),
@@ -1558,8 +1554,16 @@ mod tests {
                 LayoutSelection::ReviewedRange,
             ),
             (
-                format!("{ceil_major}.{ceil_minor}.9"),
+                format!("{span_major}.{span_minor}.{}", span_patch + 1),
+                LayoutSelection::AboveReviewedRange,
+            ),
+            (
+                format!("{ceil_major}.{ceil_minor}.{ceil_patch}"),
                 LayoutSelection::ReviewedRange,
+            ),
+            (
+                format!("{ceil_major}.{ceil_minor}.{}", ceil_patch + 1),
+                LayoutSelection::AboveReviewedRange,
             ),
             (
                 format!("{ceil_major}.{}.0", ceil_minor + 1),

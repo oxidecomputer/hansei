@@ -297,7 +297,16 @@ impl ExtractStats {
     fn review_warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some((version, outgrown)) = &self.rustc_outgrown {
-            let ranges: BTreeSet<String> = outgrown.iter().map(|c| c.range()).collect();
+            // A patch between two spans is told what was read of its
+            // minor; the version parsed when it was found outgrown.
+            let parsed = semver::Version::parse(version).ok();
+            let ranges: BTreeSet<String> = outgrown
+                .iter()
+                .map(|c| match &parsed {
+                    Some(v) => c.releases.range_for(v),
+                    None => c.range(),
+                })
+                .collect();
             for range in ranges {
                 out.push(format!(
                     "rustc {version} is newer than the supported version range: {range}"
@@ -2062,7 +2071,7 @@ mod tests {
         };
         assert_eq!(
             stats.unsupported(),
-            ["rustc 1.70.0 is older than the supported version range: 1.97-1.98"]
+            ["rustc 1.70.0 is older than the supported version range: 1.97.0-1.98.1"]
         );
 
         let stats = ExtractStats {
@@ -2138,8 +2147,8 @@ mod tests {
         assert_eq!(
             stats.unsupported(),
             [
-                "rustc 2.999.0 is newer than the supported version range: 1.97-1.98",
-                "tokio 1.999.0 is newer than the supported version range: 1.47-1.53",
+                "rustc 2.999.0 is newer than the supported version range: 1.97.0-1.98.1",
+                "tokio 1.999.0 is newer than the supported version range: 1.47.0-1.53.1",
                 "rustls 0.23.22 is older than the supported version range: \
                  0.23.23-0.23.45",
                 "tokio-rustls 0.27.0 is newer than the supported version range: \

@@ -13,7 +13,6 @@
 //! test holds it to every review the source declares, so a new one
 //! cannot be left out of it.
 
-use super::Family;
 use super::semantics::{
     AcquireOwners, DROPSHOT_HANDLER_V0_17_0, DROPSHOT_SERVER_V0_17_0,
     FUTURES_UTIL_ADAPTERS_V0_3_30, GitConvention, HASHBROWN_TABLE_V0_12_3, HTTP_REQUEST_V1_0_0,
@@ -21,15 +20,15 @@ use super::semantics::{
     HYPER_UTIL_CONNECTED_V0_1_10, HYPER_UTIL_IO_V0_1_10, HYPER_UTIL_POOL_V0_1_16,
     HYPER_UTIL_RESPONSE_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
     PARKING_LOT_RAW_MUTEX_V0_11_0, REQWEST_CONN_V0_12_14, REQWEST_COOKIE_V0_12_24,
-    REQWEST_PENDING_REQUEST_V0_12_0, RUSTC_CONVENTIONS, RUSTLS_SESSION_V0_23_23,
+    REQWEST_PENDING_REQUEST_V0_12_0, RUSTC_CONVENTIONS, RUSTLS_SESSION_V0_23_23, Releases,
     SPROCKETS_TLS_CLIENT_D2B68E4, SPROCKETS_TLS_SERVER_D2B68E4, SPROCKETS_TLS_STREAM_D2B68E4,
-    StateProtocol, TOKIO_ACQUIRE_OWNERS_V1_47, TOKIO_INTERVAL_TICK_V1_47,
+    StateProtocol, TOKIO_ACQUIRE_OWNERS_V1_47, TOKIO_INTERVAL_TICK_V1_47, TOKIO_RELEASES,
     TOKIO_RUSTLS_HANDSHAKE_V0_26_0, TOKIO_RUSTLS_STREAM_V0_26_0, TOKIO_SELECT_V1_47,
     TOKIO_STATE_PROTOCOLS, TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
     TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2, TRACING_INSTRUMENTED_V0_1_40,
 };
+use crate::bundle::LayoutSelection;
 
-use std::cmp::Ordering;
 use std::fmt;
 
 /// Every reviewed crate release range.
@@ -90,58 +89,11 @@ impl Subject {
     }
 }
 
-/// One end of a reviewed range. A bound with no patch is a minor
-/// release's every patch: as a floor it starts at `.0`, as a ceiling it
-/// takes in every patch of that minor.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Bound {
-    pub major: u64,
-    pub minor: u64,
-    pub patch: Option<u64>,
-}
-
-impl Bound {
-    const fn minor(major: u64, minor: u64) -> Self {
-        Bound {
-            major,
-            minor,
-            patch: None,
-        }
-    }
-
-    const fn patch((major, minor, patch): (u64, u64, u64)) -> Self {
-        Bound {
-            major,
-            minor,
-            patch: Some(patch),
-        }
-    }
-
-    /// How a version compares with this bound, a patchless bound
-    /// equal to every patch of its minor.
-    fn cmp_version(&self, version: &semver::Version) -> Ordering {
-        let minor = (version.major, version.minor).cmp(&(self.major, self.minor));
-        match self.patch {
-            Some(patch) => minor.then(version.patch.cmp(&patch)),
-            None => minor,
-        }
-    }
-}
-
-impl fmt::Display for Bound {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.patch {
-            Some(patch) => write!(f, "{}.{}.{patch}", self.major, self.minor),
-            None => write!(f, "{}.{}", self.major, self.minor),
-        }
-    }
-}
-
 /// What a review covers of its subject.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Covers {
-    /// Every release from `floor` to `ceiling`, both inclusive.
-    Releases { floor: Bound, ceiling: Bound },
+    /// The releases in each of these spans.
+    Releases(Releases),
     /// These git revisions, by full hash, of the named repository.
     Revisions {
         repository: &'static str,
@@ -152,7 +104,7 @@ pub enum Covers {
 impl fmt::Display for Covers {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Covers::Releases { floor, ceiling } => write!(f, "{floor}-{ceiling}"),
+            Covers::Releases(releases) => write!(f, "{releases}"),
             Covers::Revisions { revisions, .. } => {
                 let short: Vec<&str> = revisions.iter().map(|r| &r[..r.len().min(9)]).collect();
                 write!(f, "{}", short.join(","))
@@ -179,19 +131,20 @@ pub struct Review {
 }
 
 impl Review {
-    /// Where `version` falls against the reviewed releases; `None` for a
-    /// review of revisions, which no release number places.
-    pub fn place(&self, version: &semver::Version) -> Option<Placement> {
-        let Covers::Releases { floor, ceiling } = &self.covers else {
+    /// Where `version` falls against the reviewed releases — above for
+    /// a patch between two spans, which the review did not read — and
+    /// the range a finding names for it; `None` for a review of
+    /// revisions, which no release number places.
+    pub fn place(&self, version: &semver::Version) -> Option<(Placement, String)> {
+        let Covers::Releases(releases) = &self.covers else {
             return None;
         };
-        Some(if floor.cmp_version(version) == Ordering::Less {
-            Placement::Below
-        } else if ceiling.cmp_version(version) == Ordering::Greater {
-            Placement::Above
-        } else {
-            Placement::Inside
-        })
+        let placement = match releases.select(version) {
+            LayoutSelection::BelowFloor => Placement::Below,
+            LayoutSelection::AboveReviewedRange => Placement::Above,
+            _ => Placement::Inside,
+        };
+        Some((placement, releases.range_for(version)))
     }
 
     /// Whether the review covers this git revision: a reviewed full
@@ -209,10 +162,7 @@ fn library(c: &LibraryConvention) -> Review {
     Review {
         subject: Subject::Crate(c.package),
         family: c.family,
-        covers: Covers::Releases {
-            floor: Bound::patch(c.floor),
-            ceiling: Bound::patch(c.ceiling),
-        },
+        covers: Covers::Releases(c.releases),
     }
 }
 
@@ -227,41 +177,32 @@ fn git(c: &GitConvention) -> Review {
     }
 }
 
-fn tokio_minor(family: &'static str, floor: (u64, u64), ceiling: (u64, u64)) -> Review {
+fn tokio(family: &'static str, releases: Releases) -> Review {
     Review {
         subject: Subject::Crate("tokio"),
         family,
-        covers: Covers::Releases {
-            floor: Bound::minor(floor.0, floor.1),
-            ceiling: Bound::minor(ceiling.0, ceiling.1),
-        },
+        covers: Covers::Releases(releases),
     }
 }
 
 fn state(p: &StateProtocol) -> Review {
-    tokio_minor(p.family, p.floor, p.ceiling)
+    tokio(p.family, p.releases)
 }
 
 fn owners(o: &AcquireOwners) -> Review {
-    tokio_minor(o.family, o.floor, o.ceiling)
+    tokio(o.family, o.releases)
 }
 
 /// Every review this hansei carries: rustc's conventions, the crate
 /// releases and git revisions, tokio's state protocols, and the tokio
-/// layout families' reviewed range.
+/// layout families' reviewed releases.
 pub fn reviews() -> Vec<Review> {
     let rustc = RUSTC_CONVENTIONS.iter().map(|c| Review {
         subject: Subject::Rustc,
         family: c.family,
-        covers: Covers::Releases {
-            floor: Bound::minor(c.floor.0, c.floor.1),
-            ceiling: Bound::minor(c.ceiling.0, c.ceiling.1),
-        },
+        covers: Covers::Releases(c.releases),
     });
-    let families = {
-        let floor = Family::ALL[0].floor();
-        tokio_minor(TOKIO_LAYOUT_FAMILIES, floor, Family::REVIEWED_CEILING)
-    };
+    let families = tokio(TOKIO_LAYOUT_FAMILIES, TOKIO_RELEASES);
     rustc
         .chain(LIBRARY_CONVENTIONS.iter().map(|c| library(c)))
         .chain(GIT_CONVENTIONS.iter().map(|c| git(c)))
@@ -311,23 +252,24 @@ mod tests {
         );
     }
 
-    /// Every range runs forward: a floor above its ceiling would place
-    /// every release outside.
+    /// Every review's spans run forward and in order: a floor above its
+    /// ceiling would place every release outside, and an overlap would
+    /// mean two spans claim one minor.
     #[test]
     fn test_every_range_runs_forward() {
         for review in reviews() {
-            if let Covers::Releases { floor, ceiling } = &review.covers {
-                let floor = (floor.major, floor.minor, floor.patch.unwrap_or(0));
-                let ceiling = (
-                    ceiling.major,
-                    ceiling.minor,
-                    ceiling.patch.unwrap_or(u64::MAX),
-                );
-                assert!(
-                    floor <= ceiling,
-                    "{}: {floor:?} > {ceiling:?}",
-                    review.family
-                );
+            if let Covers::Releases(releases) = &review.covers {
+                assert!(!releases.0.is_empty(), "{}", review.family);
+                for &(floor, ceiling) in releases.0 {
+                    assert!(
+                        floor <= ceiling,
+                        "{}: {floor:?} > {ceiling:?}",
+                        review.family
+                    );
+                }
+                for pair in releases.0.windows(2) {
+                    assert!(pair[0].1 < pair[1].0, "{}: {pair:?}", review.family);
+                }
             }
         }
     }
@@ -336,29 +278,35 @@ mod tests {
         semver::Version::parse(s).unwrap()
     }
 
-    /// A patch bound is exact at both ends; a patchless one takes in
-    /// every patch of its minor.
+    /// A span is exact at both ends, and a patch between two spans is
+    /// above the review, named against the span below it.
     #[test]
-    fn test_releases_place_at_the_bounds_granularity() {
-        let patch = library(&HYPER_H1_CONN_V1_6_0);
-        assert_eq!(patch.place(&v("1.5.9")), Some(Placement::Below));
-        assert_eq!(patch.place(&v("1.6.0")), Some(Placement::Inside));
-        let Covers::Releases { ceiling, .. } = patch.covers else {
-            unreachable!()
-        };
-        assert_eq!(
-            patch.place(&v(&ceiling.to_string())),
-            Some(Placement::Inside)
-        );
-        let past = semver::Version::new(ceiling.major, ceiling.minor, ceiling.patch.unwrap() + 1);
-        assert_eq!(patch.place(&past), Some(Placement::Above));
+    fn test_releases_place_at_patch_granularity() {
+        let place = |r: &Review, s: &str| r.place(&v(s)).map(|(p, _)| p);
+        let one = library(&HYPER_H1_CONN_V1_6_0);
+        assert_eq!(place(&one, "1.5.9"), Some(Placement::Below));
+        assert_eq!(place(&one, "1.6.0"), Some(Placement::Inside));
+        assert_eq!(place(&one, "1.10.1"), Some(Placement::Inside));
+        assert_eq!(place(&one, "1.10.2"), Some(Placement::Above));
 
-        let minor = tokio_minor("t", (1, 47), (1, 53));
-        assert_eq!(minor.place(&v("1.46.9")), Some(Placement::Below));
-        assert_eq!(minor.place(&v("1.47.0")), Some(Placement::Inside));
-        assert_eq!(minor.place(&v("1.53.99")), Some(Placement::Inside));
-        assert_eq!(minor.place(&v("1.54.0")), Some(Placement::Above));
-        assert_eq!(minor.covers_revision("abc"), None);
+        let spans = tokio(
+            "t",
+            Releases(&[((1, 47, 0), (1, 47, 5)), ((1, 48, 0), (1, 48, 2))]),
+        );
+        assert_eq!(place(&spans, "1.46.9"), Some(Placement::Below));
+        assert_eq!(place(&spans, "1.47.0"), Some(Placement::Inside));
+        assert_eq!(place(&spans, "1.47.5"), Some(Placement::Inside));
+        assert_eq!(
+            spans.place(&v("1.47.6")),
+            Some((Placement::Above, "1.47.0-1.47.5".to_string()))
+        );
+        assert_eq!(place(&spans, "1.48.2"), Some(Placement::Inside));
+        assert_eq!(
+            spans.place(&v("1.49.0")),
+            Some((Placement::Above, "1.47.0-1.48.2".to_string()))
+        );
+        assert_eq!(spans.covers.to_string(), "1.47.0-1.47.5,1.48.0-1.48.2");
+        assert_eq!(spans.covers_revision("abc"), None);
     }
 
     /// A revision review covers a reviewed hash by any prefix of it,
