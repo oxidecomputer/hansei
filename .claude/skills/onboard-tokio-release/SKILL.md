@@ -14,12 +14,37 @@ fallback that could bind on a version it was not written for.** Ordered
 alternatives inside a detector are only for divergence a version cannot
 select: feature/cfg variance within one release, or rustc-driven drift.
 
-## 1. Notice and run the mechanical half
+## 1. Notice, review, and run the mechanical half
 
 ```
 test-programs/matrix.sh update            # exit 1 + report when behind
 test-programs/matrix.sh add tokio-<ver>   # or add rust-<ver>
 ```
+
+**Review before `add`.** Every review in `exegesis/src/detect/semantics.rs`
+reads tokio and rustc release by release — `TOKIO_RELEASES` and
+`RUSTC_RELEASES`, one span per minor through the matrix's newest pin —
+so a release outside them gets no rule and extraction refuses it. For
+the new release:
+
+1. Hash every file each review names (its `checksums` paths) at the
+   release — the crate's registry sources for tokio, the toolchain's
+   `rust-src` for rustc — and diff each file that hashes to no listed
+   revision against the neighbouring reviewed one. A rustc convention
+   with no checksums read compiler sources, which no toolchain ships:
+   diff the files its doc names at the two git tags.
+2. Where the change leaves a review's claims true, list the new
+   revision's checksum (generate the bytes; never type them) and amend
+   the doc's account of how its files vary across the range. Where it
+   does not, that is a layout or protocol change: stop and treat it as
+   §2's classification does.
+3. Raise the minor's span in `TOKIO_RELEASES`/`RUSTC_RELEASES` to the
+   release, or add one for a new minor.
+
+Then run `add`. The matrix suite holds each span's top to the matrix's
+pin for that minor and every listed checksum to the sources each cell
+builds, so `add`'s runs fail on a span left behind or a file nobody
+read.
 
 `add` derives the lockfile, edits `matrix.toml`, deletes golden dirs the
 edit orphans (the "latest" role slides), blesses the new cells, then runs
@@ -28,9 +53,10 @@ touch the floor and primary pins — those advance by hand, deliberately.
 Advancing the primary toolchain edits `rust-toolchain.toml` at the
 repository root in the same commit, since the workspace builds on the
 primary too; a `testrun` test fails while the two differ.
-`add` installs the toolchains, blesses and runs the full matrix in the
-Linux test image, so onboard on an x86_64 Linux host with podman; it
-refuses anywhere else. A cell whose toolchain is missing fails.
+`add` installs the toolchains, with the `rust-src` the matrix suite's
+source check reads, blesses and runs the full matrix in the Linux test
+image, so onboard on an x86_64 Linux host with podman; it refuses
+anywhere else. A cell whose toolchain is missing fails.
 
 ## 2. Classify the release
 

@@ -42,6 +42,8 @@ hansei-bundle = { path = "hansei-bundle", version = "0.1.0" }
 hansei-runtime = { path = "hansei-runtime" }
 insta = "1.48"
 libproc-sys = { path = "libproc-sys", version = "0.1.0" }
+# Test-only: the matrix suite hashes the sources each review read.
+md-5 = "0.11"
 memmap2 = "0.9"
 mimalloc = { version = "0.1", features = ["v3"] }
 object = "0.40"

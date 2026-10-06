@@ -52,7 +52,9 @@ jobs:
 
       # Every toolchain the matrix names, before anything runs: the
       # suite fails a cell whose toolchain is missing, and this makes
-      # that a failure to install, named as one.
+      # that a failure to install, named as one. Each with rust-src,
+      # the standard library sources the suite holds the rustc reviews
+      # to.
       - name: Toolchains
         run: |
           read -ra toolchains <<<"$(sed -n '/^\[toolchain\]/,/^\[/s/^versions *= *\[\(.*\)\]/\1/p' \
@@ -61,7 +63,7 @@ jobs:
           [ ${#toolchains[@]} -gt 0 ]
           # shellcheck disable=SC2016 # expanded by the image's shell
           .github/scripts/in-image.sh sh -ec \
-            'for tc; do rustup toolchain install --profile minimal "$tc"; done' \
+            'for tc; do rustup toolchain install --profile minimal --component rust-src "$tc"; done' \
             sh "${toolchains[@]}"
 
       - name: Test

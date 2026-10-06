@@ -46,6 +46,15 @@
 //! primary cell shares its fixture dirs with the extraction goldens,
 //! and two test binaries rebuilding one fixture dir race.
 //!
+//! Each cell also holds the reviews to the sources it builds: every
+//! file a review read, at each crate release the cell's lockfile pins
+//! and at the cell's toolchain, must hash to a revision the review
+//! lists — so a checksum copied wrong, or a release whose file changed
+//! with nobody reading it, fails here rather than vouching for code no
+//! one saw. The toolchain's sources are its `rust-src` component. A
+//! separate test, which needs no build, holds each reviewed tokio and
+//! rustc span to the newest release the matrix pins in that minor.
+//!
 //! The goldens are the rendering in the Linux test image
 //! (`.github/image/`): blessed there (`test-programs/matrix.sh bless`),
 //! and checked there by CI's matrix workflow, which is dispatched by
@@ -57,11 +66,14 @@
 
 use exegesis::describe::{describe_debug_format, describe_semantics};
 use exegesis::detect::Family;
+use exegesis::detect::reviewed::{Subject, sources};
+use exegesis::detect::semantics::{RUSTC_RELEASES, Release, Releases, TOKIO_RELEASES};
 use exegesis::extract::{ExtractOptions, extract_file};
 use exegesis::summary::portable_summary;
 use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::testkit::matrix::Matrix;
 use hansei_runtime::tokio::contract::verify_walk_contract;
+use md5::{Digest, Md5};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -265,6 +277,172 @@ impl Cell {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The sources the reviews read
+// ---------------------------------------------------------------------------
+
+/// Every `(package, version)` a lockfile pins.
+fn lock_packages(path: &Path) -> Vec<(String, semver::Version)> {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let value = |line: &str, key: &str| {
+        line.strip_prefix(key)
+            .map(|rest| rest.trim_matches(|c| c == '"' || c == ' ').to_owned())
+    };
+    let mut out = Vec::new();
+    let mut name = None;
+    for line in text.lines() {
+        if let Some(n) = value(line, "name = ") {
+            name = Some(n);
+        } else if let Some(v) = value(line, "version = ")
+            && let Some(n) = name.take()
+            && let Ok(v) = semver::Version::parse(&v)
+        {
+            out.push((n, v));
+        }
+    }
+    out
+}
+
+/// Where cargo unpacked a registry release: `<CARGO_HOME>/registry/src/
+/// <index>/<package>-<version>`, in whichever index holds it.
+fn crate_root(package: &str, version: &semver::Version) -> Option<PathBuf> {
+    let home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cargo")))?;
+    std::fs::read_dir(home.join("registry/src"))
+        .ok()?
+        .flatten()
+        .map(|index| index.path().join(format!("{package}-{version}")))
+        .find(|dir| dir.is_dir())
+}
+
+/// The root of a toolchain's `rust-src`, the standard library sources
+/// as the toolchain ships them.
+fn rust_src(toolchain: &str) -> PathBuf {
+    let out = Command::new("rustup")
+        .args(["run", toolchain, "rustc", "--print", "sysroot"])
+        .output()
+        .expect("failed to run rustc --print sysroot");
+    let sysroot = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    PathBuf::from(sysroot).join("lib/rustlib/src/rust")
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Hold every review to the sources the cell builds: each file a
+/// review read, at every release of its subject the cell pins inside
+/// the review's releases, must hash to one of the revisions it lists.
+/// A file absent from a release is the review's to explain, not a
+/// mismatch; a review none of whose files a release ships is one.
+fn check_sources(cell: &Cell, m: &Matrix, failures: &mut Vec<String>) {
+    let dir = test_programs_dir();
+    let lockfile = if cell.tokio == m.primary.tokio {
+        dir.join("Cargo.lock")
+    } else {
+        dir.join(format!("locks/tokio-{}.lock", cell.tokio))
+    };
+    let toolchain = semver::Version::parse(&cell.toolchain).expect("a release toolchain");
+    let packages = lock_packages(&lockfile);
+    let name = cell.name();
+    for review in sources() {
+        let releases: Vec<(String, semver::Version, Option<PathBuf>)> = match review.subject {
+            Subject::Rustc => {
+                let root = rust_src(&cell.toolchain);
+                let root = root.is_dir().then_some(root);
+                vec![("rustc".to_owned(), toolchain.clone(), root)]
+            }
+            Subject::Crate(package) => packages
+                .iter()
+                .filter(|(n, _)| n == package)
+                .map(|(n, v)| (n.clone(), v.clone(), crate_root(n, v)))
+                .collect(),
+        };
+        for (subject, version, root) in releases {
+            if !review.releases.covers(&version) || review.checksums.is_empty() {
+                continue;
+            }
+            let Some(root) = root else {
+                failures.push(format!(
+                    "{name}: {subject} {version}'s sources are not on disk to check {} \
+                     against{}",
+                    review.family,
+                    if subject == "rustc" {
+                        format!(" (rustup component add rust-src --toolchain {version})")
+                    } else {
+                        String::new()
+                    }
+                ));
+                continue;
+            };
+            let files: BTreeSet<&str> = review.checksums.iter().map(|&(f, _)| f).collect();
+            let mut shipped = 0;
+            for file in files {
+                let Ok(bytes) = std::fs::read(root.join(file)) else {
+                    continue;
+                };
+                shipped += 1;
+                let actual: [u8; 16] = Md5::digest(&bytes).into();
+                let reviewed = review
+                    .checksums
+                    .iter()
+                    .any(|&(f, md5)| f == file && md5 == actual);
+                if !reviewed {
+                    failures.push(format!(
+                        "{name}: {subject} {version}'s {file} hashes to {}, \
+                         not a revision {} lists",
+                        hex(&actual),
+                        review.family
+                    ));
+                }
+            }
+            if shipped == 0 {
+                failures.push(format!(
+                    "{name}: {subject} {version} ships none of the files {} read",
+                    review.family
+                ));
+            }
+        }
+    }
+}
+
+/// The spans a list of matrix versions implies: per minor, `.0`
+/// through the newest patch listed.
+fn spans_through(versions: &[String]) -> Vec<(Release, Release)> {
+    let mut newest: BTreeMap<(u64, u64), u64> = BTreeMap::new();
+    for v in versions {
+        let v = semver::Version::parse(v).expect("a matrix version");
+        let patch = newest.entry((v.major, v.minor)).or_default();
+        *patch = (*patch).max(v.patch);
+    }
+    newest
+        .into_iter()
+        .map(|((major, minor), patch)| ((major, minor, 0), (major, minor, patch)))
+        .collect()
+}
+
+/// The tokio and rustc releases the reviews read end, minor by minor,
+/// at the newest release the matrix pins there: a patch onboarded into
+/// the matrix raises its span in the same change, and no span reaches
+/// a release the matrix never built — the checksums each cell holds
+/// the reviews to are only ever checked at what the matrix builds.
+#[test]
+fn test_reviewed_releases_end_at_the_matrix_pins() {
+    let m = Matrix::load();
+    let check = |what: &str, releases: Releases, versions: &[String]| {
+        assert_eq!(
+            releases.0,
+            spans_through(versions).as_slice(),
+            "the reviewed {what} releases ({releases}) and test-programs/matrix.toml's \
+             {what} versions disagree: onboard and review a release in one change"
+        );
+    };
+    check("tokio", TOKIO_RELEASES, &m.tokio.versions);
+    check("rustc", RUSTC_RELEASES, &m.toolchain.versions);
+}
+
 fn toolchain_installed(toolchain: &str) -> bool {
     Command::new("rustup")
         .args(["toolchain", "list"])
@@ -435,6 +613,7 @@ fn test_matrix() {
     let matrix = Matrix::load();
 
     let mut failures = Vec::new();
+    let mut unreviewed = Vec::new();
     let mut matched = 0usize;
     for cell in cells(&matrix) {
         let name = cell.name();
@@ -450,6 +629,7 @@ fn test_matrix() {
             continue;
         }
         cell.build();
+        check_sources(&cell, &matrix, &mut unreviewed);
 
         let programs = cell.programs();
         let bundles: Vec<(&str, Bundle)> = programs
@@ -493,6 +673,12 @@ fn test_matrix() {
     }
 
     assert!(matched > 0, "no matrix cell matched HANSEI_MATRIX={filter}");
+    assert!(
+        unreviewed.is_empty(),
+        "{} reviewed source(s) do not match what the cells build:\n  {}",
+        unreviewed.len(),
+        unreviewed.join("\n  ")
+    );
     assert!(
         failures.is_empty(),
         "{} matrix check(s) failed (golden diffs above; INSTA_UPDATE=always to re-bless):\n  {}",

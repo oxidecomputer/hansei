@@ -193,6 +193,55 @@ fn owners(o: &AcquireOwners) -> Review {
     tokio(o.family, o.releases)
 }
 
+/// What a review records of the sources it read, for the matrix suite
+/// to hold against the sources each cell builds: its subject, name and
+/// releases, and the md5 of every reviewed revision of each file it
+/// read — relative to the crate root, or for rustc to the root of the
+/// toolchain's `rust-src`.
+#[derive(Clone, Copy, Debug)]
+pub struct Sources {
+    pub subject: Subject,
+    pub family: &'static str,
+    pub releases: Releases,
+    pub checksums: &'static [(&'static str, [u8; 16])],
+}
+
+/// Every review that records the sources it read: each rustc
+/// convention, crate release review, tokio state protocol and the
+/// acquire owners. A git review is held to its revisions instead, and
+/// the layout families read no one file.
+pub fn sources() -> Vec<Sources> {
+    let rustc = RUSTC_CONVENTIONS.iter().map(|c| Sources {
+        subject: Subject::Rustc,
+        family: c.family,
+        releases: c.releases,
+        checksums: c.checksums,
+    });
+    let library = LIBRARY_CONVENTIONS.iter().map(|c| Sources {
+        subject: Subject::Crate(c.package),
+        family: c.family,
+        releases: c.releases,
+        checksums: c.checksums,
+    });
+    let protocols = TOKIO_STATE_PROTOCOLS.iter().map(|p| Sources {
+        subject: Subject::Crate("tokio"),
+        family: p.family,
+        releases: p.releases,
+        checksums: p.checksums,
+    });
+    let owners = &TOKIO_ACQUIRE_OWNERS_V1_47;
+    rustc
+        .chain(library)
+        .chain(protocols)
+        .chain([Sources {
+            subject: Subject::Crate("tokio"),
+            family: owners.family,
+            releases: owners.releases,
+            checksums: owners.checksums,
+        }])
+        .collect()
+}
+
 /// Every review this hansei carries: rustc's conventions, the crate
 /// releases and git revisions, tokio's state protocols, and the tokio
 /// layout families' reviewed releases.
@@ -250,6 +299,9 @@ mod tests {
                 + TOKIO_STATE_PROTOCOLS.len()
                 + 2
         );
+        // Every review but the git ones and the layout families is in
+        // the list the matrix suite holds to the sources it builds.
+        assert_eq!(sources().len(), all.len() - GIT_CONVENTIONS.len() - 1);
     }
 
     /// Every review's spans run forward and in order: a floor above its

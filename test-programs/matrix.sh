@@ -19,11 +19,11 @@
 #                    orphans, build and bless the new cells' goldens, then
 #                    run the whole matrix un-blessed to prove no existing
 #                    cell's goldens moved
-#   add rust-VER     onboard a toolchain: rustup-install it, update
-#                    matrix.toml the same way (a new minor is inserted; a
-#                    newer patch of a listed minor replaces its pin),
-#                    delete golden dirs the edit orphans, bless its cells,
-#                    run the whole matrix
+#   add rust-VER     onboard a toolchain: rustup-install it with rust-src,
+#                    update matrix.toml the same way (a new minor is
+#                    inserted; a newer patch of a listed minor replaces
+#                    its pin), delete golden dirs the edit orphans, bless
+#                    its cells, run the whole matrix
 #   bless [FILTER]   bless the goldens of every cell, or of the cells
 #                    whose name contains FILTER: after a change that moves
 #                    them, before pushing, so CI's matrix workflow passes
@@ -34,6 +34,15 @@
 # .github/scripts/in-image.sh: they need an x86_64 Linux host with
 # podman, and no Rust of the host's own. Anywhere else their goldens
 # would be another platform's, so they refuse.
+#
+# Every review in exegesis/src/detect/semantics.rs reads tokio and rustc
+# release by release (TOKIO_RELEASES, RUSTC_RELEASES), each minor
+# through the newest patch the matrix pins, and the matrix suite holds
+# the two to each other and every listed checksum to the sources the
+# cells build. So before add, read the files each review names at the
+# new release, list the checksum of every revision that changed, and
+# raise the minor's span (or add one) to it: add's runs then pass once
+# its manifest edit lands, and fail on any file nobody read.
 #
 # add prepares the working tree and never commits. Review the manifest,
 # lockfile, and golden diffs — a respelled member is one more ordered
@@ -296,6 +305,10 @@ require_image_host() {
 ensure_toolchain() {
     in_image rustup toolchain install --profile minimal "$1" \
         || die "installing toolchain $1 failed"
+    # The matrix suite holds the rustc reviews to the standard library
+    # sources each toolchain ships.
+    in_image rustup component add rust-src --toolchain "$1" >/dev/null 2>&1 \
+        || die "adding rust-src to toolchain $1 failed"
 }
 
 # The matrix suite in the image, over the cells whose names contain
