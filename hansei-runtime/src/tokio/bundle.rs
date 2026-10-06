@@ -2795,6 +2795,17 @@ impl<'b, T: Target> Context<'b, T> {
         let elem = self
             .walk_root_ty(WalkRole::BlockingTaskHeader)
             .ok_or_else(|| anyhow!("the tokio info records no blocking pool Task layout"))?;
+        // The ring is one allocation of `cap` elements, so both its ends
+        // are mapped. A capacity that reaches past what is mapped is a
+        // word that lies, and would otherwise be walked slot by slot.
+        let last = cap
+            .checked_mul(elem.size())
+            .and_then(|bytes| buf.checked_add(bytes.checked_sub(1)?));
+        ensure!(
+            self.mappings.contains_addr(buf)
+                && last.is_some_and(|a| self.mappings.contains_addr(a)),
+            "the blocking queue's {cap} slots at {buf:#x} are not all mapped"
+        );
         for i in 0..len {
             let slot = (head + i) % cap;
             let addr = buf + slot * elem.size();

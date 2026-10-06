@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`thread 1001` over illumos/local-set"
 ---
 lwp 1001  polling no task  runtime 0 @ 0xA1
-    thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId> = Some(1)
+    thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId> = Some(3001)
     runtime:
       tokio::runtime::context::runtime::EnterRuntime = Entered {
           allow_block_in_place: false,
@@ -29,12 +29,12 @@ lwp 1001  polling no task  runtime 0 @ 0xA1
               park_count: N,
               park_unpark_count: N,
               noop_count: N,
-              steal_count: 0,
-              steal_operations: 0,
-              poll_count: 1,
-              poll_count_on_last_park: 1,
-              local_schedule_count: 1,
-              overflow_count: 0,
+              steal_count: N,
+              steal_operations: N,
+              poll_count: N,
+              poll_count_on_last_park: N,
+              local_schedule_count: N,
+              overflow_count: N,
               poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer> { .. } @ 0xA3,
           },
           global_queue_interval: 31,

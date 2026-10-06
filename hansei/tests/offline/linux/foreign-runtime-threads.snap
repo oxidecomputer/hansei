@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads` over linux/foreign-runtime"
 ---
 LWP  NAME  ROLE  TASK  FRAME 0
-1001  —  block_on caller  —  __syscall_cancel_arch
+1001  —  block_on caller  —  0xA1
 1002  —  tokio context, no runtime  —  syscall
 [2 threads]

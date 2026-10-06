@@ -1,0 +1,233 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# The merge gate. Every Linux and illumos run builds the fixture
+# programs, cores them, and checks the cores against the committed
+# goldens; macOS cannot core an ELF process, so it reads the cores
+# those runs took, through the same production readers, against the
+# same goldens. Four checks:
+#
+#   lint     rustfmt over both manifests, clippy
+#   linux    the whole suite in the pinned image (.github/image/),
+#            capturing the linux and linux-floor sets
+#   helios   the whole suite on illumos, capturing the illumos set
+#            (buildomat: .github/buildomat/jobs/helios.sh)
+#   macos    the whole suite over the cores both of them took, built
+#            once while they run
+#
+# The jobs that read cores test a pull request's head commit, not the
+# merge commit Actions checks out by default: buildomat builds the head
+# and publishes the illumos cores under it, and one macOS build reads
+# every set, each of which must have been captured from the tree it
+# runs in.
+#
+# The version matrix is not among them: it is dispatched by hand
+# (matrix.yml).
+#
+# The suites build with the ci profile (Cargo.toml), which keeps line
+# tables only for most workspace crates: debug info is most of every
+# test binary, and a runner has disk for little else.
+#
+# A golden read from cores is blessed only by the host that captures
+# its set; a diff only macOS shows is a reader bug, and one a host
+# and this workflow disagree on is a canonicalization gap.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  # The fixture work each job does before its suite (build_fixtures)
+  # counts as the suite's own only under one run name; a rerun is a
+  # new one.
+  HANSEI_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+  # The commit the jobs that read cores test (see the header).
+  HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  # Its own job, so a lint failure neither stops the suite from running
+  # nor leaves the macOS check without cores to read.
+  lint:
+    name: lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # The linux job's toolchain, restored but never saved from here:
+      # the cache budget has no room for a copy of its own.
+      - uses: ./.github/actions/linux-image
+        with:
+          cache: linux
+          save: "false"
+
+      - name: Format
+        run: |
+          .github/scripts/in-image.sh cargo fmt --all --check
+          .github/scripts/in-image.sh cargo fmt --manifest-path test-programs/Cargo.toml --check
+
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        run: .github/scripts/in-image.sh cargo clippy --locked --workspace --all-targets -- -D warnings
+
+  linux:
+    name: linux
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.HEAD_SHA }}
+
+      - id: image
+        uses: ./.github/actions/linux-image
+        with:
+          cache: linux
+
+      # The workspace's and the fixture programs' dependency builds.
+      - uses: ./.github/actions/linux-rust-cache
+        with:
+          image: ${{ steps.image.outputs.image }}
+
+      # The suite's build builds the fixture example with it. `cargo run
+      # -p hansei-runtime --example` would resolve features for that
+      # one package and compile the workspace a second time.
+      - name: Build
+        run: .github/scripts/in-image.sh cargo nextest run --locked --no-run --cargo-profile ci
+
+      # Outside the suite, so no test waits on it under the per-test
+      # limit (.config/nextest.toml) or holds a slot while it does.
+      - name: Fixtures
+        run: .github/scripts/in-image.sh target/ci/examples/build_fixtures
+
+      - name: Test
+        run: .github/scripts/in-image.sh cargo nextest run --locked --no-fail-fast --profile ci --cargo-profile ci
+
+      - name: Disk
+        if: always()
+        run: df -h / "${{ steps.image.outputs.scratch }}"
+
+      # Whatever was captured, pass or fail: the macOS job reads it
+      # (.github/scripts/wait-linux.sh), and a failure here is
+      # root-caused from it. A Linux core is
+      # mostly holes, which --sparse keeps out of the archive and the
+      # reader's disk alike. The dot-named bookkeeping is this host's
+      # own.
+      - id: cores
+        name: Archive cores
+        if: always()
+        run: |
+          sets=()
+          for set in linux linux-floor; do
+            [ -d "$HANSEI_CORES/$set" ] && sets+=("$set")
+          done
+          if [ ${#sets[@]} -eq 0 ]; then
+            echo "no cores were captured"
+            exit 0
+          fi
+          tar --sparse --exclude='.*' -C "$HANSEI_CORES" -cf - "${sets[@]}" \
+            | zstd -3 -T0 -q -o "$RUNNER_TEMP/cores-linux.tar.zst"
+          ls -l "$RUNNER_TEMP/cores-linux.tar.zst"
+          echo "archived=true" >>"$GITHUB_OUTPUT"
+
+      - if: always() && steps.cores.outputs.archived == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: cores-linux
+          path: ${{ runner.temp }}/cores-linux.tar.zst
+          compression-level: 0
+          retention-days: ${{ github.event_name == 'pull_request' && 7 || 30 }}
+
+  # One build reads every set: it compiles while the linux job and
+  # buildomat's helios job take their cores, waits for both, and runs
+  # the suite once over whatever they delivered. A side that delivered
+  # nothing leaves the others read, and fails the job by name after.
+  macos:
+    name: macos
+    runs-on: macos-26
+    # The waits below last as long as the linux job and buildomat do.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.HEAD_SHA }}
+
+      - uses: ./.github/actions/macos-setup
+        with:
+          save: "true"
+
+      # Before any cores arrive: the Mach-O fixture builds and the
+      # bundles extracted from them.
+      - name: Build
+        run: |
+          cargo nextest run --locked --no-run --cargo-profile ci
+          target/ci/examples/build_fixtures
+
+      - id: linux
+        name: Wait for linux
+        continue-on-error: true
+        run: .github/scripts/wait-linux.sh "$RUNNER_TEMP/cores"
+
+      - id: helios
+        name: Wait for helios
+        continue-on-error: true
+        run: .github/scripts/wait-helios.sh "$HEAD_SHA" "$RUNNER_TEMP/cores"
+
+      - name: Sets
+        env:
+          LINUX: ${{ steps.linux.outcome }}
+          HELIOS: ${{ steps.helios.outcome }}
+        run: |
+          sets=()
+          [ "$LINUX" = success ] && sets+=(linux linux-floor)
+          [ "$HELIOS" = success ] && sets+=(illumos)
+          if [ ${#sets[@]} -eq 0 ]; then
+            echo "::error::neither the linux job nor helios delivered cores; see their logs"
+            exit 1
+          fi
+          {
+            echo "HANSEI_CORES=$RUNNER_TEMP/cores"
+            echo "HANSEI_SETS=$(IFS=,; echo "${sets[*]}")"
+          } >>"$GITHUB_ENV"
+
+      # Again, now that there are cores: each set's bundles.
+      - name: Fixtures
+        run: target/ci/examples/build_fixtures
+
+      - name: Test
+        run: cargo nextest run --locked --no-fail-fast --profile ci --cargo-profile ci
+
+      - name: Every set read?
+        if: ${{ !cancelled() }}
+        env:
+          LINUX: ${{ steps.linux.outcome }}
+          HELIOS: ${{ steps.helios.outcome }}
+        run: |
+          missing=0
+          [ "$LINUX" = success ] \
+            || { echo "::error::the linux job delivered no cores, so its sets went unread; see its log"; missing=1; }
+          [ "$HELIOS" = success ] \
+            || { echo "::error::helios delivered no cores, so the illumos set went unread; see its check"; missing=1; }
+          exit "$missing"

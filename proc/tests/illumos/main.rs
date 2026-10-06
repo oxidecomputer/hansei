@@ -110,15 +110,27 @@ impl Parked {
         Self::start(&[])
     }
 
+    fn start(args: &[&str]) -> Self {
+        let mut cmd = Command::new(fixture());
+        cmd.args(args);
+        Self::launch(cmd)
+    }
+
+    /// The target with ASLR off, which starts the break right after the
+    /// executable's .bss, as a system that does not randomize it does.
+    fn spawn_without_aslr() -> Self {
+        let mut cmd = Command::new("psecflags");
+        cmd.args(["-s", "-aslr", "-e"]).arg(fixture());
+        Self::launch(cmd)
+    }
+
     /// Launch the target and block on its stdout until it reports the
     /// LWP ids it parked with.
-    fn start(args: &[&str]) -> Self {
-        let path = fixture();
-        let mut child = Command::new(path)
-            .args(args)
+    fn launch(mut cmd: Command) -> Self {
+        let mut child = cmd
             .stdout(Stdio::piped())
             .spawn()
-            .unwrap_or_else(|e| panic!("failed to launch {}: {e}", path.display()));
+            .unwrap_or_else(|e| panic!("failed to launch {:?}: {e}", cmd.get_program()));
 
         let stdout = child.stdout.take().expect("the child's stdout is piped");
         let mut lines = BufReader::new(stdout).lines();
@@ -307,9 +319,26 @@ fn for_each_target(check: impl Fn(&Reader, &Parked, &str)) {
 /// meant by reading a core.
 #[test]
 fn test_the_portable_reader_agrees_with_libproc() {
+    readers_agree(Parked::spawn());
+}
+
+/// The same with ASLR off, so the heap starts in the mapping that holds
+/// the executable's last .bss page: the one mapping the readers name
+/// differently, which a randomized break never shows.
+#[test]
+fn test_the_readers_agree_where_the_heap_follows_the_bss() {
+    assert!(
+        readers_agree(Parked::spawn_without_aslr()),
+        "with ASLR off, no mapping libproc named held the break"
+    );
+}
+
+/// Hold the portable reader to libproc over a core of `parked`. Says
+/// whether a mapping libproc named held the start of the break, the
+/// one difference allowed.
+fn readers_agree(parked: Parked) -> bool {
     use proc::coredump::illumos::Core;
 
-    let parked = Parked::spawn();
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let core_path = gcore(parked.pid(), dir.path());
 
@@ -450,7 +479,27 @@ fn test_the_portable_reader_agrees_with_libproc() {
         want_maps.iter().filter(|(_, p)| p.is_some()).count() >= 3,
         "libproc named too little for this to be a test: {want_maps:#?}"
     );
-    assert_eq!(named(&portable.mappings().unwrap()), want_maps);
+    // All but the mapping the break starts in. When the break starts
+    // right after the executable's .bss, the heap shares the mapping
+    // that holds the bss's last page: libproc names it by its first
+    // byte, the executable's, while the portable reader names no
+    // mapping an object does not cover whole, so the heap does not read
+    // as the binary. When the break starts elsewhere, no named mapping
+    // overlaps it and nothing is excused.
+    let brk = portable.status().brk_range;
+    let heap = |r: &std::ops::Range<u64>| r.start < brk.end && brk.start < r.end;
+    let got_maps = named(&portable.mappings().unwrap());
+    assert!(
+        got_maps.iter().all(|(r, p)| !heap(r) || p.is_none()),
+        "the portable reader named the heap: {got_maps:#?}"
+    );
+    let excused = want_maps.iter().any(|(r, p)| heap(r) && p.is_some());
+    let want_maps: Vec<_> = want_maps
+        .into_iter()
+        .map(|(r, p)| (r.clone(), p.filter(|_| !heap(&r))))
+        .collect();
+    assert_eq!(got_maps, want_maps);
+    excused
 }
 
 /// Compare two symbol tables and say how they differ, rather than

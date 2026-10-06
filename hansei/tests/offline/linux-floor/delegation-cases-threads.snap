@@ -4,5 +4,5 @@ description: "`threads` over linux-floor/delegation-cases"
 ---
 LWP  NAME  ROLE  TASK  FRAME 0
 1001  —  tokio context, no runtime  —  syscall
-1002  —  block_on caller  —  __syscall_cancel_arch
+1002  —  block_on caller  —  0xA1
 [2 threads]

@@ -14,6 +14,6 @@ lwp 1001 native stack:
 0xA9  std::rt::lang_start::<()>::{closure#0}
 0xA10  std::rt::lang_start_internal
 0xA11  main
-0xA12  __libc_start_call_main
-0xA13  __libc_start_main_impl
+0xA12  
+0xA13  __libc_start_main
 0xA14  _start

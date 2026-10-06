@@ -53,68 +53,18 @@
 
 #![cfg(any(target_os = "linux", target_os = "illumos"))]
 
-use exegesis::extract::{ExtractOptions, extract_file};
 use hansei_bundle::{Bundle, BundleView};
+use hansei_runtime::testkit::accept::{self, Fixtures};
 use hansei_runtime::testkit::cores::{Parked, binary_args, gcore};
 use hansei_runtime::testkit::matrix::{Matrix, Recipe};
 use hansei_runtime::tokio::bundle::Context as BundleContext;
 use proc::Proc;
 
 use std::collections::HashSet;
-use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
-
-const PROGRAMS: &[&str] = &[
-    "simple-await",
-    "nested-await",
-    "dyn-future",
-    "futurelock",
-    "many-tasks",
-    "sleep-join",
-    "unordered",
-    "joinset",
-    "ct-runtime",
-    "local-set",
-    "local-set-timer",
-    "local-set-io",
-    "foreign-runtime",
-    "blocking-pool",
-    "delegation-cases",
-    "spin-poll",
-    "ct-spin",
-    "stale-local",
-    "enum-reprs",
-    "armed-select",
-    "watch-stream",
-    "http-conns",
-    "two-releases",
-    "tls-conns",
-];
-
-fn workspace_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
-}
-
-/// What this cell's bundles are extracted from, for a run reusing what
-/// an earlier one left behind (`testrun::REUSE`): build B of every
-/// program, and the code that reads and writes the bundles.
-fn extracted_from(cell: &Cell) -> String {
-    let root = workspace_root();
-    let dir = root.join("test-programs");
-    let matrix = Matrix::read(&dir);
-    let mut inputs = testrun::Inputs::new();
-    for program in PROGRAMS {
-        inputs.text(&cell.recipe.inputs(&dir, &matrix, program));
-    }
-    inputs
-        .tree(&root.join("exegesis/src"), ".rs")
-        .tree(&root.join("hansei-bundle/src"), ".rs")
-        .file(&root.join("Cargo.lock"));
-    inputs.finish()
-}
 
 /// The matrix cell the suite is running against.
 struct Cell {
@@ -173,83 +123,11 @@ fn spawned(loc: &str) -> String {
     }
 }
 
-struct Fixtures {
-    /// Build A: the binaries that run (and are cored).
-    bin_a: PathBuf,
-    /// Build B: the same programs carrying DWARF, which the bundles
-    /// below were extracted from and which `--debug-info` takes.
-    bin_b: PathBuf,
-    /// Bundles extracted from build B, one per program.
-    bundles: PathBuf,
-}
-
-impl Fixtures {
-    fn program(&self, program: &str) -> PathBuf {
-        self.bin_a.join(program)
-    }
-
-    fn debug_binary(&self, program: &str) -> PathBuf {
-        self.bin_b.join(program)
-    }
-
-    fn bundle(&self, program: &str) -> PathBuf {
-        self.bundles.join(format!("{program}.tinfo"))
-    }
-}
-
-/// Build both fixture compilations and extract every program's bundle,
-/// once per test-suite run.
+/// Both fixture compilations of the cell and every program's bundle,
+/// built and extracted once per test-suite run ([`accept::fixtures`]).
 fn fixtures() -> &'static Fixtures {
     static FIXTURES: OnceLock<Fixtures> = OnceLock::new();
-    FIXTURES.get_or_init(|| {
-        let cell = cell();
-        // Both compilations, once per run and each held to its recipe:
-        // build B is the standard fixture build the extraction goldens
-        // share, build A one of its own without debug info.
-        let bin_a = testrun::fixture::build_a(&cell.recipe, PROGRAMS);
-        let bin_b = testrun::fixture::build_b(&cell.recipe, PROGRAMS);
-        let bundles = workspace_root()
-            .join("test-programs/fixtures/accept")
-            .join(cell.recipe.cell());
-        fs::create_dir_all(&bundles).expect("failed to create the bundle dir");
-
-        // Once per run rather than once per process. Under nextest every
-        // test is its own process, so without this each of them would
-        // re-extract every bundle while the others read the bundles
-        // being written.
-        //
-        // The bundles stamp apart from the builds because they are made
-        // from different things, which only matters to a run reusing
-        // what an earlier one left behind (`testrun::REUSE`): a change
-        // to the extraction side must re-extract without recompiling
-        // the fixtures, and — the case that makes it necessary rather
-        // than tidy — a `cargo mutants` sweep of hansei-bundle mutates
-        // what the bundles are written by, so those must be rebuilt per
-        // mutant while the compilations need not be.
-        testrun::once_per_run(
-            &bundles.join(".bundles"),
-            || extracted_from(cell),
-            || {
-                for program in PROGRAMS {
-                    let opts = ExtractOptions {
-                        extract_args: format!("acceptance-suite extraction of {program}"),
-                        ..Default::default()
-                    };
-                    let (bundle, _stats) = extract_file(&bin_b.join(program), &opts)
-                        .unwrap_or_else(|e| panic!("extraction of {program} failed: {e}"));
-                    bundle
-                        .save(&bundles.join(format!("{program}.tinfo")))
-                        .expect("failed to write the bundle");
-                }
-            },
-        );
-
-        Fixtures {
-            bin_a,
-            bin_b,
-            bundles,
-        }
-    })
+    FIXTURES.get_or_init(|| accept::fixtures(&cell().recipe))
 }
 
 /// A fixture program from build A, running at its parked steady state.
@@ -459,6 +337,9 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
         // Which label the detail lines are under: `awaiting on` or
         // `will wake`, the two that carry any.
         let mut under: Option<&str> = None;
+        // Whether the task printed `awaiting on`, whose lines may all
+        // have been dropped below.
+        let mut awaited = false;
         while let Some(line) = lines.peek() {
             if line.is_empty() || line.starts_with("[Executed against ") {
                 break;
@@ -471,6 +352,15 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 .strip_prefix("    ")
                 .unwrap_or_else(|| panic!("unexpected task line {line:?}"));
             if let Some(detail) = field_line.strip_prefix("    ") {
+                // A waker slot attribution could only call unknown is
+                // not pinned, as [`mask`] does not pin it in a golden:
+                // on a Linux core, with no allocator index to tell a
+                // freed chunk from a live one, a waker a freed chunk
+                // still holds reads as a slot, and whether one is
+                // there is what the allocator reused before the core.
+                if detail.starts_with("unknown @ 0x") {
+                    continue;
+                }
                 match under {
                     Some("awaiting on") => row.wait_lines.push(detail.to_string()),
                     Some("will wake") => row.wake_lines.push(detail.to_string()),
@@ -488,6 +378,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                     .unwrap_or_else(|| panic!("unexpected task line {line:?}")),
             };
             under = matches!(label, "awaiting on" | "will wake").then_some(label);
+            awaited |= label == "awaiting on";
             let field = match label {
                 "state" => &mut row.state,
                 "thread" => &mut row.thread,
@@ -502,10 +393,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 // `will wake` carries no value of its own.
                 "will wake" => {
                     assert!(row.wake_lines.is_empty(), "repeated task field {line:?}");
-                    assert!(
-                        !row.waiting.is_empty() || !row.wait_lines.is_empty(),
-                        "will wake before awaiting on {line:?}"
-                    );
+                    assert!(awaited, "will wake before awaiting on {line:?}");
                     continue;
                 }
                 _ => panic!("unexpected task field {line:?}"),

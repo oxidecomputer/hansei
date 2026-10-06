@@ -28,8 +28,9 @@ touch the floor and primary pins — those advance by hand, deliberately.
 Advancing the primary toolchain edits `rust-toolchain.toml` at the
 repository root in the same commit, since the workspace builds on the
 primary too; a `testrun` test fails while the two differ.
-Toolchains must be installed (`rustup toolchain install <ver>`); missing
-ones make cells *skip*, and a skipped cell proves nothing.
+`add` installs the toolchains, blesses and runs the full matrix in the
+Linux test image, so onboard on an x86_64 Linux host with podman; it
+refuses anywhere else. A cell whose toolchain is missing fails.
 
 ## 2. Classify the release
 
@@ -80,13 +81,14 @@ Never bless first. The un-blessed diff is the review surface.
 1. `cargo nextest run -p exegesis --no-fail-fast` — unit + extraction goldens
    (primary cell). A new family serving the primary pin must leave these
    goldens unchanged unless the render intentionally changed.
-2. `HANSEI_MATRIX=1 cargo nextest run -p hansei-runtime --test matrix` (alone,
-   not under a workspace-wide run) — **read every diverged cell** and
+2. `.github/scripts/in-image.sh env HANSEI_MATRIX=1 cargo nextest run -p
+   hansei-runtime --test matrix` (alone, not under a workspace-wide run;
+   x86_64 Linux) — **read every diverged cell** and
    confirm the diff is exactly what step 2's classification predicts (a
    family split with unchanged rendering diffs only the `family:` header
    line in the affected cells' `formats.snap`).
-3. `HANSEI_MATRIX=1 INSTA_UPDATE=always …`, then a plain re-run proving
-   clean, then `git diff` on the golden dirs as a second look.
+3. `test-programs/matrix.sh bless`, then a plain re-run proving clean,
+   then `git diff` on the golden dirs as a second look.
 4. `cargo clippy -p exegesis -p reify`; `cargo fmt --all` **and**
    `cargo fmt --manifest-path test-programs/Cargo.toml`.
 5. Commit (repo conventions: `exegesis:` / `test-programs:` prefix, why

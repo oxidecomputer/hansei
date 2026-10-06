@@ -229,6 +229,54 @@ pub fn build_a(recipe: &Recipe, programs: &[&str]) -> PathBuf {
     build(&recipe.target_recipe(), programs)
 }
 
+/// Every fixture program, by the names of `test-programs/src/bin`, in
+/// name order: what a step building ahead of the suites builds, so no
+/// suite compiles one while its other tests wait.
+pub fn all_programs() -> Vec<String> {
+    let bin = test_programs_dir().join("src/bin");
+    let mut programs: Vec<String> = std::fs::read_dir(&bin)
+        .unwrap_or_else(|e| panic!("failed to list {}: {e}", bin.display()))
+        .map(|entry| entry.expect("failed to read a fixture source").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .map(|path| path.file_stem().unwrap().to_string_lossy().into_owned())
+        .collect();
+    programs.sort();
+    programs
+}
+
+/// The packed-split build of `program` in the primary cell (`regen.sh
+/// --dwp`), once per run, and the directory holding it: the
+/// skeleton-DWARF binary, with its `.dwp` beside it. It is stamped and
+/// digested apart from the unsplit build of the same sources. Linux
+/// only, where rustc packs a dwp.
+pub fn build_dwp(program: &str) -> PathBuf {
+    let dir = test_programs_dir();
+    let matrix = Matrix::read(&dir);
+    let mut recipe = matrix.primary_recipe();
+    recipe.dwp = true;
+    crate::once_per_run_each(
+        &dir.join("fixtures/.built/dwp"),
+        &[program],
+        |program| recipe.inputs(&dir, &matrix, program),
+        |stale| {
+            // Through bash: a copied tree need not keep the mode bit.
+            let status = std::process::Command::new("bash")
+                .arg(dir.join("regen.sh"))
+                .arg("--dwp")
+                .args(stale)
+                .status()
+                .expect("failed to run regen.sh");
+            assert!(status.success(), "regen.sh --dwp failed for {stale:?}");
+        },
+    );
+    let bin = dir.join("fixtures/bin/dwp");
+    assert!(
+        bin.join(program).exists(),
+        "regen.sh --dwp succeeded but the {program} binary is still missing"
+    );
+    bin
+}
+
 /// Build `programs` exactly as `recipe` says, once per run each, and
 /// hold every one of them to it: `regen.sh` records the settings it
 /// actually built with beside each binary, and a binary whose record

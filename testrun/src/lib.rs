@@ -29,6 +29,16 @@
 //! golden as if it were the truth — because the next run is named
 //! differently.
 //!
+//! # Doing a run's fixture work ahead of it
+//!
+//! Work done before nextest starts has no run id to stamp, so the
+//! suite does it again. And inside the suite, whichever test gets there
+//! first does it while every other test needing it waits, each holding
+//! a test slot nothing else can use. CI does the work up front instead,
+//! in a step of its own, and names the run itself with [`RUN`] in that
+//! step and in the suite alike: the suite then finds every stamp
+//! already its own run's.
+//!
 //! # Reusing fixtures across runs
 //!
 //! Rebuilding every run is a blunt spelling of rebuilding when the
@@ -57,6 +67,21 @@ use std::sync::Mutex;
 /// behind. See the module docs; sweeps set it, people do not.
 pub const REUSE: &str = "HANSEI_REUSE_FIXTURES";
 
+/// Names the run in place of nextest's `NEXTEST_RUN_ID`, so that work
+/// done before the suite starts is stamped as the suite's own. A name
+/// must be new for every run, or the run reads what an earlier one
+/// built; CI sets it, people do not. See the module docs.
+pub const RUN: &str = "HANSEI_RUN_ID";
+
+/// The name of the run this process belongs to: the one [`RUN`] gives,
+/// else the one nextest gave, else none.
+fn run_id() -> Option<String> {
+    std::env::var(RUN)
+        .ok()
+        .filter(|run| !run.is_empty())
+        .or_else(|| std::env::var("NEXTEST_RUN_ID").ok())
+}
+
 /// Run `work` once per test-suite run, guarded by `stamp` and a lock
 /// file beside it.
 ///
@@ -73,7 +98,7 @@ pub const REUSE: &str = "HANSEI_REUSE_FIXTURES";
 /// a fixture that was never built.
 pub fn once_per_run(stamp: &Path, inputs: impl FnOnce() -> String, work: impl FnOnce()) {
     let reuse = std::env::var_os(REUSE).is_some();
-    let value = stamp_value(std::env::var("NEXTEST_RUN_ID").ok(), reuse, inputs);
+    let value = stamp_value(run_id(), reuse, inputs);
     once_stamped(stamp, value, work);
 }
 
@@ -118,7 +143,7 @@ pub fn once_per_run_each(
     work: impl FnOnce(&[&str]),
 ) {
     let reuse = std::env::var_os(REUSE).is_some();
-    let run = std::env::var("NEXTEST_RUN_ID").ok();
+    let run = run_id();
     once_each_stamped(
         dir,
         keys,

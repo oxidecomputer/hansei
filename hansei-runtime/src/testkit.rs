@@ -21,7 +21,9 @@ use proc::{LwpInfo, Target};
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+pub mod accept;
 pub mod canonical;
 pub mod cores;
 pub mod corrupt;
@@ -31,6 +33,44 @@ pub mod heap;
 
 pub use canonical::Canonical;
 pub use fixture::Fixture;
+
+/// Do `work` on every one of `items`, as many at once as the system
+/// has CPUs: for fixture work the suites would otherwise do one item
+/// after another under a lock, coring the programs, while every test
+/// needing it waits. A panic in any `work` is the caller's, once every
+/// item has been tried.
+pub fn parallel<T: Sync>(items: &[T], work: impl Fn(&T) + Sync) {
+    parallel_at(
+        std::thread::available_parallelism().map_or(1, |n| n.get()),
+        items,
+        work,
+    );
+}
+
+/// How many bundles one process extracts at once.
+///
+/// An extraction runs a thread pool as wide as the system on its own,
+/// so a process extracting as many bundles at once as there are CPUs
+/// asks for CPUs squared threads. On a 32-CPU host, under the test
+/// image's 16 GiB address-space limit, that ran out of address space
+/// for their stacks and allocator arenas, and every extraction failed.
+/// Two at once let one's serial phases overlap the other's parallel
+/// ones.
+pub const EXTRACTIONS: usize = 2;
+
+/// [`parallel`], at most `width` at once.
+pub fn parallel_at<T: Sync>(width: usize, items: &[T], work: impl Fn(&T) + Sync) {
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..width.min(items.len()) {
+            scope.spawn(|| {
+                while let Some(item) = items.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    work(item);
+                }
+            });
+        }
+    });
+}
 
 /// Record each of `kinds` on `bundle`'s type as the coroutine kind a
 /// rule of that kind names — what extraction records for a coroutine
@@ -418,11 +458,13 @@ fn mask_times(s: &str) -> String {
 ///   the runtime's clock origin to registration rounded up, plus the
 ///   duration: whether registration fell in the first millisecond is a
 ///   race no readiness wait controls;
-/// - `r11` in a register block, which the `syscall` instruction
-///   overwrites with the flags: a thread parked in a syscall records
-///   either that or the value its previous call left, as the kernel
-///   saves it at whatever point the stop caught the thread, and the
-///   register is caller-saved, so neither is the program's state;
+/// - every register in a register block but `rip` and `rsp`, value and
+///   annotation both: what a parked thread's other registers hold is
+///   whatever the code before its stop left there — `r11` is the flags
+///   or an older value, as the `syscall` instruction caught it — and a
+///   value that is no address can still land in a mapping ASLR placed
+///   under it, so its annotation varies too. Where the thread stopped
+///   (`rip`) and on whose stack (`rsp`) are kept;
 /// - the process's own facts: its pid and parent, the user and group it
 ///   ran as (whoever took the core), start time, the checkout its
 ///   binary ran from (truncated at a length that moves with that path,
@@ -431,10 +473,23 @@ fn mask_times(s: &str) -> String {
 /// - the worker index: which worker held the driver is a race no
 ///   readiness wait controls, so the state is kept and the number not;
 /// - what scheduling and stale stack contents decide: the runtime's
-///   metric counters, the waker sweep's extent and hit counts, the
+///   metric counters, a current-thread scheduler's `MetricsBatch`
+///   counts among them, the waker sweep's extent and hit counts, the
 ///   allocator's cache and slab counts;
+/// - how many I/O registrations wait to be released
+///   (`num_pending_release`): a resource dropped after the driver's
+///   last turn began stays counted until a turn that may never come;
+/// - how much of a stalled TLS writer's output the kernel took before
+///   it refused more (`N written, 1 unsent (N bytes)`): the send buffer
+///   grows by autotuning, at a pace the acknowledgments set, to a size
+///   the host's memory sets. The one unsent record is kept;
 /// - ephemeral ports, and file descriptor numbers, which the kernel
 ///   hands out in the order threads opening sockets at once reach it;
+/// - the tick in a `ScheduledIo`'s `readiness` word, which counts the
+///   readiness events the I/O driver delivered to that resource: whether
+///   the kernel reports a socket's events together or one at a time is
+///   timing, so a capture finds 4 one run and 5 the next. The ready bits
+///   and the shutdown bit beside it are kept;
 /// - runs of spaces inside a line, which move with the width of a
 ///   value beside them.
 pub fn mask_core(s: &str) -> String {
@@ -442,8 +497,9 @@ pub fn mask_core(s: &str) -> String {
     let s = re(r"\b[0-9a-f]{40}\b").replace_all(s, "BUILDID");
     let s = re(r"(?m)^(psargs:\s+).*$").replace_all(&s, "${1}PSARGS");
     let s = re(r"\S*/test-programs/").replace_all(&s, "<test-programs>/");
-    // Before the numbering, so a varying r11 moves no other number.
-    let s = re(r"(?m)^(\s*r11\s+)0x[0-9a-f]+.*$").replace_all(&s, "${1}R11");
+    // Before the numbering, so a varying register moves no other number.
+    let s = re(r"(?m)^(\s*(?:rax|rbx|rcx|rdx|rsi|rdi|rbp|r8|r9|r1[0-5])\s+)0x[0-9a-f]+.*$")
+        .replace_all(&s, "${1}REG");
     let s = first_seen(&s);
     let s = mask_times(&s);
     let s = re(r"\bdeadline: \d+\.\d{3}s").replace_all(&s, "deadline: TS");
@@ -456,14 +512,39 @@ pub fn mask_core(s: &str) -> String {
     let s = re(r"(?m)^(start:\s+).*$").replace_all(&s, "${1}TIME");
     let s = re(r"\bworker \d+\b").replace_all(&s, "worker N");
     let s = re(r"(MetricAtomic\w+ \{\n\s*value: )\d+").replace_all(&s, "${1}N");
-    let s = re(r"\b(busy_duration_total|tick|park_count|park_unpark_count|noop_count): \d+")
-        .replace_all(&s, "$1: N");
+    let s = re(concat!(
+        r"\b(busy_duration_total|tick|park_count|park_unpark_count|noop_count",
+        r"|steal_count|steal_operations|poll_count|poll_count_on_last_park",
+        r"|local_schedule_count|overflow_count|num_pending_release): \d+"
+    ))
+    .replace_all(&s, "$1: N");
+    let s = re(r"\b\d+ written, (\d+) unsent \(\d+ bytes\)")
+        .replace_all(&s, "N written, $1 unsent (N bytes)");
     let s = re(r"[\d.]+ [KMG]?i?B swept in \d+ chunks").replace_all(&s, "N swept in N chunks");
     let s = re(r"(?m)^(\s*(hits|by class|attributed):).*$").replace_all(&s, "$1 N");
     let s = re(r"\(\d+ caches, \d+ slabs\)").replace_all(&s, "(N caches, N slabs)");
     let s = re(r"\b(\d{1,3}(\.\d{1,3}){3}):\d+\b").replace_all(&s, "$1:PORT");
     let s = re(r"\bfd(:?) \d+\b").replace_all(&s, "fd$1 N");
+    let s = mask_io_tick(&s);
     re(r"(\S) {2,}").replace_all(&s, "$1  ").into_owned()
+}
+
+/// The bits of a `ScheduledIo`'s `readiness` word that hold its tick:
+/// bits 16 to 30, between the ready bits and the shutdown bit, in every
+/// tokio the matrix covers (`READINESS`, `TICK` and `SHUTDOWN` in
+/// tokio's `runtime/io/scheduled_io.rs`).
+const IO_TICK: u64 = 0x7fff << 16;
+
+/// Clear the tick bits of every `ScheduledIo`'s `readiness` field, the
+/// field a value of that type prints second ([`mask_core`]), and say so.
+fn mask_io_tick(s: &str) -> String {
+    regex::Regex::new(r"(scheduled_io::ScheduledIo \{\n[^\n]*\n\s*readiness: )(\d+)")
+        .unwrap()
+        .replace_all(s, |caps: &regex::Captures<'_>| {
+            let word: u64 = caps[2].parse().expect("a readiness word is a number");
+            format!("{}{} (tick masked)", &caps[1], word & !IO_TICK)
+        })
+        .into_owned()
 }
 
 /// Every `0x` address in `s`, numbered by first appearance.
@@ -485,9 +566,10 @@ fn first_seen(s: &str) -> String {
         .into_owned()
 }
 
-/// The sets this run reads, in [`FIXTURE_SETS`] order: the ones this
-/// system captures plus any other copied in beside them ([`cores`]) —
-/// on a system that captures none, all of them, each of which must be
+/// The sets this run reads, in [`FIXTURE_SETS`] order: the ones
+/// `HANSEI_SETS` names ([`cores::SETS`]), or else the ones this system
+/// captures plus any other copied in beside them ([`cores`]) — on a
+/// system that captures none, all of them, each of which must be
 /// there. A test walking the sets walks these.
 pub fn fixture_sets() -> &'static [&'static str] {
     static SETS: OnceLock<Vec<&'static str>> = OnceLock::new();
@@ -1656,5 +1738,88 @@ mod tests {
             assert!(!list.is_empty(), "[cells] {name} parsed to nothing");
         }
         assert_eq!(super::matrix::floor(), m.tokio.floor);
+    }
+
+    /// Two captures whose socket saw four readiness events and five
+    /// mask alike, while the ready bits and the shutdown bit still
+    /// show, and a `readiness` field of any other type is left alone.
+    #[test]
+    fn test_the_io_tick_is_masked_and_nothing_else() {
+        let io = |word: u64| {
+            format!(
+                "0x10 -> tokio::runtime::io::scheduled_io::ScheduledIo {{\n  \
+                 linked_list_pointers: core::cell::UnsafeCell<()> {{ .. }} @ 0x10,\n  \
+                 readiness: {word},\n}}\n"
+            )
+        };
+        let four = super::mask_core(&io(4 << 16));
+        assert_eq!(four, super::mask_core(&io(5 << 16)));
+        assert!(four.contains("readiness: 0 (tick masked),"), "{four}");
+
+        let readable_shut = (1 << 31) | (7 << 16) | 1;
+        let masked = super::mask_core(&io(readable_shut));
+        let kept = (1u64 << 31) | 1;
+        assert!(
+            masked.contains(&format!("readiness: {kept} (tick masked),")),
+            "{masked}"
+        );
+
+        let other = "Other {\n  first: 1,\n  readiness: 327680,\n}\n";
+        assert_eq!(super::mask_core(other), other);
+    }
+
+    /// What scheduling and the kernel decide masks alike from one
+    /// capture to the next, and what the program decides beside it
+    /// stays: the batch's `global_queue_interval`, a TLS connection's
+    /// record counts and its one unsent record.
+    #[test]
+    fn test_scheduler_counts_and_a_stalled_writer_are_masked() {
+        let batch = |polls: u64, schedules: u64, pending: u64| {
+            format!(
+                "metrics: MetricsBatch {{\n  steal_count: 0,\n  steal_operations: 0,\n  \
+                 poll_count: {polls},\n  poll_count_on_last_park: {polls},\n  \
+                 local_schedule_count: {schedules},\n  overflow_count: 0,\n}}\n\
+                 global_queue_interval: 31,\nnum_pending_release: {pending},\n"
+            )
+        };
+        let one = super::mask_core(&batch(2, 2, 0));
+        assert_eq!(one, super::mask_core(&batch(3, 1, 1)));
+        assert!(one.contains("poll_count_on_last_park: N,"), "{one}");
+        assert!(one.contains("global_queue_interval: 31,"), "{one}");
+
+        let tls = |written: u64, bytes: u64| {
+            format!(
+                "tls client, established, 1 record read, {written} written, 1 unsent ({bytes} bytes)"
+            )
+        };
+        let masked = super::mask_core(&tls(156, 3432));
+        assert_eq!(masked, super::mask_core(&tls(8, 184)));
+        assert_eq!(
+            masked,
+            "tls client, established, 1 record read, N written, 1 unsent (N bytes)"
+        );
+    }
+
+    /// Two stops in one place whose scratch registers differ — a
+    /// leftover that lands in the heap one run and nowhere the next —
+    /// mask alike; where the thread stopped and on whose stack stay.
+    #[test]
+    fn test_a_register_block_keeps_only_where_the_thread_stopped() {
+        let regs = |r8: &str| {
+            format!(
+                "registers:\n  rip  0x7f00aa10  — __lwp_park +0x14\n  \
+                 rsp  0x7ffe0010  — [ stack tid=1001 ]\n  \
+                 rbx  0x1234  — [ anon ]\n  r8   0x1000000  — {r8}\n  \
+                 r11  0x246\n  r14  0x2000  — [ heap ]\n"
+            )
+        };
+        let one = super::mask_core(&regs("unmapped"));
+        assert_eq!(one, super::mask_core(&regs("[ heap ]")));
+        assert_eq!(
+            one,
+            "registers:\n  rip  0xA1  — __lwp_park +0xA2\n  \
+             rsp  0xA3  — [ stack tid=1001 ]\n  rbx  REG\n  r8  REG\n  \
+             r11  REG\n  r14  REG\n"
+        );
     }
 }

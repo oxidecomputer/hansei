@@ -1,0 +1,26 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# Weekly: fail when tokio or Rust has a release the version matrix
+# (test-programs/matrix.toml) does not cover, naming the
+# `test-programs/matrix.sh add` command for each. It edits nothing;
+# onboarding is the onboard-tokio-release skill's.
+
+name: matrix canary
+
+on:
+  schedule:
+    - cron: "41 14 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    name: matrix.sh update
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: test-programs/matrix.sh update

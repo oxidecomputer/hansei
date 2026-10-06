@@ -1,0 +1,76 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# The version-matrix goldens, every cell (or those whose names contain
+# the filter), in the Linux test image (.github/image/), whose rendering
+# they are. Dispatched by hand rather than run on every pull request:
+# a cold run builds tokio and std for every cell and takes most of an
+# hour, which a project this size does not need per change. A change
+# that moves the goldens blesses them first (test-programs/matrix.sh
+# bless); this is the check that they are right.
+
+name: matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      cells:
+        description: Run the cells whose names contain this ("1" for all)
+        default: "1"
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  matrix:
+    name: matrix
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: image
+        uses: ./.github/actions/linux-image
+        with:
+          cache: matrix
+
+      # Each cell's build dir; the cells sharing a (toolchain, cfg) pair
+      # share one. The workspace build is not cached: the suite is one
+      # test binary, and the cells are what take the time.
+      - uses: actions/cache@v6
+        with:
+          path: test-programs/fixtures/cells
+          key: cells-${{ steps.image.outputs.image }}-${{ hashFiles('test-programs/matrix.toml', 'test-programs/Cargo.lock', 'test-programs/locks/*.lock') }}
+          restore-keys: cells-${{ steps.image.outputs.image }}-
+
+      # Every toolchain the matrix names, before anything runs: the
+      # suite fails a cell whose toolchain is missing, and this makes
+      # that a failure to install, named as one.
+      - name: Toolchains
+        run: |
+          read -ra toolchains <<<"$(sed -n '/^\[toolchain\]/,/^\[/s/^versions *= *\[\(.*\)\]/\1/p' \
+            test-programs/matrix.toml | tr -d '",')"
+          echo "toolchains: ${toolchains[*]}"
+          [ ${#toolchains[@]} -gt 0 ]
+          # shellcheck disable=SC2016 # expanded by the image's shell
+          .github/scripts/in-image.sh sh -ec \
+            'for tc; do rustup toolchain install --profile minimal "$tc"; done' \
+            sh "${toolchains[@]}"
+
+      - name: Test
+        env:
+          CELLS: ${{ inputs.cells }}
+        run: |
+          .github/scripts/in-image.sh env HANSEI_MATRIX="$CELLS" \
+            cargo nextest run --locked --no-fail-fast --profile ci --cargo-profile ci -p hansei-runtime --test matrix
+
+      - name: Disk
+        if: always()
+        run: df -h / "${{ steps.image.outputs.scratch }}"

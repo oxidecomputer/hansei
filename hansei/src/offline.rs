@@ -686,9 +686,10 @@ fn outputs<T: proc::Target>(
 
 /// The canonical renaming renames and does nothing else. Over the
 /// programs whose captures race most — spawns inside hyper and reqwest,
-/// a second runtime, a blocking pool, a semaphore's queue — every
-/// command's output over a [`testkit::Canonical`] target, with its lwp
-/// and task ids mapped back to the real ones, is the output over the
+/// a second runtime, a blocking pool, a semaphore's queue, local sets —
+/// every command's output over a [`testkit::Canonical`] target, with its
+/// lwp, task, thread and owned-list ids mapped back to the real ones,
+/// is the output over the
 /// target underneath, word for word. The comparison ignores the order
 /// of lines and of the words in a line, which a renaming moves (every
 /// listing and every list inside a line is in id order, and a column is
@@ -732,6 +733,7 @@ fn test_the_canonical_renaming_changes_only_names() {
             "futurelock",
             "blocking-pool",
             "walk-shapes",
+            "local-set",
         ] {
             let (bundle, fixture) = testkit::load(set, program);
             let core = &fixture.0;
@@ -742,6 +744,14 @@ fn test_the_canonical_renaming_changes_only_names() {
                 core.task_renaming().to_vec(),
             );
             assert!(!tasks.is_empty(), "[{set}] {program}: no task was renamed");
+            // The counter-given ids the overlay renames besides task
+            // ids, each space's numbers clear of the others'.
+            let ids: Vec<(u64, u64)> = core
+                .thread_renaming()
+                .iter()
+                .chain(core.owned_renaming())
+                .copied()
+                .collect();
             let undo_line = |text: &str| {
                 if facts.is_match(text) {
                     return text.to_owned();
@@ -753,7 +763,8 @@ fn test_the_canonical_renaming_changes_only_names() {
                             .iter()
                             .find(|(_, c)| u64::from(*c) == n)
                             .map(|(r, _)| u64::from(*r))
-                            .or_else(|| tasks.iter().find(|(_, c)| *c == n).map(|(r, _)| *r));
+                            .or_else(|| tasks.iter().find(|(_, c)| *c == n).map(|(r, _)| *r))
+                            .or_else(|| ids.iter().find(|(_, c)| *c == n).map(|(r, _)| *r));
                         match real {
                             Some(real) => format!("{}{real}", &caps[1]),
                             None => caps[0].to_owned(),

@@ -5,12 +5,14 @@
 #
 # tokio lists the floor plus the latest patch of every minor above it
 # (patch releases essentially never move internal layouts; a new patch
-# bumps its minor's pin in place). Toolchain patches are listed
-# individually, since a point release can change codegen and DWARF
-# output; retirement keeps at most two patches per supported minor.
-# The floors advance deliberately, tracking what deployed targets
-# actually run; retiring an entry deletes its lockfile, cells, and
-# goldens in the same change that edits this file.
+# bumps its minor's pin in place). The toolchains follow the same rule:
+# the latest patch of each supported minor, a new patch replacing its
+# minor's pin. A point release is unlikely to move codegen or DWARF
+# output in a way that matters, and a target can be expected to come
+# from its minor's latest patch; an earlier patch of a supported minor
+# is supported, but untested. The floors advance deliberately, tracking
+# what deployed targets actually run; retiring an entry deletes its
+# lockfile, cells, and goldens in the same change that edits this file.
 #
 # The primary cell is what test-programs/Cargo.lock resolves, built on
 # the primary toolchain — the default regen.sh build, the existing
@@ -19,7 +21,7 @@
 # lock with `cargo update -p tokio --precise <ver>` so only tokio and
 # its dependents move.
 
-primary = { tokio = "1.52.4", toolchain = "1.98.0" }
+primary = { tokio = "1.52.4", toolchain = "1.98.1" }
 
 [tokio]
 floor = "1.47.5"
@@ -29,8 +31,8 @@ floor = "1.47.5"
 versions = ["1.47.5", "1.48.0", "1.49.0", "1.50.0", "1.51.4", "1.52.4", "1.53.1"]
 
 [toolchain]
-floor = "1.97.0"
-versions = ["1.97.0", "1.97.1", "1.98.0"]
+floor = "1.97.1"
+versions = ["1.97.1", "1.98.1"]
 
 # Which cells the trim policy actually builds, so "the matrix" is
 # enumerable by tooling rather than implied by prose. The tokio axis is

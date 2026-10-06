@@ -206,6 +206,51 @@ fn test_a_task_list_cycle_is_caught() {
     );
 }
 
+/// A blocking queue whose capacity reaches past mapped memory is
+/// refused before its slots are walked: the ring is one allocation, so
+/// a capacity no mapping holds is a word that lies, and walking it slot
+/// by slot once ran a sweep out of memory.
+#[test]
+fn test_a_blocking_queue_capacity_past_its_mapping_is_refused() {
+    let (bundle, core) = load_any("blocking-pool");
+    let ctx = Context::new(&core, BundleView::new(&bundle)).expect("the core has mappings");
+    let lwps = core.lwps().expect("the core records lwps");
+    let workers = ctx.find_workers(&lwps).expect("the fixture runs tokio");
+    let runtime = ctx
+        .find_runtimes(&workers)
+        .expect("a runtime")
+        .into_iter()
+        .next()
+        .expect("a runtime");
+    let queue = ctx
+        .walk(WalkRole::BlockingQueue)
+        .walk_at(runtime.handle)
+        .expect("the runtime has a blocking queue");
+    let word = |role| ctx.walk(role).walk_at(queue).unwrap().addr;
+
+    // One queued slot, so the walk does not stop at an empty queue, in
+    // a ring far larger than the address space holds.
+    let corrupt = Corrupt::new(&core)
+        .patch(word(WalkRole::BlockingQueueLen), 1)
+        .patch(word(WalkRole::BlockingQueueCap), 1 << 40);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+    let mut e = testkit::try_enumerate(&ctx, &corrupt).expect("the tasks still list");
+    e.discover(&ctx, &[]);
+
+    let errs: Vec<String> = e.list.errors.iter().map(|e| format!("{e:#}")).collect();
+    assert!(
+        errs.iter().any(
+            |e| e.contains(&format!("the blocking queue's {} slots at", 1u64 << 40))
+                && e.contains("are not all mapped")
+        ),
+        "{errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("blocking-queue slot")),
+        "a slot was walked: {errs:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Stage and chain
 // ---------------------------------------------------------------------------

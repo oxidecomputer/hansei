@@ -43,6 +43,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 
+mod settle;
+
 /// Where the fixture-reading tests keep their cores, the sets this
 /// system takes captured into it first: the directory this names, or
 /// `test-programs/fixtures/cores` in the tree under test when it names
@@ -67,14 +69,38 @@ pub const CAPTURED: &[&str] = if cfg!(target_os = "linux") {
     &[]
 };
 
-/// The sets a run reads cores of: on a system that captures, its own
-/// and any other already in [`dir`]; elsewhere every set, each of which
-/// must be there.
+/// Names the sets a run reads, comma-separated, in place of the ones
+/// [`sets`] would choose. For a run that holds only some sets' cores on
+/// purpose: CI's macOS job names the sets whose cores arrived, so a
+/// capturing system that delivered none leaves the others read.
+pub const SETS: &str = "HANSEI_SETS";
+
+/// The sets a run reads cores of: those [`SETS`] names, if it names
+/// any; otherwise, on a system that captures, its own and any other
+/// already in [`dir`], and elsewhere every set. Each set read must be
+/// there, or be one this system captures.
 pub fn sets(dir: &Path) -> Vec<&'static str> {
+    if let Some(named) = std::env::var(SETS).ok().filter(|named| !named.is_empty()) {
+        return named_sets(&named);
+    }
     FIXTURE_SETS
         .iter()
         .copied()
         .filter(|set| CAPTURED.is_empty() || CAPTURED.contains(set) || dir.join(set).is_dir())
+        .collect()
+}
+
+/// The sets a [`SETS`] value names, in [`FIXTURE_SETS`] order. Panics
+/// on a name that is no set, rather than read fewer sets than meant.
+fn named_sets(named: &str) -> Vec<&'static str> {
+    let named: Vec<&str> = named.split(',').map(str::trim).collect();
+    if let Some(unknown) = named.iter().find(|set| !FIXTURE_SETS.contains(set)) {
+        panic!("{SETS} names {unknown:?}, which is not one of {FIXTURE_SETS:?}");
+    }
+    FIXTURE_SETS
+        .iter()
+        .copied()
+        .filter(|set| named.contains(set))
         .collect()
 }
 
@@ -186,7 +212,11 @@ fn missing(dir: &Path, set: &str, program: &str) -> ! {
 }
 
 /// Capture every program of `set` this run has not, once per run.
-fn take(dir: &Path, set: &str) {
+///
+/// The programs are cored at once, as many as there are CPUs: each
+/// capture is mostly waiting, on its program reaching its marker and on
+/// `gcore`, and futurelock's alone holds its marker back for seconds.
+pub fn take(dir: &Path, set: &str) {
     let recipe = recipe(set);
     let stamps = dir.join(".stamps").join(set);
     testrun::once_per_run_each(
@@ -196,9 +226,7 @@ fn take(dir: &Path, set: &str) {
         |stale| {
             let bin_a = testrun::fixture::build_a(&recipe, PROGRAMS);
             let bin_b = testrun::fixture::build_b(&recipe, PROGRAMS);
-            for &program in stale {
-                take_one(dir, set, program, &bin_a, &bin_b);
-            }
+            super::parallel(stale, |program| take_one(dir, set, program, &bin_a, &bin_b));
         },
     );
 }
@@ -247,6 +275,9 @@ fn take_one(dir: &Path, set: &str, program: &str, bin_a: &Path, bin_b: &Path) {
 /// Copy every library `proc` maps into `sysroot` at its recorded path,
 /// replacing by rename so a reader of an earlier copy keeps its file.
 /// The executable is left out: it is read from the copy of build A.
+///
+/// A set's programs are captured at once and map the same libraries,
+/// so each copy goes through a file of its own before the rename.
 fn sysroot(proc: &Proc, sysroot: &Path) {
     let exec = proc.exec_name().expect("the core names its executable");
     let mappings = proc.mappings().expect("the core lists its mappings");
@@ -259,10 +290,12 @@ fn sysroot(proc: &Proc, sysroot: &Path) {
     files.dedup();
     for file in files {
         let to = sysroot.join(file.trim_start_matches('/'));
-        fs::create_dir_all(to.parent().unwrap()).expect("failed to create a sysroot dir");
-        let tmp = to.with_extension(format!("tmp{}", std::process::id()));
-        fs::copy(file, &tmp).unwrap_or_else(|e| panic!("failed to copy {file}: {e}"));
-        fs::rename(&tmp, &to).expect("failed to install a sysroot library");
+        let parent = to.parent().unwrap();
+        fs::create_dir_all(parent).expect("failed to create a sysroot dir");
+        let tmp = tempfile::NamedTempFile::new_in(parent).expect("failed to create a sysroot file");
+        fs::copy(file, tmp.path()).unwrap_or_else(|e| panic!("failed to copy {file}: {e}"));
+        tmp.persist(&to)
+            .expect("failed to install a sysroot library");
     }
 }
 
@@ -360,15 +393,22 @@ pub fn marker(program: &str) -> &'static str {
     }
 }
 
+/// The fixtures that spin on purpose, a task caught mid-poll forever:
+/// no thread of theirs ever sleeps through two passes, so they are
+/// cored at their marker, which they print from inside the spin.
+const SPINNING: &[&str] = &["spin-poll", "ct-spin"];
+
 /// A fixture program from build A, running at its parked steady state.
 pub struct Parked {
     child: Child,
 }
 
 impl Parked {
-    /// Launch `binary`, the build of `program`, and block on its stdout
-    /// until the readiness marker: from that line on, the state under
-    /// inspection is stable. There are no timing sleeps anywhere.
+    /// Launch `binary`, the build of `program`, block on its stdout
+    /// until the readiness marker, and then until every one of its
+    /// threads is asleep ([`settle::settle`]), the marker's own among
+    /// them: from then on, the state under inspection is stable. There
+    /// are no timing sleeps anywhere.
     pub fn spawn(binary: &Path, program: &str) -> Self {
         let marker = marker(program);
         // An empty environment: the target's is in its core, and the
@@ -391,9 +431,13 @@ impl Parked {
             }
         }
         // Keep draining stdout so the child can never block on a full
-        // pipe.
+        // pipe, the wait below included.
         thread::spawn(move || lines.for_each(drop));
-        Self { child }
+        let parked = Self { child };
+        if !SPINNING.contains(&program) {
+            settle::settle(parked.pid(), program);
+        }
+        parked
     }
 
     pub fn pid(&self) -> u32 {
@@ -445,7 +489,7 @@ pub fn binary_args(core: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FIXTURE_SETS, PROGRAMS, record, record_in};
+    use super::{FIXTURE_SETS, PROGRAMS, named_sets, record, record_in};
 
     use testrun::fixture::test_programs_dir;
 
@@ -505,5 +549,28 @@ mod tests {
         fs::write(&source, text).unwrap();
         assert_ne!(record_in(&alone, "linux", changed), before.0);
         assert_eq!(record_in(&alone, "linux", other), before.1);
+    }
+
+    /// A run told which sets to read reads those, in the usual order,
+    /// however the value lists them.
+    #[test]
+    fn test_named_sets_are_read_in_set_order() {
+        assert_eq!(named_sets("illumos"), ["illumos"]);
+        assert_eq!(
+            named_sets("linux-floor, linux,linux"),
+            ["linux", "linux-floor"]
+        );
+        assert_eq!(
+            named_sets("linux-floor,illumos,linux"),
+            ["illumos", "linux", "linux-floor"]
+        );
+    }
+
+    /// A name that is no set fails the run rather than leave a set
+    /// unread.
+    #[test]
+    #[should_panic(expected = "names \"linux-flor\"")]
+    fn test_a_named_set_that_does_not_exist_fails() {
+        named_sets("linux,linux-flor");
     }
 }

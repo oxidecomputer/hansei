@@ -219,6 +219,9 @@ const REG_GSBASE: usize = 27;
 const AT_PHDR: u64 = 3;
 const AT_PHENT: u64 = 4;
 const AT_PHNUM: u64 = 5;
+/// The path the kernel executed, whole, as a string in the process's
+/// own memory: what libproc's `Pexecname` reads first too.
+const AT_SUN_EXECNAME: u64 = 2014;
 
 /// `r_debug` and `Link_map` from `<sys/link.h>`, whose offsets the
 /// `libproc-sys` bindings assert.
@@ -511,6 +514,15 @@ impl Core {
         core_file.facts = psinfo
             .as_deref()
             .map(|desc| core_file.process_facts_from(desc));
+        // `pr_psargs` holds the command line only as far as its 80
+        // bytes go, so a long path is cut short there. The auxiliary
+        // vector points at the whole of it, in memory the dump carries.
+        if let Some(name) = auxv
+            .get(&AT_SUN_EXECNAME)
+            .and_then(|&at| core_file.read_cstr(at))
+        {
+            core_file.exec = Some(name);
+        }
 
         // The link map lives in the target's memory, so it can only be
         // walked once the segments are readable. So are the program
@@ -2250,6 +2262,33 @@ mod tests {
             .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
             .proc();
         assert!(p.exec_name().is_err());
+    }
+
+    /// A path longer than `pr_psargs` holds is read whole from where
+    /// `AT_SUN_EXECNAME` points, not cut at the field's 80 bytes; a
+    /// pointer the dump does not serve leaves the command line's word.
+    #[test]
+    fn test_the_executable_is_named_whole_from_the_auxiliary_vector() {
+        let long = format!("/{}/prog", "d".repeat(90));
+        let mut data = vec![0u8; PAGE as usize];
+        data[0x100..0x100 + long.len()].copy_from_slice(long.as_bytes());
+        let core = |execname: u64| {
+            CoreBuilder::default()
+                .thread(1, regs_at(0, 0x9000))
+                .psargs(&format!("{long} --flag"))
+                .auxv(AT_SUN_EXECNAME, execname)
+                .dumped(0x8000, PF_R | PF_W, data.clone())
+                .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+                .proc()
+        };
+
+        let (_dir, p) = core(0x8100);
+        assert_eq!(p.exec_name().unwrap(), PathBuf::from(&long));
+
+        let (_dir, p) = core(0xdead_0000);
+        let cut = p.exec_name().unwrap();
+        assert!(long.starts_with(cut.to_str().unwrap()), "{cut:?}");
+        assert!(cut.as_os_str().len() < long.len(), "{cut:?}");
     }
 
     /// The psinfo's identity fields decode whole, and the argv/envp

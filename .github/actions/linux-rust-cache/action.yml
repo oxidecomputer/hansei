@@ -1,0 +1,61 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+name: linux rust cache
+description: >
+  Restore the dependency builds of the workspace and of the fixture
+  programs that a Linux job builds in the test image, and save them at
+  the end of the job, through Swatinem/rust-cache. Use after the
+  linux-image action, whose image it runs cargo in.
+
+inputs:
+  image:
+    description: The pinned image, by digest (the linux-image action's output).
+    required: true
+  save:
+    description: Whether to save the cache when this job missed it.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # Every cargo workspace the job builds, with its target dir. The
+    # workspace's own is target/container, which in-image.sh mounts
+    # over the image's target/; the fixture programs build in the
+    # primary cell's three dirs (regen.sh, --dwp and build A) and in
+    # the linux-floor set's cell, from a copy of the crate carrying the
+    # floor's lockfile. That cell is named for the primary toolchain.
+    - id: dirs
+      shell: bash
+      run: |
+        tc=$(sed -n 's/^primary = .*toolchain = "\([^"]*\)".*/\1/p' test-programs/matrix.toml)
+        [ -n "$tc" ] || { echo "::error::no primary toolchain in test-programs/matrix.toml"; exit 1; }
+        cell=test-programs/fixtures/cells/rust-$tc-unstable/crate
+        {
+          echo 'workspaces<<EOF'
+          echo '. -> target/container'
+          echo 'test-programs -> fixtures/target'
+          echo 'test-programs -> fixtures/target-a'
+          echo 'test-programs -> fixtures/target-dwp'
+          echo "$cell -> ../target"
+          echo "$cell -> ../target-a"
+          echo 'EOF'
+        } >>"$GITHUB_OUTPUT"
+
+    # It keeps the artifacts of every crate outside a workspace and drops
+    # the rest — the workspace's crates, test binaries, examples, the
+    # fixture programs — which a checkout's fresh mtimes rebuild on
+    # every run anyway. cargo runs in the image, so the dependency lists
+    # come from the lockfiles the builds used. The registry it would
+    # also cache is the runner's own ~/.cargo, which nothing here uses:
+    # the image's crate downloads are linux-image's cache. A failing test
+    # leaves those builds as good as a passing one, so a red run saves
+    # them too.
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        shared-key: linux-${{ inputs.image }}-${{ hashFiles('test-programs/matrix.toml', 'test-programs/locks/*.lock') }}
+        save-if: ${{ inputs.save }}
+        cache-on-failure: "true"
+        cmd-format: ${{ github.workspace }}/.github/scripts/in-image.sh {0}
+        workspaces: ${{ steps.dirs.outputs.workspaces }}

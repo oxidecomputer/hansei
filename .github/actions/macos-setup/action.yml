@@ -1,0 +1,60 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+name: macos setup
+description: >
+  The toolchain, cargo-nextest and build caches for a macOS check.
+  The job selects its Xcode through DEVELOPER_DIR: the Mach-O fixture
+  builds feed the extraction goldens and the bundle-only tests, and a
+  new linker can change which identical functions it folds, so
+  changing Xcode (or the runner image's macOS) is a deliberate step,
+  like a Linux image bump.
+
+inputs:
+  save:
+    description: >
+      Whether to save the build caches when this job missed them. One
+      macOS job saves; two saving one key would race, and whichever won
+      would decide what the other restores.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Versions
+      shell: bash
+      run: |
+        sw_vers
+        xcodebuild -version
+        cargo --version
+        rustc --version
+        df -h "$GITHUB_WORKSPACE"
+
+    - name: cargo-nextest
+      shell: bash
+      env:
+        NEXTEST_VERSION: 0.9.143
+        NEXTEST_SHA256: 4830d430411148d17602a75cc880bfb4dc8dac153dea59a48a2ef4cc93577f07
+      run: |
+        curl -sSfL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/nextest.tar.gz" \
+          "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$NEXTEST_VERSION/cargo-nextest-$NEXTEST_VERSION-universal-apple-darwin.tar.gz"
+        echo "$NEXTEST_SHA256  $RUNNER_TEMP/nextest.tar.gz" | shasum -a 256 -c -
+        tar -xzf "$RUNNER_TEMP/nextest.tar.gz" -C "$HOME/.cargo/bin" cargo-nextest
+        cargo nextest --version
+
+    # The dependency builds of the workspace and of the Mach-O fixture
+    # builds, and the crates downloaded for them. rust-cache drops the
+    # workspace's crates, test binaries and the fixture programs
+    # themselves, which a checkout's fresh mtimes rebuild every run. A
+    # failing test leaves those builds as good as a passing one, so a
+    # red run saves them too.
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        shared-key: macos-${{ env.DEVELOPER_DIR }}-${{ hashFiles('test-programs/matrix.toml', 'test-programs/locks/*.lock') }}
+        save-if: ${{ inputs.save }}
+        cache-on-failure: "true"
+        cache-bin: "false"
+        workspaces: |
+          . -> target
+          test-programs -> fixtures/target

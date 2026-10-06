@@ -51,7 +51,7 @@
 
 set -euo pipefail
 
-PRIMARY_TOOLCHAIN=1.98.0
+PRIMARY_TOOLCHAIN=1.98.1
 ALL_PROGRAMS=(futurelock simple-await nested-await dyn-future select-combinator many-tasks sleep-join channels park-target core-target unordered joinset ct-runtime local-set local-set-timer local-set-io foreign-runtime gen-0007 walk-shapes spin-poll ct-spin stale-local blocking-pool enum-reprs delegation-cases armed-select watch-stream http-conns two-releases tls-conns)
 
 cd "$(dirname "$0")"
@@ -176,8 +176,11 @@ bins=()
 for p in "${PROGRAMS[@]}"; do
     bins+=(--bin "$p")
 done
+# FEATURES is empty for the default build. macOS's /bin/bash is 3.2,
+# which under `set -u` calls an empty array unbound, so it expands
+# through the form that only expands what is there.
 (cd "$CRATE_DIR" && \
-    cargo "+$TOOLCHAIN" build --locked --release "${FEATURES[@]}" "${bins[@]}")
+    cargo "+$TOOLCHAIN" build --locked --release ${FEATURES[@]+"${FEATURES[@]}"} "${bins[@]}")
 
 mkdir -p "$BIN_DIR"
 
@@ -187,10 +190,21 @@ mkdir -p "$BIN_DIR"
 # bytes under another process's live mapping, which reads as a corrupt
 # binary or a parse that disagrees with itself. A rename replaces the
 # directory entry instead, so a reader keeps the file it opened.
+#
+# The file renamed in is a hard link to the build, not a copy, which
+# would double the disk every fixture build takes. That is the same
+# file only until the next build: cargo and the linkers write each
+# output as a new file and then replace the old one (checked on Linux,
+# illumos and macOS), so a rebuild leaves an installed link holding the
+# bytes it was installed with. A copy remains the fallback, for a
+# target dir on another filesystem. A build that did not change is
+# still the installed file, and is left alone: renaming a link onto
+# the file it links is an error to mv.
 install() {
     local src="$1" dst="$2"
+    [ "$src" -ef "$dst" ] && return
     mkdir -p "$(dirname "$dst")"
-    cp -f "$src" "$dst.tmp$$"
+    ln -f "$src" "$dst.tmp$$" 2>/dev/null || cp -f "$src" "$dst.tmp$$"
     mv -f "$dst.tmp$$" "$dst"
 }
 

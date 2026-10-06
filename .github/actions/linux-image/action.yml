@@ -1,0 +1,83 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+name: linux image
+description: >
+  Gather the cores and toolchains in one directory, pull the pinned
+  Linux test image, and restore the toolchains and crate downloads
+  .github/scripts/in-image.sh mounts into it.
+
+inputs:
+  cache:
+    description: >
+      Which job's toolchain cache to restore: each job installs its own
+      toolchains, and sharing one entry would make whichever job saved
+      it first decide what the others restore.
+    required: true
+  save:
+    description: Whether to save the cache when this job missed it.
+    default: "true"
+
+outputs:
+  image:
+    description: The pinned image, by digest.
+    value: ${{ steps.pinned.outputs.image }}
+  scratch:
+    description: >
+      The directory holding the cores and the toolchain cache.
+    value: ${{ steps.scratch.outputs.dir }}
+
+runs:
+  using: composite
+  steps:
+    # One directory for what a run writes outside the checkout — the
+    # cores, the toolchains — so the disk report covers it. The
+    # workspace and fixture builds stay in the checkout, where
+    # in-image.sh builds by default, because Swatinem/rust-cache finds a
+    # workspace's target dir only beneath it. The environment this sets
+    # reaches in-image.sh in every later step.
+    - id: scratch
+      shell: bash
+      run: |
+        dir=$RUNNER_TEMP/hansei
+        mkdir -p "$dir"
+        {
+          echo "HANSEI_IMAGE_CACHE=$dir/image-cache"
+          echo "HANSEI_CORES=$dir/cores"
+        } >>"$GITHUB_ENV"
+        echo "dir=$dir" >>"$GITHUB_OUTPUT"
+        df -h / "$dir"
+
+    - id: pinned
+      shell: bash
+      run: |
+        image=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' .github/image/pinned | head -1)
+        if [ -z "$image" ] || [ "$image" = unpinned ]; then
+          echo "::error file=.github/image/pinned::no Linux test image is pinned (see .github/image/Containerfile)"
+          exit 1
+        fi
+        echo "image=$image" >>"$GITHUB_OUTPUT"
+
+    # A package GHCR has just created is private; the job's token can
+    # read it either way.
+    - shell: bash
+      env:
+        TOKEN: ${{ github.token }}
+      run: |
+        podman login ghcr.io -u "${{ github.actor }}" --password-stdin <<<"$TOKEN"
+        podman pull -q "${{ steps.pinned.outputs.image }}"
+
+    - if: inputs.save == 'true'
+      uses: actions/cache@v6
+      with:
+        path: ${{ steps.scratch.outputs.dir }}/image-cache
+        key: image-${{ inputs.cache }}-${{ hashFiles('rust-toolchain.toml', 'test-programs/matrix.toml', 'Cargo.lock', 'test-programs/Cargo.lock', 'test-programs/locks/*.lock') }}
+        restore-keys: image-${{ inputs.cache }}-
+
+    - if: inputs.save != 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ steps.scratch.outputs.dir }}/image-cache
+        key: image-${{ inputs.cache }}-${{ hashFiles('rust-toolchain.toml', 'test-programs/matrix.toml', 'Cargo.lock', 'test-programs/Cargo.lock', 'test-programs/locks/*.lock') }}
+        restore-keys: image-${{ inputs.cache }}-

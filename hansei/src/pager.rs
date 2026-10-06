@@ -208,7 +208,9 @@ impl Write for PagerSink {
 /// than `SIG_IGN`: an ignored signal is inherited across `exec`, and
 /// the pager must still receive its own.
 struct Interrupts {
-    previous: libc::sigaction,
+    /// Boxed: on Linux a `sigaction` carries a 128-byte signal set,
+    /// which would make every [`State`] the size of a running pager's.
+    previous: Box<libc::sigaction>,
 }
 
 extern "C" fn disregard(_: libc::c_int) {}
@@ -224,8 +226,8 @@ impl Interrupts {
             let mut action: libc::sigaction = std::mem::zeroed();
             action.sa_sigaction = disregard as extern "C" fn(libc::c_int) as usize;
             action.sa_flags = libc::SA_RESTART;
-            let mut previous: libc::sigaction = std::mem::zeroed();
-            libc::sigaction(libc::SIGINT, &action, &mut previous);
+            let mut previous: Box<libc::sigaction> = Box::new(std::mem::zeroed());
+            libc::sigaction(libc::SIGINT, &action, &mut *previous);
             Self { previous }
         }
     }
@@ -236,7 +238,7 @@ impl Drop for Interrupts {
         // SAFETY: `previous` is what `sigaction` filled in when the
         // handler was installed, and is restored whole.
         unsafe {
-            libc::sigaction(libc::SIGINT, &self.previous, std::ptr::null_mut());
+            libc::sigaction(libc::SIGINT, &*self.previous, std::ptr::null_mut());
         }
     }
 }

@@ -82,3 +82,34 @@ zstd-sys = "2.0"
 [profile.dev.package."*"]
 opt-level = 2
 debug = "line-tables-only"
+
+# CI's test builds: the dev profile with line tables only for the
+# workspace crates too. Full debug info is most of every test binary,
+# and there are a few dozen test binaries, each linking the workspace;
+# CI runs out of disk long before it needs a debugger. exegesis and
+# hansei keep full debug info, since their tests read their own
+# binary's DWARF.
+#
+# exegesis and hansei-bundle, which write every bundle, are optimized:
+# a Linux run extracts some ninety bundles before its suite starts. CI
+# compiles the workspace crates afresh every run, so optimizing any
+# more of them costs more compile time than the tests win back.
+# Measured on four CPUs, build, fixtures and suite take 176 s with
+# these two optimized, 195 s with none, and 220 s with every crate.
+[profile.ci]
+inherits = "dev"
+debug = "line-tables-only"
+
+[profile.ci.package."*"]
+opt-level = 2
+debug = "line-tables-only"
+
+[profile.ci.package.exegesis]
+opt-level = 1
+debug = "full"
+
+[profile.ci.package.hansei-bundle]
+opt-level = 1
+
+[profile.ci.package.hansei]
+debug = "full"
