@@ -103,7 +103,7 @@ impl Releases {
     }
 
     /// The range a version outside the review is told it misses: what
-    /// was read of its own minor — `1.51.0-1.51.4` for an unread 1.51.5,
+    /// was read of its own minor — `1.51.0-1.51.5` for an unread 1.51.6,
     /// `1.52.1-1.52.4` for a 1.52.0 left out — else, past every span,
     /// the whole range, and between two spans of other minors the one
     /// below it.
@@ -2135,7 +2135,7 @@ pub const TOKIO_RELEASES: Releases = Releases(&[
     ((1, 48, 0), (1, 48, 0)),
     ((1, 49, 0), (1, 49, 0)),
     ((1, 50, 0), (1, 50, 0)),
-    ((1, 51, 0), (1, 51, 4)),
+    ((1, 51, 0), (1, 51, 5)),
     ((1, 52, 0), (1, 52, 0)),
     ((1, 52, 1), (1, 52, 4)),
     ((1, 53, 0), (1, 53, 1)),
@@ -3682,13 +3682,17 @@ pub struct StateProtocol {
 /// `batch_semaphore::Acquire`'s protocol, tokio 1.47 through 1.53
 /// (`sync/batch_semaphore.rs`, unchanged across the range but for the
 /// queue's type alias, the closed bit surviving `forget_permits`'
-/// compare-exchange from 1.53, and the trace hook's signature):
-/// `Acquire::poll` forwards to `poll_acquire` with the node embedded in
-/// the future; a `Pending` sets `queued` and a `Ready(Ok)` clears it,
-/// so `queued` records that a poll linked the node and outlives the
-/// grant. `poll_acquire` returns the closed error on the permit word's
-/// low bit or the wait list's own flag, takes what the permit word
-/// holds, and — with permits still needed — stores the task's waker
+/// compare-exchange from 1.53, the trace hook's signature, and where
+/// 1.51.5 sets `queued`): `Acquire::poll` forwards to `poll_acquire`
+/// with the node embedded in the future; a `Pending` leaves `queued`
+/// set and a `Ready(Ok)` clears it, so `queued` records that a poll
+/// linked the node and outlives the grant. (1.51.5 sets it inside
+/// `poll_acquire`, before the node is assigned permits or linked, and
+/// zeroes the node's counter on an immediate grant, so that a future
+/// dropped mid-poll returns what it holds; what a returned poll leaves
+/// is the same.) `poll_acquire` returns the closed error on the permit
+/// word's low bit or the wait list's own flag, takes what the permit
+/// word holds, and — with permits still needed — stores the task's waker
 /// in the node and pushes it at the list's front, under the list's
 /// lock. `add_permits_locked` assigns released permits to the list's
 /// back node, pops it and takes its waker once its counter reaches
@@ -3720,12 +3724,20 @@ pub const TOKIO_ACQUIRE_STATE_V1_47: StateProtocol = StateProtocol {
                 0x33, 0xf5,
             ],
         ),
-        // src/sync/batch_semaphore.rs, 1.51.1 through 1.52.4
+        // src/sync/batch_semaphore.rs, 1.51.1 through 1.51.4, 1.52.0 through 1.52.4
         (
             "src/sync/batch_semaphore.rs",
             [
                 0xda, 0x55, 0xcb, 0xcf, 0x9d, 0xdb, 0x37, 0xab, 0x8e, 0xc5, 0xf5, 0xc9, 0x4b, 0x7d,
                 0x49, 0x22,
+            ],
+        ),
+        // src/sync/batch_semaphore.rs, 1.51.5
+        (
+            "src/sync/batch_semaphore.rs",
+            [
+                0x64, 0x2f, 0x17, 0xc9, 0x3f, 0xc5, 0x1f, 0xd8, 0x84, 0x23, 0xc7, 0x52, 0x60, 0xfd,
+                0x43, 0x19,
             ],
         ),
         // src/sync/batch_semaphore.rs, 1.53.0 and 1.53.1
@@ -3881,8 +3893,10 @@ pub const TOKIO_SLEEP_STATE_V1_47: StateProtocol = StateProtocol {
 /// (`runtime/io/scheduled_io.rs`, `runtime/io/registration.rs`,
 /// `runtime/io/driver.rs`, and `io/util/{read,read_exact,read_buf,
 /// write,write_all,write_buf,flush,shutdown}.rs`, unchanged across the
-/// range but for a list type alias): the registration's readiness word
-/// packs the delivered `Ready` bits in its low sixteen, a tick above
+/// range but for a list type alias and 1.51.5's driver keeping a
+/// registration whose OS deregister failed): the registration's
+/// readiness word packs the delivered `Ready` bits in its low sixteen,
+/// a tick above
 /// them and the shutdown flag at bit 31. Each operation future polls
 /// the stream its `&mut` names and nothing else — `poll_read` for the
 /// three reads, `poll_write` for the three writes, `poll_flush` and
@@ -3974,12 +3988,20 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
                 0x76, 0x14,
             ],
         ),
-        // src/runtime/io/driver.rs, 1.50.0 through 1.52.4
+        // src/runtime/io/driver.rs, 1.50.0 through 1.51.4, 1.52.0 through 1.52.4
         (
             "src/runtime/io/driver.rs",
             [
                 0x84, 0xc8, 0x25, 0x0e, 0x92, 0x93, 0x1e, 0xe1, 0x4d, 0xc3, 0x83, 0xbc, 0x40, 0x9e,
                 0x92, 0x78,
+            ],
+        ),
+        // src/runtime/io/driver.rs, 1.51.5
+        (
+            "src/runtime/io/driver.rs",
+            [
+                0xf8, 0xc0, 0xf6, 0x59, 0x3f, 0x21, 0xc1, 0x20, 0x96, 0xb1, 0xb2, 0x03, 0xc2, 0x70,
+                0xd5, 0x17,
             ],
         ),
         // src/runtime/io/driver.rs, 1.53.0 and 1.53.1
@@ -4068,12 +4090,14 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
 /// The bounded mpsc receiver's `recv` protocol, tokio 1.47 through 1.53
 /// (`sync/mpsc/chan.rs`, `sync/mpsc/list.rs`, `sync/mpsc/block.rs` and
 /// `sync/task/atomic_waker.rs`; across the range `chan.rs` differs only
-/// in the trace hook's signature and a `take_waker` on the receiver's
-/// drop, `list.rs` and `block.rs` only in `len`'s closed-marker
-/// accounting and `unsafe` block reflows — `pop`, `try_advancing_head`
-/// and `Block::read` are byte-identical — and `atomic_waker.rs` not at
-/// all): `Receiver::recv` awaits `poll_fn(|cx| self.chan.recv(cx))`,
-/// and `Rx::recv` checks the cooperative budget, then pops: the head
+/// in the trace hook's signature, a `take_waker` on the receiver's
+/// drop and a test-only constructor, `list.rs` and `block.rs` only in
+/// `len`'s closed-marker accounting, `unsafe` block reflows and
+/// 1.51.5's wrapping block indices in `grow`, `has_value` and
+/// `reclaim_blocks` — `pop`, `try_advancing_head` and `Block::read` are
+/// byte-identical — and `atomic_waker.rs` not at all): `Receiver::recv`
+/// awaits `poll_fn(|cx| self.chan.recv(cx))`, and `Rx::recv` checks the
+/// cooperative budget, then pops: the head
 /// block is advanced to the one whose `start_index` is the read index's
 /// block (a missing successor reads as nothing), and in that block the
 /// slot's bit in `ready_slots` yields the value, the `TX_CLOSED` flag
@@ -4120,6 +4144,14 @@ pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
             [
                 0x71, 0x3a, 0xce, 0xaf, 0xe4, 0x54, 0x7f, 0x82, 0xd0, 0x31, 0x22, 0x82, 0xb1, 0xe3,
                 0x2f, 0x09,
+            ],
+        ),
+        // src/sync/mpsc/chan.rs, 1.51.5
+        (
+            "src/sync/mpsc/chan.rs",
+            [
+                0x1b, 0x3b, 0x6a, 0x24, 0x2c, 0x2b, 0xd1, 0x3f, 0xd0, 0x39, 0xe5, 0x93, 0xfa, 0xfb,
+                0x12, 0x25,
             ],
         ),
         // src/sync/mpsc/chan.rs, 1.53.0 and 1.53.1
@@ -4170,6 +4202,14 @@ pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
                 0x53, 0xba,
             ],
         ),
+        // src/sync/mpsc/list.rs, 1.51.5
+        (
+            "src/sync/mpsc/list.rs",
+            [
+                0x03, 0x6f, 0x12, 0x2b, 0xbb, 0xe3, 0x26, 0xc3, 0xac, 0x23, 0x83, 0xd5, 0xfd, 0xac,
+                0xbf, 0xd4,
+            ],
+        ),
         // src/sync/mpsc/block.rs, 1.47.0 through 1.47.4, 1.48.0
         (
             "src/sync/mpsc/block.rs",
@@ -4200,6 +4240,14 @@ pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
             [
                 0xf8, 0xce, 0x09, 0x77, 0xed, 0xa7, 0x41, 0x5d, 0x8f, 0x13, 0xb4, 0x4e, 0x73, 0x61,
                 0x49, 0xc6,
+            ],
+        ),
+        // src/sync/mpsc/block.rs, 1.51.5
+        (
+            "src/sync/mpsc/block.rs",
+            [
+                0x4d, 0x3c, 0xb0, 0x08, 0x8c, 0xc7, 0x50, 0x01, 0x52, 0x91, 0xdc, 0xea, 0x6a, 0x79,
+                0x8a, 0x0b,
             ],
         ),
         // src/sync/task/atomic_waker.rs, 1.47.0 through 1.53.1
@@ -4323,7 +4371,7 @@ pub const TOKIO_ONESHOT_RECV_STATE_V1_47: StateProtocol = StateProtocol {
                 0x56, 0x7e,
             ],
         ),
-        // src/sync/oneshot.rs, 1.50.0 through 1.51.4
+        // src/sync/oneshot.rs, 1.50.0 through 1.51.5
         (
             "src/sync/oneshot.rs",
             [
@@ -4413,7 +4461,7 @@ pub const TOKIO_ACQUIRE_OWNERS_V1_47: AcquireOwners = AcquireOwners {
                 0x74, 0x42,
             ],
         ),
-        // src/sync/rwlock.rs, 1.51.3 and 1.51.4, 1.52.3 through 1.53.1
+        // src/sync/rwlock.rs, 1.51.3 through 1.51.5, 1.52.3 through 1.53.1
         (
             "src/sync/rwlock.rs",
             [
@@ -4483,6 +4531,14 @@ pub const TOKIO_ACQUIRE_OWNERS_V1_47: AcquireOwners = AcquireOwners {
             [
                 0x82, 0x2a, 0x1a, 0x86, 0x1a, 0xb3, 0x64, 0x52, 0x99, 0x2c, 0x52, 0xaa, 0xb4, 0x9b,
                 0xc2, 0x0d,
+            ],
+        ),
+        // src/sync/mpsc/bounded.rs, 1.51.5
+        (
+            "src/sync/mpsc/bounded.rs",
+            [
+                0x4f, 0x18, 0x59, 0x42, 0x0d, 0x5f, 0x2a, 0x61, 0xd3, 0x80, 0xd2, 0xaa, 0x74, 0xb8,
+                0x82, 0x51,
             ],
         ),
         // src/sync/mpsc/bounded.rs, 1.53.0 and 1.53.1
@@ -4796,7 +4852,7 @@ mod tests {
         for (version, range, newer) in [
             ("1.54.0", "1.47.0-1.53.1", true),
             ("1.53.2", "1.53.0-1.53.1", true),
-            ("1.51.5", "1.51.0-1.51.4", true),
+            ("1.51.6", "1.51.0-1.51.5", true),
             // Past the later of a split minor's two spans.
             ("1.52.5", "1.52.1-1.52.4", true),
             ("1.46.3", "1.47.0-1.53.1", false),
@@ -5133,7 +5189,7 @@ mod tests {
                     "{kind:?} at {version}"
                 );
             }
-            for version in ["1.46.9", "1.51.5", "1.52.5", "1.53.2", "1.54.0", "2.0.0"] {
+            for version in ["1.46.9", "1.51.6", "1.52.5", "1.53.2", "1.54.0", "2.0.0"] {
                 assert_eq!(
                     tokio_state_protocol(kind, Some(&v(version))),
                     None,
@@ -5168,7 +5224,7 @@ mod tests {
             );
         }
         for version in [
-            "1.46.9", "1.51.5", "1.52.5", "1.53.2", "1.54.0", "0.47.0", "2.47.0",
+            "1.46.9", "1.51.6", "1.52.5", "1.53.2", "1.54.0", "0.47.0", "2.47.0",
         ] {
             assert_eq!(
                 tokio_acquire_owner(lock, Some(&v(version))),

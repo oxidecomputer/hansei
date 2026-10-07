@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: futurelock
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -177,7 +177,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: simple-await
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -352,7 +352,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: nested-await
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -527,7 +527,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: dyn-future
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 38 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 38 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -702,7 +702,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: select-combinator
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -877,7 +877,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: many-tasks
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1052,7 +1052,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: sleep-join
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1227,7 +1227,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: channels
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 29 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 29 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1402,7 +1402,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: unordered
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 41 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1577,7 +1577,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: joinset
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 23 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 23 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1752,7 +1752,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: ct-runtime
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1927,7 +1927,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: local-set
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 41 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2102,7 +2102,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: local-set-timer
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 41 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2277,7 +2277,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: local-set-io
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 39 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 39 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2452,7 +2452,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: foreign-runtime
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 41 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2627,7 +2627,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: blocking-pool
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2802,7 +2802,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: delegation-cases
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2977,7 +2977,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: armed-select
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 26 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 26 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3152,7 +3152,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: watch-stream
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 41 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3327,7 +3327,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      StreamMap.entry.key
 
 program: http-conns
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 27 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 27 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3502,7 +3502,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: two-releases
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3677,7 +3677,7 @@ walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: tls-conns
-walk contract (tokio 1.51.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 29 absent
+walk contract (tokio 1.51.5, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 29 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
