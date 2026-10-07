@@ -45,22 +45,28 @@ impl Releases {
             .1
     }
 
-    /// Whether a span holds the version. A pre-release counts as its
-    /// release, as rustc's own nightly producer strings name one.
+    /// Whether a span holds the version. A pre-release — a nightly or
+    /// beta rustc, a crate's release candidate — is none of the
+    /// releases a review read, however close its number.
     pub fn covers(&self, version: &semver::Version) -> bool {
-        let version = release(version);
-        self.0
-            .iter()
-            .any(|&(floor, ceiling)| version >= floor && version <= ceiling)
+        let release = release(version);
+        version.pre.is_empty()
+            && self
+                .0
+                .iter()
+                .any(|&(floor, ceiling)| release >= floor && release <= ceiling)
     }
 
     /// The version's place against the spans: reviewed inside one,
-    /// below the floor, and otherwise above — past the ceiling, or a
-    /// patch newer than its minor's span read.
+    /// below the floor, and otherwise above — past the ceiling, a patch
+    /// newer than its minor's span read, or a pre-release past the
+    /// floor. Placed in semver order, a pre-release of the floor
+    /// itself is below it.
     pub fn select(&self, version: &semver::Version) -> LayoutSelection {
+        let (major, minor, patch) = self.floor();
         if self.covers(version) {
             LayoutSelection::ReviewedRange
-        } else if release(version) < self.floor() {
+        } else if *version < semver::Version::new(major, minor, patch) {
             LayoutSelection::BelowFloor
         } else {
             LayoutSelection::AboveReviewedRange
@@ -77,15 +83,16 @@ impl Releases {
     /// an unread 1.51.5, which names what was read of its minor — and
     /// the whole range otherwise.
     pub fn range_for(&self, version: &semver::Version) -> String {
-        let version = release(version);
-        if version < self.floor() || version > self.ceiling() {
+        // Semver order, so a pre-release sorts before its release.
+        let at = |(major, minor, patch): Release| semver::Version::new(major, minor, patch);
+        if *version < at(self.floor()) || *version > at(self.ceiling()) {
             return self.range();
         }
         let &(floor, ceiling) = self
             .0
             .iter()
             .rev()
-            .find(|&&(floor, _)| floor <= version)
+            .find(|&&(floor, _)| at(floor) <= *version)
             .expect("a version at or above the floor has a span below it");
         release_range(floor, ceiling)
     }
@@ -4031,7 +4038,6 @@ mod tests {
             "clang LLVM (rustc version 1.97.0 (2d8144b78 2026-07-07))",
             "rustc version 1.97.1 (ccdd 2026-07-08)",
             "rustc version 1.98.0 (88d9e12ae 2026-08-18)",
-            "rustc version 1.98.0-nightly (eeff 2026-07-01)",
         ] {
             assert_eq!(
                 rustc_coroutine_convention(producer).map(|c| c.family),
@@ -4041,6 +4047,9 @@ mod tests {
         }
         for producer in [
             "rustc version 1.96.0 (aabb 2026-05-01)",
+            // A nightly or beta is none of the releases read.
+            "rustc version 1.98.0-nightly (eeff 2026-07-01)",
+            "rustc version 1.98.1-beta.2 (eeff 2026-08-30)",
             // A patch past its minor's span, and one between two spans.
             "rustc version 1.98.9 (aabb 2026-12-01)",
             "rustc version 1.97.2 (aabb 2026-09-01)",
@@ -4114,8 +4123,16 @@ mod tests {
             RUSTC_COROUTINE_V1_97.releases.range_for(&version),
             "1.97.0-1.97.1"
         );
+        // A nightly of a reviewed release is outgrown like an unread
+        // patch, placed after the span below it.
+        let (version, _) =
+            rustc_conventions_outgrown("rustc version 1.98.0-nightly (eeff 2026-07-01)")
+                .expect("a nightly outgrows the reviews");
+        assert_eq!(
+            RUSTC_COROUTINE_V1_97.releases.range_for(&version),
+            "1.97.0-1.97.1"
+        );
         for producer in [
-            "rustc version 1.98.0-nightly (eeff 2026-07-01)",
             "rustc version 1.97.0 (2d8144b78 2026-07-07)",
             "rustc version 1.96.0 (aabb 2026-05-01)",
             "GNU C17 14.2.0 -mtune=generic -g",
