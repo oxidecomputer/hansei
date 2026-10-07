@@ -310,6 +310,10 @@ check:
     (any other value filters cells), **alone, not under a workspace-wide
     run** — the primary cell shares fixture dirs with the extraction
     goldens. A cell whose toolchain is missing fails.
+  - The cells pin each minor's newest patch; `HANSEI_MATRIX_ALL=1` also
+    builds every earlier reviewed patch and holds its layout reports to
+    its span's pinned cell. The same run checks every reviewed release's
+    sources against the reviews' checksums (see `matrix.rs`).
   - CI runs it only when the `matrix` workflow is dispatched by hand. A
     cold run is ~6 minutes on 32 cores, most of an hour on a runner.
   - Onboarding or retiring a version is the `onboard-tokio-release` skill

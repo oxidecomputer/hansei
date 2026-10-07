@@ -46,9 +46,12 @@ the new release:
    release, or add one for a new minor.
 
 Then run `add`. The matrix suite holds each span's top to the matrix's
-pin for that minor and every listed checksum to the sources each cell
-builds, so `add`'s runs fail on a span left behind or a file nobody
-read.
+pin for that minor and every listed checksum to every release inside
+the spans, so `add`'s runs fail on a span left behind or a file nobody
+read. A new patch replaces its minor's pin, and the old pin is then
+built only by the every-version run (`HANSEI_MATRIX_ALL=1`), which
+holds each unpinned patch's layout reports to its minor's pin: run it
+once the pin moves.
 
 `add` derives the lockfile, edits `matrix.toml`, deletes golden dirs the
 edit orphans (the "latest" role slides), blesses the new cells, then runs
