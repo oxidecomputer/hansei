@@ -4456,7 +4456,7 @@ impl<'b, T: Target> Context<'b, T> {
             handshake_kind: words
                 .handshake_kind
                 .as_ref()
-                .and_then(&live)
+                .and_then(live)
                 .and_then(|kind| name(kind, "handshake kind").ok())
                 .map(str::to_owned),
             suite: words

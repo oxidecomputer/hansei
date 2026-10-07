@@ -8,6 +8,6 @@
 # host installs this toolchain fresh on every run, and the default
 # profile adds only documentation, which nothing here reads.
 [toolchain]
-channel = "1.98.1"
+channel = "1.99.0"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
