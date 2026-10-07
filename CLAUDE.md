@@ -119,13 +119,18 @@ a respelled member, an added wrapper, a full restructure — gets **distinct
 code covering a version range**, never an ordered fallback that would let
 one spelling bind on a version it was not written for: a `Family`
 (`detect/mod.rs`) names the range by its floor (`v1_47` covers 1.47–1.48,
-`v1_49` covers 1.49–1.52, `v1_53` from 1.53), a `tokio_v<floor>.rs` module
+`v1_49` covers 1.49–1.51 and 1.52.1–1.52, `v1_52_0` covers 1.52.0 alone,
+`v1_53` from 1.53), read at patch granularity: a release a later patch
+reverts is a family of its own between two ranges of its parent's
+(`Family::RANGES`). A `tokio_v<floor>.rs` module
 holds *only* the detectors that moved (a family whose layouts are an older
 family's plus a respelling declares its own spellings and reuses the older
 module's builders, as `tokio_v1_49.rs` does), and the dispatch row lists
-one detector per family. The tokio version recovered from the target's
-DWARF selects the family once per target: the highest floor at or below
-it, the oldest family for anything below every floor, and the newest for
+one detector per family; a row a family has no entry in falls back along
+the family's lineage (`Family::parent`), so a branch family's entry never
+serves a later release. The tokio version recovered from the target's
+DWARF selects the family once per target: the range holding it, the
+oldest family for anything below every floor, and the newest for
 anything newer or unrecovered (refused without `--allow-unsupported`
 when unrecovered and a versioned row actually ran, as is a version
 outside any supported range). Ordered alternatives inside a detector are

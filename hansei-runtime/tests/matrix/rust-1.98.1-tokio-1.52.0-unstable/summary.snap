@@ -42,7 +42,7 @@ dyn: futurelock::start_background_task::{async_fn_env#0} (poll, drop_glue)
 
 [env-decls]
 env: futurelock::do_async_thing::{async_fn_env#0} @ futurelock.rs:88
-env: futurelock::do_stuff::{async_fn#0}::{closure_env#0} @ select.rs:664
+env: futurelock::do_stuff::{async_fn#0}::{closure_env#0} @ select.rs:659
 env: futurelock::do_stuff::{async_fn_env#0} @ futurelock.rs:68
 env: futurelock::main::{async_block#0}::{async_block_env#0} @ futurelock.rs:20
 env: futurelock::main::{async_block_env#0} @ futurelock.rs:19
@@ -114,7 +114,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -142,9 +142,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -252,7 +252,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -280,9 +280,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -378,7 +378,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -406,9 +406,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -537,7 +537,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -565,9 +565,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -633,7 +633,7 @@ task: select_combinator::selector::{async_fn_env#0}
     Unresumed @ select-combinator.rs:30
     Returned @ select-combinator.rs:36
     Panicked @ select-combinator.rs:36
-    Suspend0 @ select.rs:746 (awaited at select-combinator.rs:32)
+    Suspend0 @ select.rs:741 (awaited at select-combinator.rs:32)
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<select_combinator::joiner::{async_fn#0}::{closure_env#0}> (poll)
@@ -659,7 +659,7 @@ env: select_combinator::joiner::{async_fn_env#0} @ select-combinator.rs:38
 env: select_combinator::main::{async_block_env#0} @ select-combinator.rs:126
 env: select_combinator::mapper::{async_fn_env#0} @ select-combinator.rs:93
 env: select_combinator::remapper::{async_fn_env#0} @ select-combinator.rs:99
-env: select_combinator::selector::{async_fn#0}::{closure_env#0} @ select.rs:664
+env: select_combinator::selector::{async_fn#0}::{closure_env#0} @ select.rs:659
 env: select_combinator::selector::{async_fn_env#0} @ select-combinator.rs:26
 env: select_combinator::wait::{async_fn_env#0} @ select-combinator.rs:22
 
@@ -739,7 +739,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -767,9 +767,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -860,7 +860,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -888,9 +888,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -995,7 +995,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -1023,9 +1023,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -1058,7 +1058,7 @@ task: channels::send_waiter::{async_fn_env#0}
     Unresumed @ channels.rs:85
     Returned @ channels.rs:100
     Panicked @ channels.rs:100
-    Suspend0 @ select.rs:746 (awaited at channels.rs:95)
+    Suspend0 @ select.rs:741 (awaited at channels.rs:95)
 task: channels::notify_waiter::{async_fn_env#0}
   kind: AsyncFn
   decl: channels.rs:27
@@ -1100,7 +1100,7 @@ env: channels::main::{async_block_env#0} @ channels.rs:107
 env: channels::notify_waiter::{async_fn_env#0} @ channels.rs:27
 env: channels::recv_waiter::{async_fn_env#0} @ channels.rs:45
 env: channels::send_waiter::{async_fn#0}::{async_block_env#0} @ channels.rs:89
-env: channels::send_waiter::{async_fn#0}::{closure_env#1} @ select.rs:664
+env: channels::send_waiter::{async_fn#0}::{closure_env#1} @ select.rs:659
 env: channels::send_waiter::{async_fn_env#0} @ channels.rs:85
 
 [poll-decls]
@@ -1180,7 +1180,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -1208,9 +1208,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -1327,7 +1327,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -1355,9 +1355,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -1483,7 +1483,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -1511,9 +1511,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -1618,7 +1618,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -1646,9 +1646,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -1773,7 +1773,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -1801,9 +1801,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -1928,7 +1928,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -1956,9 +1956,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -2124,7 +2124,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -2152,9 +2152,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -2302,7 +2302,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -2330,9 +2330,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -2462,7 +2462,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -2490,9 +2490,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -2687,7 +2687,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -2715,9 +2715,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -2772,7 +2772,7 @@ task: armed_select::ticker::{async_fn_env#0}
     Unresumed @ armed-select.rs:118
     Returned @ armed-select.rs:132
     Panicked @ armed-select.rs:132
-    Suspend0 @ select.rs:746 (awaited at armed-select.rs:128)
+    Suspend0 @ select.rs:741 (awaited at armed-select.rs:128)
 task: armed_select::waiter::{async_fn_env#0}
   kind: AsyncFn
   decl: armed-select.rs:74
@@ -2794,7 +2794,7 @@ task: armed_select::forever::{async_fn_env#0}
     Unresumed @ armed-select.rs:160
     Returned @ armed-select.rs:174
     Panicked @ armed-select.rs:174
-    Suspend0 @ select.rs:746 (awaited at armed-select.rs:169)
+    Suspend0 @ select.rs:741 (awaited at armed-select.rs:169)
 task: armed_select::selector::{async_fn_env#0}
   kind: AsyncFn
   decl: armed-select.rs:31
@@ -2805,7 +2805,7 @@ task: armed_select::selector::{async_fn_env#0}
     Unresumed @ armed-select.rs:36
     Returned @ armed-select.rs:55
     Panicked @ armed-select.rs:55
-    Suspend0 @ select.rs:746 (awaited at armed-select.rs:49)
+    Suspend0 @ select.rs:741 (awaited at armed-select.rs:49)
 
 [dyn-futures]
 dyn: armed_select::child::{async_fn_env#0} (poll, drop_glue)
@@ -2830,15 +2830,15 @@ dyn: core::pin::Pin<&mut armed_select::main::{async_block_env#0}> (poll)
 env: armed_select::child::{async_fn_env#0} @ armed-select.rs:83
 env: armed_select::driver::{async_fn_env#0} @ armed-select.rs:89
 env: armed_select::forever::{async_fn#0}::{async_block_env#0} @ armed-select.rs:163
-env: armed_select::forever::{async_fn#0}::{closure_env#1} @ select.rs:664
+env: armed_select::forever::{async_fn#0}::{closure_env#1} @ select.rs:659
 env: armed_select::forever::{async_fn_env#0} @ armed-select.rs:160
 env: armed_select::holder::{async_fn_env#0} @ armed-select.rs:59
 env: armed_select::main::{async_block_env#0} @ armed-select.rs:181
 env: armed_select::never::{async_fn_env#0} @ armed-select.rs:237
 env: armed_select::pacer::{async_fn_env#0} @ armed-select.rs:138
-env: armed_select::selector::{async_fn#0}::{closure_env#0} @ select.rs:664
+env: armed_select::selector::{async_fn#0}::{closure_env#0} @ select.rs:659
 env: armed_select::selector::{async_fn_env#0} @ armed-select.rs:31
-env: armed_select::ticker::{async_fn#0}::{closure_env#0} @ select.rs:664
+env: armed_select::ticker::{async_fn#0}::{closure_env#0} @ select.rs:659
 env: armed_select::ticker::{async_fn_env#0} @ armed-select.rs:118
 env: armed_select::waiter::{async_fn_env#0} @ armed-select.rs:74
 
@@ -2932,7 +2932,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -2960,9 +2960,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -3006,7 +3006,7 @@ task: watch_stream::mapper::{async_fn_env#0}
     Unresumed @ watch-stream.rs:61
     Returned @ watch-stream.rs:79
     Panicked @ watch-stream.rs:79
-    Suspend0 @ select.rs:746 (awaited at watch-stream.rs:75)
+    Suspend0 @ select.rs:741 (awaited at watch-stream.rs:75)
 task: watch_stream::resolver::{async_fn_env#0}
   kind: AsyncFn
   decl: watch-stream.rs:30
@@ -3017,7 +3017,7 @@ task: watch_stream::resolver::{async_fn_env#0}
     Unresumed @ watch-stream.rs:34
     Returned @ watch-stream.rs:47
     Panicked @ watch-stream.rs:47
-    Suspend0 @ select.rs:746 (awaited at watch-stream.rs:43)
+    Suspend0 @ select.rs:741 (awaited at watch-stream.rs:43)
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<watch_stream::main::{async_block_env#0}>> (poll)
@@ -3034,9 +3034,9 @@ dyn: watch_stream::resolver::{async_fn_env#0} (poll, drop_glue)
 env: watch_stream::direct::{async_fn_env#0} @ watch-stream.rs:105
 env: watch_stream::fresh::{async_fn_env#0} @ watch-stream.rs:85
 env: watch_stream::main::{async_block_env#0} @ watch-stream.rs:116
-env: watch_stream::mapper::{async_fn#0}::{closure_env#0} @ select.rs:664
+env: watch_stream::mapper::{async_fn#0}::{closure_env#0} @ select.rs:659
 env: watch_stream::mapper::{async_fn_env#0} @ watch-stream.rs:57
-env: watch_stream::resolver::{async_fn#0}::{closure_env#0} @ select.rs:664
+env: watch_stream::resolver::{async_fn#0}::{closure_env#0} @ select.rs:659
 env: watch_stream::resolver::{async_fn_env#0} @ watch-stream.rs:30
 
 [poll-decls]
@@ -3121,7 +3121,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -3149,9 +3149,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -3364,7 +3364,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -3392,9 +3392,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -3525,7 +3525,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -3553,9 +3553,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
@@ -3665,7 +3665,7 @@ task: tls_conns::split_client::{async_fn_env#0}
     Unresumed @ tls-conns.rs:207
     Returned @ tls-conns.rs:222
     Panicked @ tls-conns.rs:222
-    Suspend0 @ select.rs:746 (awaited at tls-conns.rs:218)
+    Suspend0 @ select.rs:741 (awaited at tls-conns.rs:218)
 task: tls_conns::duplex_client::{async_fn_env#0}
   kind: AsyncFn
   decl: tls-conns.rs:395
@@ -3756,7 +3756,7 @@ task: tls_conns::owned_split_client::{async_fn_env#0}
     Unresumed @ tls-conns.rs:241
     Returned @ tls-conns.rs:256
     Panicked @ tls-conns.rs:256
-    Suspend0 @ select.rs:746 (awaited at tls-conns.rs:252)
+    Suspend0 @ select.rs:741 (awaited at tls-conns.rs:252)
 task: tls_conns::mute_peer::{async_fn_env#0}
   kind: AsyncFn
   decl: tls-conns.rs:336
@@ -3819,11 +3819,11 @@ env: tls_conns::https_server::{async_fn_env#0} @ tls-conns.rs:344
 env: tls_conns::main::{async_block#0}::{closure_env#0} @ tls-conns.rs:418
 env: tls_conns::main::{async_block_env#0} @ tls-conns.rs:415
 env: tls_conns::mute_peer::{async_fn_env#0} @ tls-conns.rs:336
-env: tls_conns::owned_split_client::{async_fn#0}::{closure_env#0} @ select.rs:664
+env: tls_conns::owned_split_client::{async_fn#0}::{closure_env#0} @ select.rs:659
 env: tls_conns::owned_split_client::{async_fn_env#0} @ tls-conns.rs:237
 env: tls_conns::plain_client::{async_fn_env#0} @ tls-conns.rs:170
 env: tls_conns::silent_peer::{async_fn_env#0} @ tls-conns.rs:308
-env: tls_conns::split_client::{async_fn#0}::{closure_env#0} @ select.rs:664
+env: tls_conns::split_client::{async_fn#0}::{closure_env#0} @ select.rs:659
 env: tls_conns::split_client::{async_fn_env#0} @ tls-conns.rs:203
 env: tls_conns::tcp_pair::{async_fn_env#0} @ tls-conns.rs:136
 env: tls_conns::tcp_server::{async_fn_env#0} @ tls-conns.rs:259
@@ -3950,7 +3950,7 @@ ok      Vtable.try_read_output
 ok      Vtable.drop_join_handle_slow
 ok      Vtable.drop_abort_handle
 ok      Vtable.shutdown
-absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+ok      Vtable.spawn_location_offset
 ok      Location.file (spelling 1 of 3)
 ok      Location.line
 ok      Location.col
@@ -3978,9 +3978,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
+ok      blocking::ShardedQueue.shards (family v1_52_0)
+ok      blocking::Shard.queue (spelling 1 of 3)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf

@@ -512,33 +512,26 @@ fn test_every_reviewed_release_matches_its_checksums() {
     );
 }
 
-/// The spans a list of matrix versions implies: per minor, `.0`
-/// through the newest patch listed.
-fn spans_through(versions: &[String]) -> Vec<(Release, Release)> {
-    let mut newest: BTreeMap<(u64, u64), u64> = BTreeMap::new();
-    for v in versions {
-        let v = semver::Version::parse(v).expect("a matrix version");
-        let patch = newest.entry((v.major, v.minor)).or_default();
-        *patch = (*patch).max(v.patch);
-    }
-    newest
-        .into_iter()
-        .map(|((major, minor), patch)| ((major, minor, 0), (major, minor, patch)))
-        .collect()
-}
-
-/// The tokio and rustc releases the reviews read end, minor by minor,
-/// at the newest release the matrix pins there: a patch onboarded into
-/// the matrix raises its span in the same change, and no span reaches
-/// a release the matrix never built — the checksums each cell holds
-/// the reviews to are only ever checked at what the matrix builds.
+/// The tokio and rustc releases the reviews read end exactly at the
+/// releases the matrix pins: each span at a pin, each pin at a span.
+/// A patch onboarded into the matrix raises its span in the same
+/// change, no span reaches a release the matrix never built, and a
+/// minor split where a layout family changes inside it — tokio 1.52,
+/// with 1.52.0 a family of its own — is two spans and two pins.
 #[test]
 fn test_reviewed_releases_end_at_the_matrix_pins() {
     let m = Matrix::load();
     let check = |what: &str, releases: Releases, versions: &[String]| {
+        let ends: BTreeSet<Release> = releases.0.iter().map(|&(_, ceiling)| ceiling).collect();
+        let pins: BTreeSet<Release> = versions
+            .iter()
+            .map(|v| {
+                let v = semver::Version::parse(v).expect("a matrix version");
+                (v.major, v.minor, v.patch)
+            })
+            .collect();
         assert_eq!(
-            releases.0,
-            spans_through(versions).as_slice(),
+            ends, pins,
             "the reviewed {what} releases ({releases}) and test-programs/matrix.toml's \
              {what} versions disagree: onboard and review a release in one change"
         );

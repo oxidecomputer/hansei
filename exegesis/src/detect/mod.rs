@@ -30,6 +30,7 @@ mod std;
 mod tokio;
 mod tokio_v1_47;
 mod tokio_v1_49;
+mod tokio_v1_52_0;
 mod tokio_v1_53;
 pub mod walk;
 
@@ -225,8 +226,10 @@ impl FormatExplanation {
 /// does not have to move.
 type Detector = fn(&mut Emitter<'_>, TypeId) -> Option<DisplayNode>;
 
-/// A tokio version family: a contiguous range of tokio releases whose
-/// layouts share detector code, named by the floor of the range. Any
+/// A tokio version family: the tokio releases whose layouts share
+/// detector code, named by the first of them — a range from that floor,
+/// or, where a later patch reverts what a release moved, more than one
+/// range, read at patch granularity ([`Family::RANGES`]). Any
 /// divergence a release ships in a layout the detectors navigate — a
 /// respelled member, an added wrapper, a full restructure — is a family
 /// boundary: the release gets a `tokio_v<floor>` module holding only the
@@ -236,15 +239,16 @@ type Detector = fn(&mut Emitter<'_>, TypeId) -> Option<DisplayNode>;
 /// spelling that varies with build features or cfg within one release.
 ///
 /// Selection is by version, once per target: the tokio version recovered
-/// from the target's DWARF (`Meta::tokio_version`) picks the family with
-/// the highest floor at or below it, so every versioned row in one bundle
-/// answers coherently. Two structural nets stay underneath the version
-/// check: the selected detector still validates the layout it describes
-/// and declines on any mismatch, and the per-cell matrix goldens pin which
-/// family actually attached.
+/// from the target's DWARF (`Meta::tokio_version`) picks the family whose
+/// range holds it, so every versioned row in one bundle answers
+/// coherently, and a row the family has no entry in falls back along
+/// its lineage ([`Family::parent`]). Two structural nets stay underneath
+/// the version check: the selected detector still validates the layout
+/// it describes and declines on any mismatch, and the per-cell matrix
+/// goldens pin which family actually attached.
 ///
-/// Declaration order is floor order, oldest first; [`Family::ALL`] and the
-/// derived `Ord` both rely on it.
+/// Declaration order is first-floor order, oldest first; [`Family::ALL`]
+/// relies on it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Family {
     /// tokio 1.47 through 1.48: the timer entry keeps a `registered` flag
@@ -253,11 +257,18 @@ pub enum Family {
     /// itself, and the driver's `time::Inner` is the traditional driver's
     /// struct. Anything older than the floor clamps here.
     V1_47,
-    /// tokio 1.49 through 1.52: the alternative timer arrives. The entry
+    /// tokio 1.49 through 1.52, but for 1.52.0 ([`Family::V1_52_0`]):
+    /// the alternative timer arrives. The entry
     /// layout is still [`Family::V1_47`]'s, but `Sleep`'s `entry` sits
     /// behind the `Timer` flavor enum and `time::Inner` becomes an enum
     /// over the driver flavor.
     V1_49,
+    /// tokio 1.52.0 alone: [`Family::V1_49`]'s layouts but for the blocking
+    /// pool, whose queue is a `ShardedQueue` of sixteen mutex-guarded
+    /// queues on the pool's `Inner` rather than one `VecDeque` in its
+    /// `Shared`. 1.52.1 reverted it, so the release after this family's
+    /// is [`Family::V1_49`]'s again: a family that covers part of a minor.
+    V1_52_0,
     /// tokio 1.53 onward: the timer entry holds its `TimerShared` directly,
     /// registration lives in the state word with the registration tick
     /// cached beside it, and `Sleep` carries the deadline itself.
@@ -266,17 +277,44 @@ pub enum Family {
 
 impl Family {
     /// Every family, oldest floor first.
-    pub const ALL: &'static [Family] = &[Family::V1_47, Family::V1_49, Family::V1_53];
+    pub const ALL: &'static [Family] =
+        &[Family::V1_47, Family::V1_49, Family::V1_52_0, Family::V1_53];
 
-    /// The lowest tokio `(major, minor)` the family covers; its range runs
-    /// to the next family's floor. Public because the newest floor is
-    /// recorded in the bundle (`Meta::newest_family`) as the ceiling the
-    /// read side's drift notice compares the recovered version against.
+    /// The tokio releases each family covers: from each floor, the family
+    /// beside it, through to the next floor. A family may hold more than
+    /// one range — a release a minor's later patches revert, as 1.52.0,
+    /// is a family of its own between two of its parent's — so selection
+    /// reads this table, not one floor per family.
+    const RANGES: &'static [((u64, u64, u64), Family)] = &[
+        ((1, 47, 0), Family::V1_47),
+        ((1, 49, 0), Family::V1_49),
+        ((1, 52, 0), Family::V1_52_0),
+        ((1, 52, 1), Family::V1_49),
+        ((1, 53, 0), Family::V1_53),
+    ];
+
+    /// The tokio `(major, minor)` of the family's first release. Public
+    /// because the newest floor is recorded in the bundle
+    /// (`Meta::newest_family`) as the ceiling the read side's drift
+    /// notice compares the recovered version against.
     pub fn floor(self) -> (u64, u64) {
+        let ((major, minor, _), _) = Family::RANGES
+            .iter()
+            .find(|&&(_, family)| family == self)
+            .expect("every family covers a range");
+        (*major, *minor)
+    }
+
+    /// The family a row falls back to when it has no entry of this one's:
+    /// the family whose layouts this one's departs from. A branch
+    /// covering part of a minor, as [`Family::V1_52_0`], is the parent of
+    /// no later family, so its entries never reach past it.
+    fn parent(self) -> Option<Family> {
         match self {
-            Family::V1_47 => (1, 47),
-            Family::V1_49 => (1, 49),
-            Family::V1_53 => (1, 53),
+            Family::V1_47 => None,
+            Family::V1_49 => Some(Family::V1_47),
+            Family::V1_52_0 => Some(Family::V1_49),
+            Family::V1_53 => Some(Family::V1_49),
         }
     }
 
@@ -285,27 +323,31 @@ impl Family {
         match self {
             Family::V1_47 => "v1_47",
             Family::V1_49 => "v1_49",
+            Family::V1_52_0 => "v1_52_0",
             Family::V1_53 => "v1_53",
         }
     }
 
-    /// Select the family for a target: the one with the highest floor at or
-    /// below the recovered tokio version. A version older than every floor
-    /// takes the oldest family, and a version newer than every family — or
-    /// none recovered at all, as for a vendored or forked tokio with no
-    /// registry path — takes the newest: the latest supported layouts are
-    /// the best guess, and the detectors decline structurally wherever the
-    /// guess is wrong.
+    /// Select the family for a target: the one whose range holds the
+    /// recovered tokio version, read at patch granularity. A version older
+    /// than every range takes the oldest family, and a version newer than
+    /// every family — or none recovered at all, as for a vendored or
+    /// forked tokio with no registry path — takes the newest: the latest
+    /// supported layouts are the best guess, and the detectors decline
+    /// structurally wherever the guess is wrong. A pre-release sorts
+    /// before its release, as semver orders it.
     pub fn select(version: Option<&semver::Version>) -> Family {
         let newest = *Family::ALL.last().expect("at least one family");
         let Some(version) = version else {
             return newest;
         };
-        Family::ALL
+        Family::RANGES
             .iter()
             .rev()
-            .find(|family| (version.major, version.minor) >= family.floor())
-            .copied()
+            .find(|&&((major, minor, patch), _)| {
+                *version >= semver::Version::new(major, minor, patch)
+            })
+            .map(|&(_, family)| family)
             .unwrap_or(Family::ALL[0])
     }
 
@@ -369,18 +411,21 @@ impl<T: Copy> Row<T> {
     }
 
     /// The entry the selected `family` takes: an `All` row's single value
-    /// (no family attached), or the versioned entry with the highest
-    /// floor at or below `family`, paired with that entry's family for
-    /// diagnostics. `None` when the row is versioned and no entry is old
-    /// enough for the target.
+    /// (no family attached), or the versioned entry of the nearest family
+    /// in `family`'s lineage — itself, its parent, and so on — paired
+    /// with that entry's family for diagnostics. `None` when the row is
+    /// versioned and no family in the lineage has an entry.
     fn select(self, family: Family) -> Option<(Option<Family>, T)> {
         match self {
             All(value) => Some((None, value)),
-            Versioned(entries) => entries
-                .iter()
-                .rev()
-                .find(|&&(floor, _)| floor <= family)
-                .map(|&(floor, value)| (Some(floor), value)),
+            Versioned(entries) => {
+                ::std::iter::successors(Some(family), |f| f.parent()).find_map(|f| {
+                    entries
+                        .iter()
+                        .find(|&&(entry, _)| entry == f)
+                        .map(|&(entry, value)| (Some(entry), value))
+                })
+            }
         }
     }
 }
@@ -1594,7 +1639,12 @@ mod tests {
         assert_eq!(Family::select(Some(&v("1.48.0"))), Family::V1_47);
         assert_eq!(Family::select(Some(&v("1.49.0"))), Family::V1_49);
         assert_eq!(Family::select(Some(&v("1.50.0"))), Family::V1_49);
+        // 1.52.0 is a family apart; 1.52.1 reverted it.
+        assert_eq!(Family::select(Some(&v("1.51.4"))), Family::V1_49);
+        assert_eq!(Family::select(Some(&v("1.52.0"))), Family::V1_52_0);
+        assert_eq!(Family::select(Some(&v("1.52.1"))), Family::V1_49);
         assert_eq!(Family::select(Some(&v("1.52.4"))), Family::V1_49);
+        assert_eq!(Family::V1_52_0.floor(), (1, 52));
         assert_eq!(Family::select(Some(&v("1.53.0"))), Family::V1_53);
         assert_eq!(Family::select(Some(&v("1.53.1"))), Family::V1_53);
         assert_eq!(Family::select(Some(&v("1.999.0"))), newest);
@@ -1635,6 +1685,22 @@ mod tests {
 
         let too_new: Row<&str> = Versioned(&[(Family::V1_49, "recent")]);
         assert_eq!(too_new.select(Family::V1_47), None);
+
+        // A branch family's entry serves the branch alone: 1.53 descends
+        // from 1.49, not from 1.52.0.
+        let branch: Row<&str> = Versioned(&[(Family::V1_47, "base"), (Family::V1_52_0, "sharded")]);
+        assert_eq!(
+            branch.select(Family::V1_52_0),
+            Some((Some(Family::V1_52_0), "sharded"))
+        );
+        assert_eq!(
+            branch.select(Family::V1_49),
+            Some((Some(Family::V1_47), "base"))
+        );
+        assert_eq!(
+            branch.select(Family::V1_53),
+            Some((Some(Family::V1_47), "base"))
+        );
     }
 
     /// Run one detector directly. Every detector takes an `Emitter` whether or

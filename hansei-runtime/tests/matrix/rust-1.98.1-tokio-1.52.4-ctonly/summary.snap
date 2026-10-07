@@ -125,7 +125,9 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 2 of 3)
+ok      blocking::Shared.queue (spelling 2 of 3; family v1_47)
+absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
+absent  blocking::Shard.queue — family v1_47 lays this out otherwise
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf

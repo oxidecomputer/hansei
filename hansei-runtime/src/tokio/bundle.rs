@@ -2764,7 +2764,8 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     /// The spawn_blocking cells parked in one runtime's pool queue, as
-    /// candidates naming the queue and the runtime it belongs to. The
+    /// candidates naming the queue and the runtime it belongs to: the
+    /// pool's one queue, or, in tokio 1.52.0, each of its shards. A
     /// queue is a `VecDeque` ring: the recorded element layout strides
     /// it, and each element's `UnownedTask` names the Header that
     /// identifies the cell.
@@ -2774,13 +2775,46 @@ impl<'b, T: Target> Context<'b, T> {
         found: &mut Vec<Candidate>,
         errors: &mut Vec<anyhow::Error>,
     ) -> Result<()> {
-        let Some(queue) = self
+        let mut queues = Vec::new();
+        if let Some(queue) = self
             .walk(WalkRole::BlockingQueue)
             .try_walk(runtime.handle)?
             .and_then(Walked::optional)
-        else {
-            return Ok(());
-        };
+        {
+            queues.push(queue);
+        }
+        if let Some(shards) = self
+            .walk(WalkRole::BlockingQueueShards)
+            .try_walk(runtime.handle)?
+            .and_then(Walked::optional)
+        {
+            let shards = shards
+                .elements(self.proc)
+                .context("failed to walk the blocking queue's shards")?;
+            ensure!(
+                shards.truncated().is_none(),
+                "the blocking queue claims {} shards, only {} readable",
+                shards.truncated().unwrap_or_default(),
+                shards.len()
+            );
+            for shard in shards.iter() {
+                queues.push(self.walk(WalkRole::BlockingShardQueue).walk_at(shard)?);
+            }
+        }
+        for queue in queues {
+            self.queued_in(runtime, queue, found, errors)?;
+        }
+        Ok(())
+    }
+
+    /// The spawn_blocking cells in one of the pool's `VecDeque` rings.
+    fn queued_in(
+        &self,
+        runtime: &RuntimeRef<'b>,
+        queue: Value<'b>,
+        found: &mut Vec<Candidate>,
+        errors: &mut Vec<anyhow::Error>,
+    ) -> Result<()> {
         let len: u64 = self.walk(WalkRole::BlockingQueueLen).read(queue)?;
         if len == 0 {
             return Ok(());

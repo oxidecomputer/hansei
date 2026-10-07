@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.98.1 (48a229cea 2026-09-01)): 170 entries, 0 broken, 56 absent
+walk contract (tokio 1.52.4, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 58 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -111,7 +111,9 @@ walk contract (tokio 1.52.4, rustc 1.98.1 (48a229cea 2026-09-01)): 170 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
-  ok      blocking::Shared.queue (spelling 2 of 3; no multi_thread Handle)
+  ok      blocking::Shared.queue (spelling 2 of 3; family v1_47; no multi_thread Handle)
+  absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
+  absent  blocking::Shard.queue — family v1_47 lays this out otherwise
   ok      blocking::queue.head (no multi_thread Handle)
   ok      blocking::queue.len (no multi_thread Handle)
   ok      blocking::queue.buf (no multi_thread Handle)

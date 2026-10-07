@@ -297,19 +297,25 @@ impl ExtractStats {
     fn review_warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some((version, outgrown)) = &self.rustc_outgrown {
-            // A patch between two spans is told what was read of its
-            // minor; the version parsed when it was found outgrown.
+            // A release a minor's span did not read is told what was
+            // read of that minor, on the side it falls: a nightly of a
+            // reviewed release is older than it. The version parsed
+            // when it was found outgrown.
             let parsed = semver::Version::parse(version).ok();
-            let ranges: BTreeSet<String> = outgrown
+            let ranges: BTreeSet<(bool, String)> = outgrown
                 .iter()
                 .map(|c| match &parsed {
-                    Some(v) => c.releases.range_for(v),
-                    None => c.range(),
+                    Some(v) => (
+                        c.releases.select(v) != crate::bundle::LayoutSelection::BelowFloor,
+                        c.releases.range_for(v),
+                    ),
+                    None => (true, c.range()),
                 })
                 .collect();
-            for range in ranges {
+            for (newer, range) in ranges {
+                let side = if newer { "newer" } else { "older" };
                 out.push(format!(
-                    "rustc {version} is newer than the supported version range: {range}"
+                    "rustc {version} is {side} than the supported version range: {range}"
                 ));
             }
         }

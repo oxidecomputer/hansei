@@ -90,19 +90,30 @@ Walk-contract divergence is an ordered alt in the affected `WalkPath`
 
 All in `exegesis/src/detect/`:
 
-1. `mod.rs`: variant in `Family` (declaration order is floor order — `ALL`
-   and the derived `Ord` rely on it), plus arms in `floor()` and `name()`.
+1. `mod.rs`: variant in `Family` (declaration order is first-floor order —
+   `ALL` relies on it), its range in `Family::RANGES` (patch-level floors;
+   a release a later patch reverts is a family between two of its
+   parent's ranges, as `V1_52_0` is), and arms in `parent()` and `name()`.
+   `parent()` is the family whose layouts this one departs from — the
+   lineage a row falls back along — so a branch family is nobody's parent.
 2. Doc comments: the new variant's range and what moved; **tighten the
    prior family's doc to its new ceiling**; the module-doc file list at the
    top of `mod.rs` if it names the family modules.
-3. `tokio_v<floor>.rs`: only the detectors that moved. Same fn names as
-   the sibling modules (`timer_entry_node`, `sleep_node`, …).
+3. `tokio_v<floor>.rs`: only the detectors and walk routes that moved.
+   Same fn names as the sibling modules (`timer_entry_node`, `sleep_node`,
+   …).
 4. `mod tokio_v<floor>;` declaration, and one `(Family::V<floor>, …)`
    entry in each affected `Versioned` row — never touching other families'
-   entries. A row may skip a family (lookup falls back to the highest
-   older floor), so only list the family where the layout actually differs.
-5. `test_family_selection` in `mod.rs`: asserts on both sides of the new
-   floor, and the `describe` string if the example version's family moved.
+   entries. A row may skip a family (lookup falls back along the lineage),
+   so only list the family where the layout actually differs. A walk the
+   family's layout lacks altogether takes `absent_here` (recorded absent
+   by the version, not broken); a value two families reach by different
+   routes roots its rows at `WalkRoot::EndOfAny`.
+5. `test_family_selection` in `mod.rs`: asserts on both sides of every
+   new floor, and the `describe` string if the example version's family
+   moved. A family inside a minor also splits that minor's span in
+   `TOKIO_RELEASES` and is pinned in `matrix.toml` beside the minor's
+   newest patch.
 
 ## 4. Verification gates, in order
 

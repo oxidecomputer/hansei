@@ -57,16 +57,40 @@ impl Releases {
                 .any(|&(floor, ceiling)| release >= floor && release <= ceiling)
     }
 
-    /// The version's place against the spans: reviewed inside one,
-    /// below the floor, and otherwise above — past the ceiling, a patch
-    /// newer than its minor's span read, or a pre-release past the
-    /// floor. Placed in semver order, a pre-release of the floor
-    /// itself is below it.
+    /// The span the review read of the version's own minor, if any: of
+    /// a minor split in two — tokio 1.52, whose 1.52.0 is a layout
+    /// family of its own — the last that starts at or before it, else
+    /// the minor's first.
+    fn span_of(&self, version: &semver::Version) -> Option<(Release, Release)> {
+        let minor: Vec<(Release, Release)> = self
+            .0
+            .iter()
+            .copied()
+            .filter(|&((major, minor, _), _)| (major, minor) == (version.major, version.minor))
+            .collect();
+        minor
+            .iter()
+            .rev()
+            .find(|&&(floor, _)| at(floor) <= *version)
+            .or(minor.first())
+            .copied()
+    }
+
+    /// The version's place against the spans, in semver order, so a
+    /// pre-release sorts before its release: reviewed inside one; else
+    /// placed against what was read of its own minor — below that span
+    /// for a patch older than its first release, above it for one newer
+    /// than its last — or, for a minor no span reads, against the whole
+    /// range.
     pub fn select(&self, version: &semver::Version) -> LayoutSelection {
-        let (major, minor, patch) = self.floor();
         if self.covers(version) {
-            LayoutSelection::ReviewedRange
-        } else if *version < semver::Version::new(major, minor, patch) {
+            return LayoutSelection::ReviewedRange;
+        }
+        let floor = match self.span_of(version) {
+            Some((floor, _)) => floor,
+            None => self.floor(),
+        };
+        if *version < at(floor) {
             LayoutSelection::BelowFloor
         } else {
             LayoutSelection::AboveReviewedRange
@@ -78,13 +102,15 @@ impl Releases {
         release_range(self.floor(), self.ceiling())
     }
 
-    /// The range a version outside the review is told it misses: the
-    /// span below it when it falls between two — `1.51.0-1.51.4` for
-    /// an unread 1.51.5, which names what was read of its minor — and
-    /// the whole range otherwise.
+    /// The range a version outside the review is told it misses: what
+    /// was read of its own minor — `1.51.0-1.51.4` for an unread 1.51.5,
+    /// `1.52.1-1.52.4` for a 1.52.0 left out — else, past every span,
+    /// the whole range, and between two spans of other minors the one
+    /// below it.
     pub fn range_for(&self, version: &semver::Version) -> String {
-        // Semver order, so a pre-release sorts before its release.
-        let at = |(major, minor, patch): Release| semver::Version::new(major, minor, patch);
+        if let Some((floor, ceiling)) = self.span_of(version) {
+            return release_range(floor, ceiling);
+        }
         if *version < at(self.floor()) || *version > at(self.ceiling()) {
             return self.range();
         }
@@ -96,6 +122,11 @@ impl Releases {
             .expect("a version at or above the floor has a span below it");
         release_range(floor, ceiling)
     }
+}
+
+/// A release as a semver version, to compare with one in semver order.
+fn at((major, minor, patch): Release) -> semver::Version {
+    semver::Version::new(major, minor, patch)
 }
 
 impl std::fmt::Display for Releases {
@@ -418,11 +449,12 @@ pub fn rustc_reviewed_range() -> String {
     )
 }
 
-/// The reviews in `reviewed` of every subject the producer's rustc is
-/// past each review of: newer than its ceiling, or a patch between two
-/// of its spans that it never read. A subject a later review covers
-/// the version of is not outgrown, and one the version predates is
-/// left to the floor's own warning.
+/// The reviews in `reviewed` of every subject whose releases the
+/// producer's rustc is not one of, though at or past the review's
+/// first: newer than its ceiling, a patch its minor's span did not
+/// read, or a nightly or beta. A subject a later review covers the
+/// version of is not outgrown, and one the version predates is left to
+/// the floor's own warning.
 fn outgrown(
     producer: &str,
     reviewed: &[&'static RustcConvention],
@@ -436,7 +468,7 @@ fn outgrown(
                 .iter()
                 .filter(|other| other.subject() == c.subject())
                 .all(|other| !other.releases.covers(&version))
-                && c.releases.select(&version) == LayoutSelection::AboveReviewedRange
+                && version >= at(c.releases.floor())
         })
         .collect();
     (!outgrown.is_empty()).then_some((version, outgrown))
@@ -2093,13 +2125,19 @@ pub const HYPER_H1_CONN_V1_6_0: LibraryConvention = LibraryConvention {
 /// checksum listed; the matrix suite holds each span's newest patch to
 /// the matrix's pin and each listed checksum to the sources the matrix
 /// builds.
+///
+/// A minor splits where a layout family changes inside it: 1.52.0's
+/// sharded `spawn_blocking` queue, which 1.52.1 reverted, is a family
+/// of its own, so 1.52.0 is a span apart, pinned by the matrix beside
+/// 1.52.4.
 pub const TOKIO_RELEASES: Releases = Releases(&[
     ((1, 47, 0), (1, 47, 5)),
     ((1, 48, 0), (1, 48, 0)),
     ((1, 49, 0), (1, 49, 0)),
     ((1, 50, 0), (1, 50, 0)),
     ((1, 51, 0), (1, 51, 4)),
-    ((1, 52, 0), (1, 52, 4)),
+    ((1, 52, 0), (1, 52, 0)),
+    ((1, 52, 1), (1, 52, 4)),
     ((1, 53, 0), (1, 53, 1)),
 ]);
 
@@ -4679,13 +4717,17 @@ mod tests {
             "1.97.0-1.97.1"
         );
         // A nightly of a reviewed release is outgrown like an unread
-        // patch, placed after the span below it.
+        // patch, placed before its minor's span.
         let (version, _) =
             rustc_conventions_outgrown("rustc version 1.98.0-nightly (eeff 2026-07-01)")
                 .expect("a nightly outgrows the reviews");
         assert_eq!(
             RUSTC_COROUTINE_V1_97.releases.range_for(&version),
-            "1.97.0-1.97.1"
+            "1.98.0-1.98.1"
+        );
+        assert_eq!(
+            RUSTC_COROUTINE_V1_97.releases.select(&version),
+            LayoutSelection::BelowFloor
         );
         for producer in [
             "rustc version 1.97.0 (2d8144b78 2026-07-07)",
@@ -4753,8 +4795,10 @@ mod tests {
             .chain([TOKIO_ACQUIRE_OWNERS_V1_47.family]);
         for (version, range, newer) in [
             ("1.54.0", "1.47.0-1.53.1", true),
-            ("1.53.2", "1.47.0-1.53.1", true),
+            ("1.53.2", "1.53.0-1.53.1", true),
             ("1.51.5", "1.51.0-1.51.4", true),
+            // Past the later of a split minor's two spans.
+            ("1.52.5", "1.52.1-1.52.4", true),
             ("1.46.3", "1.47.0-1.53.1", false),
         ] {
             assert_eq!(
@@ -4772,7 +4816,9 @@ mod tests {
                 "{version}"
             );
         }
-        for version in ["1.47.0", "1.47.5", "1.48.0", "1.51.4", "1.52.1", "1.53.1"] {
+        for version in [
+            "1.47.0", "1.47.5", "1.48.0", "1.51.4", "1.52.0", "1.52.1", "1.53.1",
+        ] {
             assert_eq!(tokio_protocols_outside(&v(version)), None, "{version}");
         }
     }
@@ -5087,7 +5133,7 @@ mod tests {
                     "{kind:?} at {version}"
                 );
             }
-            for version in ["1.46.9", "1.51.5", "1.53.2", "1.54.0", "2.0.0"] {
+            for version in ["1.46.9", "1.51.5", "1.52.5", "1.53.2", "1.54.0", "2.0.0"] {
                 assert_eq!(
                     tokio_state_protocol(kind, Some(&v(version))),
                     None,
@@ -5121,7 +5167,9 @@ mod tests {
                 "{version}"
             );
         }
-        for version in ["1.46.9", "1.51.5", "1.53.2", "1.54.0", "0.47.0", "2.47.0"] {
+        for version in [
+            "1.46.9", "1.51.5", "1.52.5", "1.53.2", "1.54.0", "0.47.0", "2.47.0",
+        ] {
             assert_eq!(
                 tokio_acquire_owner(lock, Some(&v(version))),
                 None,
