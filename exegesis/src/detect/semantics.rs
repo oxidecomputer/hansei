@@ -163,8 +163,11 @@ fn release_range(floor: Release, ceiling: Release) -> String {
 /// toolchain is onboarded, after its cells' goldens and the files each
 /// convention names have been read; the matrix suite holds each span's
 /// newest patch to the matrix's.
-pub const RUSTC_RELEASES: Releases =
-    Releases(&[((1, 97, 0), (1, 97, 1)), ((1, 98, 0), (1, 98, 1))]);
+pub const RUSTC_RELEASES: Releases = Releases(&[
+    ((1, 97, 0), (1, 97, 1)),
+    ((1, 98, 0), (1, 98, 1)),
+    ((1, 99, 0), (1, 99, 0)),
+]);
 
 /// One reviewed rustc convention: its name, as the bundle's `Rustc`
 /// origin records it, the compiler releases it was reviewed at, and
@@ -185,7 +188,7 @@ impl RustcConvention {
         subject(self.family)
     }
 
-    /// The range as a warning names it: `1.97.0-1.98.0`.
+    /// The range as a warning names it: `1.97.0-1.99.0`.
     pub fn range(&self) -> String {
         self.releases.range()
     }
@@ -202,7 +205,7 @@ pub(crate) fn subject(family: &'static str) -> &'static str {
         .map_or(family, |(subject, _)| subject)
 }
 
-/// The coroutine state-machine convention rustc 1.97 and 1.98 emit,
+/// The coroutine state-machine convention rustc 1.97 through 1.99 emit,
 /// reviewed against `rustc_codegen_llvm::debuginfo::metadata::enums`'
 /// coroutine variant naming and `rustc_mir_transform::coroutine`'s
 /// layout: the env is an enum whose variant members are numbered in
@@ -222,10 +225,10 @@ pub const RUSTC_COROUTINE_V1_97: RustcConvention = RustcConvention {
     checksums: &[],
 };
 
-/// The standard pointer adapters rustc 1.97 and 1.98 build, reviewed
+/// The standard pointer adapters rustc 1.97 through 1.99 build, reviewed
 /// against `library/core/src/future/future.rs` and
-/// `library/alloc/src/boxed.rs` (identical across the three matrix
-/// toolchains), and the layouts their debuginfo spells: `Pin<Ptr>` is a
+/// `library/alloc/src/boxed.rs` (the adapters' types and `Future` impls
+/// identical across the range), and the layouts their debuginfo spells: `Pin<Ptr>` is a
 /// struct whose one member `pointer` is its `Ptr`; a sized `Box<F, Global>`
 /// and a `&mut F` are thin pointers named in full; their unsized forms
 /// over a trait object are `{ pointer, vtable }` wide pointers. Each
@@ -238,7 +241,7 @@ pub const RUSTC_STD_ADAPTERS_V1_97: RustcConvention = RustcConvention {
     family: "rustc-std-adapters-1.97",
     releases: RUSTC_RELEASES,
     checksums: &[
-        // library/core/src/future/future.rs, 1.97.0 through 1.98.1
+        // library/core/src/future/future.rs, 1.97.0 through 1.99.0
         (
             "library/core/src/future/future.rs",
             [
@@ -262,10 +265,18 @@ pub const RUSTC_STD_ADAPTERS_V1_97: RustcConvention = RustcConvention {
                 0xdb, 0x1b,
             ],
         ),
+        // library/alloc/src/boxed.rs, 1.99.0
+        (
+            "library/alloc/src/boxed.rs",
+            [
+                0xd0, 0x81, 0x67, 0xce, 0x38, 0x61, 0x56, 0x23, 0x85, 0x2d, 0x82, 0xb0, 0xb0, 0x76,
+                0x4c, 0x28,
+            ],
+        ),
     ],
 };
 
-/// The `dyn Future` vtable rustc 1.97 and 1.98 lay out: the drop-in-place
+/// The `dyn Future` vtable rustc 1.97 through 1.99 lay out: the drop-in-place
 /// pointer, the size and the alignment words, then the trait's methods
 /// in declaration order — `poll` alone for `Future` — so a wide pointer's
 /// metadata is at least four words and slot 3 is the poll. Reviewed
@@ -303,9 +314,9 @@ pub fn rustc_std_adapter_convention(producer: &str) -> Option<&'static RustcConv
     rustc_convention(producer, &[&RUSTC_STD_ADAPTERS_V1_97])
 }
 
-/// core's `future::pending::Pending<T>` as rustc 1.97 and 1.98 ship it,
-/// reviewed against `library/core/src/future/pending.rs` (identical
-/// across the three matrix toolchains): a zero-sized struct whose one
+/// core's `future::pending::Pending<T>` as rustc 1.97 through 1.99 ship
+/// it, reviewed against `library/core/src/future/pending.rs` (identical
+/// across the range): a zero-sized struct whose one
 /// member is a `PhantomData`, and a `Future::poll` that returns
 /// `Poll::Pending` without touching its `Context` — no waker
 /// registered, nothing polled, never `Ready`. The source ships with
@@ -315,7 +326,7 @@ pub const RUSTC_CORE_PENDING_V1_97: RustcConvention = RustcConvention {
     family: "rustc-core-pending-1.97",
     releases: RUSTC_RELEASES,
     checksums: &[
-        // library/core/src/future/pending.rs, 1.97.0 through 1.98.1
+        // library/core/src/future/pending.rs, 1.97.0 through 1.99.0
         (
             "library/core/src/future/pending.rs",
             [
@@ -338,7 +349,7 @@ pub fn rustc_dyn_future_abi_convention(producer: &str) -> Option<&'static RustcC
     rustc_convention(producer, &[&RUSTC_DYN_FUTURE_ABI_V1_97])
 }
 
-/// std's refcounted allocation headers as rustc 1.97 and 1.98 ship
+/// std's refcounted allocation headers as rustc 1.97 through 1.99 ship
 /// them, reviewed against `library/alloc/src/sync.rs` and `rc.rs` (the
 /// two headers identical across the range but for comments):
 /// `ArcInner<T> { strong, weak, data: T }` and `RcInner<T> { strong,
@@ -365,6 +376,14 @@ pub const RUSTC_STD_REFCOUNT_V1_97: RustcConvention = RustcConvention {
                 0x5c, 0xde,
             ],
         ),
+        // library/alloc/src/sync.rs, 1.99.0
+        (
+            "library/alloc/src/sync.rs",
+            [
+                0x8b, 0x43, 0xa5, 0x3d, 0xcc, 0x02, 0xe6, 0xdc, 0xa0, 0xe1, 0x2f, 0x2a, 0xb1, 0xca,
+                0x94, 0x8e,
+            ],
+        ),
         // library/alloc/src/rc.rs, 1.97.0 and 1.97.1
         (
             "library/alloc/src/rc.rs",
@@ -381,6 +400,14 @@ pub const RUSTC_STD_REFCOUNT_V1_97: RustcConvention = RustcConvention {
                 0x9c, 0x4b,
             ],
         ),
+        // library/alloc/src/rc.rs, 1.99.0
+        (
+            "library/alloc/src/rc.rs",
+            [
+                0xa6, 0xf9, 0x30, 0xe5, 0xde, 0x5e, 0x5d, 0xb1, 0x3a, 0xc0, 0xef, 0xed, 0x74, 0xf8,
+                0x94, 0x7a,
+            ],
+        ),
     ],
 };
 
@@ -390,9 +417,10 @@ pub fn rustc_std_refcount_convention(producer: &str) -> Option<&'static RustcCon
     rustc_convention(producer, &[&RUSTC_STD_REFCOUNT_V1_97])
 }
 
-/// std's futex mutex as rustc 1.97 and 1.98 ship it, reviewed against
-/// `library/std/src/sys/sync/mutex/futex.rs` (identical across the
-/// range): `Mutex { futex }`, one futex word that reads `UNLOCKED` (0)
+/// std's futex mutex as rustc 1.97 through 1.99 ship it, reviewed
+/// against `library/std/src/sys/sync/mutex/futex.rs` (identical across
+/// the range but for 1.99's path to the futex functions it imports):
+/// `Mutex { futex }`, one futex word that reads `UNLOCKED` (0)
 /// while no thread holds the lock, `LOCKED` (1) or `CONTENDED` (2)
 /// while one does — held whenever the word is nonzero, whatever width
 /// the platform's futex word is.
@@ -406,6 +434,14 @@ pub const RUSTC_STD_FUTEX_MUTEX_V1_97: RustcConvention = RustcConvention {
             [
                 0x28, 0xfe, 0x35, 0xba, 0xd6, 0xff, 0x34, 0x0a, 0xf7, 0x07, 0xb9, 0x97, 0xfc, 0xc6,
                 0xda, 0x8c,
+            ],
+        ),
+        // library/std/src/sys/sync/mutex/futex.rs, 1.99.0
+        (
+            "library/std/src/sys/sync/mutex/futex.rs",
+            [
+                0x83, 0x12, 0xc9, 0x46, 0xdb, 0x5f, 0x27, 0xf9, 0xe3, 0x0e, 0x33, 0x71, 0x69, 0xeb,
+                0xf6, 0x09,
             ],
         ),
     ],
@@ -439,7 +475,7 @@ pub fn rustc_conventions_outgrown(
 }
 
 /// The rustc versions the compiler convention reviews span between
-/// them, as a warning names it: `1.97.0-1.98.0`.
+/// them, as a warning names it: `1.97.0-1.99.0`.
 pub fn rustc_reviewed_range() -> String {
     let floor = RUSTC_CONVENTIONS.iter().map(|c| c.releases.floor()).min();
     let ceiling = RUSTC_CONVENTIONS.iter().map(|c| c.releases.ceiling()).max();
@@ -4754,6 +4790,7 @@ mod tests {
             "clang LLVM (rustc version 1.97.0 (2d8144b78 2026-07-07))",
             "rustc version 1.97.1 (ccdd 2026-07-08)",
             "rustc version 1.98.0 (88d9e12ae 2026-08-18)",
+            "rustc version 1.99.0 (b940084d7 2026-09-28)",
         ] {
             assert_eq!(
                 rustc_coroutine_convention(producer).map(|c| c.family),
@@ -4865,8 +4902,8 @@ mod tests {
             RUSTC_STD_FUTEX_MUTEX_V1_97.subject(),
             "rustc-std-futex-mutex"
         );
-        assert_eq!(RUSTC_COROUTINE_V1_97.range(), "1.97.0-1.98.1");
-        assert_eq!(rustc_reviewed_range(), "1.97.0-1.98.1");
+        assert_eq!(RUSTC_COROUTINE_V1_97.range(), "1.97.0-1.99.0");
+        assert_eq!(rustc_reviewed_range(), "1.97.0-1.99.0");
     }
 
     /// A later review of one subject keeps that subject covered, and

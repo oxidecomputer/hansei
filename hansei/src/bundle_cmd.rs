@@ -1292,7 +1292,7 @@ mod tests {
     fn test_a_toolchain_is_held_to_rustcs_reviews() {
         let toml = |channel: &str| format!("[toolchain]\nchannel = \"{channel}\"\n");
         let reviews = reviews();
-        for channel in ["1.98.0", "1.98.1"] {
+        for channel in ["1.98.0", "1.98.1", "1.99.0"] {
             assert_eq!(
                 toolchain_findings(&toml(channel), &reviews),
                 Vec::<String>::new(),
@@ -1307,7 +1307,7 @@ mod tests {
         let found = toolchain_findings(&toml("1.999.0"), &reviews);
         assert_eq!(found.len(), 1, "{found:#?}");
         assert!(
-            found[0].starts_with("rustc 1.999.0: above 1.97.0-1.98.1 ("),
+            found[0].starts_with("rustc 1.999.0: above 1.97.0-1.99.0 ("),
             "{found:#?}"
         );
         // A patch released into a reviewed minor after its review is
