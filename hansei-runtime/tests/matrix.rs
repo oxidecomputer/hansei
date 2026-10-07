@@ -46,13 +46,11 @@
 //! primary cell shares its fixture dirs with the extraction goldens,
 //! and two test binaries rebuilding one fixture dir race.
 //!
-//! Each cell also holds the reviews to the sources it builds: every
-//! file a review read, at each crate release the cell's lockfile pins
-//! and at the cell's toolchain, must hash to a revision the review
-//! lists — so a checksum copied wrong, or a release whose file changed
-//! with nobody reading it, fails here rather than vouching for code no
-//! one saw. The toolchain's sources are its `rust-src` component. A
-//! separate test, which needs no build, holds each reviewed tokio and
+//! The same run holds every review to its sources at every release it
+//! covers, not only the ones the cells build: each file a review read
+//! must hash to a revision it lists in every crate release and rustc
+//! patch inside its spans, fetched once into `fixtures/sources`. A
+//! further test, which needs no build, holds each reviewed tokio and
 //! rustc span to the newest release the matrix pins in that minor.
 //!
 //! The goldens are the rendering in the Linux test image
@@ -281,27 +279,133 @@ impl Cell {
 // The sources the reviews read
 // ---------------------------------------------------------------------------
 
-/// Every `(package, version)` a lockfile pins.
-fn lock_packages(path: &Path) -> Vec<(String, semver::Version)> {
-    let text = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    let value = |line: &str, key: &str| {
-        line.strip_prefix(key)
-            .map(|rest| rest.trim_matches(|c| c == '"' || c == ' ').to_owned())
-    };
-    let mut out = Vec::new();
-    let mut name = None;
-    for line in text.lines() {
-        if let Some(n) = value(line, "name = ") {
-            name = Some(n);
-        } else if let Some(v) = value(line, "version = ")
-            && let Some(n) = name.take()
-            && let Ok(v) = semver::Version::parse(&v)
-        {
-            out.push((n, v));
-        }
+/// Where the source check keeps what it fetched: each crate's index
+/// entry and every release it unpacked, and each toolchain's
+/// standard library sources.
+fn sources_dir() -> PathBuf {
+    test_programs_dir().join("fixtures/sources")
+}
+
+/// Run a command, panicking with its name and stderr on failure.
+fn run(cmd: &mut Command) -> Vec<u8> {
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run {cmd:?}: {e}"));
+    assert!(
+        out.status.success(),
+        "{cmd:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
+}
+
+/// crates.io's sparse-index path for a crate.
+fn index_path(name: &str) -> String {
+    match name.len() {
+        1 | 2 => format!("{}/{name}", name.len()),
+        3 => format!("3/{}/{name}", &name[..1]),
+        _ => format!("{}/{}/{name}", &name[..2], &name[2..4]),
     }
-    out
+}
+
+/// Every release of a crate crates.io lists, yanked ones included, less
+/// pre-releases, which no review covers. The index entry is fetched
+/// once and kept; it is fetched again only when it lacks a release the
+/// reviews end a span at, as after a span is raised.
+fn crate_releases(name: &str, ceilings: &[Release]) -> Vec<semver::Version> {
+    let vers = regex::Regex::new(r#""vers":"([^"]+)""#).unwrap();
+    let path = sources_dir().join(format!("index-{name}.json"));
+    let parse = |text: &str| -> Vec<semver::Version> {
+        vers.captures_iter(text)
+            .filter_map(|c| semver::Version::parse(&c[1]).ok())
+            .filter(|v| v.pre.is_empty())
+            .collect()
+    };
+    let cached = std::fs::read_to_string(&path).unwrap_or_default();
+    let has = |releases: &[semver::Version]| {
+        ceilings.iter().all(|&(a, b, c)| {
+            releases
+                .iter()
+                .any(|v| (v.major, v.minor, v.patch) == (a, b, c))
+        })
+    };
+    let releases = parse(&cached);
+    if !cached.is_empty() && has(&releases) {
+        return releases;
+    }
+    let url = format!("https://index.crates.io/{}", index_path(name));
+    let text = String::from_utf8(run(Command::new("curl").args(["-fsSL", &url])))
+        .expect("the index is UTF-8");
+    std::fs::create_dir_all(sources_dir()).expect("failed to create the sources dir");
+    std::fs::write(&path, &text).expect("failed to cache the index entry");
+    parse(&text)
+}
+
+/// A crate release's sources: cargo's unpacked registry copy when it
+/// has one, else the release fetched from crates.io once and kept.
+fn crate_sources(name: &str, version: &semver::Version) -> PathBuf {
+    if let Some(root) = crate_root(name, version) {
+        return root;
+    }
+    let crates = sources_dir().join("crates");
+    let root = crates.join(format!("{name}-{version}"));
+    if !root.is_dir() {
+        std::fs::create_dir_all(&crates).expect("failed to create the crate cache");
+        let url = format!("https://static.crates.io/crates/{name}/{name}-{version}.crate");
+        let tarball = crates.join(format!("{name}-{version}.crate"));
+        run(Command::new("curl")
+            .args(["-fsSL", "-o"])
+            .arg(&tarball)
+            .arg(&url));
+        run(Command::new("tar")
+            .arg("-xzf")
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&crates));
+        std::fs::remove_file(&tarball).expect("failed to remove the tarball");
+    }
+    root
+}
+
+/// A rustc release's standard library sources: an installed
+/// toolchain's `rust-src` when it has one, else the release's `rust-src`
+/// fetched from the Rust distribution once and kept.
+fn rustc_sources(version: &semver::Version) -> PathBuf {
+    let installed = toolchain_installed(&version.to_string())
+        .then(|| rust_src(&version.to_string()))
+        .filter(|root| root.is_dir());
+    if let Some(root) = installed {
+        return root;
+    }
+    let dir = sources_dir().join(format!("rust-src-{version}"));
+    let root = dir.join(format!("rust-src-{version}/rust-src/lib/rustlib/src/rust"));
+    if !root.is_dir() {
+        std::fs::create_dir_all(&dir).expect("failed to create the rust-src cache");
+        let url = format!("https://static.rust-lang.org/dist/rust-src-{version}.tar.xz");
+        let tarball = dir.join("rust-src.tar.xz");
+        run(Command::new("curl")
+            .args(["-fsSL", "-o"])
+            .arg(&tarball)
+            .arg(&url));
+        run(Command::new("tar")
+            .arg("-xJf")
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&dir));
+        std::fs::remove_file(&tarball).expect("failed to remove the tarball");
+    }
+    root
+}
+
+/// The root of a toolchain's `rust-src`, the standard library sources
+/// as the toolchain ships them.
+fn rust_src(toolchain: &str) -> PathBuf {
+    let out = Command::new("rustup")
+        .args(["run", toolchain, "rustc", "--print", "sysroot"])
+        .output()
+        .expect("failed to run rustc --print sysroot");
+    let sysroot = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    PathBuf::from(sysroot).join("lib/rustlib/src/rust")
 }
 
 /// Where cargo unpacked a registry release: `<CARGO_HOME>/registry/src/
@@ -317,69 +421,63 @@ fn crate_root(package: &str, version: &semver::Version) -> Option<PathBuf> {
         .find(|dir| dir.is_dir())
 }
 
-/// The root of a toolchain's `rust-src`, the standard library sources
-/// as the toolchain ships them.
-fn rust_src(toolchain: &str) -> PathBuf {
-    let out = Command::new("rustup")
-        .args(["run", toolchain, "rustc", "--print", "sysroot"])
-        .output()
-        .expect("failed to run rustc --print sysroot");
-    let sysroot = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    PathBuf::from(sysroot).join("lib/rustlib/src/rust")
-}
-
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Hold every review to the sources the cell builds: each file a
-/// review read, at every release of its subject the cell pins inside
-/// the review's releases, must hash to one of the revisions it lists.
-/// A file absent from a release is the review's to explain, not a
-/// mismatch; a review none of whose files a release ships is one.
-fn check_sources(cell: &Cell, m: &Matrix, failures: &mut Vec<String>) {
-    let dir = test_programs_dir();
-    let lockfile = if cell.tokio == m.primary.tokio {
-        dir.join("Cargo.lock")
-    } else {
-        dir.join(format!("locks/tokio-{}.lock", cell.tokio))
-    };
-    let toolchain = semver::Version::parse(&cell.toolchain).expect("a release toolchain");
-    let packages = lock_packages(&lockfile);
-    let name = cell.name();
+/// Every review holds at every release it covers: each file it read
+/// must hash, in every release inside its spans, to a revision it lists
+/// — so a checksum copied wrong, or a release whose file changed with
+/// nobody reading it, fails here rather than vouching for code no one
+/// saw. A crate's releases are what crates.io lists inside the spans;
+/// rustc's are every patch of each span, which Rust numbers without
+/// gaps. A file absent from a release is the review's to explain, not
+/// a mismatch; a review none of whose files a release ships is one.
+/// Part of the matrix run, and like it opt-in: the first run fetches
+/// every release's sources, which later runs reuse.
+#[test]
+fn test_every_reviewed_release_matches_its_checksums() {
+    if std::env::var_os("HANSEI_MATRIX").is_none() {
+        eprintln!("SKIP: set HANSEI_MATRIX=1 to check the reviews' sources");
+        return;
+    }
+    let mut failures = Vec::new();
+    let mut checked = 0usize;
     for review in sources() {
-        let releases: Vec<(String, semver::Version, Option<PathBuf>)> = match review.subject {
-            Subject::Rustc => {
-                let root = rust_src(&cell.toolchain);
-                let root = root.is_dir().then_some(root);
-                vec![("rustc".to_owned(), toolchain.clone(), root)]
-            }
-            Subject::Crate(package) => packages
+        if review.checksums.is_empty() {
+            continue;
+        }
+        let ceilings: Vec<Release> = review.releases.0.iter().map(|&(_, c)| c).collect();
+        let releases: Vec<(String, semver::Version, PathBuf)> = match review.subject {
+            Subject::Rustc => review
+                .releases
+                .0
                 .iter()
-                .filter(|(n, _)| n == package)
-                .map(|(n, v)| (n.clone(), v.clone(), crate_root(n, v)))
+                .flat_map(|&((major, minor, lo), (_, _, hi))| {
+                    (lo..=hi).map(move |patch| semver::Version::new(major, minor, patch))
+                })
+                .map(|v| ("rustc".to_owned(), v.clone(), rustc_sources(&v)))
+                .collect(),
+            Subject::Crate(name) => crate_releases(name, &ceilings)
+                .into_iter()
+                .filter(|v| review.releases.covers(v))
+                .map(|v| (name.to_owned(), v.clone(), crate_sources(name, &v)))
                 .collect(),
         };
+        for &(a, b, c) in &ceilings {
+            assert!(
+                releases
+                    .iter()
+                    .any(|(_, v, _)| (v.major, v.minor, v.patch) == (a, b, c)),
+                "{}: no release {a}.{b}.{c} to check, though a span ends there",
+                review.family
+            );
+        }
+        let files: BTreeSet<&str> = review.checksums.iter().map(|&(f, _)| f).collect();
         for (subject, version, root) in releases {
-            if !review.releases.covers(&version) || review.checksums.is_empty() {
-                continue;
-            }
-            let Some(root) = root else {
-                failures.push(format!(
-                    "{name}: {subject} {version}'s sources are not on disk to check {} \
-                     against{}",
-                    review.family,
-                    if subject == "rustc" {
-                        format!(" (rustup component add rust-src --toolchain {version})")
-                    } else {
-                        String::new()
-                    }
-                ));
-                continue;
-            };
-            let files: BTreeSet<&str> = review.checksums.iter().map(|&(f, _)| f).collect();
+            checked += 1;
             let mut shipped = 0;
-            for file in files {
+            for &file in &files {
                 let Ok(bytes) = std::fs::read(root.join(file)) else {
                     continue;
                 };
@@ -391,8 +489,7 @@ fn check_sources(cell: &Cell, m: &Matrix, failures: &mut Vec<String>) {
                     .any(|&(f, md5)| f == file && md5 == actual);
                 if !reviewed {
                     failures.push(format!(
-                        "{name}: {subject} {version}'s {file} hashes to {}, \
-                         not a revision {} lists",
+                        "{subject} {version}'s {file} hashes to {}, not a revision {} lists",
                         hex(&actual),
                         review.family
                     ));
@@ -400,12 +497,19 @@ fn check_sources(cell: &Cell, m: &Matrix, failures: &mut Vec<String>) {
             }
             if shipped == 0 {
                 failures.push(format!(
-                    "{name}: {subject} {version} ships none of the files {} read",
+                    "{subject} {version} ships none of the files {} read",
                     review.family
                 ));
             }
         }
     }
+    eprintln!("checked {checked} reviewed releases");
+    assert!(
+        failures.is_empty(),
+        "{} reviewed source(s) do not match their releases:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
 }
 
 /// The spans a list of matrix versions implies: per minor, `.0`
@@ -613,7 +717,6 @@ fn test_matrix() {
     let matrix = Matrix::load();
 
     let mut failures = Vec::new();
-    let mut unreviewed = Vec::new();
     let mut matched = 0usize;
     for cell in cells(&matrix) {
         let name = cell.name();
@@ -629,7 +732,6 @@ fn test_matrix() {
             continue;
         }
         cell.build();
-        check_sources(&cell, &matrix, &mut unreviewed);
 
         let programs = cell.programs();
         let bundles: Vec<(&str, Bundle)> = programs
@@ -673,12 +775,6 @@ fn test_matrix() {
     }
 
     assert!(matched > 0, "no matrix cell matched HANSEI_MATRIX={filter}");
-    assert!(
-        unreviewed.is_empty(),
-        "{} reviewed source(s) do not match what the cells build:\n  {}",
-        unreviewed.len(),
-        unreviewed.join("\n  ")
-    );
     assert!(
         failures.is_empty(),
         "{} matrix check(s) failed (golden diffs above; INSTA_UPDATE=always to re-bless):\n  {}",
