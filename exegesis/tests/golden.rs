@@ -8,7 +8,7 @@
 //!
 //! Fixtures are never checked in: missing ones are built on demand by
 //! `test-programs/regen.sh` with the pinned bundle-compatible toolchain,
-//! the workspace's own (`rust-toolchain.toml`).
+//! the matrix's primary (`test-programs/matrix.toml`).
 //! Because fixtures are always freshly built, these tests double as the
 //! canary for DWARF-shape and mangling drift across toolchain bumps.
 //!
@@ -74,9 +74,8 @@ fn extract_fixture(program: &str, opts: &ExtractOptions) -> (Bundle, ExtractStat
 
 /// Put the fixture in the state its sources describe: build B of the
 /// primary cell, which `testrun` builds for every suite reading it.
-/// Panics on a build failure, a missing toolchain among them: the
-/// primary is the workspace's own (`rust-toolchain.toml`), so a test
-/// running at all has it installed.
+/// Panics on a build failure, a missing primary toolchain among them:
+/// `rustup toolchain install` it, as `regen.sh`'s message says.
 ///
 /// The fixture is rebuilt every run rather than kept if it happens to
 /// exist. `test-programs/fixtures/` is gitignored, so a checkout that

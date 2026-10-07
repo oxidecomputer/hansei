@@ -58,6 +58,9 @@ jobs:
           image: ${{ steps.image.outputs.image }}
           save: "false"
 
+      - name: Fixture toolchain
+        run: .github/scripts/in-image.sh .github/scripts/fixture-toolchain.sh
+
       - name: Build
         run: .github/scripts/in-image.sh cargo nextest run --locked --no-run --cargo-profile ci
 

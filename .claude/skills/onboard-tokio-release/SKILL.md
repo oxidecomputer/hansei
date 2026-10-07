@@ -57,9 +57,9 @@ once the pin moves.
 edit orphans (the "latest" role slides), blesses the new cells, then runs
 the whole matrix un-blessed to prove no existing cell moved. It refuses to
 touch the floor and primary pins — those advance by hand, deliberately.
-Advancing the primary toolchain edits `rust-toolchain.toml` at the
-repository root in the same commit, since the workspace builds on the
-primary too; a `testrun` test fails while the two differ.
+Advancing the primary toolchain edits `regen.sh`'s `PRIMARY_TOOLCHAIN`
+and the copies exegesis's tests name in the same commit. The workspace's
+own toolchain (`rust-toolchain.toml`) is independent of it.
 `add` installs the toolchains, with the `rust-src` the matrix suite's
 source check reads, blesses and runs the full matrix in the Linux test
 image, so onboard on an x86_64 Linux host with podman; it refuses

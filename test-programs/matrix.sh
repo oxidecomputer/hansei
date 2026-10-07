@@ -56,8 +56,10 @@
 # hansei --test acceptance) and commit. The floor and primary pins, of
 # tokio and of Rust alike, advance deliberately, by hand; add refuses to
 # touch them, and update names a new patch of either Rust pin's minor
-# as a pin to advance. Advancing the primary toolchain edits
-# rust-toolchain.toml in the same change. Advancing the tokio floor also
+# as a pin to advance. Advancing the primary toolchain edits regen.sh's
+# PRIMARY_TOOLCHAIN and the copies exegesis's tests name in the same
+# change; hansei's own toolchain (rust-toolchain.toml) is independent of
+# it. Advancing the tokio floor also
 # moves the linux-floor set, whose cores are captured at the floor:
 # re-bless its @linux-floor goldens on a Linux host.
 
@@ -273,7 +275,7 @@ cmd_update() {
     done
     if [ -n "$have" ] && [ "$(ver_cmp "$have" "$stable")" -lt 0 ]; then
         if [ "$have" = "$P_TC" ] || [ "$have" = "${TC_FLOOR:-}" ]; then
-            echo "matrix is behind: Rust $stable released ($have is pinned) — advance that pin by hand, in matrix.toml and rust-toolchain.toml"
+            echo "matrix is behind: Rust $stable released ($have is pinned) — advance that pin by hand (see matrix.sh's header)"
         else
             echo "matrix is behind: Rust $stable released ($have is pinned) — run \`test-programs/matrix.sh add rust-$stable\`"
         fi
@@ -303,7 +305,7 @@ cmd_update() {
         done
         if [ "$(ver_cmp "$have_patch" "$newest")" -lt 0 ] && [ "$newest" != "$stable" ]; then
             if [ "$have_patch" = "$P_TC" ] || [ "$have_patch" = "${TC_FLOOR:-}" ]; then
-                echo "matrix is behind: Rust $newest released ($have_patch is pinned) — advance that pin by hand, in matrix.toml and rust-toolchain.toml"
+                echo "matrix is behind: Rust $newest released ($have_patch is pinned) — advance that pin by hand (see matrix.sh's header)"
             else
                 echo "matrix is behind: Rust $newest released ($have_patch is the newest $m listed) — run \`test-programs/matrix.sh add rust-$newest\`"
             fi
@@ -514,7 +516,7 @@ cmd_add_rust() {
         && die "rust $ver is below the floor ($TC_FLOOR)"
     if [ "$(minor_of "$ver")" = "$(minor_of "${TC_FLOOR:-}")" ] \
         || [ "$(minor_of "$ver")" = "$(minor_of "$P_TC")" ]; then
-        die "the floor/primary toolchain pins (${TC_FLOOR:-}/$P_TC) advance deliberately — edit matrix.toml by hand (the primary with rust-toolchain.toml; see the header)"
+        die "the floor/primary toolchain pins (${TC_FLOOR:-}/$P_TC) advance deliberately — edit matrix.toml by hand (see the header)"
     fi
     # The matrix holds one patch per minor, the latest: a newer patch
     # replaces its minor's pin.
