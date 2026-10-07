@@ -525,7 +525,7 @@ pub const TRACING_INSTRUMENTED_V0_1_40: LibraryConvention = LibraryConvention {
 pub const PARKING_LOT_RAW_MUTEX_V0_11_0: LibraryConvention = LibraryConvention {
     package: "parking_lot",
     family: "parking_lot-raw-mutex-0.11.0",
-    releases: Releases(&[((0, 11, 0), (0, 12, 5))]),
+    releases: Releases(&[((0, 11, 0), (0, 11, 2)), ((0, 12, 0), (0, 12, 5))]),
     checksums: &[
         // 0.11.0 through 0.11.2.
         (
@@ -1222,7 +1222,7 @@ pub const TOWER_RETRY_V0_5_2: LibraryConvention = LibraryConvention {
 pub const REQWEST_COOKIE_V0_12_24: LibraryConvention = LibraryConvention {
     package: "reqwest",
     family: "reqwest-cookie-0.12.24",
-    releases: Releases(&[((0, 12, 24), (0, 13, 4))]),
+    releases: Releases(&[((0, 12, 24), (0, 12, 28)), ((0, 13, 0), (0, 13, 4))]),
     checksums: &[
         // src/cookie.rs, 0.12.24 through 0.13.4
         (
@@ -1301,7 +1301,7 @@ pub const DROPSHOT_SERVER_V0_17_0: LibraryConvention = LibraryConvention {
 pub const REQWEST_PENDING_REQUEST_V0_12_0: LibraryConvention = LibraryConvention {
     package: "reqwest",
     family: "reqwest-pending-request-0.12.0",
-    releases: Releases(&[((0, 12, 0), (0, 13, 2))]),
+    releases: Releases(&[((0, 12, 0), (0, 12, 28)), ((0, 13, 0), (0, 13, 2))]),
     checksums: &[
         // src/async_impl/client.rs, 0.12.0
         (
@@ -1516,7 +1516,13 @@ pub const REQWEST_PENDING_REQUEST_V0_12_0: LibraryConvention = LibraryConvention
 pub const HTTP_REQUEST_V1_0_0: LibraryConvention = LibraryConvention {
     package: "http",
     family: "http-request-1.0.0",
-    releases: Releases(&[((1, 0, 0), (1, 4, 2))]),
+    releases: Releases(&[
+        ((1, 0, 0), (1, 0, 0)),
+        ((1, 1, 0), (1, 1, 0)),
+        ((1, 2, 0), (1, 2, 0)),
+        ((1, 3, 0), (1, 3, 1)),
+        ((1, 4, 0), (1, 4, 2)),
+    ]),
     checksums: &[
         // src/request.rs, 1.0.0
         (
@@ -1833,7 +1839,13 @@ pub const DROPSHOT_HANDLER_V0_17_0: LibraryConvention = LibraryConvention {
 pub const HYPER_H1_CONN_V1_6_0: LibraryConvention = LibraryConvention {
     package: "hyper",
     family: "hyper-h1-conn-1.6.0",
-    releases: Releases(&[((1, 6, 0), (1, 10, 1))]),
+    releases: Releases(&[
+        ((1, 6, 0), (1, 6, 0)),
+        ((1, 7, 0), (1, 7, 0)),
+        ((1, 8, 0), (1, 8, 1)),
+        ((1, 9, 0), (1, 9, 0)),
+        ((1, 10, 0), (1, 10, 1)),
+    ]),
     checksums: &[
         // src/proto/h1/conn.rs, 1.6.0
         (
@@ -2491,7 +2503,10 @@ pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
 };
 
 /// rustls's connection state as 0.23.23 through 0.23.45 lay it out,
-/// read in every release of that range: `ConnectionCommon<Data>` holds
+/// read in every release of that range (`src/conn.rs`,
+/// `src/common_state.rs`, `src/record_layer.rs`; 0.23.28 retypes
+/// `CommonState`'s `alpn_protocol` and adds `tls13_tickets_received`,
+/// neither on a route): `ConnectionCommon<Data>` holds
 /// `core: ConnectionCore<Data>`, whose `state` is a `Result<Box<dyn
 /// State<Data>>, Error>` that turns `Err` when the connection fails and
 /// stays so, and whose `common_state: CommonState` holds `side`, the
@@ -2509,12 +2524,134 @@ pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
 /// be sent, while a fatal alert (`send_fatal_alert`) always comes with
 /// the error the state then holds. The
 /// release is read off the type's own method declarations, as
-/// hashbrown's is; rustc's DWARF 4 records no checksum to check.
+/// hashbrown's is; the checksums are of every reviewed revision, which
+/// rustc's DWARF 4 never records but the matrix suite checks.
 pub const RUSTLS_SESSION_V0_23_23: LibraryConvention = LibraryConvention {
     package: "rustls",
     family: "rustls-session-0.23.23",
     releases: Releases(&[((0, 23, 23), (0, 23, 45))]),
-    checksums: &[],
+    checksums: &[
+        // src/conn.rs, 0.23.23
+        (
+            "src/conn.rs",
+            [
+                0x4b, 0xe9, 0xec, 0xc7, 0xda, 0xdc, 0x70, 0x0f, 0x3b, 0xbb, 0xbf, 0x90, 0xd0, 0xea,
+                0x4f, 0x5f,
+            ],
+        ),
+        // src/conn.rs, 0.23.24 through 0.23.26
+        (
+            "src/conn.rs",
+            [
+                0x15, 0x67, 0x4c, 0x26, 0xef, 0xce, 0xc4, 0xbb, 0xef, 0x99, 0xc4, 0x62, 0x63, 0x11,
+                0x24, 0x1f,
+            ],
+        ),
+        // src/conn.rs, 0.23.27
+        (
+            "src/conn.rs",
+            [
+                0x84, 0xb9, 0x87, 0x76, 0x46, 0xc0, 0x17, 0x92, 0x6e, 0x43, 0x12, 0x3c, 0xf4, 0x6a,
+                0x11, 0xaf,
+            ],
+        ),
+        // src/conn.rs, 0.23.28 and 0.23.29
+        (
+            "src/conn.rs",
+            [
+                0x94, 0xc2, 0xea, 0x9f, 0x80, 0x6b, 0xbf, 0x52, 0x0c, 0x70, 0x90, 0xa4, 0x21, 0xf3,
+                0x1b, 0x6b,
+            ],
+        ),
+        // src/conn.rs, 0.23.30
+        (
+            "src/conn.rs",
+            [
+                0xac, 0x5d, 0xec, 0x93, 0x7b, 0xd6, 0xb2, 0x71, 0x9f, 0x42, 0x91, 0x8c, 0xfa, 0x11,
+                0x37, 0x8e,
+            ],
+        ),
+        // src/conn.rs, 0.23.31 through 0.23.40
+        (
+            "src/conn.rs",
+            [
+                0x33, 0xbc, 0xb4, 0x3f, 0xae, 0x3d, 0x2c, 0xca, 0xee, 0x70, 0xda, 0xf6, 0xc5, 0xac,
+                0x82, 0xb3,
+            ],
+        ),
+        // src/conn.rs, 0.23.41 through 0.23.44
+        (
+            "src/conn.rs",
+            [
+                0x8f, 0xa3, 0x7e, 0xb2, 0x55, 0xc2, 0x79, 0xd2, 0x65, 0xeb, 0xf4, 0x55, 0x33, 0x08,
+                0xf2, 0xa6,
+            ],
+        ),
+        // src/conn.rs, 0.23.45
+        (
+            "src/conn.rs",
+            [
+                0x1e, 0x63, 0xf0, 0xda, 0x2b, 0x28, 0x4d, 0xbb, 0x5f, 0x01, 0x54, 0x0f, 0x44, 0xc8,
+                0x46, 0x30,
+            ],
+        ),
+        // src/common_state.rs, 0.23.23
+        (
+            "src/common_state.rs",
+            [
+                0x5a, 0x72, 0x91, 0xec, 0x53, 0x89, 0x47, 0x80, 0xc2, 0xf3, 0x62, 0x24, 0x52, 0x25,
+                0x21, 0xf5,
+            ],
+        ),
+        // src/common_state.rs, 0.23.24 through 0.23.26
+        (
+            "src/common_state.rs",
+            [
+                0xb9, 0xdc, 0xf7, 0x7f, 0x89, 0xdf, 0x2d, 0xc0, 0x50, 0x0d, 0x7f, 0x02, 0x90, 0x20,
+                0x8e, 0x49,
+            ],
+        ),
+        // src/common_state.rs, 0.23.27
+        (
+            "src/common_state.rs",
+            [
+                0xff, 0x03, 0x3f, 0x97, 0xb7, 0xca, 0x5f, 0x8c, 0xea, 0x86, 0xb5, 0x12, 0x5d, 0xcc,
+                0x9e, 0xd8,
+            ],
+        ),
+        // src/common_state.rs, 0.23.28 through 0.23.32
+        (
+            "src/common_state.rs",
+            [
+                0xa6, 0xab, 0xcc, 0x1e, 0xdc, 0x14, 0x48, 0x4c, 0x17, 0x3f, 0x7e, 0x8d, 0x45, 0x4a,
+                0x03, 0x38,
+            ],
+        ),
+        // src/common_state.rs, 0.23.33 through 0.23.42
+        (
+            "src/common_state.rs",
+            [
+                0x29, 0xf2, 0x08, 0xb6, 0xde, 0xf3, 0x56, 0x8a, 0xcd, 0x8d, 0x58, 0x90, 0x97, 0xa9,
+                0xfa, 0x54,
+            ],
+        ),
+        // src/common_state.rs, 0.23.43 through 0.23.45
+        (
+            "src/common_state.rs",
+            [
+                0x86, 0xdf, 0x07, 0x52, 0x5f, 0x81, 0x1f, 0x24, 0x6f, 0xcc, 0x0c, 0xa9, 0xcb, 0x5e,
+                0x74, 0x7c,
+            ],
+        ),
+        // src/record_layer.rs, 0.23.23 through 0.23.45
+        (
+            "src/record_layer.rs",
+            [
+                0x7b, 0x19, 0xf9, 0xd4, 0x00, 0x63, 0xfa, 0xe6, 0x52, 0x0b, 0xe7, 0xfe, 0x5e, 0xca,
+                0x80, 0xfa,
+            ],
+        ),
+    ],
 };
 
 /// reqwest's connection types as 0.12.14 through 0.13.5 implement them,
@@ -2536,7 +2673,7 @@ pub const RUSTLS_SESSION_V0_23_23: LibraryConvention = LibraryConvention {
 pub const REQWEST_CONN_V0_12_14: LibraryConvention = LibraryConvention {
     package: "reqwest",
     family: "reqwest-conn-0.12.14",
-    releases: Releases(&[((0, 12, 14), (0, 13, 5))]),
+    releases: Releases(&[((0, 12, 14), (0, 12, 28)), ((0, 13, 0), (0, 13, 5))]),
     checksums: &[
         // src/connect.rs, 0.12.14 and 0.12.15
         (
@@ -3032,7 +3169,8 @@ pub const SPROCKETS_TLS_SERVER_D2B68E4: GitConvention = GitConvention {
 
 /// hashbrown's `RawTable` as 0.12.3 through 0.17.1 lay it out, read in
 /// every release of that range (`src/raw/mod.rs`, `src/raw.rs` from
-/// 0.17.0, beside `src/map.rs` and `src/set.rs`): `HashMap` is
+/// 0.17.0, beside `src/map.rs` and `src/set.rs`, and `is_full` in
+/// `src/control/tag.rs` from 0.15.2): `HashMap` is
 /// `{ hash_builder, table: RawTable<(K, V), A> }`, `HashSet` is
 /// `{ map: HashMap<T, (), S, A> }`, and a `RawTable`'s `table` is the
 /// `RawTableInner` holding `bucket_mask`, `ctrl: NonNull<u8>`,
@@ -3044,13 +3182,430 @@ pub const SPROCKETS_TLS_SERVER_D2B68E4: GitConvention = GitConvention {
 /// `i` is the `T` ending `i` buckets below it (`from_base_index` takes
 /// `base.sub(index)`, `as_ptr` one `T` below that). std vendors the
 /// crate, so its maps follow whichever release the toolchain carries;
-/// the version is read off the declarations either way. No reviewed
-/// file's checksum is listed: rustc's DWARF 4 records none to check.
+/// the version is read off the declarations either way. The checksums
+/// are of every reviewed revision, which rustc's DWARF 4 never records
+/// but the matrix suite checks.
 pub const HASHBROWN_TABLE_V0_12_3: LibraryConvention = LibraryConvention {
     package: "hashbrown",
     family: "hashbrown-table-0.12.3",
-    releases: Releases(&[((0, 12, 3), (0, 17, 1))]),
-    checksums: &[],
+    releases: Releases(&[
+        ((0, 12, 3), (0, 12, 3)),
+        ((0, 13, 0), (0, 13, 2)),
+        ((0, 14, 0), (0, 14, 5)),
+        ((0, 15, 0), (0, 15, 5)),
+        ((0, 16, 0), (0, 16, 1)),
+        ((0, 17, 0), (0, 17, 1)),
+    ]),
+    checksums: &[
+        // src/map.rs, 0.12.3
+        (
+            "src/map.rs",
+            [
+                0x41, 0x62, 0x93, 0x69, 0xcf, 0xa4, 0xfe, 0x48, 0x27, 0xec, 0xbc, 0xd0, 0x0a, 0xe0,
+                0x9f, 0x37,
+            ],
+        ),
+        // src/map.rs, 0.13.0 and 0.13.1
+        (
+            "src/map.rs",
+            [
+                0x0c, 0x94, 0xab, 0x52, 0x69, 0x43, 0x13, 0x5a, 0x9a, 0x3f, 0x39, 0xf1, 0x75, 0xc5,
+                0x85, 0x9a,
+            ],
+        ),
+        // src/map.rs, 0.13.2
+        (
+            "src/map.rs",
+            [
+                0x1d, 0x6a, 0x5d, 0x74, 0xdf, 0xba, 0x52, 0x46, 0x1b, 0x40, 0xac, 0x24, 0x82, 0x6b,
+                0x84, 0x32,
+            ],
+        ),
+        // src/map.rs, 0.14.0
+        (
+            "src/map.rs",
+            [
+                0x5c, 0xc7, 0xb6, 0x07, 0x6e, 0xf6, 0x67, 0x48, 0xdf, 0x2f, 0xba, 0x5a, 0x28, 0xa2,
+                0x35, 0x02,
+            ],
+        ),
+        // src/map.rs, 0.14.1
+        (
+            "src/map.rs",
+            [
+                0x34, 0xf5, 0xd0, 0x83, 0x6d, 0x98, 0xe1, 0x59, 0x3b, 0x76, 0x07, 0x8b, 0x56, 0x81,
+                0xd6, 0xea,
+            ],
+        ),
+        // src/map.rs, 0.14.2
+        (
+            "src/map.rs",
+            [
+                0xc4, 0x06, 0x24, 0x5c, 0x4e, 0xc4, 0x97, 0x67, 0x6f, 0x29, 0x0a, 0xe1, 0x0f, 0xec,
+                0x10, 0x51,
+            ],
+        ),
+        // src/map.rs, 0.14.3
+        (
+            "src/map.rs",
+            [
+                0x90, 0x31, 0xa7, 0x89, 0xc1, 0x9c, 0x8e, 0x60, 0x7d, 0x4f, 0xec, 0x2f, 0xde, 0x97,
+                0xc9, 0x1a,
+            ],
+        ),
+        // src/map.rs, 0.14.4 and 0.14.5
+        (
+            "src/map.rs",
+            [
+                0x05, 0xfc, 0xd0, 0x83, 0xad, 0x7c, 0x6b, 0xcf, 0x07, 0xbe, 0x92, 0xdd, 0x12, 0x8f,
+                0x94, 0x68,
+            ],
+        ),
+        // src/map.rs, 0.15.0
+        (
+            "src/map.rs",
+            [
+                0xd1, 0xb1, 0x36, 0x8b, 0x60, 0xb3, 0x9d, 0xb6, 0xb8, 0x08, 0xe7, 0xc2, 0x16, 0x33,
+                0x9d, 0xc0,
+            ],
+        ),
+        // src/map.rs, 0.15.1
+        (
+            "src/map.rs",
+            [
+                0xee, 0x63, 0x6b, 0xc4, 0x3e, 0x4e, 0xf2, 0xac, 0x17, 0x9f, 0x44, 0x22, 0x6b, 0x5b,
+                0x27, 0xc1,
+            ],
+        ),
+        // src/map.rs, 0.15.2
+        (
+            "src/map.rs",
+            [
+                0xfd, 0xc2, 0x24, 0x3f, 0x81, 0x06, 0xcb, 0xdb, 0x72, 0xff, 0x32, 0xb5, 0x83, 0x3e,
+                0xbe, 0x8b,
+            ],
+        ),
+        // src/map.rs, 0.15.3
+        (
+            "src/map.rs",
+            [
+                0xe1, 0x13, 0x48, 0x38, 0x3c, 0xf5, 0xcb, 0x9a, 0xcf, 0x85, 0x5b, 0x40, 0x86, 0xc4,
+                0xf0, 0xb7,
+            ],
+        ),
+        // src/map.rs, 0.15.4
+        (
+            "src/map.rs",
+            [
+                0xf3, 0x9f, 0xc6, 0x12, 0x8f, 0x43, 0xd0, 0xe8, 0xf3, 0x1e, 0x8d, 0x5a, 0x42, 0xde,
+                0xc8, 0x6f,
+            ],
+        ),
+        // src/map.rs, 0.15.5
+        (
+            "src/map.rs",
+            [
+                0x75, 0x01, 0x9d, 0x1d, 0x6b, 0x73, 0xc8, 0x0a, 0x86, 0x84, 0x3e, 0x5b, 0xab, 0x7c,
+                0xac, 0x12,
+            ],
+        ),
+        // src/map.rs, 0.16.0
+        (
+            "src/map.rs",
+            [
+                0x30, 0xa9, 0x31, 0x8b, 0x67, 0x03, 0x17, 0xd3, 0x59, 0xb7, 0xfd, 0xbe, 0xad, 0x86,
+                0x26, 0x84,
+            ],
+        ),
+        // src/map.rs, 0.16.1
+        (
+            "src/map.rs",
+            [
+                0x1d, 0xff, 0x53, 0x18, 0xb3, 0x84, 0x1f, 0xf7, 0x36, 0x71, 0xad, 0xde, 0x53, 0x0b,
+                0x5f, 0x2e,
+            ],
+        ),
+        // src/map.rs, 0.17.0 and 0.17.1
+        (
+            "src/map.rs",
+            [
+                0x5f, 0x06, 0x4d, 0x32, 0xfe, 0x49, 0x6a, 0x8e, 0xf3, 0x19, 0x52, 0x65, 0x99, 0x24,
+                0x10, 0x68,
+            ],
+        ),
+        // src/set.rs, 0.12.3
+        (
+            "src/set.rs",
+            [
+                0x5a, 0xfc, 0xfa, 0x1b, 0xba, 0x1e, 0xc9, 0x11, 0xf3, 0xb0, 0x85, 0x33, 0xba, 0x87,
+                0xe4, 0xc6,
+            ],
+        ),
+        // src/set.rs, 0.13.0 and 0.13.1
+        (
+            "src/set.rs",
+            [
+                0x0d, 0x22, 0x7a, 0x84, 0x81, 0x16, 0x0f, 0x38, 0xf2, 0x24, 0x7d, 0xaf, 0xcd, 0x9c,
+                0x8c, 0xf9,
+            ],
+        ),
+        // src/set.rs, 0.13.2
+        (
+            "src/set.rs",
+            [
+                0xaa, 0x29, 0x2f, 0x56, 0x8c, 0xb0, 0x22, 0x2b, 0x2c, 0x17, 0x78, 0x32, 0x9c, 0x09,
+                0x29, 0xab,
+            ],
+        ),
+        // src/set.rs, 0.14.0
+        (
+            "src/set.rs",
+            [
+                0x43, 0xe6, 0x06, 0x77, 0x95, 0x61, 0x13, 0xdc, 0x28, 0xc4, 0x2d, 0xaa, 0x6e, 0x58,
+                0x40, 0x8e,
+            ],
+        ),
+        // src/set.rs, 0.14.1
+        (
+            "src/set.rs",
+            [
+                0x26, 0x4c, 0xc9, 0x38, 0x32, 0x66, 0x51, 0xdb, 0x8e, 0x92, 0x96, 0x11, 0x1c, 0xee,
+                0xf4, 0x92,
+            ],
+        ),
+        // src/set.rs, 0.14.2
+        (
+            "src/set.rs",
+            [
+                0x85, 0xa1, 0xa7, 0x40, 0x3e, 0x4f, 0x0e, 0x0f, 0xc4, 0x59, 0x73, 0x0c, 0xb4, 0x12,
+                0x71, 0x8d,
+            ],
+        ),
+        // src/set.rs, 0.14.3
+        (
+            "src/set.rs",
+            [
+                0xf3, 0xb0, 0x58, 0x40, 0x01, 0xd1, 0x3a, 0x94, 0x95, 0xdd, 0xcf, 0xd2, 0x8a, 0xef,
+                0x26, 0xa0,
+            ],
+        ),
+        // src/set.rs, 0.14.4
+        (
+            "src/set.rs",
+            [
+                0xcb, 0xb8, 0xdd, 0xb7, 0x81, 0x08, 0x34, 0xc9, 0x02, 0xf8, 0x5d, 0x77, 0x42, 0x0f,
+                0x1f, 0x5d,
+            ],
+        ),
+        // src/set.rs, 0.14.5
+        (
+            "src/set.rs",
+            [
+                0xc5, 0x12, 0x60, 0x1e, 0xae, 0x9e, 0x5f, 0xc6, 0x3f, 0xae, 0x2b, 0x33, 0xc4, 0xd7,
+                0x74, 0x0e,
+            ],
+        ),
+        // src/set.rs, 0.15.0
+        (
+            "src/set.rs",
+            [
+                0x37, 0xc3, 0xc9, 0xae, 0xbe, 0x4c, 0x59, 0xf2, 0xe1, 0xb9, 0x3a, 0x3a, 0x5c, 0x86,
+                0xe1, 0x03,
+            ],
+        ),
+        // src/set.rs, 0.15.1
+        (
+            "src/set.rs",
+            [
+                0x54, 0x52, 0x71, 0xf8, 0x80, 0x31, 0x0f, 0x3b, 0x9b, 0xe9, 0x54, 0xd6, 0xf2, 0x20,
+                0xdd, 0xed,
+            ],
+        ),
+        // src/set.rs, 0.15.2
+        (
+            "src/set.rs",
+            [
+                0xb5, 0xd4, 0x44, 0x38, 0xef, 0x1f, 0x92, 0x7a, 0x23, 0xe4, 0x1b, 0x8b, 0x27, 0xe3,
+                0x8c, 0x33,
+            ],
+        ),
+        // src/set.rs, 0.15.3
+        (
+            "src/set.rs",
+            [
+                0x2f, 0x75, 0x91, 0xa8, 0xc9, 0x7e, 0x2c, 0xb0, 0xbc, 0xf0, 0xeb, 0x87, 0x36, 0x4d,
+                0x12, 0xae,
+            ],
+        ),
+        // src/set.rs, 0.15.4 through 0.16.0
+        (
+            "src/set.rs",
+            [
+                0x83, 0xb6, 0xa5, 0xc0, 0xfe, 0x68, 0x50, 0x18, 0x1d, 0x34, 0x60, 0x65, 0x7a, 0x05,
+                0x85, 0x4c,
+            ],
+        ),
+        // src/set.rs, 0.16.1
+        (
+            "src/set.rs",
+            [
+                0x99, 0xc6, 0xb7, 0xca, 0x83, 0x2c, 0xdb, 0xa9, 0xbd, 0x8d, 0x8b, 0xb0, 0x84, 0x58,
+                0xc8, 0xef,
+            ],
+        ),
+        // src/set.rs, 0.17.0 and 0.17.1
+        (
+            "src/set.rs",
+            [
+                0x87, 0xa6, 0x02, 0xd9, 0x0a, 0x47, 0xf2, 0x6d, 0xa5, 0x01, 0xaf, 0xa2, 0x85, 0xc4,
+                0x25, 0x16,
+            ],
+        ),
+        // src/raw/mod.rs, 0.12.3
+        (
+            "src/raw/mod.rs",
+            [
+                0xf3, 0xeb, 0xca, 0x7c, 0x61, 0x98, 0x34, 0xfb, 0xc5, 0xaf, 0x49, 0x05, 0xb3, 0x4b,
+                0xb2, 0x4d,
+            ],
+        ),
+        // src/raw/mod.rs, 0.13.0
+        (
+            "src/raw/mod.rs",
+            [
+                0x9a, 0x00, 0xd3, 0xce, 0x50, 0x98, 0x06, 0x56, 0x04, 0x9c, 0xdd, 0x5b, 0xfd, 0xe9,
+                0x1b, 0x99,
+            ],
+        ),
+        // src/raw/mod.rs, 0.13.1
+        (
+            "src/raw/mod.rs",
+            [
+                0xf2, 0x71, 0x97, 0xb4, 0xa4, 0xfc, 0x1d, 0x4c, 0x94, 0xae, 0x6c, 0xa0, 0x70, 0x2e,
+                0x3a, 0xe6,
+            ],
+        ),
+        // src/raw/mod.rs, 0.13.2
+        (
+            "src/raw/mod.rs",
+            [
+                0xf4, 0x59, 0x7e, 0x1d, 0x44, 0x55, 0x25, 0x8c, 0x7c, 0x2d, 0xbc, 0x2c, 0x60, 0x9c,
+                0xe2, 0x33,
+            ],
+        ),
+        // src/raw/mod.rs, 0.14.0
+        (
+            "src/raw/mod.rs",
+            [
+                0xa5, 0xd5, 0x34, 0xa9, 0xa1, 0xa0, 0x2c, 0x1c, 0x43, 0xdd, 0xbf, 0x1f, 0x02, 0x3c,
+                0x11, 0x29,
+            ],
+        ),
+        // src/raw/mod.rs, 0.14.1
+        (
+            "src/raw/mod.rs",
+            [
+                0xa5, 0x9a, 0xa5, 0xfc, 0x96, 0xcb, 0x91, 0x97, 0x12, 0xb8, 0x53, 0x4f, 0x07, 0xe0,
+                0xfc, 0xaf,
+            ],
+        ),
+        // src/raw/mod.rs, 0.14.2
+        (
+            "src/raw/mod.rs",
+            [
+                0x05, 0x58, 0x72, 0x7e, 0x46, 0xf9, 0xf3, 0xa4, 0xc8, 0xa7, 0xd4, 0xf2, 0xea, 0x95,
+                0x95, 0xb0,
+            ],
+        ),
+        // src/raw/mod.rs, 0.14.3
+        (
+            "src/raw/mod.rs",
+            [
+                0x55, 0x1b, 0x64, 0x6f, 0x50, 0x7a, 0xf1, 0xdb, 0x8f, 0xdb, 0x7a, 0x79, 0xfb, 0x23,
+                0x0b, 0x7c,
+            ],
+        ),
+        // src/raw/mod.rs, 0.14.4
+        (
+            "src/raw/mod.rs",
+            [
+                0x05, 0x74, 0x6b, 0xaa, 0xf0, 0x20, 0x5e, 0x11, 0xde, 0x58, 0x78, 0x13, 0xc9, 0xba,
+                0x07, 0xf5,
+            ],
+        ),
+        // src/raw/mod.rs, 0.14.5
+        (
+            "src/raw/mod.rs",
+            [
+                0x39, 0x53, 0xd5, 0x31, 0xe4, 0x60, 0x6f, 0xc7, 0xb2, 0x52, 0xf4, 0xfd, 0x90, 0xa4,
+                0x70, 0x79,
+            ],
+        ),
+        // src/raw/mod.rs, 0.15.0
+        (
+            "src/raw/mod.rs",
+            [
+                0x23, 0xc5, 0xba, 0xab, 0x03, 0x46, 0x75, 0x6e, 0xdb, 0x95, 0xee, 0xa1, 0x39, 0xad,
+                0xe5, 0x60,
+            ],
+        ),
+        // src/raw/mod.rs, 0.15.1
+        (
+            "src/raw/mod.rs",
+            [
+                0x66, 0x4a, 0x30, 0xf7, 0x32, 0x53, 0xda, 0x4c, 0xce, 0xbb, 0x54, 0xab, 0x1f, 0x0e,
+                0x15, 0xdc,
+            ],
+        ),
+        // src/raw/mod.rs, 0.15.2
+        (
+            "src/raw/mod.rs",
+            [
+                0x3f, 0x78, 0x3b, 0x11, 0xaf, 0x11, 0x19, 0xf7, 0x3d, 0xc1, 0xf1, 0x8f, 0x1f, 0x19,
+                0x3d, 0x5e,
+            ],
+        ),
+        // src/raw/mod.rs, 0.15.3 through 0.16.0
+        (
+            "src/raw/mod.rs",
+            [
+                0x5d, 0x3b, 0x64, 0x71, 0x9e, 0xe6, 0x4b, 0x75, 0x78, 0xbc, 0x74, 0xbe, 0x56, 0xa5,
+                0xef, 0x35,
+            ],
+        ),
+        // src/raw/mod.rs, 0.16.1
+        (
+            "src/raw/mod.rs",
+            [
+                0xd4, 0x74, 0x3e, 0x4e, 0x52, 0x6b, 0x3c, 0xa0, 0x80, 0x4e, 0x46, 0x7d, 0xc6, 0xa5,
+                0xbf, 0x88,
+            ],
+        ),
+        // src/raw.rs, 0.17.0 and 0.17.1
+        (
+            "src/raw.rs",
+            [
+                0xda, 0x13, 0x52, 0x10, 0x4b, 0x49, 0x38, 0xbc, 0x72, 0x89, 0xa2, 0xca, 0xd1, 0xb5,
+                0xe1, 0xe6,
+            ],
+        ),
+        // src/control/tag.rs, 0.15.2 through 0.16.1
+        (
+            "src/control/tag.rs",
+            [
+                0x8d, 0x1d, 0xbc, 0x37, 0x6b, 0x4c, 0x6e, 0x81, 0xb1, 0x28, 0xda, 0xf6, 0x0e, 0xb1,
+                0xea, 0xa3,
+            ],
+        ),
+        // src/control/tag.rs, 0.17.0 and 0.17.1
+        (
+            "src/control/tag.rs",
+            [
+                0x29, 0xb0, 0x20, 0x44, 0x8e, 0x8b, 0x8a, 0xbb, 0xc2, 0x10, 0x13, 0xf0, 0x51, 0xb6,
+                0x5e, 0x9a,
+            ],
+        ),
+    ],
 };
 
 /// The reviewed implementation a version selects, or which side of the
