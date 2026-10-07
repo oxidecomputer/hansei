@@ -2154,7 +2154,7 @@ mod tests {
             stats.unsupported(),
             [
                 "rustc 2.999.0 is newer than the supported version range: 1.97.0-1.98.1",
-                "tokio 1.999.0 is newer than the supported version range: 1.47.0-1.53.1",
+                "tokio 1.999.0 is newer than the supported version range: 1.47.0-1.53.2",
                 "rustls 0.23.22 is older than the supported version range: \
                  0.23.23-0.23.45",
                 "tokio-rustls 0.27.0 is newer than the supported version range: \

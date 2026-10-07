@@ -9938,7 +9938,7 @@ mod tests {
                 "not the tokio crate",
             ),
             (
-                &format!("{ROOT}/tokio-1.53.2/src/time/interval.rs"),
+                &format!("{ROOT}/tokio-1.53.3/src/time/interval.rs"),
                 None,
                 "above the reviewed range",
             ),

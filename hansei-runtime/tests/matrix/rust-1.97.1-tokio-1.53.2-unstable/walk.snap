@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: futurelock
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 45 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -41,7 +41,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -55,7 +55,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -177,7 +177,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: simple-await
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 45 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -216,7 +216,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -230,7 +230,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -352,7 +352,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: nested-await
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 45 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -391,7 +391,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -405,7 +405,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -527,7 +527,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: dyn-future
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 39 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 38 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -566,7 +566,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -580,7 +580,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -702,7 +702,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: select-combinator
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 45 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -741,7 +741,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -755,7 +755,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -877,7 +877,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: many-tasks
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 45 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -916,7 +916,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -930,7 +930,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (5 types)
+  ok      JoinHandle.raw (4 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -1052,7 +1052,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: sleep-join
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 45 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1091,7 +1091,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -1105,7 +1105,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -1227,7 +1227,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: channels
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 30 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 29 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1266,7 +1266,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -1280,7 +1280,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (8 types)
+  ok      JoinHandle.raw (7 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -1402,7 +1402,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: unordered
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 42 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1441,7 +1441,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -1455,7 +1455,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -1577,7 +1577,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: joinset
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 24 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 23 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1616,7 +1616,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -1630,7 +1630,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -1752,7 +1752,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: ct-runtime
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 45 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1791,7 +1791,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -1805,7 +1805,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -1927,7 +1927,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: local-set
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 42 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1966,7 +1966,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -1980,7 +1980,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -2102,7 +2102,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: local-set-timer
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 42 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2141,7 +2141,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -2155,7 +2155,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -2277,7 +2277,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: local-set-io
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 40 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 39 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2316,7 +2316,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -2330,7 +2330,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -2452,7 +2452,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: foreign-runtime
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 42 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2491,7 +2491,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -2505,7 +2505,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -2627,7 +2627,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: blocking-pool
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 45 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2666,7 +2666,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -2680,7 +2680,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -2802,7 +2802,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: delegation-cases
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 45 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2841,7 +2841,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -2855,7 +2855,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -2977,7 +2977,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: armed-select
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 27 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 26 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3016,7 +3016,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -3030,7 +3030,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -3152,7 +3152,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: watch-stream
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 42 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3191,7 +3191,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -3205,7 +3205,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -3327,7 +3327,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      StreamMap.entry.key
 
 program: http-conns
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 28 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 27 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3366,7 +3366,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -3380,7 +3380,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (7 types)
+  ok      JoinHandle.raw (6 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -3502,7 +3502,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: two-releases
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 45 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3541,7 +3541,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -3555,7 +3555,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (6 types)
+  ok      JoinHandle.raw (5 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -3677,7 +3677,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: tls-conns
-walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 0 broken, 30 absent
+walk contract (tokio 1.53.2, rustc 1.97.1 (8bab26f4f 2026-07-14)): 172 entries, 0 broken, 29 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3716,7 +3716,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Vtable.drop_join_handle_slow
   ok      Vtable.drop_abort_handle
   ok      Vtable.shutdown
-  absent  Vtable.spawn_location_offset — the target was built without tokio_unstable
+  ok      Vtable.spawn_location_offset
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
@@ -3730,7 +3730,7 @@ walk contract (tokio 1.53.1, rustc 1.98.1 (48a229cea 2026-09-01)): 172 entries, 
   ok      Sleep.deadline (family v1_53)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
-  ok      JoinHandle.raw (5 types)
+  ok      JoinHandle.raw (4 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
