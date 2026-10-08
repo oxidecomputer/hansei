@@ -35,7 +35,7 @@ cp target/release/libmdb_hansei.so hansei.so    # mdb names a module after its f
 | `::hansei CMD [args]` | Any hansei session command, answered as hansei answers it: `census`, `graph`, `threads`, `trace 12 -v`, `print …`. An address in front (`addr::hansei whatis`) is passed as the last word. |
 | `::tokio_tasks [-w F A] [-W F A] [tasks flags]` | hansei's `tasks`. Piped, it emits the kept tasks' addresses. |
 | `addr::tokio_task [-v] [-w F A] [-W F A]` | One row per task (`-v`: hansei's full `task` view). With filters it passes on only the tasks they keep, so it works as a filter stage in a pipe. |
-| `addr::tokio_trace [-v] [--native]` | The task's async backtrace. |
+| `addr::tokio_trace [-v] [--native] [-s] [--context N]` | The task's async backtrace. `--native` merges in the polling thread's own frames, each placed in source from DWARF as `::srcstack` places them, inlined frames included. `-s` lists N lines of source either side (default 2) under each await site and native frame, the line in bold, as `::srcstack -v` does. |
 | `::tokio_workers [-v] [-q]` | Every worker, as `::cpuinfo` shows CPUs: runtime, index, lwp, state, tick, queue depth and the task it is polling, then each runtime's inject queue. `-v` lists each worker's LIFO slot, local run queue and top frame. Piped, it emits the polled tasks (`-q`: queued ones too), so `::tokio_workers \| ::tokio_trace` traces what every worker is running. |
 | `::walk tokio_task` | Every task hansei finds, by header address. That is the start of the task's allocation, so `::whatis` and the rest of mdb understand it too. |
 

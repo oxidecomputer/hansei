@@ -302,6 +302,36 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
     STATE.with(|s| f(&mut s.borrow_mut()))
 }
 
+/// The lookups above, lent to the hansei session so `::tokio_trace`
+/// places native frames and lists source the way `::srcstack` does.
+pub(crate) struct MdbSource;
+
+impl hansei::embed::SourceLines for MdbSource {
+    fn locate(&self, pc: u64) -> Vec<hansei::embed::SourceFrame> {
+        let objects = loaded_objects();
+        with_state(|st| answer(st, &objects, pc, pc))
+            .map(|a| a.frames)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|f| {
+                Some(hansei::embed::SourceFrame {
+                    function: f.function,
+                    file: f.file?,
+                    line: f.line,
+                    column: f.column,
+                    inlined: f.inlined,
+                })
+            })
+            .collect()
+    }
+
+    fn around(&self, file: &str, line: u32, context: u32) -> Result<Vec<String>, String> {
+        with_state(|st| source_context(st, file, line, context, ""))
+            .map(|text| text.lines().map(str::to_owned).collect())
+            .ok_or_else(|| format!("source not found: {file}; see ::srcpath"))
+    }
+}
+
 // ---------------------------------------------------------------------
 // dcmds
 

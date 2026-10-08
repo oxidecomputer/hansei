@@ -419,6 +419,8 @@ fn print_root_chain<T: proc::Target>(
         theme,
         fit: session.fit_width(theme),
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
+        source: session.source_lines,
+        context: None,
     };
     exec_trace_root(session, root, &opts, out)
 }
@@ -599,6 +601,8 @@ pub(crate) fn exec_locals<T: proc::Target>(
         theme,
         fit: session.fit_width(theme),
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
+        source: session.source_lines,
+        context: None,
     };
     let extents = session.extents();
     let census = session.census();
@@ -776,6 +780,8 @@ fn print_cursor_frame<T: proc::Target>(
         theme,
         fit: session.fit_width(theme),
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
+        source: session.source_lines,
+        context: None,
     };
     let wait = match Some(n) == chain.frames.len().checked_sub(1) {
         true => resolved.wait.as_deref(),

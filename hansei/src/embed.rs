@@ -21,6 +21,8 @@
 //! - [`tasks`] selects tasks with the `tasks` filters and hands back
 //!   what a host needs to name each one itself — above all its address,
 //!   which is what a debugger pipes between commands.
+//! - [`set_source_lines`] lends the session source lines the host can
+//!   read and hansei cannot, for `trace` to print.
 //!
 //! The session borrows the target, the bundle and the options, so the
 //! host owns all three and keeps them alive at least as long as it.
@@ -109,6 +111,52 @@ pub fn run<T: Target>(
         repl::execute_into(session, line, out)?,
         crate::Flow::Continue
     ))
+}
+
+/// Source lines a host lends the session. The bundle records where
+/// each await is written but no line tables, so a native frame's pc
+/// places nowhere in source and no source text is ever read; a host
+/// that can read the program's DWARF and find its sources — a debugger
+/// — answers both here.
+///
+/// With one lent ([`set_source_lines`]), `trace --native` places each
+/// native frame in source, and `trace --source` lists the source
+/// around every await site and native frame.
+pub trait SourceLines {
+    /// Where the code at `pc` is written: one frame per function
+    /// inlined there, innermost first, the function `pc` is in last.
+    /// `pc` is a lookup address, already backed into the call for a
+    /// return address. Empty where nothing is known.
+    fn locate(&self, pc: u64) -> Vec<SourceFrame>;
+
+    /// `context` lines either side of `line` in `file`, as the file is
+    /// named by DWARF or by an await site, one string per line and the
+    /// line itself marked however the host marks it. An error is the
+    /// host's own words for why it has no source to show.
+    fn around(
+        &self,
+        file: &str,
+        line: u32,
+        context: u32,
+    ) -> std::result::Result<Vec<String>, String>;
+}
+
+/// One frame of [`SourceLines::locate`]'s answer.
+#[derive(Clone, Debug)]
+pub struct SourceFrame {
+    /// The function, demangled.
+    pub function: Option<String>,
+    pub file: String,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    /// Inlined into the frame after it, rather than the function the
+    /// pc is in.
+    pub inlined: bool,
+}
+
+/// Lend the session the host's source lines; see [`SourceLines`].
+pub fn set_source_lines<'b, T: Target>(session: &mut Session<'b, T>, lines: &'b dyn SourceLines) {
+    session.source_lines = Some(lines);
 }
 
 /// One task, as a host needs to name it and pass it on.

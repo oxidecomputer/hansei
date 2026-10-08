@@ -3077,6 +3077,31 @@ mod tests {
         assert!(target.is_none());
     }
 
+    /// `--source` and `--context` parse for a host's sake, `--context`
+    /// in hex too, since mdb hands a dcmd its numbers as `0x…`.
+    #[test]
+    fn test_trace_parses_source_and_context() {
+        for (line, want_source, want_context) in [
+            (&["trace", "12", "-s"][..], true, None),
+            (
+                &["trace", "12", "-s", "--context", "0x3"][..],
+                true,
+                Some(3),
+            ),
+            (&["trace", "12", "--context", "4"][..], false, Some(4)),
+        ] {
+            let Command::Trace {
+                source, context, ..
+            } = Line::try_parse_from(line)
+                .expect("trace takes --source and --context")
+                .command
+            else {
+                panic!("trace parsed as another command");
+            };
+            assert_eq!((source, context), (want_source, want_context), "{line:?}");
+        }
+    }
+
     /// A positional id still parses — the refusal that teaches the
     /// filter spelling is the command's own, not clap's bare
     /// "unexpected argument".

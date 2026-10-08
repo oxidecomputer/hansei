@@ -671,8 +671,62 @@ pub(crate) fn print_frame<'b, T: proc::Target>(
         }
     }
 
+    if let Some((file, line)) = frame.state.as_ref().and_then(|s| s.await_loc) {
+        print_source(file, line, opts, out)?;
+    }
+
     if opts.verbose {
         print_frame_verbose(ctx, frame, Some(i) == last, opts, impls, annotate, out)?;
+    }
+    Ok(())
+}
+
+/// Under a native row: where the host's source lines place its pc —
+/// each function inlined there, innermost first, then the one the pc
+/// is in, whose name the row already gives — and under `--source` the
+/// source around each. Nothing without a host lending source lines.
+fn print_native_source(pc: u64, opts: &TraceOpts<'_>, out: &mut dyn io::Write) -> Result<()> {
+    let Some(lines) = opts.source else {
+        return Ok(());
+    };
+    for f in lines.locate(pc) {
+        let loc = match (f.line, f.column) {
+            (Some(l), Some(c)) if c > 0 => format!("{}:{l}:{c}", f.file),
+            (Some(l), _) => format!("{}:{l}", f.file),
+            _ => f.file.clone(),
+        };
+        let loc = opts.theme.loc(&loc);
+        if f.inlined {
+            let function = f.function.as_deref().unwrap_or("??");
+            writeln!(out, "{DETAIL_INDENT}{function} [inlined] at {loc}")?;
+        } else {
+            writeln!(out, "{DETAIL_INDENT}at {loc}")?;
+        }
+        if let Some(line) = f.line {
+            print_source(&f.file, line, opts, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Under `--source`, the source around `file:line` as the host lends
+/// it, or the host's reason it cannot.
+fn print_source(
+    file: &str,
+    line: u32,
+    opts: &TraceOpts<'_>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let (Some(lines), Some(context)) = (opts.source, opts.context) else {
+        return Ok(());
+    };
+    match lines.around(file, line, context) {
+        Ok(text) => {
+            for l in text {
+                writeln!(out, "{ENTRY_INDENT}{l}")?;
+            }
+        }
+        Err(why) => writeln!(out, "{ENTRY_INDENT}({why})")?,
     }
     Ok(())
 }
@@ -1218,6 +1272,7 @@ fn print_native_section(
                     // The pc column and the gap after it.
                     let text = output::fit_name(text, 18 + 2, opts.fit);
                     writeln!(out, "{:#018x}  {text}", f.pc)?;
+                    print_native_source(f.pc, opts, out)?;
                 }
                 NativeLine::Fold(r) => {
                     writeln!(
@@ -1804,6 +1859,8 @@ mod native_section_tests {
             theme: output::Theme::plain(),
             fit,
             heap: None,
+            source: None,
+            context: None,
         };
         print_native_section(frames, &joined, lwp, fatal, mapped, &opts, &mut out)
             .expect("the section renders");
@@ -1832,6 +1889,117 @@ mod native_section_tests {
             lwp: Some(7),
             sender: None,
         }
+    }
+
+    /// A host's source lines for the frames below: `0x9000` is in
+    /// `mutex_lock` with a function inlined there, and only
+    /// `mutex_lock`'s file has source to show.
+    struct Lines;
+
+    impl crate::embed::SourceLines for Lines {
+        fn locate(&self, pc: u64) -> Vec<crate::embed::SourceFrame> {
+            if pc != 0x9000 {
+                return Vec::new();
+            }
+            vec![
+                crate::embed::SourceFrame {
+                    function: Some("std::sync::Mutex::lock".into()),
+                    file: "/src/sync.rs".into(),
+                    line: Some(10),
+                    column: Some(5),
+                    inlined: true,
+                },
+                crate::embed::SourceFrame {
+                    function: Some("mutex_lock".into()),
+                    file: "/src/lock.rs".into(),
+                    line: Some(20),
+                    column: None,
+                    inlined: false,
+                },
+            ]
+        }
+
+        fn around(&self, file: &str, line: u32, context: u32) -> Result<Vec<String>, String> {
+            match file {
+                "/src/lock.rs" => Ok(vec![
+                    format!("{} ...", line - context),
+                    format!("=> {line}"),
+                    format!("{} ...", line + context),
+                ]),
+                _ => Err(format!("no source for {file}")),
+            }
+        }
+    }
+
+    /// The limit test's section, with [`Lines`] lent and `context`
+    /// lines of source asked for.
+    fn section_with_lines(context: Option<u32>) -> String {
+        let chain = [BundleTypeId(10), BundleTypeId(11), BundleTypeId(12)];
+        let frames = [
+            frame(0x9000, "__lwp_park"),
+            frame(0x9010, "mutex_lock"),
+            frame(0x9020, "vmem_xalloc"),
+            poll_frame(0x9060, "nexus::saga::{closure#0}", &[10]),
+            frame(0x5010, "tokio::runtime::task::raw::poll"),
+        ];
+        let joined = stackjoin::classify(&frames, &POLL, &chain).expect("the poll frame anchors");
+        let mut out = Vec::new();
+        let opts = TraceOpts {
+            verbose: false,
+            native: true,
+            limit: Some(2),
+            render: RenderOpts {
+                depth: 4,
+                ugly: false,
+                max_string_len: reify::DEFAULT_MAX_STRING_LEN,
+                max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
+            },
+            theme: output::Theme::plain(),
+            fit: None,
+            heap: None,
+            source: Some(&Lines),
+            context,
+        };
+        print_native_section(&frames, &joined, 115, None, &|_| true, &opts, &mut out)
+            .expect("the section renders");
+        String::from_utf8(out).expect("rendered output is UTF-8")
+    }
+
+    /// A host's source lines place each native row: every function
+    /// inlined at its pc, innermost first, then the one it is in. A
+    /// row they cannot place prints as it always has.
+    #[test]
+    fn test_source_lines_place_native_rows() {
+        assert_eq!(
+            section_with_lines(None),
+            "mid-poll on lwp 115
+0x0000000000009000  __lwp_park
+      std::sync::Mutex::lock [inlined] at /src/sync.rs:10:5
+      at /src/lock.rs:20
+0x0000000000009010  mutex_lock
+[3 rows, 2 shown]
+"
+        );
+    }
+
+    /// Under `--source` each placed frame lists its source, or the
+    /// host's reason it has none.
+    #[test]
+    fn test_source_lists_under_each_placed_frame() {
+        assert_eq!(
+            section_with_lines(Some(1)),
+            "mid-poll on lwp 115
+0x0000000000009000  __lwp_park
+      std::sync::Mutex::lock [inlined] at /src/sync.rs:10:5
+        (no source for /src/sync.rs)
+      at /src/lock.rs:20
+        19 ...
+        => 20
+        21 ...
+0x0000000000009010  mutex_lock
+[3 rows, 2 shown]
+"
+        );
     }
 
     /// `--limit` applies to the section on its own: the most recent
@@ -2637,6 +2805,8 @@ mod future_trace_tests {
                 theme: output::Theme::plain(),
                 fit: None,
                 heap: None,
+                source: None,
+                context: None,
             };
             print_await_chain(
                 ctx,
@@ -3132,6 +3302,26 @@ mod trace_render_tests {
         limit: Option<usize>,
         fit: Option<usize>,
     ) -> String {
+        trace_lent(
+            ctx, bundle, core, future, verbose, theme, limit, fit, None, None,
+        )
+    }
+
+    /// [`trace_ctx`], with a host's source lines lent and `context`
+    /// lines of source asked for.
+    #[allow(clippy::too_many_arguments)]
+    fn trace_lent(
+        ctx: &hansei_runtime::tokio::bundle::Context<'_, hansei_runtime::testkit::Fixture>,
+        bundle: &hansei_bundle::Bundle,
+        core: &hansei_runtime::testkit::Fixture,
+        future: &str,
+        verbose: bool,
+        theme: output::Theme,
+        limit: Option<usize>,
+        fit: Option<usize>,
+        source: Option<&dyn crate::embed::SourceLines>,
+        context: Option<u32>,
+    ) -> String {
         let list = testkit::tasks(ctx, core);
 
         let (index, task) = list
@@ -3173,6 +3363,8 @@ mod trace_render_tests {
             theme,
             fit,
             heap: None,
+            source,
+            context,
         };
         print_await_chain(
             ctx,
@@ -3192,6 +3384,49 @@ mod trace_render_tests {
             .unwrap()
             .replace_all(&rendered, "0xADDR")
             .into_owned()
+    }
+
+    /// Source lines that answer every site with its own coordinates
+    /// and the context asked for.
+    struct EchoLines;
+
+    impl crate::embed::SourceLines for EchoLines {
+        fn locate(&self, _pc: u64) -> Vec<crate::embed::SourceFrame> {
+            Vec::new()
+        }
+
+        fn around(&self, file: &str, line: u32, context: u32) -> Result<Vec<String>, String> {
+            Ok(vec![format!("{file}:{line} ±{context}")])
+        }
+    }
+
+    /// Under `--source` an await site lists its source beneath its
+    /// detail line; a hand-written future's `defined at` is where its
+    /// `poll` is written, no place execution sits, and lists none.
+    #[test]
+    fn test_source_lists_under_each_await_site() {
+        let (bundle, core) = testkit::load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &core);
+        assert_eq!(
+            trace_lent(
+                &ctx,
+                &bundle,
+                &core,
+                "walk_shapes::chained::{async_fn_env#0}",
+                false,
+                output::Theme::plain(),
+                None,
+                None,
+                Some(&EchoLines),
+                Some(1),
+            ),
+            "#0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
+      defined at src/bin/walk-shapes.rs:44 (<no_state>, 2 locals; holds 1 pending future)
+#1  async fn      walk_shapes::chained
+      awaiting at src/bin/walk-shapes.rs:116 (Suspend0, 1 local; holds 1 pending future)
+        src/bin/walk-shapes.rs:116 ±1
+"
+        );
     }
 
     /// A frame parked in a terminal state reports the state with the
@@ -3452,6 +3687,8 @@ mod trace_render_tests {
             theme: output::Theme::plain(),
             fit: None,
             heap: None,
+            source: None,
+            context: None,
         };
         print_await_chain(
             &ctx,

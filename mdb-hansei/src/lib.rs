@@ -177,7 +177,7 @@ fn attach(flags: &[String]) -> Result<String> {
     let target = Box::into_raw(Box::new(target));
     let options = Box::into_raw(Box::new(options));
     let session = unsafe { embed::attach(&*target, bundle, &*options) };
-    let session = match session {
+    let mut session = match session {
         Ok(session) => session,
         Err(e) => {
             unsafe {
@@ -187,6 +187,7 @@ fn attach(flags: &[String]) -> Result<String> {
             return Err(e);
         }
     };
+    embed::set_source_lines(&mut session, &source::MdbSource);
     let tasks = embed::tasks(&session, &[], &[])?.len();
     let attached = Attached {
         session: ManuallyDrop::new(session),
@@ -820,8 +821,13 @@ unsafe extern "C" fn help_task() {
 unsafe extern "C" fn help_trace() {
     print(concat!(
         "Print the async backtrace of the task at addr: each await, outermost\n",
-        "last, with its source line. Further arguments go to hansei's `trace`\n",
-        "(-v for locals, --native to merge the polling thread's own frames).\n",
+        "last, with its source line. Further arguments go to hansei's `trace`:\n",
+        "  -v              locals at each await\n",
+        "  --native        merge in the polling thread's own frames, each placed\n",
+        "                  in source from DWARF as ::srcstack places them\n",
+        "  -s [--context N]  N lines of source either side (default 2) under\n",
+        "                  each await site and native frame, the line in bold\n",
+        "Moved sources: see ::srcpath.\n",
     ));
 }
 
@@ -895,7 +901,7 @@ static DCMDS: Sync<[mdb_dcmd_t; 12]> = Sync([
     ),
     dcmd(
         c"tokio_trace",
-        c":[-v] [--native]",
+        c":[-v] [--native] [-s] [--context N]",
         c"async backtrace of a tokio task",
         dcmd_trace,
         help_trace,

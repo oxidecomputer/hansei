@@ -1344,6 +1344,19 @@ pub enum Command {
         /// `config limit`.
         #[arg(long, short = 'l', value_name = "N")]
         limit: Option<usize>,
+
+        /// Print the source around each await site and each native
+        /// frame, the line itself marked. Source comes through the host
+        /// that embeds the session (mdb's `::tokio_trace -s`); the
+        /// command line has none, so the flag is hidden here.
+        #[arg(long, short = 's', hide = true)]
+        source: bool,
+
+        /// Lines of source either side under --source (default 2);
+        /// implies it. Decimal, or hex with a leading 0x, which is how
+        /// mdb hands a dcmd a number.
+        #[arg(long, value_name = "N", value_parser = parse_length, hide = true)]
+        context: Option<u64>,
     },
 
     /// Print the layout the tokio info records for a type, by its
@@ -1505,6 +1518,13 @@ struct TraceOpts<'a> {
     /// because the render happens deep inside the chain walk, which
     /// takes the walk context rather than the session.
     heap: Option<&'a dyn reify::Heap>,
+    /// The host's source lines, where it lends the session any: each
+    /// native frame of the continuation is placed in source through
+    /// them.
+    source: Option<&'a dyn embed::SourceLines>,
+    /// Lines of source either side of each await site and native
+    /// frame (`--source`); `None` lists no source.
+    context: Option<u32>,
 }
 
 /// Parse a target address: hex digits behind a required `0x`. The
@@ -1724,6 +1744,11 @@ pub struct Session<'b, T: Target> {
     /// single-target commands fall back to when given no target.
     /// Listings never read it.
     cursor: RefCell<cursor::Cursor>,
+    /// Source lines from the host that embeds the session, which can
+    /// read the program's line tables where the bundle carries none:
+    /// `trace` places native frames and lists await sites' source
+    /// through it. `None` on the command line.
+    source_lines: Option<&'b dyn embed::SourceLines>,
 }
 
 impl<'b, T: Target> Session<'b, T> {
@@ -1873,6 +1898,7 @@ impl<'b, T: Target> Session<'b, T> {
             thread_rows: OnceCell::new(),
             settings: RefCell::new(settings),
             cursor: RefCell::new(cursor::Cursor::default()),
+            source_lines: None,
         })
     }
 
@@ -2328,8 +2354,21 @@ pub fn dispatch<T: Target>(
             verbose,
             native,
             limit,
+            source,
+            context,
         } => {
             session.note_version_ceiling();
+            let context = match (source, context) {
+                (_, Some(n)) => Some(u32::try_from(n).unwrap_or(u32::MAX)),
+                (true, None) => Some(2),
+                (false, None) => None,
+            };
+            if context.is_some() && session.source_lines.is_none() {
+                anyhow::bail!(
+                    "trace --source reads source through the program that embeds hansei \
+                     (mdb's ::tokio_trace -s); this session has no source lines"
+                );
+            }
             let render = RenderOpts::from_settings(&session.settings.borrow());
             let limit = limit.or(session.settings.borrow().limit);
             let omitted = target.is_none();
@@ -2355,6 +2394,8 @@ pub fn dispatch<T: Target>(
                 theme,
                 fit: session.fit_width(theme),
                 heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
+                source: session.source_lines,
+                context,
             };
             // The cursor's root is the future it was scoped to, which
             // its address alone may not name; a typed one resolves
