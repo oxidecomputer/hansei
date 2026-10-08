@@ -786,33 +786,33 @@ rule 23: TokioIoState rev 1 origin 1
 rule 24: StdPinBoxAccess rev 1 origin 7
 rule 25: StdPinBoxPoll rev 1 origin 7
 rule 26: StdBoxAccess rev 1 origin 7
-rule 27: TokioCurrentThreadScheduler rev 1 origin 1
-rule 28: TokioMultiThreadScheduler rev 1 origin 1
+rule 27: TokioMultiThreadScheduler rev 1 origin 1
+rule 28: TokioCurrentThreadScheduler rev 1 origin 1
 rule 29: TokioBlockingScheduler rev 1 origin 1
 many_tasks::park_task::{async_fn_env#0} :: states future[task 0, task 1, coroutine rule 0] continuation rule 0 match <self>@+0 -> many_tasks::park_task::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+16 -> tokio::sync::oneshot::Receiver<u32>} coroutine rule 0 {0:Unresumed[ready,park]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee,__1]()} kind rule 0
 tokio::sync::oneshot::Receiver<u32> :: members future[poll, delegated by many_tasks::park_task::{async_fn_env#0}] continuation rule 1 primitive resource OneshotRecv rule 1 state rule 2 exclusive-pending
 alloc::sync::ArcInner<tokio::sync::oneshot::Inner<()>> :: members refcount rule 3 value data
 alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>> :: members refcount rule 3 value data
-alloc::sync::ArcInner<tokio::runtime::scheduler::current_thread::Handle> :: members refcount rule 3 value data
+alloc::sync::ArcInner<tokio::runtime::scheduler::multi_thread::handle::Handle> :: members refcount rule 3 value data
 std::sys::sync::mutex::futex::Mutex :: members lock rule 4 word 0+4 mask 0xffffffff
 alloc::sync::ArcInner<(dyn core::ops::function::Fn<(&tokio::runtime::task_hooks::TaskMeta), Output=()> + core::marker::Send + core::marker::Sync)> :: members refcount rule 3 value data
 parking_lot::raw_mutex::RawMutex :: members lock rule 5 word 0+1 mask 0x1
 alloc::sync::ArcInner<tokio::runtime::blocking::pool::Inner> :: members refcount rule 3 value data
+alloc::sync::ArcInner<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>> :: members refcount rule 3 value data
+alloc::sync::ArcInner<tokio::runtime::scheduler::multi_thread::park::Inner> :: members refcount rule 3 value data
 alloc::sync::ArcInner<tokio::runtime::park::Inner> :: members refcount rule 3 value data
 alloc::sync::ArcInner<()> :: members refcount rule 3 value data
 alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=()> + core::marker::Send + core::marker::Sync)> :: members refcount rule 3 value data
 std::collections::hash::map::HashMap<usize, std::thread::join_handle::JoinHandle<()>, std::hash::random::RandomState, alloc::alloc::Global> :: members table rule 6 mask base.table.table.bucket_mask@+8 -> usize ctrl base.table.table.ctrl.pointer@+0 -> *const u8 items base.table.table.items@+24 -> usize bucket (usize, std::thread::join_handle::JoinHandle<()>)
 alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=alloc::string::String> + core::marker::Send + core::marker::Sync)> :: members refcount rule 3 value data
 hashbrown::map::HashMap<usize, std::thread::join_handle::JoinHandle<()>, std::hash::random::RandomState, alloc::alloc::Global> :: members table rule 6 mask table.table.bucket_mask@+8 -> usize ctrl table.table.ctrl.pointer@+0 -> *const u8 items table.table.items@+24 -> usize bucket (usize, std::thread::join_handle::JoinHandle<()>)
+alloc::sync::ArcInner<tokio::runtime::scheduler::multi_thread::park::Shared> :: members refcount rule 3 value data
 alloc::sync::ArcInner<tokio::runtime::io::scheduled_io::ScheduledIo> :: members refcount rule 3 value data
 alloc::sync::ArcInner<tokio::sync::oneshot::Sender<()>> :: members refcount rule 3 value data
 alloc::sync::ArcInner<std::thread::lifecycle::Packet<()>> :: members refcount rule 3 value data
 alloc::sync::ArcInner<std::thread::thread::Inner> :: members refcount rule 3 value data
 alloc::sync::ArcInner<std::thread::scoped::ScopeData> :: members refcount rule 3 value data
-alloc::sync::ArcInner<tokio::runtime::scheduler::multi_thread::handle::Handle> :: members refcount rule 3 value data
-alloc::sync::ArcInner<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>> :: members refcount rule 3 value data
-alloc::sync::ArcInner<tokio::runtime::scheduler::multi_thread::park::Inner> :: members refcount rule 3 value data
-alloc::sync::ArcInner<tokio::runtime::scheduler::multi_thread::park::Shared> :: members refcount rule 3 value data
+alloc::sync::ArcInner<tokio::runtime::scheduler::current_thread::Handle> :: members refcount rule 3 value data
 tokio::runtime::blocking::task::BlockingTask<tokio::fs::read_dir::{impl#0}::poll_next_entry::{closure_env#0}> :: members future[task 2, poll] continuation unknown (NoRule)
 alloc::sync::ArcInner<std::sys::fs::unix::InnerReadDir> :: members refcount rule 3 value data
 alloc::sync::ArcInner<std::fs::DirEntry> :: members refcount rule 3 value data
@@ -868,8 +868,8 @@ core::pin::Pin<alloc::boxed::Box<tokio::time::sleep::Sleep, alloc::alloc::Global
 alloc::boxed::Box<tokio::time::sleep::Sleep, alloc::alloc::Global> :: members access Owned rule 26 *@+0 -> tokio::time::sleep::Sleep
 tokio::sync::notify::OwnedNotified :: members future[poll] continuation unknown (NoRule)
 alloc::sync::ArcInner<tokio::sync::notify::Notify> :: members refcount rule 3 value data
-task 0: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 27
-task 1: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 28
+task 0: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 27
+task 1: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 28
 task 2: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocking rule 29
 task 3: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocking rule 29
 task 4: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocking rule 29
