@@ -94,6 +94,7 @@ exclude_globs = [
     # pin advances, move the newly-primary module out of this list and the
     # newly-non-primary one in.
     "exegesis/src/detect/tokio_v1_47.rs",
+    "exegesis/src/detect/tokio_v1_52_0.rs",
     "exegesis/src/detect/tokio_v1_53.rs",
 ]
 
