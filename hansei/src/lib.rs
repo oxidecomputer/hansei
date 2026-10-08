@@ -54,6 +54,7 @@ mod typenames;
 pub mod types;
 mod umem;
 mod whatis;
+pub mod workers;
 
 /// The command line names a target; what to ask of it comes from
 /// `--exec`, or failing that from stdin, at a prompt or from a pipe.

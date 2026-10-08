@@ -533,6 +533,156 @@ unsafe extern "C" fn dcmd_trace(
     })
 }
 
+unsafe extern "C" fn dcmd_workers(
+    _addr: usize,
+    flags: c_uint,
+    argc: c_int,
+    argv: *const mdb_arg_t,
+) -> c_int {
+    let words = unsafe { words(argc, argv) };
+    guard(|| {
+        if flags & DCMD_ADDRSPEC != 0 {
+            return Ok((DCMD_USAGE, String::new()));
+        }
+        let mut verbose = false;
+        let mut queued = false;
+        for w in &words {
+            match w.as_str() {
+                "-v" => verbose = true,
+                "-q" => queued = true,
+                _ => return Ok((DCMD_USAGE, String::new())),
+            }
+        }
+        let piped = flags & DCMD_PIPE_OUT != 0;
+        let (attached_now, text) = with_session(|a| {
+            let workers = embed::workers(&a.session);
+            let injects = embed::injects(&a.session);
+            let tasks = select(a, &Filters::default())?;
+            let name = |addr: u64| match tasks.iter().find(|t| t.addr == addr) {
+                Some(t) => format!(
+                    "{} {}",
+                    t.id.map_or(format!("{addr:#x}"), |id| id.to_string()),
+                    t.future
+                ),
+                None => format!("{addr:#x} (not a listed task)"),
+            };
+            let ids = |addrs: &[u64]| {
+                addrs
+                    .iter()
+                    .map(
+                        |&a| match tasks.iter().find(|t| t.addr == a).and_then(|t| t.id) {
+                            Some(id) => id.to_string(),
+                            None => format!("{a:#x}"),
+                        },
+                    )
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+
+            if piped {
+                // The running tasks; with -q, everything queued too.
+                let mut out = String::new();
+                for w in &workers {
+                    out.extend(w.polling.map(|t| format!("{t:#x}\n")));
+                    if queued && let Ok(q) = &w.queues {
+                        out.extend(q.lifo.map(|t| format!("{t:#x}\n")));
+                        out.extend(q.local.iter().map(|t| format!("{t:#x}\n")));
+                    }
+                }
+                if queued {
+                    for i in &injects {
+                        out.extend(i.tasks.iter().map(|t| format!("{t:#x}\n")));
+                    }
+                }
+                return Ok(out);
+            }
+
+            let mut out = format!(
+                "{:>2} {:>3} {:>6}  {:<14} {:>6} {:>5}  {}\n",
+                "RT", "WKR", "LWP", "STATE", "TICK", "QUEUE", "POLLING"
+            );
+            for w in &workers {
+                let depth = match &w.queues {
+                    Ok(q) => (q.local.len() + usize::from(q.lifo.is_some())).to_string(),
+                    Err(_) => "?".into(),
+                };
+                out.push_str(&format!(
+                    "{:>2} {:>3} {:>6}  {:<14} {:>6} {:>5}  {}\n",
+                    w.runtime,
+                    w.index.map_or("?".into(), |i| i.to_string()),
+                    w.lwp,
+                    w.state,
+                    w.tick.map_or("-".into(), |t| t.to_string()),
+                    depth,
+                    w.polling.map_or("-".into(), name),
+                ));
+                if verbose {
+                    let pad = " ".repeat(16);
+                    match &w.queues {
+                        Ok(q) => {
+                            out.push_str(&format!(
+                                "{pad}lifo:  {}\n",
+                                q.lifo.map_or("-".into(), name)
+                            ));
+                            let local = match q.local.len() {
+                                0 => "empty".to_string(),
+                                n => format!("{n} queued: {}", ids(&q.local)),
+                            };
+                            out.push_str(&format!("{pad}local: {local}\n"));
+                        }
+                        Err(e) => out.push_str(&format!("{pad}queues: {e}\n")),
+                    }
+                    if let Some(f) = &w.frame0 {
+                        out.push_str(&format!("{pad}stack: {f}\n"));
+                    }
+                }
+            }
+            for i in &injects {
+                let walked = i.tasks.len();
+                // tokio's own count, and the list walked where they
+                // disagree: a push or pop under way, or a list cut.
+                let count = match i.len {
+                    Some(l) if l as usize != walked => format!("{l} (walked {walked})"),
+                    Some(l) => l.to_string(),
+                    None => walked.to_string(),
+                };
+                let list = if verbose && walked > 0 {
+                    format!(": {}", ids(&i.tasks))
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!(
+                    "{:>2} {:>3} {:>6}  {:<14} {:>6} {:>5}  {}\n",
+                    i.runtime,
+                    "-",
+                    "-",
+                    "inject queue",
+                    "-",
+                    count,
+                    list.trim_start_matches(": ")
+                ));
+            }
+            Ok(out)
+        })?;
+        Ok((DCMD_OK, attached_now.unwrap_or_default() + &text))
+    })
+}
+
+unsafe extern "C" fn help_workers() {
+    print(concat!(
+        "Every tokio worker, as ::cpuinfo shows CPUs: its runtime and index, the\n",
+        "lwp running it, what it is doing, its tick, how many tasks wait in its\n",
+        "LIFO slot and local run queue, and the task it is polling; then each\n",
+        "runtime's inject queue, where tasks spawned from outside a worker wait.\n",
+        "  -v   list each worker's LIFO slot, local queue and top frame\n",
+        "  -q   piped: emit queued tasks too, not only the ones being polled\n\n",
+        "  ::tokio_workers -v\n",
+        "  ::tokio_workers | ::tokio_trace        what every worker is running\n",
+        "Queues are read from a running process's memory, so a worker caught\n",
+        "pushing or stealing may show a run a moment out of date.\n",
+    ));
+}
+
 // ---------------------------------------------------------------------
 // Walkers
 
@@ -679,7 +829,7 @@ const NO_DCMD: mdb_dcmd_t = mdb_dcmd_t {
     dc_tabp: std::ptr::null(),
 };
 
-static DCMDS: Sync<[mdb_dcmd_t; 11]> = Sync([
+static DCMDS: Sync<[mdb_dcmd_t; 12]> = Sync([
     dcmd(
         c"tokio_attach",
         c"[hansei flags]",
@@ -749,6 +899,13 @@ static DCMDS: Sync<[mdb_dcmd_t; 11]> = Sync([
         c"where ::srclist finds sources",
         source::dcmd_srcpath,
         source::help_srcpath,
+    ),
+    dcmd(
+        c"tokio_workers",
+        c"[-v] [-q]",
+        c"tokio workers, their queues and what they run",
+        dcmd_workers,
+        help_workers,
     ),
     NO_DCMD,
 ]);

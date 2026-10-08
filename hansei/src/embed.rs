@@ -159,3 +159,26 @@ pub fn tasks<T: Target>(
         })
         .collect())
 }
+
+pub use crate::workers::{InjectInfo, Queues, WorkerInfo};
+
+/// Every multi_thread worker, by runtime and index: its thread, state,
+/// the task it polls, its tick, and the tasks in its LIFO slot and
+/// local run queue.
+pub fn workers<T: Target>(session: &Session<'_, T>) -> Vec<WorkerInfo> {
+    crate::workers::workers(session)
+}
+
+/// Each multi_thread runtime's inject queue: the tasks spawned from
+/// outside its workers, waiting for one.
+pub fn injects<T: Target>(session: &Session<'_, T>) -> Vec<InjectInfo> {
+    crate::workers::injects(session)
+}
+
+/// The task whose header is at `addr`, as [`tasks`] names it.
+pub fn task_at<T: Target>(session: &Session<'_, T>, addr: u64) -> Option<TaskRef> {
+    tasks(session, &[], &[])
+        .ok()?
+        .into_iter()
+        .find(|t| t.addr == addr)
+}
