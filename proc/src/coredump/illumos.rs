@@ -779,12 +779,7 @@ impl Core {
     }
 
     fn stack_from_ustack(&self, ustack: u64) -> Option<Range<u64>> {
-        if ustack == 0 {
-            return None;
-        }
-        let sp = self.read_u64(ustack + STACK_SS_SP).ok()?;
-        let size = self.read_u64(ustack + STACK_SS_SIZE).ok()?;
-        (sp != 0 && size != 0).then(|| sp..sp.saturating_add(size))
+        procfs::stack_range(&|addr| self.read_u64(addr), ustack)
     }
 
     fn segment_at(&self, addr: u64) -> Option<&Segment> {
@@ -1253,6 +1248,127 @@ fn decode_fatal_signal(desc: &[u8]) -> Option<FatalSignal> {
     })
 }
 
+/// The `/proc` structures a live illumos debugger hands out, decoded as
+/// the core reader decodes the same structures from its notes.
+///
+/// A host that reads its target through `mdb` or libproc has no notes:
+/// it has `lwpstatus_t`s, a `pstatus_t` and a `psinfo_t` (mdb exports
+/// each as target data). They are the very structures a core's
+/// `NT_LWPSTATUS`, `NT_PSTATUS` and `NT_PSINFO` notes carry, so a
+/// [`Target`] built over such a host decodes them here and agrees with
+/// a core of the same process.
+pub mod procfs {
+    use super::*;
+
+    /// `sizeof (lwpstatus_t)` on amd64.
+    pub const LWPSTATUS_LEN: usize = super::LWPSTATUS_LEN;
+
+    /// One lwp's state from its `lwpstatus_t`, with its `pr_ustack`: the
+    /// address of the `stack_t` that bounds its stack, which
+    /// [`stack_range`] reads. `stack_range` is left empty for the caller
+    /// to fill. `None` for a buffer too short to be one.
+    pub fn lwp(desc: &[u8]) -> Option<(LwpInfo, u64)> {
+        if desc.len() < LWPSTATUS_LEN {
+            return None;
+        }
+        let at = LWPSTATUS_PR_USTACK;
+        let ustack = u64::from_le_bytes(desc[at..at + 8].try_into().unwrap());
+        Some((parse_lwpstatus(desc), ustack))
+    }
+
+    /// The stack a `stack_t` at `ustack` describes, read through any
+    /// target's memory. `None` where there is no `stack_t`, it cannot
+    /// be read, or it describes nothing.
+    pub fn stack_range(read_u64: &dyn Fn(u64) -> Result<u64>, ustack: u64) -> Option<Range<u64>> {
+        if ustack == 0 {
+            return None;
+        }
+        let sp = read_u64(ustack + STACK_SS_SP).ok()?;
+        let size = read_u64(ustack + STACK_SS_SIZE).ok()?;
+        (sp != 0 && size != 0).then(|| sp..sp.saturating_add(size))
+    }
+
+    /// The signal that terminated the process, from its `pstatus_t`
+    /// (the representative lwp's status ends it). `None` when it was
+    /// taking none — a live process, or a `gcore` capture.
+    pub fn fatal_signal(pstatus: &[u8]) -> Option<FatalSignal> {
+        let lwp = pstatus.get(pstatus.len().checked_sub(LWPSTATUS_LEN)?..)?;
+        decode_fatal_signal(lwp)
+    }
+
+    /// `pr_agentid` from a `pstatus_t`: the lwp `/proc` made to act
+    /// inside the process, if any.
+    pub fn agent_lwp(pstatus: &[u8]) -> Option<u32> {
+        let at = PSTATUS_PR_AGENTID;
+        let tid = u32::from_le_bytes(pstatus.get(at..at + 4)?.try_into().ok()?);
+        (tid != 0).then_some(tid)
+    }
+
+    /// The executable's path from a `psinfo_t`: the first word of the
+    /// command line, which is all an illumos process records of it.
+    pub fn exec_path(psinfo: &[u8]) -> Option<String> {
+        if psinfo.len() < PSINFO_PR_PSARGS + PSINFO_PSARGS_LEN {
+            return None;
+        }
+        parse_psinfo_exec(psinfo)
+    }
+
+    /// The inverse of [`Regs::from_gregset`], for building notes. The
+    /// slot order itself is pinned by writing raw slots in
+    /// [`test_registers_decode_in_illumos_order`], so a mistake shared
+    /// with the decoder cannot hide here.
+    fn gregset(regs: &Regs) -> [u64; NGREG] {
+        let mut r = [0u64; NGREG];
+        r[REG_R15] = regs.r15;
+        r[REG_R14] = regs.r14;
+        r[REG_R13] = regs.r13;
+        r[REG_R12] = regs.r12;
+        r[REG_R11] = regs.r11;
+        r[REG_R10] = regs.r10;
+        r[REG_R9] = regs.r9;
+        r[REG_R8] = regs.r8;
+        r[REG_RDI] = regs.rdi;
+        r[REG_RSI] = regs.rsi;
+        r[REG_RBP] = regs.rbp;
+        r[REG_RBX] = regs.rbx;
+        r[REG_RDX] = regs.rdx;
+        r[REG_RCX] = regs.rcx;
+        r[REG_RAX] = regs.rax;
+        r[REG_TRAPNO] = regs.trapno;
+        r[REG_ERR] = regs.err;
+        r[REG_RIP] = regs.rip;
+        r[REG_CS] = regs.cs;
+        r[REG_RFL] = regs.rfl;
+        r[REG_RSP] = regs.rsp;
+        r[REG_SS] = regs.ss;
+        r[REG_FS] = regs.fs;
+        r[REG_GS] = regs.gs;
+        r[REG_ES] = regs.es;
+        r[REG_DS] = regs.ds;
+        r[REG_FSBASE] = regs.fsbase;
+        r[REG_GSBASE] = regs.gsbase;
+        r
+    }
+
+    /// An `lwpstatus_t` holding `tid`'s registers, stop time and
+    /// `pr_ustack`, everything else zero: what [`lwp`] decodes. For hosts
+    /// that stand in for a live illumos debugger in tests.
+    pub fn encode_lwpstatus(tid: u32, regs: &Regs, ustack: u64, tstamp: Timespec) -> Vec<u8> {
+        let mut out = vec![0u8; LWPSTATUS_LEN];
+        out[LWPSTATUS_PR_LWPID..LWPSTATUS_PR_LWPID + 4].copy_from_slice(&tid.to_le_bytes());
+        let at = LWPSTATUS_PR_TSTAMP;
+        out[at..at + 8].copy_from_slice(&tstamp.tv_sec.to_le_bytes());
+        out[at + 8..at + 16].copy_from_slice(&tstamp.tv_nsec.to_le_bytes());
+        let at = LWPSTATUS_PR_USTACK;
+        out[at..at + 8].copy_from_slice(&ustack.to_le_bytes());
+        for (i, v) in gregset(regs).iter().enumerate() {
+            let at = LWPSTATUS_PR_REG + i * 8;
+            out[at..at + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+}
+
 fn parse_lwpstatus(desc: &[u8]) -> LwpInfo {
     let tid = u32::from_le_bytes(
         desc[LWPSTATUS_PR_LWPID..LWPSTATUS_PR_LWPID + 4]
@@ -1660,57 +1776,7 @@ mod tests {
         out
     }
 
-    /// The inverse of [`Regs::from_gregset`], for building notes. The
-    /// slot order itself is pinned by writing raw slots in
-    /// [`test_registers_decode_in_illumos_order`], so a mistake shared
-    /// with the decoder cannot hide here.
-    fn gregset(regs: &Regs) -> [u64; NGREG] {
-        let mut r = [0u64; NGREG];
-        r[REG_R15] = regs.r15;
-        r[REG_R14] = regs.r14;
-        r[REG_R13] = regs.r13;
-        r[REG_R12] = regs.r12;
-        r[REG_R11] = regs.r11;
-        r[REG_R10] = regs.r10;
-        r[REG_R9] = regs.r9;
-        r[REG_R8] = regs.r8;
-        r[REG_RDI] = regs.rdi;
-        r[REG_RSI] = regs.rsi;
-        r[REG_RBP] = regs.rbp;
-        r[REG_RBX] = regs.rbx;
-        r[REG_RDX] = regs.rdx;
-        r[REG_RCX] = regs.rcx;
-        r[REG_RAX] = regs.rax;
-        r[REG_TRAPNO] = regs.trapno;
-        r[REG_ERR] = regs.err;
-        r[REG_RIP] = regs.rip;
-        r[REG_CS] = regs.cs;
-        r[REG_RFL] = regs.rfl;
-        r[REG_RSP] = regs.rsp;
-        r[REG_SS] = regs.ss;
-        r[REG_FS] = regs.fs;
-        r[REG_GS] = regs.gs;
-        r[REG_ES] = regs.es;
-        r[REG_DS] = regs.ds;
-        r[REG_FSBASE] = regs.fsbase;
-        r[REG_GSBASE] = regs.gsbase;
-        r
-    }
-
-    fn lwpstatus(tid: u32, regs: &Regs, ustack: u64, tstamp: Timespec) -> Vec<u8> {
-        let mut out = vec![0u8; LWPSTATUS_LEN];
-        out[LWPSTATUS_PR_LWPID..LWPSTATUS_PR_LWPID + 4].copy_from_slice(&tid.to_le_bytes());
-        let at = LWPSTATUS_PR_TSTAMP;
-        out[at..at + 8].copy_from_slice(&tstamp.tv_sec.to_le_bytes());
-        out[at + 8..at + 16].copy_from_slice(&tstamp.tv_nsec.to_le_bytes());
-        let at = LWPSTATUS_PR_USTACK;
-        out[at..at + 8].copy_from_slice(&ustack.to_le_bytes());
-        for (i, v) in gregset(regs).iter().enumerate() {
-            let at = LWPSTATUS_PR_REG + i * 8;
-            out[at..at + 8].copy_from_slice(&v.to_le_bytes());
-        }
-        out
-    }
+    use super::procfs::encode_lwpstatus as lwpstatus;
 
     /// The size of the `pstatus_t` an illumos kernel writes today; the
     /// reader tail-anchors the embedded lwpstatus rather than trusting
