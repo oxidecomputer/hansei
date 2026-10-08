@@ -1304,6 +1304,20 @@ pub mod procfs {
         (tid != 0).then_some(tid)
     }
 
+    /// The process's break — the heap `brk(2)` grows — from a
+    /// `pstatus_t`, as the core reader takes it from `NT_PSTATUS`.
+    /// `None` where it records none.
+    pub fn brk(pstatus: &[u8]) -> Option<Range<u64>> {
+        let word = |at: usize| {
+            Some(u64::from_le_bytes(
+                pstatus.get(at..at + 8)?.try_into().ok()?,
+            ))
+        };
+        let base = word(PSTATUS_PR_BRKBASE)?;
+        let end = base.checked_add(word(PSTATUS_PR_BRKSIZE)?)?;
+        (base != 0).then_some(base..end)
+    }
+
     /// The executable's path from a `psinfo_t`: the first word of the
     /// command line, which is all an illumos process records of it.
     pub fn exec_path(psinfo: &[u8]) -> Option<String> {

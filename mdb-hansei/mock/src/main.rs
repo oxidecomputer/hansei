@@ -279,7 +279,22 @@ fn xdata(name: &str) -> Option<Vec<u8>> {
             }
             Some(out)
         }
-        "pstatus" => Some(vec![0; PSTATUS_LEN]),
+        "pstatus" => {
+            // No signal and no agent, as a gcore; the break where the
+            // core marks one, at pr_brkbase/pr_brksize.
+            let mut out = vec![0u8; PSTATUS_LEN];
+            if let Some(heap) = core()
+                .mappings()
+                .ok()?
+                .as_slice()
+                .iter()
+                .find(|m| m.is_heap())
+            {
+                out[48..56].copy_from_slice(&heap.vaddr.to_le_bytes());
+                out[56..64].copy_from_slice(&heap.size.to_le_bytes());
+            }
+            Some(out)
+        }
         "psinfo" => {
             let mut out = vec![0u8; PSINFO_LEN];
             let exec = core().exec_path()?.display().to_string();
@@ -336,15 +351,24 @@ pub unsafe extern "C" fn Pmapping_iter(
             pr_size: m.size as usize,
             pr_mapname: [0; 64],
             pr_offset: 0,
-            pr_mflags: m.flags.0 as c_int,
+            // libproc reports the break without MA_ANON from a core.
+            pr_mflags: if m.is_heap() {
+                (m.flags.0 & !0x40) as c_int
+            } else {
+                m.flags.0 as c_int
+            },
             pr_pagesize: 4096,
             pr_shmid: -1,
             pr_filler: [0],
         };
-        let name = m
-            .path
-            .as_ref()
-            .map(|p| CString::new(p.as_str()).unwrap_or_default());
+        // libproc names a mapping by the object its start falls in,
+        // which hands the break the executable's name. Do the same, so
+        // the module has to undo it here as it must on illumos.
+        let path = match (&m.path, m.is_heap()) {
+            (None, true) => core().exec_path().map(|p| p.display().to_string()),
+            (path, _) => path.clone(),
+        };
+        let name = path.map(|p| CString::new(p).unwrap_or_default());
         let rc = unsafe {
             func(
                 cd,

@@ -77,7 +77,9 @@ impl MdbTarget {
     /// Snapshot what mdb has open. Called on mdb's own thread.
     pub fn new() -> anyhow::Result<Self> {
         let objects = loaded_objects();
-        let mappings_raw = mappings(&objects)?;
+        let pstatus = xdata("pstatus");
+        let brk = pstatus.as_deref().and_then(procfs::brk);
+        let mappings_raw = mappings(&objects, brk)?;
         let mut extents: Vec<Range<u64>> = mappings_raw
             .iter()
             .map(|m| m.vaddr..m.vaddr.saturating_add(m.size))
@@ -97,9 +99,9 @@ impl MdbTarget {
             data: exec_symbols(MDB_TYPE_OBJECT | MDB_TYPE_TLS),
             objects,
         };
-        if let Some(pstatus) = xdata("pstatus") {
-            target.fatal = procfs::fatal_signal(&pstatus);
-            target.agent = procfs::agent_lwp(&pstatus);
+        if let Some(pstatus) = &pstatus {
+            target.fatal = procfs::fatal_signal(pstatus);
+            target.agent = procfs::agent_lwp(pstatus);
         }
         target.lwps = target.read_lwps()?;
         target.lwp_names = target
@@ -405,7 +407,17 @@ fn exec_symbols(ty: u32) -> Vec<SymbolBuf> {
 /// Every mapping, from libproc, each named by the object that covers
 /// it as the core reader names them: the flags are the kernel's, kept
 /// to the ones the core reader records.
-fn mappings(objects: &[Object]) -> anyhow::Result<Vec<LoadedObjectWithPath>> {
+///
+/// libproc names a mapping by the object whose extent its *start* falls
+/// in, so the break — which begins in the page the executable's `.bss`
+/// ends in — comes back named as the executable. The core reader's rule
+/// is that the break, and anything libproc itself calls anonymous, is
+/// nobody's: so here too, or every sweep of anonymous memory (the waker
+/// sweep among them) skips the heap.
+fn mappings(
+    objects: &[Object],
+    brk: Option<Range<u64>>,
+) -> anyhow::Result<Vec<LoadedObjectWithPath>> {
     unsafe extern "C" fn cb(
         data: *mut c_void,
         map: *const prmap_t,
@@ -460,10 +472,18 @@ fn mappings(objects: &[Object]) -> anyhow::Result<Vec<LoadedObjectWithPath>> {
     Ok(raw
         .into_iter()
         .map(|(m, name)| {
-            let path = resolve(name);
+            let end = m.vaddr.saturating_add(m.size);
+            let in_break = brk
+                .as_ref()
+                .is_some_and(|b| m.vaddr < b.end && end > b.start);
+            let anon = in_break || m.mflags & 0x40 != 0;
+            let path = if anon { None } else { resolve(name) };
             let mut flags = m.mflags & KEPT;
             if path.is_none() {
                 flags |= 0x40;
+            }
+            if in_break {
+                flags |= 0x10;
             }
             LoadedObjectWithPath {
                 path,
