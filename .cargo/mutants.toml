@@ -548,4 +548,14 @@ exclude_re = [
     # oracle runs only when the soak loop asks for it: no sweep reaches
     # it. The soak itself is its judge.
     "testkit/cores\\.rs:.*: replace capture_now ",
+    # A version equal to a span's floor is inside the review, and
+    # `select` returns for it before it compares against the floor; so
+    # `<=` there places only the versions `<` does.
+    "replace < with <= in Releases::select",
+    # The same at the whole range's edges in `range_for`: a version
+    # equal to its floor or its ceiling falls in its own minor's span,
+    # which `range_for` names before it compares against either edge.
+    "replace (< with <=|> with >=) in Releases::range_for",
+    # `absent_here` already returns an empty Vec: the mutant is its body.
+    "replace absent_here -> .* with vec!\\[\\]",
 ]

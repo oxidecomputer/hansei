@@ -4815,6 +4815,21 @@ fn outside(version: &semver::Version, reviewed: &[Review]) -> Vec<ProtocolOutsid
 mod tests {
     use super::*;
 
+    /// A version in a minor no span reads, between two spans of other
+    /// minors, is told the span below it — not the nearest above, nor
+    /// the last.
+    #[test]
+    fn test_a_version_between_spans_is_named_against_the_one_below() {
+        let releases = Releases(&[
+            ((1, 47, 0), (1, 47, 5)),
+            ((1, 49, 0), (1, 49, 3)),
+            ((1, 51, 0), (1, 51, 2)),
+        ]);
+        let range_for = |v: &str| releases.range_for(&semver::Version::parse(v).unwrap());
+        assert_eq!(range_for("1.48.1"), "1.47.0-1.47.5");
+        assert_eq!(range_for("1.50.0"), "1.49.0-1.49.3");
+    }
+
     #[test]
     fn test_coroutine_convention_covers_exactly_the_reviewed_range() {
         for producer in [
