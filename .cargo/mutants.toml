@@ -27,7 +27,15 @@ test_tool = "nextest"
 # still running rather than wait for it. One failure is the verdict;
 # without this a caught mutant waited minutes for the slowest
 # acceptance test still in flight, which was most of a sweep's time.
-additional_cargo_test_args = ["--max-fail=1:immediate"]
+#
+# Run the tests that catch mutants first: nextest's `mutants` profile
+# (.config/nextest.toml) orders the suite so a mutant's verdict does
+# not wait behind work that could not have produced it.
+#
+# Arguments after a command line's `--` are appended to these, not put
+# in their place, and nextest refuses a flag given twice: pass neither
+# again there, or the unmutated baseline fails before any mutant runs.
+additional_cargo_test_args = ["--max-fail=1:immediate", "--profile", "mutants"]
 
 # Copy only what git tracks. cargo-mutants copies the tree into a
 # scratch dir per job, and does *not* filter by gitignore unless told

@@ -21,3 +21,27 @@ slow-timeout = { period = "60s", terminate-after = 60 }
 [[profile.ci.overrides]]
 filter = "binary_id(hansei-runtime::degraded) & test(/seeded_faults/)"
 slow-timeout = { period = "60s", terminate-after = 15 }
+
+# cargo-mutants' profile (.cargo/mutants.toml), which stops a run at its
+# first failure. Run in name order, a mutant waited behind the suites
+# sorting before the one that catches it: hansei-runtime's unit tests,
+# which run in milliseconds, finished around 1,100th to 1,500th of
+# ~2,000, so a mutant they caught took most of a full run to report.
+# The cheap in-process tests that catch most mutants go first, then the
+# acceptance suite; what is left runs in name order after them.
+[profile.mutants]
+
+# Each seeded-fault test is a minute or more on its own and judges a
+# mutant only once it ends, so it starts at once: begun last, it would
+# add its whole length to every mutant no other test catches.
+[[profile.mutants.overrides]]
+filter = "binary_id(hansei-runtime::degraded) & test(/seeded_faults/)"
+priority = 50
+
+[[profile.mutants.overrides]]
+filter = "kind(lib) | binary_id(hansei::bin/hansei)"
+priority = 40
+
+[[profile.mutants.overrides]]
+filter = "binary_id(hansei::acceptance)"
+priority = 30
