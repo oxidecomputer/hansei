@@ -325,25 +325,33 @@ is what tells a test that *pins* behavior from one that merely runs the
 code. Nearly every suite here asserts over a frozen capture, so nearly
 every test executes the same lines and line coverage says almost
 nothing. The per-change loop is the diff — `git diff origin/main >
-/tmp/change.diff && cargo mutants --in-diff /tmp/change.diff` — and it
-replaces hand-writing mutations to check a new test actually bites. A
-whole-crate sweep (`cargo mutants -p hansei-runtime -j 4`) is ~25
-minutes; triage its `missed.txt` into tests, or into an `exclude_re`
-entry with a comment where the mutant is equivalent.
+mutants.diff`, then `cargo mutants --in-diff mutants.diff` run as below —
+and it replaces hand-writing mutations to check a new test actually
+bites. A whole-crate sweep (`cargo mutants -p hansei-runtime -j 4`) is
+~25 minutes; triage its `missed.txt` into tests, or into an
+`exclude_re` entry with a comment where the mutant is equivalent.
 
-Every `cargo mutants` run, `--in-diff` included, goes on Linux under a
-memory cap. A mutant that breaks a write loop's exit appends output
-without bound, and macOS has no enforceable per-process memory cap: such
-a run has crashed a machine before the test timeout could reap it.
+Every `cargo mutants` run, `--in-diff` included, goes in the Linux test
+image on a Linux host:
 
 ```
-ulimit -v 16777216 && systemd-run --user --scope -p MemoryMax=48G \
-  -p OOMPolicy=continue env HANSEI_REUSE_FIXTURES=1 cargo mutants -p <crate> -j 4
+HANSEI_REUSE_FIXTURES=1 .github/scripts/in-image.sh cargo mutants -p <crate> -j 4
 ```
 
-`ulimit -v` is the limit doing the work (a bomb's own allocation fails,
-so the mutant is caught with no cross-fire on sibling jobs);
-`OOMPolicy=continue` keeps one OOM kill from tearing down the sweep.
+The image, because the Linux goldens are its rendering: the cores show
+its C library's frames, so on a host's own C library the unmutated
+baseline fails before any mutant runs. And `in-image.sh` sets the
+memory caps a run needs. A mutant that breaks a write loop's exit
+appends output without bound, and macOS has no enforceable per-process
+memory cap: such a run has crashed a machine before the test timeout
+could reap it. Each process in the container gets 16 GiB of address
+space, which is the limit doing the work (a bomb's own allocation
+fails, so the mutant is caught with no cross-fire on sibling jobs), and
+the container 48 GiB where the host's cgroups allow it. The scratch copies and the tests' tempdirs live
+in the container's `/tmp` and go with it, a killed test's leftovers
+included. The container sees only the checkout, so the diff and the
+output (`mutants.out`) live there.
+
 `test_package` in the config widens the judging suite past the mutated
 crate, because hansei-runtime is a library its consumers assert, and it
 includes exegesis, the only thing that writes a bundle. A survivor worth

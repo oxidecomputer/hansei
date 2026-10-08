@@ -5,10 +5,12 @@
 # Mutation testing is the tool that tells those apart — it reports the
 # code that can be changed without any test noticing.
 #
-# The loop for a change is the diff:
+# Every run goes in the Linux test image, whose rendering the suites'
+# goldens are (see CLAUDE.md). The loop for a change is the diff:
 #
-#     git diff origin/main > /tmp/change.diff
-#     cargo mutants --in-diff /tmp/change.diff
+#     git diff origin/main > mutants.diff
+#     HANSEI_REUSE_FIXTURES=1 .github/scripts/in-image.sh \
+#         cargo mutants --in-diff mutants.diff
 #
 # and a sweep of one crate is `cargo mutants -p hansei-runtime`: about
 # twenty seconds a mutant at -j 6 on a 32-core host (3,831 mutants, so

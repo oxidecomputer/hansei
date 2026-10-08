@@ -6,9 +6,11 @@
 # Rejected goldens a diverged snapshot writes for review.
 *.snap.new
 
-# cargo-mutants scratch output.
+# cargo-mutants scratch output, and the diff an --in-diff run reads:
+# it runs in the test image, which sees only the checkout.
 /mutants.out
 /mutants.out.old
+/mutants.diff
 
 # The demo program builds in its own directory.
 /example/target
