@@ -81,6 +81,13 @@ minimum_test_timeout = 600
 # sweep meant a fixture build per mutant; HANSEI_REUSE_FIXTURES ended
 # that, and a measured sweep with it in scope costs about what one
 # without it did.
+#
+# This list judges a mutant anywhere in the workspace. A sweep whose
+# mutants all sit in known crates can narrow it on the command line
+# (`--test-package`, which replaces the list) to those crates and every
+# workspace crate depending on them, through any kind of dependency: no
+# other suite links the mutated code, and none runs a binary built from
+# it, so nothing is lost but the time those suites take.
 test_package = [
     "hansei-bundle",
     "reify",
