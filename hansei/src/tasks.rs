@@ -2879,6 +2879,48 @@ fn refuse_positional_ids(task: &[String]) -> Result<()> {
     }
 }
 
+/// The `--with`/`--without` clauses, parsed against this session's
+/// runtime handles (an `rt` clause may name one by address).
+fn session_clauses<T: proc::Target>(
+    session: &Session<'_, T>,
+    with: &[String],
+    without: &[String],
+) -> Result<Vec<Clause>> {
+    let handles: Vec<u64> = session.runtimes.iter().map(|rt| rt.handle.addr).collect();
+    parse_clauses(with, without, &handles)
+}
+
+/// The indices into the task list of the rows every clause keeps.
+fn survivors_of<T: proc::Target>(
+    session: &Session<'_, T>,
+    clauses: &[Clause],
+    counts: Option<&CountsByTask>,
+) -> Vec<usize> {
+    let rows = rows(session);
+    (0..rows.len())
+        .filter(|&i| clauses.iter().all(|c| survives(c, i, &rows[i], counts)))
+        .collect()
+}
+
+/// The indices into the task list of the tasks `--with`/`--without`
+/// keep, exactly as `tasks` would list them — every task when no
+/// clause is given. What [`crate::embed::tasks`] selects with.
+pub(crate) fn select<T: proc::Target>(
+    session: &Session<'_, T>,
+    with: &[String],
+    without: &[String],
+) -> Result<Vec<usize>> {
+    let clauses = session_clauses(session, with, without)?;
+    if clauses.is_empty() {
+        return Ok((0..rows(session).len()).collect());
+    }
+    let counts = clauses
+        .iter()
+        .any(|c| c.field.needs_census())
+        .then(|| census_counts(session.census().into()));
+    Ok(survivors_of(session, &clauses, counts.as_ref()))
+}
+
 pub(crate) fn exec_tasks<T: proc::Target>(
     session: &Session<'_, T>,
     cmd: TasksCmd,
@@ -2893,8 +2935,7 @@ pub(crate) fn exec_tasks<T: proc::Target>(
         .map(Field::parse)
         .transpose()
         .context("--group")?;
-    let handles: Vec<u64> = session.runtimes.iter().map(|rt| rt.handle.addr).collect();
-    let clauses = parse_clauses(&cmd.with, &cmd.without, &handles)?;
+    let clauses = session_clauses(session, &cmd.with, &cmd.without)?;
 
     // The table's `FUT` column and a count clause or grouping
     // read what only the census counts; `--exec` and the other
@@ -2906,16 +2947,8 @@ pub(crate) fn exec_tasks<T: proc::Target>(
 
     // The filters' survivors, as indices into the task list — `None`
     // when there is nothing to filter by.
-    let survivors: Option<Vec<usize>> = (!clauses.is_empty()).then(|| {
-        let rows = rows(session);
-        (0..rows.len())
-            .filter(|&i| {
-                clauses
-                    .iter()
-                    .all(|c| survives(c, i, &rows[i], counts.as_ref()))
-            })
-            .collect()
-    });
+    let survivors: Option<Vec<usize>> =
+        (!clauses.is_empty()).then(|| survivors_of(session, &clauses, counts.as_ref()));
 
     if !cmd.exec.is_empty() {
         // clap refuses `--group` beside `--exec`; the filters and

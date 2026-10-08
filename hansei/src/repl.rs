@@ -356,11 +356,37 @@ pub(crate) fn execute<T: proc::Target>(
     mode: Mode,
     line: &str,
 ) -> Result<Flow> {
+    execute_with(session, mode, line, None)
+}
+
+/// [`execute`], with every answer written to `out` rather than to
+/// stdout or a pager: the spelling a host that embeds hansei uses
+/// ([`crate::embed::run`]), whose output has its own way to the
+/// reader. The answers are unstyled, as a `!` pipe's are.
+pub(crate) fn execute_into<T: proc::Target>(
+    session: &Session<'_, T>,
+    line: &str,
+    out: &mut dyn Write,
+) -> Result<Flow> {
+    execute_with(session, Mode::Scripted, line, Some(out))
+}
+
+fn execute_with<T: proc::Target>(
+    session: &Session<'_, T>,
+    mode: Mode,
+    line: &str,
+    mut into: Option<&mut dyn Write>,
+) -> Result<Flow> {
     let commands = split_commands(line);
     for command in &commands {
+        // Reborrowed per command, each for no longer than its answer.
+        let into: Option<&mut dyn Write> = match &mut into {
+            Some(w) => Some(&mut **w),
+            None => None,
+        };
         let flow = match command_frame(commands.len(), command) {
-            None => execute_one(session, mode, command)?,
-            Some(frame) => execute_one(session, mode, command).with_context(|| frame)?,
+            None => execute_one(session, mode, command, into)?,
+            Some(frame) => execute_one(session, mode, command, into).with_context(|| frame)?,
         };
         if let Flow::Quit = flow {
             return Ok(Flow::Quit);
@@ -467,7 +493,12 @@ fn command_frame(count: usize, command: &str) -> Option<String> {
 /// cursor's current-frame address — in the command's own words; a
 /// command it carries (`frame 1 whatis $_`) substitutes its own when
 /// it runs, under the cursor it moved to.
-fn execute_one<T: proc::Target>(session: &Session<'_, T>, mode: Mode, line: &str) -> Result<Flow> {
+fn execute_one<T: proc::Target>(
+    session: &Session<'_, T>,
+    mode: Mode,
+    line: &str,
+    into: Option<&mut dyn Write>,
+) -> Result<Flow> {
     // Everything after the first `!` is a shell command to pipe into,
     // so `tasks ! grep foo` filters the listing.
     let (command, shell) = match line.split_once('!') {
@@ -491,7 +522,7 @@ fn execute_one<T: proc::Target>(session: &Session<'_, T>, mode: Mode, line: &str
         }
         None => (None, words),
     };
-    let result = answer_words(session, mode, &words, shell);
+    let result = answer_words(session, mode, &words, shell, into);
     if let Some(saved) = saved {
         *session.cursor.borrow_mut() = saved;
     }
@@ -506,6 +537,7 @@ fn answer_words<T: proc::Target>(
     mode: Mode,
     words: &[String],
     shell: Option<&str>,
+    into: Option<&mut dyn Write>,
 ) -> Result<Flow> {
     let words = substitute_head(words, session.cursor.borrow().last_addr)?;
     let parsed = match parse_words(&words)? {
@@ -536,6 +568,18 @@ fn answer_words<T: proc::Target>(
     // that terminal's width. A prompt's answer onto a terminal pages
     // instead, and the pager's pipe ends on that terminal too, so it
     // is styled as stdout would be.
+    // An embedding host's writer takes the answer, unstyled. The host
+    // has its own pipes, so a `!` here would be a second shell nobody
+    // asked for.
+    if let Some(out) = into {
+        if shell.is_some() {
+            anyhow::bail!("`!` pipes to a shell are the host's to run, not hansei's");
+        }
+        let mut out = io::BufWriter::new(out);
+        let flow = answer(Theme::for_pipe(), &mut out)?;
+        out.flush()?;
+        return Ok(flow);
+    }
     let pager = session.settings.borrow().pager.clone();
     let pages = crate::pager::pages(
         mode == Mode::Interactive,
