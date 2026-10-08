@@ -1,6 +1,8 @@
 # Weekly: hold omicron's dependencies and toolchain to what hansei was
 # reviewed against, and open an issue for each release outside that
-# no issue has named yet. See .github/scripts/review-drift.sh.
+# no issue has named yet, and for each tokio or rustc minor newer than
+# the matrix's primary pin; close those once the primary catches up.
+# See .github/scripts/review-drift.sh.
 name: review drift
 
 on:
