@@ -4,14 +4,14 @@ description: "`futures --exec trace -l 1` over illumos/http-conns"
 ---
 future 0xA1
 future 0xA1: future futures_channel::oneshot::Receiver<core::convert::Infallible>
-Held by: task 2003 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `self`)
+Held by: task 2002 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `self`)
 
 #0  future  futures_channel::oneshot::Receiver<core::convert::Infallible>
       defined at futures-channel-0.3.33/src/oneshot.rs:458 (<no_state>, 1 local)
 
 future 0xA2
 future 0xA2: future hyper_util::rt::tokio::TokioSleep
-Held by: task 2003 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `sleep`)
+Held by: task 2002 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `sleep`)
 
 #0  future  tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
@@ -19,7 +19,7 @@ Held by: task 2003 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1,
 
 future 0xA3
 future 0xA3: future futures_channel::oneshot::Receiver<core::convert::Infallible>
-Held by: task 2003 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `on_pool_drop`)
+Held by: task 2002 — future Pin<Box<(dyn Future<Output=()> + Send)>> (frame 1, `on_pool_drop`)
 
 #0  future  futures_channel::oneshot::Receiver<core::convert::Infallible>
       defined at futures-channel-0.3.33/src/oneshot.rs:458 (<no_state>, 1 local)

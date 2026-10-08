@@ -6,6 +6,6 @@ Status: live
 Size:  256 bytes
 Offset: +128 in allocation
 
-Connection 0xA1: http1 client, awaiting response, task 2001
+Connection 0xA1: http1 client, idle, task 2001
     At: offset 0xA2 in the socket's registration, tokio::runtime::io::scheduled_io::ScheduledIo
     In full: connection 0xA1

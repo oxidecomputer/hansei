@@ -15,8 +15,8 @@ ppid:  PID
 uid:  ID
 gid:  ID
 psargs: PSARGS
-execfn: <test-programs>/fixtures/bin-a/rust-1.98.1-tokio-1.47.5-unstable/blocking-pool
-executable: <test-programs>/fixtures/bin-a/rust-1.98.1-tokio-1.47.5-unstable/blocking-pool
+execfn: <test-programs>/fixtures/bin-a/rust-1.99.0-tokio-1.47.5-unstable/blocking-pool
+executable: <test-programs>/fixtures/bin-a/rust-1.99.0-tokio-1.47.5-unstable/blocking-pool
 build id (core):  BUILDID
 build id (binary): BUILDID — agree
 argv: not recorded in a Linux core (psargs is its 80-byte spelling)

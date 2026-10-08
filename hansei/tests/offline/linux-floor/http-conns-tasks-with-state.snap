@@ -4,8 +4,8 @@ description: "`tasks --with state idle` over linux-floor/http-conns"
 ---
 ID  STATE  FUT  AWAITING AT  WAITING ON  TYPE
 2001  idle  0  —  http1 client  future Pin<Box<(dyn Future<Output=()> + Send)>>
-2002  idle  0  —  http1 client  future Pin<Box<(dyn Future<Output=()> + Send)>>
-2003  idle  3  hyper-util-0.1.20/src/client/legacy/pool.rs:798  futures_channel::lock::Lock, timer  future Pin<Box<(dyn Future<Output=()> + Send)>>
+2002  idle  3  hyper-util-0.1.20/src/client/legacy/pool.rs:798  futures_channel::lock::Lock, timer  future Pin<Box<(dyn Future<Output=()> + Send)>>
+2003  idle  0  —  http1 client  future Pin<Box<(dyn Future<Output=()> + Send)>>
 2004  idle  1  src/bin/http-conns.rs:137  http1 server  async fn http_conns::serve
 2005  idle  0  src/bin/http-conns.rs:137  http1 server  async fn http_conns::serve
 2006  idle  0  src/bin/http-conns.rs:137  http1 server  async fn http_conns::serve
