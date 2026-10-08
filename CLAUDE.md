@@ -27,7 +27,11 @@ However, hansei-runtime takes exegesis as an optional dependency behind its
 `hansei tokio-info` produces and inspects tokio-info files, but the DWARF
 stack reaches no further than the entry points arg handling calls
 (`hansei/src/bundle_cmd.rs`). exegesis builds no binary of its own:
-`hansei` is the only one the workspace produces. No session, runtime or
+`hansei` is the only program the workspace ships. The `hansei` crate is
+also a library: `hansei::embed` attaches a session to a `proc::Target` a
+host brings, which is how `mdb-hansei` (an mdb module, a cdylib) runs
+the same commands inside mdb. `mdb-hansei/mock` (`mdbmock`) is its test
+host, standing in for mdb over a Linux core. No session, runtime or
 render code imports exegesis types; if read-side code seems to need
 something from it, it wants `hansei-bundle`.
 

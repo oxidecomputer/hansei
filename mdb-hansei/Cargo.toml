@@ -1,0 +1,18 @@
+[package]
+name = "mdb-hansei"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "An mdb module (dmod) running hansei's tokio analysis inside mdb, on cores and live processes"
+
+[lib]
+# A dmod is a shared object mdb dlopen()s: `::load hansei.so`.
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = { workspace = true }
+hansei = { workspace = true }
+hansei-bundle = { workspace = true }
+proc = { workspace = true }
+rayon = { workspace = true }

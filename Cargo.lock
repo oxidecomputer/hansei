@@ -884,6 +884,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdb-hansei"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hansei",
+ "hansei-bundle",
+ "proc",
+ "rayon",
+]
+
+[[package]]
+name = "mdbmock"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cc",
+ "libc",
+ "proc",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

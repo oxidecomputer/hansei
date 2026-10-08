@@ -6,6 +6,8 @@ members = [
     "hansei-bundle",
     "hansei-runtime",
     "libproc-sys",
+    "mdb-hansei",
+    "mdb-hansei/mock",
     "proc",
     "reify",
     "testrun",
@@ -38,6 +40,7 @@ exegesis = { path = "exegesis", version = "0.1.0" }
 foldhash = "0.2"
 gimli = { version = "0.34", features = ["fallible-iterator"] }
 goblin = "0.10"
+hansei = { path = "hansei" }
 hansei-bundle = { path = "hansei-bundle", version = "0.1.0" }
 hansei-runtime = { path = "hansei-runtime" }
 insta = "1.48"

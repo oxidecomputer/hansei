@@ -1,0 +1,16 @@
+[package]
+name = "mdbmock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A stand-in for mdb's proc target over a Linux core, for testing mdb-hansei off illumos"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+libc = { workspace = true }
+proc = { workspace = true, features = ["testkit"] }
+
+[build-dependencies]
+cc = "1"
