@@ -1280,17 +1280,18 @@ pub const TOWER_RETRY_V0_5_2: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// reqwest's cookie layer as 0.12.24 through 0.13.4 implement it,
-/// reviewed in `src/cookie.rs` of each (byte-identical): the service's
-/// `ResponseFuture<S, B>` is `{ future: S::Future, cookie_store, url }`,
-/// and its `poll` clones the store and the URL, then polls `future`,
-/// reading the other two only once the response is in. So it forwards
-/// exclusively to `future`. Before 0.12.24 the file has no `service`
-/// module: the layer did not exist.
+/// reqwest's cookie layer as 0.12.24 through 0.13.5 implement it,
+/// reviewed in `src/cookie.rs` of each (byte-identical through 0.13.4):
+/// the service's `ResponseFuture<S, B>` is `{ future: S::Future,
+/// cookie_store, url }`, and its `poll` polls `future`, reading the
+/// other two only once the response is in (through 0.13.4 it clones
+/// them first; 0.13.5 reads them through the projection). So it
+/// forwards exclusively to `future`. Before 0.12.24 the file has no
+/// `service` module: the layer did not exist.
 pub const REQWEST_COOKIE_V0_12_24: LibraryConvention = LibraryConvention {
     package: "reqwest",
     family: "reqwest-cookie-0.12.24",
-    releases: Releases(&[((0, 12, 24), (0, 12, 28)), ((0, 13, 0), (0, 13, 4))]),
+    releases: Releases(&[((0, 12, 24), (0, 12, 28)), ((0, 13, 0), (0, 13, 5))]),
     checksums: &[
         // src/cookie.rs, 0.12.24 through 0.13.4
         (
@@ -1298,6 +1299,14 @@ pub const REQWEST_COOKIE_V0_12_24: LibraryConvention = LibraryConvention {
             [
                 0xb7, 0x07, 0x01, 0x0e, 0x05, 0x11, 0x1e, 0x6c, 0x25, 0xd1, 0xe6, 0xd0, 0x5c, 0x75,
                 0x81, 0x1c,
+            ],
+        ),
+        // src/cookie.rs, 0.13.5
+        (
+            "src/cookie.rs",
+            [
+                0xa1, 0x58, 0x4c, 0xda, 0x48, 0xef, 0xb7, 0x06, 0x1c, 0x69, 0x1e, 0xc7, 0xd1, 0xae,
+                0xdc, 0xb9,
             ],
         ),
     ],
@@ -1349,7 +1358,7 @@ pub const DROPSHOT_SERVER_V0_17_0: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// reqwest's client request as 0.12.0 through 0.13.2 implement it,
+/// reqwest's client request as 0.12.0 through 0.13.5 implement it,
 /// reviewed in `src/async_impl/client.rs` of each release: `send()`
 /// returns a `Pending` whose `PendingInner::Request` holds the
 /// `PendingRequest` the client polls — inline through 0.12.19, behind a
@@ -1363,13 +1372,11 @@ pub const DROPSHOT_SERVER_V0_17_0: LibraryConvention = LibraryConvention {
 /// as its own future either way. `url.serialization` is the whole URL
 /// as text, which is what the `url` crate keeps its parsed form as.
 ///
-/// The ceiling is the newest release the cores on hand build; it
-/// advances by hand when a newer one is read (0.13.3 and 0.13.4 match
-/// on every addressed declaration).
+/// The ceiling advances by hand when a newer release is read.
 pub const REQWEST_PENDING_REQUEST_V0_12_0: LibraryConvention = LibraryConvention {
     package: "reqwest",
     family: "reqwest-pending-request-0.12.0",
-    releases: Releases(&[((0, 12, 0), (0, 12, 28)), ((0, 13, 0), (0, 13, 2))]),
+    releases: Releases(&[((0, 12, 0), (0, 12, 28)), ((0, 13, 0), (0, 13, 5))]),
     checksums: &[
         // src/async_impl/client.rs, 0.12.0
         (
@@ -1561,6 +1568,30 @@ pub const REQWEST_PENDING_REQUEST_V0_12_0: LibraryConvention = LibraryConvention
             [
                 0x14, 0x1e, 0x93, 0x91, 0x30, 0xc2, 0xa9, 0x7f, 0x54, 0x7f, 0x02, 0xfb, 0x1c, 0xc9,
                 0xfa, 0xd8,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.13.3
+        (
+            "src/async_impl/client.rs",
+            [
+                0x7a, 0x3b, 0x94, 0xfd, 0x3b, 0xc3, 0xba, 0x65, 0x74, 0x24, 0x54, 0xd3, 0x1b, 0x23,
+                0x3e, 0xdf,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.13.4
+        (
+            "src/async_impl/client.rs",
+            [
+                0xaf, 0x6e, 0x02, 0x0d, 0x36, 0x29, 0xbe, 0x26, 0x36, 0x85, 0xbf, 0x01, 0xae, 0x6e,
+                0xfe, 0x4c,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.13.5
+        (
+            "src/async_impl/client.rs",
+            [
+                0x68, 0xaf, 0xd0, 0xdc, 0x0d, 0x15, 0xe9, 0xfd, 0x8b, 0xde, 0x08, 0xe1, 0x85, 0xa2,
+                0x5f, 0x77,
             ],
         ),
     ],
@@ -5065,9 +5096,9 @@ mod tests {
             ),
             (
                 &REQWEST_COOKIE_V0_12_24,
-                ["0.12.24", "0.12.28", "0.13.0", "0.13.2", "0.13.4"].as_slice(),
+                ["0.12.24", "0.12.28", "0.13.0", "0.13.4", "0.13.5"].as_slice(),
                 "0.12.23",
-                "0.13.5",
+                "0.13.6",
             ),
             (
                 &TOKIO_STREAM_WATCH_V0_1_14,
@@ -5111,11 +5142,11 @@ mod tests {
             (
                 &REQWEST_PENDING_REQUEST_V0_12_0,
                 [
-                    "0.12.0", "0.12.19", "0.12.20", "0.12.28", "0.13.0", "0.13.2",
+                    "0.12.0", "0.12.19", "0.12.20", "0.12.28", "0.13.0", "0.13.2", "0.13.5",
                 ]
                 .as_slice(),
                 "0.11.27",
-                "0.13.3",
+                "0.13.6",
             ),
             (
                 &HTTP_REQUEST_V1_0_0,
@@ -5209,8 +5240,8 @@ mod tests {
         assert_eq!(HYPER_UTIL_AUTO_CONN_V0_1_10.checksums.len(), 8);
         assert_eq!(DROPSHOT_SERVER_V0_17_0.range(), "0.17.0-0.17.1");
         assert_eq!(DROPSHOT_SERVER_V0_17_0.checksums.len(), 2);
-        assert_eq!(REQWEST_PENDING_REQUEST_V0_12_0.range(), "0.12.0-0.13.2");
-        assert_eq!(REQWEST_PENDING_REQUEST_V0_12_0.checksums.len(), 24);
+        assert_eq!(REQWEST_PENDING_REQUEST_V0_12_0.range(), "0.12.0-0.13.5");
+        assert_eq!(REQWEST_PENDING_REQUEST_V0_12_0.checksums.len(), 27);
         assert_eq!(HTTP_REQUEST_V1_0_0.range(), "1.0.0-1.4.2");
         assert_eq!(HTTP_REQUEST_V1_0_0.checksums.len(), 27);
         assert_eq!(DROPSHOT_HANDLER_V0_17_0.range(), "0.17.0-0.17.1");
