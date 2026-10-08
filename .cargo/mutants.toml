@@ -37,6 +37,14 @@ test_tool = "nextest"
 # again there, or the unmutated baseline fails before any mutant runs.
 additional_cargo_test_args = ["--max-fail=1:immediate", "--profile", "mutants"]
 
+# Build with CI's cargo profile: line tables only, except for the two
+# crates whose tests read their own binary's DWARF (see Cargo.toml).
+# No suite reads the rest of the debug info, and leaving it out takes
+# about a tenth off a mutant's rebuild. That is a small share of a
+# sweep: under a sweep's load a rebuild's time is mostly waiting on
+# the other jobs' test runs for CPU.
+profile = "ci"
+
 # Copy only what git tracks. cargo-mutants copies the tree into a
 # scratch dir per job, and does *not* filter by gitignore unless told
 # to: on a host that has built the version matrix, that means 12 GB of
