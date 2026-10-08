@@ -51,11 +51,39 @@ use std::path::PathBuf;
 // borrow: every dcmd computes its whole answer first, lets go of the
 // session, and only then prints.
 
+/// Marks the start of bold text in what [`print`] is given, through
+/// to [`BOLD_END`]. Text is always passed to `mdb_printf` as a `%s`
+/// argument, never as its format, so emphasis travels as these marks
+/// and becomes mdb's own `%<b>`/`%</b>`, which mdb renders only on a
+/// terminal that can.
+pub(crate) const BOLD: char = '\u{1}';
+pub(crate) const BOLD_END: char = '\u{2}';
+
 pub(crate) fn print(text: &str) {
     for line in text.split_inclusive('\n') {
-        let c = CString::new(line.replace('\0', "\\0")).unwrap_or_default();
-        let _g = mdb_lock();
-        unsafe { mdb_printf(c"%s".as_ptr(), c.as_ptr()) };
+        // Runs of plain and bold text, split at the marks.
+        let mut bold = false;
+        let mut run = String::new();
+        let emit = |run: &mut String, bold: bool| {
+            if run.is_empty() {
+                return;
+            }
+            let c = CString::new(run.replace('\0', "\\0")).unwrap_or_default();
+            let fmt = if bold { c"%<b>%s%</b>" } else { c"%s" };
+            let _g = mdb_lock();
+            unsafe { mdb_printf(fmt.as_ptr(), c.as_ptr()) };
+            run.clear();
+        };
+        for ch in line.chars() {
+            match ch {
+                BOLD | BOLD_END => {
+                    emit(&mut run, bold);
+                    bold = ch == BOLD;
+                }
+                ch => run.push(ch),
+            }
+        }
+        emit(&mut run, bold);
     }
 }
 
@@ -888,7 +916,7 @@ static DCMDS: Sync<[mdb_dcmd_t; 12]> = Sync([
     ),
     dcmd(
         c"srcstack",
-        c"?[-t lwp] [-p pc]",
+        c"?[-v] [-n N] [-t lwp] [-p pc]",
         c"$C with source lines",
         source::dcmd_srcstack,
         source::help_srcstack,

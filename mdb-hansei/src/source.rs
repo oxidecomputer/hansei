@@ -17,7 +17,7 @@
 
 use crate::ffi::*;
 use crate::target::{Object, loaded_objects, mdb_lock};
-use crate::{guard, words};
+use crate::{BOLD, BOLD_END, guard, words};
 
 use object::{Object as _, ObjectSegment};
 
@@ -260,6 +260,44 @@ fn frames_text(frames: &[Frame], indent: &str) -> String {
     out
 }
 
+/// `ctx` lines either side of `line` in the source `file` names, the
+/// line itself marked and bold, each indented by `indent`. `None` when
+/// the source cannot be found or read; the caller says so its own way.
+fn source_context(st: &State, file: &str, line: u32, ctx: u32, indent: &str) -> Option<String> {
+    let path = st.srcpath.resolve(file)?;
+    let source = fs::read_to_string(&path).ok()?;
+    let (lo, hi) = (line.saturating_sub(ctx).max(1), line.saturating_add(ctx));
+    let mut out = String::new();
+    for (i, text) in source.lines().enumerate() {
+        let n = i as u32 + 1;
+        if n > hi {
+            break;
+        }
+        if n >= lo {
+            if n == line {
+                out.push_str(&format!("{indent}{BOLD}=>{n:>6}  {text}{BOLD_END}\n"));
+            } else {
+                out.push_str(&format!("{indent}  {n:>6}  {text}\n"));
+            }
+        }
+    }
+    Some(out)
+}
+
+/// [`frames_text`], each location followed by its source.
+fn frames_with_source(st: &State, frames: &[Frame], indent: &str, ctx: u32) -> String {
+    let mut out = String::new();
+    for f in frames {
+        out.push_str(&frames_text(std::slice::from_ref(f), indent));
+        if let (Some(file), Some(line)) = (&f.file, f.line) {
+            let body = source_context(st, file, line, ctx, &format!("{indent}    "))
+                .unwrap_or_else(|| format!("{indent}      (source not found; see ::srcpath)\n"));
+            out.push_str(&body);
+        }
+    }
+    out
+}
+
 fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
     STATE.with(|s| f(&mut s.borrow_mut()))
 }
@@ -332,19 +370,9 @@ pub(crate) unsafe extern "C" fn dcmd_srclist(
                 f.function.as_deref().unwrap_or("??"),
                 f.location().unwrap_or_default()
             );
-            let Some(path) = st.srcpath.resolve(file) else {
-                out.push_str(&format!("    source not found: {file} (see ::srcpath)\n"));
-                return Ok(out);
-            };
-            let source =
-                fs::read_to_string(&path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
-            let (lo, hi) = (line.saturating_sub(ctx).max(1), line.saturating_add(ctx));
-            for (i, text) in source.lines().enumerate() {
-                let n = i as u32 + 1;
-                if (lo..=hi).contains(&n) {
-                    let mark = if n == line { "=>" } else { "  " };
-                    out.push_str(&format!("{mark}{n:>6}  {text}\n"));
-                }
+            match source_context(st, file, line, ctx, "") {
+                Some(body) => out.push_str(&body),
+                None => out.push_str(&format!("    source not found: {file} (see ::srcpath)\n")),
             }
             Ok(out)
         })?;
@@ -394,9 +422,19 @@ pub(crate) unsafe extern "C" fn dcmd_srcstack(
     let words = unsafe { words(argc, argv) };
     guard(|| {
         let (mut tid, mut pc) = (1usize, None);
+        let (mut verbose, mut ctx) = (false, 2u32);
         let mut i = 0;
         while i < words.len() {
+            if words[i] == "-v" {
+                verbose = true;
+                i += 1;
+                continue;
+            }
             match (words[i].as_str(), words.get(i + 1)) {
+                ("-n", Some(v)) => {
+                    ctx = parse_decimal(v).ok_or_else(|| anyhow!("bad -n value {v}"))? as u32;
+                    verbose = true;
+                }
                 ("-t", Some(v)) => {
                     tid = parse_decimal(v).ok_or_else(|| anyhow!("bad -t value {v}"))? as usize
                 }
@@ -432,7 +470,10 @@ pub(crate) unsafe extern "C" fn dcmd_srcstack(
                     match answer(st, &objects, probe, pc) {
                         Some(a) => {
                             out.push_str(&format!("{fp:016x} {}\n", a.symbol));
-                            out.push_str(&frames_text(&a.frames, "    "));
+                            out.push_str(&match verbose {
+                                true => frames_with_source(st, &a.frames, "    ", ctx),
+                                false => frames_text(&a.frames, "    "),
+                            });
                         }
                         None => out.push_str(&format!("{fp:016x} {pc:#x}\n")),
                     }
@@ -536,6 +577,8 @@ pub(crate) unsafe extern "C" fn help_srcstack() {
         "its file:line, inlined frames included. Return addresses resolve to the\n",
         "line of the call.\n\n",
         "  ::srcstack             thread 1's %rbp/%rip (-t LWP for another)\n",
+        "  ::srcstack -v [-n N]   with N lines of source either side (default 2),\n",
+        "                         each frame's line in bold\n",
         "  fp::srcstack -p pc     start from an explicit frame\n",
         "Piped, it emits each frame's pc. Rust code needs\n",
         "-C force-frame-pointers=yes for the chain to hold.\n",

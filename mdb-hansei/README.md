@@ -44,8 +44,8 @@ Native code, from DWARF, with no hansei session needed:
 | | |
 |---|---|
 | `addr::whatline` | Function and `file:line:col` at an address, with every frame inlined there. Objects without DWARF (libc) give their symbol only. |
-| `addr::srclist [-n N]` | The source around an address, its line marked. |
-| `[fp]::srcstack [-t LWP] [-p PC]` | `$C` with source lines: every frame's file:line, a return address resolved to the line of its call. Piped, it emits each frame's pc. |
+| `addr::srclist [-n N]` | The source around an address, its line marked and bold. |
+| `[fp]::srcstack [-v] [-n N] [-t LWP] [-p PC]` | `$C` with source lines: every frame's file:line, a return address resolved to the line of its call. `-v` adds N lines of source either side (default 2) under each frame, its line in bold, as v8.so's `::jsstack -v` did. Piped, it emits each frame's pc. |
 | `::srcpath [-c] [-d DIR] [-s FROM=TO]` | Where `::srclist` looks for sources that moved, e.g. `-s /rustc/<hash>=$(rustc --print sysroot)/lib/rustlib/src/rust` for std. |
 
 `-w FIELD ARG` / `-W FIELD ARG` are `tasks --with` / `--without`. The fields are
