@@ -5,10 +5,12 @@
 # Mutation testing is the tool that tells those apart — it reports the
 # code that can be changed without any test noticing.
 #
-# The loop for a change is the diff:
+# Every run goes in the Linux test image, whose rendering the suites'
+# goldens are (see CLAUDE.md). The loop for a change is the diff:
 #
-#     git diff origin/main > /tmp/change.diff
-#     cargo mutants --in-diff /tmp/change.diff
+#     git diff origin/main > mutants.diff
+#     HANSEI_REUSE_FIXTURES=1 .github/scripts/in-image.sh \
+#         cargo mutants --in-diff mutants.diff
 #
 # and a sweep of one crate is `cargo mutants -p hansei-runtime`: about
 # twenty seconds a mutant at -j 6 on a 32-core host (3,831 mutants, so
@@ -27,7 +29,23 @@ test_tool = "nextest"
 # still running rather than wait for it. One failure is the verdict;
 # without this a caught mutant waited minutes for the slowest
 # acceptance test still in flight, which was most of a sweep's time.
-additional_cargo_test_args = ["--max-fail=1:immediate"]
+#
+# Run the tests that catch mutants first: nextest's `mutants` profile
+# (.config/nextest.toml) orders the suite so a mutant's verdict does
+# not wait behind work that could not have produced it.
+#
+# Arguments after a command line's `--` are appended to these, not put
+# in their place, and nextest refuses a flag given twice: pass neither
+# again there, or the unmutated baseline fails before any mutant runs.
+additional_cargo_test_args = ["--max-fail=1:immediate", "--profile", "mutants"]
+
+# Build with CI's cargo profile: line tables only, except for the two
+# crates whose tests read their own binary's DWARF (see Cargo.toml).
+# No suite reads the rest of the debug info, and leaving it out takes
+# about a tenth off a mutant's rebuild. That is a small share of a
+# sweep: under a sweep's load a rebuild's time is mostly waiting on
+# the other jobs' test runs for CPU.
+profile = "ci"
 
 # Copy only what git tracks. cargo-mutants copies the tree into a
 # scratch dir per job, and does *not* filter by gitignore unless told
@@ -65,6 +83,13 @@ minimum_test_timeout = 600
 # sweep meant a fixture build per mutant; HANSEI_REUSE_FIXTURES ended
 # that, and a measured sweep with it in scope costs about what one
 # without it did.
+#
+# This list judges a mutant anywhere in the workspace. A sweep whose
+# mutants all sit in known crates can narrow it on the command line
+# (`--test-package`, which replaces the list) to those crates and every
+# workspace crate depending on them, through any kind of dependency: no
+# other suite links the mutated code, and none runs a binary built from
+# it, so nothing is lost but the time those suites take.
 test_package = [
     "hansei-bundle",
     "reify",
@@ -94,6 +119,7 @@ exclude_globs = [
     # pin advances, move the newly-primary module out of this list and the
     # newly-non-primary one in.
     "exegesis/src/detect/tokio_v1_47.rs",
+    "exegesis/src/detect/tokio_v1_52_0.rs",
     "exegesis/src/detect/tokio_v1_53.rs",
 ]
 
@@ -522,4 +548,14 @@ exclude_re = [
     # oracle runs only when the soak loop asks for it: no sweep reaches
     # it. The soak itself is its judge.
     "testkit/cores\\.rs:.*: replace capture_now ",
+    # A version equal to a span's floor is inside the review, and
+    # `select` returns for it before it compares against the floor; so
+    # `<=` there places only the versions `<` does.
+    "replace < with <= in Releases::select",
+    # The same at the whole range's edges in `range_for`: a version
+    # equal to its floor or its ceiling falls in its own minor's span,
+    # which `range_for` names before it compares against either edge.
+    "replace (< with <=|> with >=) in Releases::range_for",
+    # `absent_here` already returns an empty Vec: the mutant is its body.
+    "replace absent_here -> .* with vec!\\[\\]",
 ]

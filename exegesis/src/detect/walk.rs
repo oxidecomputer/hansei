@@ -3291,6 +3291,54 @@ mod tests {
         assert_eq!(note.as_deref(), Some("no current_thread Handle"));
     }
 
+    /// A root on whichever parent bound carries that parent's note, and
+    /// none when the parent had none; absent only when every parent is.
+    #[test]
+    fn test_any_end_root_carries_the_bound_parents_note() {
+        let reader = DwReader::default();
+        let em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        let roots = context_roots(type_id(1));
+        let root = WalkRoot::EndOfAny(BLOCKING_QUEUES);
+        let shards_absent = || Chained::Absent("no shards here".to_string());
+        let queue = |note: Option<&str>| {
+            Chained::Terminals(
+                vec![("queue".to_string(), type_id(2))],
+                note.map(str::to_string),
+            )
+        };
+
+        let chained = BTreeMap::from([
+            (WalkRole::BlockingQueue, queue(Some("family v1_47"))),
+            (WalkRole::BlockingShardQueue, shards_absent()),
+        ]);
+        let Roots::Types { types, note } = resolve_root(&em, &roots, &chained, &root) else {
+            panic!("one bound parent resolves");
+        };
+        assert_eq!(types.len(), 1);
+        assert_eq!(note.as_deref(), Some("family v1_47"));
+
+        let chained = BTreeMap::from([
+            (WalkRole::BlockingQueue, queue(None)),
+            (WalkRole::BlockingShardQueue, shards_absent()),
+        ]);
+        let Roots::Types { note, .. } = resolve_root(&em, &roots, &chained, &root) else {
+            panic!("one bound parent resolves");
+        };
+        assert_eq!(note, None);
+
+        let chained = BTreeMap::from([
+            (
+                WalkRole::BlockingQueue,
+                Chained::Absent("no queue here".to_string()),
+            ),
+            (WalkRole::BlockingShardQueue, shards_absent()),
+        ]);
+        let Roots::Absent(reason) = resolve_root(&em, &roots, &chained, &root) else {
+            panic!("every parent absent is absent");
+        };
+        assert_eq!(reason, "no queue here; no shards here");
+    }
+
     #[test]
     fn test_leaf_root_notes_a_monomorphization_count_past_one() {
         let mut reader = DwReader::default();
