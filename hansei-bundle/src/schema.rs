@@ -1612,6 +1612,8 @@ walk_roles! {
     UnixDatagramShared = "net::UnixDatagram.shared",
     UnixDatagramFd = "net::UnixDatagram.fd",
     BlockingQueue = "blocking::Shared.queue",
+    BlockingQueueShards = "blocking::ShardedQueue.shards",
+    BlockingShardQueue = "blocking::Shard.queue",
     BlockingQueueHead = "blocking::queue.head",
     BlockingQueueLen = "blocking::queue.len",
     BlockingQueueBuf = "blocking::queue.buf",

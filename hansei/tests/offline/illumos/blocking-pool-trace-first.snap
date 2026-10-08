@@ -11,6 +11,8 @@ mid-poll on lwp 1004
 0xA6  <std::thread::thread::Thread>::park
 0xA7  <std::sync::mpmc::list::Channel<()>>::recv::{closure#1}
 0xA8  <std::sync::mpmc::list::Channel<()>>::recv
+0xA9  blocking_pool::main::{closure#0}::{closure#0}
+0xA10  <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{closure#0}::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll
 
 the task is mid-poll: its saved state below the root is not read as a chain
 #0  future  tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>

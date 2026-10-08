@@ -3,16 +3,21 @@
 # supported-versions statement — tooling enumerates cells from it, and
 # the polling job diffs new releases against it.
 #
-# tokio lists the floor plus the latest patch of every minor above it
-# (patch releases essentially never move internal layouts; a new patch
-# bumps its minor's pin in place). The toolchains follow the same rule:
-# the latest patch of each supported minor, a new patch replacing its
-# minor's pin. A point release is unlikely to move codegen or DWARF
-# output in a way that matters, and a target can be expected to come
-# from its minor's latest patch; an earlier patch of a supported minor
-# is supported, but untested. The floors advance deliberately, tracking
-# what deployed targets actually run; retiring an entry deletes its
-# lockfile, cells, and goldens in the same change that edits this file.
+# tokio lists the floor plus the latest patch of every minor above it —
+# of each layout family within it, where a family covers only part of
+# one (patch releases essentially never move internal layouts; a new
+# patch bumps its minor's newest pin in place). The toolchains follow
+# the same rule: the latest patch of each supported minor, a new patch
+# replacing its minor's pin. A point release is unlikely to move codegen
+# or DWARF output in a way that matters, and a target can be expected to
+# come from its minor's latest patch. An earlier patch of a supported
+# minor is supported too, and only built on request: the reviews read
+# every release in their spans, the matrix suite checks each one's
+# sources, and HANSEI_MATRIX_ALL=1 builds each against its span's pin
+# (hansei-runtime/tests/matrix.rs). The floors advance deliberately,
+# tracking what deployed targets actually run; retiring an entry deletes
+# its lockfile, cells, and goldens in the same change that edits this
+# file.
 #
 # The primary cell is what test-programs/Cargo.lock resolves, built on
 # the primary toolchain — the default regen.sh build, the existing
@@ -21,18 +26,21 @@
 # lock with `cargo update -p tokio --precise <ver>` so only tokio and
 # its dependents move.
 
-primary = { tokio = "1.52.4", toolchain = "1.98.1" }
+primary = { tokio = "1.52.4", toolchain = "1.99.0" }
 
 [tokio]
 floor = "1.47.5"
 # 1.53 restructured the timer; its detectors live in their own family
 # module (exegesis/src/detect/tokio_v1_53.rs), selected by the tokio
-# version recovered from the target.
-versions = ["1.47.5", "1.48.0", "1.49.0", "1.50.0", "1.51.4", "1.52.4", "1.53.1"]
+# version recovered from the target. A family can also cover part of
+# a minor: 1.52.0 sharded the blocking pool's queue and 1.52.1 reverted
+# it, so 1.52.0 is a family of its own and pinned beside 1.52.4 — a
+# minor pins the newest patch of each family it holds.
+versions = ["1.47.5", "1.48.0", "1.49.0", "1.50.0", "1.51.5", "1.52.0", "1.52.4", "1.53.2"]
 
 [toolchain]
 floor = "1.97.1"
-versions = ["1.97.1", "1.98.1"]
+versions = ["1.97.1", "1.98.1", "1.99.0"]
 
 # Which cells the trim policy actually builds, so "the matrix" is
 # enumerable by tooling rather than implied by prose. The tokio axis is

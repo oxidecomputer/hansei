@@ -14,23 +14,56 @@ fallback that could bind on a version it was not written for.** Ordered
 alternatives inside a detector are only for divergence a version cannot
 select: feature/cfg variance within one release, or rustc-driven drift.
 
-## 1. Notice and run the mechanical half
+## 1. Notice, review, and run the mechanical half
 
 ```
 test-programs/matrix.sh update            # exit 1 + report when behind
 test-programs/matrix.sh add tokio-<ver>   # or add rust-<ver>
 ```
 
+`update` reports every release no review has read: a new minor or patch
+of tokio (the floor's and primary's minors too), a new stable Rust, and
+a point release of a Rust minor the matrix lists.
+
+**Review before `add`.** Every review in `exegesis/src/detect/semantics.rs`
+reads tokio and rustc release by release — `TOKIO_RELEASES` and
+`RUSTC_RELEASES`, one span per minor through the matrix's newest pin —
+so a release outside them gets no rule and extraction refuses it. For
+the new release:
+
+1. Hash every file each review names (its `checksums` paths) at the
+   release — the crate's registry sources for tokio, the toolchain's
+   `rust-src` for rustc — and diff each file that hashes to no listed
+   revision against the neighbouring reviewed one. A rustc convention
+   with no checksums read compiler sources, which no toolchain ships:
+   diff the files its doc names at the two git tags.
+2. Where the change leaves a review's claims true, list the new
+   revision's checksum (generate the bytes; never type them) and amend
+   the doc's account of how its files vary across the range. Where it
+   does not, that is a layout or protocol change: stop and treat it as
+   §2's classification does.
+3. Raise the minor's span in `TOKIO_RELEASES`/`RUSTC_RELEASES` to the
+   release, or add one for a new minor.
+
+Then run `add`. The matrix suite holds each span's top to the matrix's
+pin for that minor and every listed checksum to every release inside
+the spans, so `add`'s runs fail on a span left behind or a file nobody
+read. A new patch replaces its minor's pin, and the old pin is then
+built only by the every-version run (`HANSEI_MATRIX_ALL=1`), which
+holds each unpinned patch's layout reports to its minor's pin: run it
+once the pin moves.
+
 `add` derives the lockfile, edits `matrix.toml`, deletes golden dirs the
 edit orphans (the "latest" role slides), blesses the new cells, then runs
 the whole matrix un-blessed to prove no existing cell moved. It refuses to
 touch the floor and primary pins — those advance by hand, deliberately.
-Advancing the primary toolchain edits `rust-toolchain.toml` at the
-repository root in the same commit, since the workspace builds on the
-primary too; a `testrun` test fails while the two differ.
-`add` installs the toolchains, blesses and runs the full matrix in the
-Linux test image, so onboard on an x86_64 Linux host with podman; it
-refuses anywhere else. A cell whose toolchain is missing fails.
+Advancing the primary toolchain edits `regen.sh`'s `PRIMARY_TOOLCHAIN`
+and the copies exegesis's tests name in the same commit. The workspace's
+own toolchain (`rust-toolchain.toml`) is independent of it.
+`add` installs the toolchains, with the `rust-src` the matrix suite's
+source check reads, blesses and runs the full matrix in the Linux test
+image, so onboard on an x86_64 Linux host with podman; it refuses
+anywhere else. A cell whose toolchain is missing fails.
 
 ## 2. Classify the release
 
@@ -60,19 +93,30 @@ Walk-contract divergence is an ordered alt in the affected `WalkPath`
 
 All in `exegesis/src/detect/`:
 
-1. `mod.rs`: variant in `Family` (declaration order is floor order — `ALL`
-   and the derived `Ord` rely on it), plus arms in `floor()` and `name()`.
+1. `mod.rs`: variant in `Family` (declaration order is first-floor order —
+   `ALL` relies on it), its range in `Family::RANGES` (patch-level floors;
+   a release a later patch reverts is a family between two of its
+   parent's ranges, as `V1_52_0` is), and arms in `parent()` and `name()`.
+   `parent()` is the family whose layouts this one departs from — the
+   lineage a row falls back along — so a branch family is nobody's parent.
 2. Doc comments: the new variant's range and what moved; **tighten the
    prior family's doc to its new ceiling**; the module-doc file list at the
    top of `mod.rs` if it names the family modules.
-3. `tokio_v<floor>.rs`: only the detectors that moved. Same fn names as
-   the sibling modules (`timer_entry_node`, `sleep_node`, …).
+3. `tokio_v<floor>.rs`: only the detectors and walk routes that moved.
+   Same fn names as the sibling modules (`timer_entry_node`, `sleep_node`,
+   …).
 4. `mod tokio_v<floor>;` declaration, and one `(Family::V<floor>, …)`
    entry in each affected `Versioned` row — never touching other families'
-   entries. A row may skip a family (lookup falls back to the highest
-   older floor), so only list the family where the layout actually differs.
-5. `test_family_selection` in `mod.rs`: asserts on both sides of the new
-   floor, and the `describe` string if the example version's family moved.
+   entries. A row may skip a family (lookup falls back along the lineage),
+   so only list the family where the layout actually differs. A walk the
+   family's layout lacks altogether takes `absent_here` (recorded absent
+   by the version, not broken); a value two families reach by different
+   routes roots its rows at `WalkRoot::EndOfAny`.
+5. `test_family_selection` in `mod.rs`: asserts on both sides of every
+   new floor, and the `describe` string if the example version's family
+   moved. A family inside a minor also splits that minor's span in
+   `TOKIO_RELEASES` and is pinned in `matrix.toml` beside the minor's
+   newest patch.
 
 ## 4. Verification gates, in order
 

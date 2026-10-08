@@ -363,32 +363,6 @@ fn build(recipe: &Recipe, programs: &[&str]) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// The workspace's toolchain file names the matrix's primary, so
-    /// hansei and the fixtures it is tested against build on one
-    /// release.
-    #[test]
-    fn test_workspace_toolchain_is_the_matrix_primary() {
-        #[derive(Deserialize)]
-        struct ToolchainFile {
-            toolchain: Channel,
-        }
-        #[derive(Deserialize)]
-        struct Channel {
-            channel: String,
-        }
-
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        let text = std::fs::read_to_string(root.join("rust-toolchain.toml"))
-            .expect("read rust-toolchain.toml");
-        let file: ToolchainFile = toml::from_str(&text).expect("parse rust-toolchain.toml");
-        let matrix = Matrix::read(&root.join("test-programs"));
-        assert_eq!(
-            file.toolchain.channel, matrix.primary.toolchain,
-            "rust-toolchain.toml and test-programs/matrix.toml name different \
-             primary toolchains; advance both in one commit"
-        );
-    }
-
     /// A recipe names the cell `regen.sh` builds it as and passes the
     /// flags that build exactly it, and only the primary recipe is the
     /// one `regen.sh` builds in place.

@@ -297,10 +297,25 @@ impl ExtractStats {
     fn review_warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Some((version, outgrown)) = &self.rustc_outgrown {
-            let ranges: BTreeSet<String> = outgrown.iter().map(|c| c.range()).collect();
-            for range in ranges {
+            // A release a minor's span did not read is told what was
+            // read of that minor, on the side it falls: a nightly of a
+            // reviewed release is older than it. The version parsed
+            // when it was found outgrown.
+            let parsed = semver::Version::parse(version).ok();
+            let ranges: BTreeSet<(bool, String)> = outgrown
+                .iter()
+                .map(|c| match &parsed {
+                    Some(v) => (
+                        c.releases.select(v) != crate::bundle::LayoutSelection::BelowFloor,
+                        c.releases.range_for(v),
+                    ),
+                    None => (true, c.range()),
+                })
+                .collect();
+            for (newer, range) in ranges {
+                let side = if newer { "newer" } else { "older" };
                 out.push(format!(
-                    "rustc {version} is newer than the supported version range: {range}"
+                    "rustc {version} is {side} than the supported version range: {range}"
                 ));
             }
         }
@@ -2062,7 +2077,7 @@ mod tests {
         };
         assert_eq!(
             stats.unsupported(),
-            ["rustc 1.70.0 is older than the supported version range: 1.97-1.98"]
+            ["rustc 1.70.0 is older than the supported version range: 1.97.0-1.99.0"]
         );
 
         let stats = ExtractStats {
@@ -2138,8 +2153,8 @@ mod tests {
         assert_eq!(
             stats.unsupported(),
             [
-                "rustc 2.999.0 is newer than the supported version range: 1.97-1.98",
-                "tokio 1.999.0 is newer than the supported version range: 1.47-1.53",
+                "rustc 2.999.0 is newer than the supported version range: 1.97.0-1.99.0",
+                "tokio 1.999.0 is newer than the supported version range: 1.47.0-1.53.2",
                 "rustls 0.23.22 is older than the supported version range: \
                  0.23.23-0.23.45",
                 "tokio-rustls 0.27.0 is newer than the supported version range: \

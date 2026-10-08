@@ -4,7 +4,7 @@ description: "`connection 0xA1` over illumos/http-conns"
 ---
 connection 0xA1
     proto: http1
-    driven by: task 2002
+    driven by: task 2001
     http: client, idle
         dispatcher: 0xA1 hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
         conn: 0xA1
@@ -17,7 +17,7 @@ connection 0xA1
         stream: 0xA1 tokio::net::tcp::stream::TcpStream
         registration: 0xA2
         ready: writable
-        waker: the reader slot, task 2002
+        waker: the reader slot, task 2001
         local address: 127.0.0.1:PORT
     peer: 127.0.0.1:PORT
     route:

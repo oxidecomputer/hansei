@@ -2963,7 +2963,7 @@ mod unsupported_warning_tests {
             unsupported: vec![
                 "parking_lot 0.10.2 is older than the supported version range: 0.11.0-0.12.5"
                     .to_owned(),
-                "rustc 1.96.0 is older than the supported version range: 1.97-1.98".to_owned(),
+                "rustc 1.96.0 is older than the supported version range: 1.97.0-1.99.0".to_owned(),
             ],
             ..Meta::default()
         };
@@ -2974,7 +2974,7 @@ mod unsupported_warning_tests {
                  and may show incomplete, raw, or wrong data:\n  \
                  parking_lot 0.10.2 is older than the supported version range: \
                  0.11.0-0.12.5\n  \
-                 rustc 1.96.0 is older than the supported version range: 1.97-1.98"
+                 rustc 1.96.0 is older than the supported version range: 1.97.0-1.99.0"
             )
         );
     }

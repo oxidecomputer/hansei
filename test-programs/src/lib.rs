@@ -40,21 +40,60 @@ pub fn allow_any_tracer() {
 pub fn allow_any_tracer() {}
 
 /// The builder every fixture parks a runtime from. `oxide-tokio-rt`
-/// re-exports this same type, so both arms of [`run_builder`] take it.
+/// re-exports this same type, so both arms of [`build`] take it.
 pub use tokio::runtime::Builder;
+
+/// Build the runtime, wait until every worker of a multi-thread one is
+/// running, then run `main` on it.
+///
+/// A multi-thread runtime starts each worker through its blocking pool:
+/// building it queues one launch task per worker and starts a pool
+/// thread for each, and a thread runs its worker only once it pops that
+/// task. tokio 1.52.0 shards the pool's queue, so a thread that starts
+/// late can find a `spawn_blocking` cell that `main` queued meanwhile,
+/// and run that first: `blocking-pool`'s queued cells did, so they had
+/// finished by the capture its acceptance test takes them to be queued
+/// in. Every other release keeps one FIFO queue, whose launch tasks
+/// always come first. Waiting here gives every fixture the same start
+/// in every release, without touching `main`, whose type the goldens
+/// print.
+pub fn run_builder<T>(builder: &mut Builder, main: impl std::future::Future<Output = T>) -> T {
+    let rt = build(builder);
+    workers_started(&rt);
+    rt.block_on(main)
+}
 
 /// With the `unstable` feature (the default recipe, built with
 /// `--cfg tokio_unstable`), the runtime is oxide-tokio-rt's.
 #[cfg(feature = "unstable")]
-pub use oxide_tokio_rt::run_builder;
+fn build(builder: &mut Builder) -> tokio::runtime::Runtime {
+    oxide_tokio_rt::build(builder).unwrap_or_else(|e| panic!("{e:?}"))
+}
 
-/// Without it, a plain tokio runtime with the same call shape, so a
-/// fixture's `main` is identical however the cell is built.
+/// Without it, a plain tokio runtime, so a fixture's `main` is
+/// identical however the cell is built.
 #[cfg(not(feature = "unstable"))]
-pub fn run_builder<T>(builder: &mut Builder, main: impl std::future::Future<Output = T>) -> T {
-    match builder.enable_all().build() {
-        Ok(rt) => rt.block_on(main),
-        Err(e) => panic!("failed to initialize Tokio runtime: {e:?}"),
+fn build(builder: &mut Builder) -> tokio::runtime::Runtime {
+    builder
+        .enable_all()
+        .build()
+        .unwrap_or_else(|e| panic!("failed to initialize Tokio runtime: {e:?}"))
+}
+
+/// Block until each worker of a multi-thread `rt` has parked once. A
+/// worker parks only from inside its run loop, and publishes the count
+/// just before it does, so a nonzero count says its launch task has
+/// left the blocking pool's queue. A current-thread runtime has no
+/// workers: its one thread parks only inside `block_on`.
+fn workers_started(rt: &tokio::runtime::Runtime) {
+    if rt.handle().runtime_flavor() != tokio::runtime::RuntimeFlavor::MultiThread {
+        return;
+    }
+    let metrics = rt.metrics();
+    for worker in 0..metrics.num_workers() {
+        while metrics.worker_park_count(worker) == 0 {
+            std::thread::yield_now();
+        }
     }
 }
 

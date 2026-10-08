@@ -4,7 +4,7 @@ description: "`connection 0xA1` over linux-floor/http-conns"
 ---
 connection 0xA1
     proto: http1
-    driven by: task 2001
+    driven by: task 2003
     http: client, awaiting response
         dispatcher: 0xA1 hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<reqwest::async_impl::body::Body>, reqwest::async_impl::body::Body, reqwest::connect::sealed::Conn, hyper::proto::h1::role::Client>
         conn: 0xA1
@@ -20,7 +20,7 @@ connection 0xA1
         stream: 0xA2 tokio::net::tcp::stream::TcpStream
         registration: 0xA3
         ready: writable
-        waker: the reader slot, task 2001
+        waker: the reader slot, task 2003
         local address: 127.0.0.1:PORT
     peer: 127.0.0.1:PORT
     route:

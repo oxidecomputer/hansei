@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`whatis 0xA1` over linux-floor/http-conns"
 ---
-Connection 0xA1: http1 client, awaiting response, task 2001
+Connection 0xA1: http1 client, idle, task 2001
     At: offset 0xA2 in the socket's registration, tokio::runtime::io::scheduled_io::ScheduledIo
     In full: connection 0xA1

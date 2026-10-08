@@ -20,7 +20,9 @@
 # Usage: regen.sh [OPTION]... [PROGRAM]...   (default: all programs)
 #
 #   --tokio VER      build against locks/tokio-VER.lock (or the crate's
-#                    own Cargo.lock when that is what it resolves)
+#                    own Cargo.lock when that is what it resolves, or
+#                    for a patch the matrix does not pin, the lockfile
+#                    the every-version run derives under fixtures/locks)
 #   --toolchain VER  build with the named toolchain instead of the pin
 #   --no-unstable    drop --cfg tokio_unstable and the oxide-tokio-rt
 #                    runtime (--no-default-features --features full-tokio)
@@ -51,7 +53,7 @@
 
 set -euo pipefail
 
-PRIMARY_TOOLCHAIN=1.98.1
+PRIMARY_TOOLCHAIN=1.99.0
 ALL_PROGRAMS=(futurelock simple-await nested-await dyn-future select-combinator many-tasks sleep-join channels park-target core-target unordered joinset ct-runtime local-set local-set-timer local-set-io foreign-runtime gen-0007 walk-shapes spin-poll ct-spin stale-local blocking-pool enum-reprs delegation-cases armed-select watch-stream http-conns two-releases tls-conns)
 
 cd "$(dirname "$0")"
@@ -105,9 +107,12 @@ locked_tokio() {
 CRATE_DIR="$PWD"
 if [[ -n "$TOKIO" && "$TOKIO" != "$(locked_tokio)" ]]; then
     LOCK="locks/tokio-$TOKIO.lock"
+    # A patch the matrix does not pin has no checked-in lockfile; the
+    # every-version run derives one under fixtures/ instead.
+    [[ -f "$LOCK" ]] || LOCK="$FIXTURES/locks/tokio-$TOKIO.lock"
     if [[ ! -f "$LOCK" ]]; then
-        echo "regen.sh: no $LOCK; add the version to matrix.toml and" \
-             "derive its lockfile from Cargo.lock with" \
+        echo "regen.sh: no locks/tokio-$TOKIO.lock; add the version to" \
+             "matrix.toml and derive its lockfile from Cargo.lock with" \
              "\`cargo update -p tokio --precise $TOKIO\`" >&2
         exit 2
     fi

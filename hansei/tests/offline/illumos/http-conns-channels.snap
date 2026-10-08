@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`channels` over illumos/http-conns"
 ---
 oneshot 0xA1: nothing sent, sender alive
-    tx: task 2001
+    tx: task 2003
 
 oneshot 0xA2: nothing sent, sender alive
     rx: task 2012
@@ -12,7 +12,7 @@ oneshot 0xA3: nothing sent, sender alive
     tx: task 2014
 
 mpsc 0xA4: 1 sender, 0 unread
-    rx: task 2002
+    rx: task 2001
 
 mpsc 0xA5: 1 sender, 0 unread
     rx: task 2013

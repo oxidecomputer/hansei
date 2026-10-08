@@ -61,6 +61,7 @@ gtar -xzf /tmp/nextest.tar.gz -C ~/.cargo/bin cargo-nextest
 cargo --version
 rustc --version
 cargo nextest --version
+.github/scripts/fixture-toolchain.sh
 
 export CARGO_INCREMENTAL=0
 export RUST_BACKTRACE=1

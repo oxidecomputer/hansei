@@ -9,9 +9,12 @@
 #
 # Usage: matrix.sh COMMAND [ARG]
 #
-#   update           check crates.io and the Rust stable channel for
-#                    releases the matrix does not cover and print the add
-#                    command for each; exits 1 when behind, 0 when current
+#   update           check crates.io and the Rust channels for releases
+#                    the matrix does not cover — a new tokio minor or
+#                    patch (the floor's and primary's included, whose
+#                    pins advance by hand), a new stable Rust, a point
+#                    release of a listed Rust minor — and print what to
+#                    do for each; exits 1 when behind, 0 when current
 #   add tokio-VER    onboard a tokio version: derive locks/tokio-VER.lock
 #                    from the primary Cargo.lock, update matrix.toml (a
 #                    new minor is inserted; a newer patch of a listed
@@ -19,11 +22,11 @@
 #                    orphans, build and bless the new cells' goldens, then
 #                    run the whole matrix un-blessed to prove no existing
 #                    cell's goldens moved
-#   add rust-VER     onboard a toolchain: rustup-install it, update
-#                    matrix.toml the same way (a new minor is inserted; a
-#                    newer patch of a listed minor replaces its pin),
-#                    delete golden dirs the edit orphans, bless its cells,
-#                    run the whole matrix
+#   add rust-VER     onboard a toolchain: rustup-install it with rust-src,
+#                    update matrix.toml the same way (a new minor is
+#                    inserted; a newer patch of a listed minor replaces
+#                    its pin), delete golden dirs the edit orphans, bless
+#                    its cells, run the whole matrix
 #   bless [FILTER]   bless the goldens of every cell, or of the cells
 #                    whose name contains FILTER: after a change that moves
 #                    them, before pushing, so CI's matrix workflow passes
@@ -35,6 +38,15 @@
 # podman, and no Rust of the host's own. Anywhere else their goldens
 # would be another platform's, so they refuse.
 #
+# Every review in exegesis/src/detect/semantics.rs reads tokio and rustc
+# release by release (TOKIO_RELEASES, RUSTC_RELEASES), each minor
+# through the newest patch the matrix pins, and the matrix suite holds
+# the two to each other and every listed checksum to the sources the
+# cells build. So before add, read the files each review names at the
+# new release, list the checksum of every revision that changed, and
+# raise the minor's span (or add one) to it: add's runs then pass once
+# its manifest edit lands, and fail on any file nobody read.
+#
 # add prepares the working tree and never commits. Review the manifest,
 # lockfile, and golden diffs — a respelled member is one more ordered
 # structural alternative in place; a restructure is a new
@@ -44,8 +56,10 @@
 # hansei --test acceptance) and commit. The floor and primary pins, of
 # tokio and of Rust alike, advance deliberately, by hand; add refuses to
 # touch them, and update names a new patch of either Rust pin's minor
-# as a pin to advance. Advancing the primary toolchain edits
-# rust-toolchain.toml in the same change. Advancing the tokio floor also
+# as a pin to advance. Advancing the primary toolchain edits regen.sh's
+# PRIMARY_TOOLCHAIN and the copies exegesis's tests name in the same
+# change; hansei's own toolchain (rust-toolchain.toml) is independent of
+# it. Advancing the tokio floor also
 # moves the linux-floor set, whose cores are captured at the floor:
 # re-bless its @linux-floor goldens on a Linux host.
 
@@ -211,11 +225,23 @@ cmd_update() {
     [ -n "$latest_per_minor" ] || die "no tokio versions parsed from the index"
 
     for v in $latest_per_minor; do
-        # Below the floor, or the floor/primary minor itself: those pins
-        # advance deliberately, not by release-tracking.
         [ "$(ver_cmp "$v" "$T_FLOOR")" -lt 0 ] && continue
-        [ "$(minor_of "$v")" = "$(minor_of "$T_FLOOR")" ] && continue
-        [ "$(minor_of "$v")" = "$(minor_of "$P_TOKIO")" ] && continue
+        # The floor and primary pins advance deliberately, by hand, but
+        # a patch to either minor is as unreviewed as any other: the
+        # reviews read each minor only through its pin.
+        local pin="" role=""
+        if [ "$(minor_of "$v")" = "$(minor_of "$T_FLOOR")" ]; then
+            pin=$T_FLOOR role=floor
+        elif [ "$(minor_of "$v")" = "$(minor_of "$P_TOKIO")" ]; then
+            pin=$P_TOKIO role=primary
+        fi
+        if [ -n "$role" ]; then
+            if [ "$(ver_cmp "$pin" "$v")" -lt 0 ]; then
+                echo "matrix is behind: tokio $v released ($pin is the $role pin) — advance the $role pin by hand (see this script's header)"
+                behind=1
+            fi
+            continue
+        fi
         have=""
         for lv in "${TOKIO_VERSIONS[@]}"; do
             [ "$(minor_of "$lv")" = "$(minor_of "$v")" ] && have=$lv
@@ -249,7 +275,7 @@ cmd_update() {
     done
     if [ -n "$have" ] && [ "$(ver_cmp "$have" "$stable")" -lt 0 ]; then
         if [ "$have" = "$P_TC" ] || [ "$have" = "${TC_FLOOR:-}" ]; then
-            echo "matrix is behind: Rust $stable released ($have is pinned) — advance that pin by hand, in matrix.toml and rust-toolchain.toml"
+            echo "matrix is behind: Rust $stable released ($have is pinned) — advance that pin by hand (see matrix.sh's header)"
         else
             echo "matrix is behind: Rust $stable released ($have is pinned) — run \`test-programs/matrix.sh add rust-$stable\`"
         fi
@@ -258,6 +284,34 @@ cmd_update() {
         echo "matrix is behind: Rust $stable is stable (new minor) — run \`test-programs/matrix.sh add rust-$stable\`"
         behind=1
     fi
+    # A point release of a minor the matrix lists, which stable may
+    # already have moved past: each minor's own channel names its
+    # newest patch.
+    local minors m newest have_patch
+    minors=$(for tc in "${TOOLCHAINS[@]}"; do minor_of "$tc"; done | sort -u)
+    for m in $minors; do
+        # awk reads to the end: leaving early would break curl's pipe.
+        newest=$(curl -fsS --max-time 30 "${CHANNEL_URL%stable.toml}$m.toml" | awk '
+            /^\[pkg\.rust\]/ { in_rust = 1; next }
+            /^\[/ { in_rust = 0 }
+            in_rust && /^version = / && !found {
+                split($0, q, "\""); split(q[2], w, " "); print w[1]; found = 1
+            }
+        ') || die "fetching the Rust $m channel failed"
+        [ -n "$newest" ] || continue
+        have_patch=""
+        for tc in "${TOOLCHAINS[@]}"; do
+            [ "$(minor_of "$tc")" = "$m" ] && have_patch=$tc
+        done
+        if [ "$(ver_cmp "$have_patch" "$newest")" -lt 0 ] && [ "$newest" != "$stable" ]; then
+            if [ "$have_patch" = "$P_TC" ] || [ "$have_patch" = "${TC_FLOOR:-}" ]; then
+                echo "matrix is behind: Rust $newest released ($have_patch is pinned) — advance that pin by hand (see matrix.sh's header)"
+            else
+                echo "matrix is behind: Rust $newest released ($have_patch is the newest $m listed) — run \`test-programs/matrix.sh add rust-$newest\`"
+            fi
+            behind=1
+        fi
+    done
 
     if [ $behind = 0 ]; then
         echo "matrix is current (tokio ${TOKIO_VERSIONS[*]}; rust ${TOOLCHAINS[*]}; stable is $stable)"
@@ -296,6 +350,10 @@ require_image_host() {
 ensure_toolchain() {
     in_image rustup toolchain install --profile minimal "$1" \
         || die "installing toolchain $1 failed"
+    # The matrix suite holds the rustc reviews to the standard library
+    # sources each toolchain ships.
+    in_image rustup component add rust-src --toolchain "$1" >/dev/null 2>&1 \
+        || die "adding rust-src to toolchain $1 failed"
 }
 
 # The matrix suite in the image, over the cells whose names contain
@@ -458,7 +516,7 @@ cmd_add_rust() {
         && die "rust $ver is below the floor ($TC_FLOOR)"
     if [ "$(minor_of "$ver")" = "$(minor_of "${TC_FLOOR:-}")" ] \
         || [ "$(minor_of "$ver")" = "$(minor_of "$P_TC")" ]; then
-        die "the floor/primary toolchain pins (${TC_FLOOR:-}/$P_TC) advance deliberately — edit matrix.toml by hand (the primary with rust-toolchain.toml; see the header)"
+        die "the floor/primary toolchain pins (${TC_FLOOR:-}/$P_TC) advance deliberately — edit matrix.toml by hand (see the header)"
     fi
     # The matrix holds one patch per minor, the latest: a newer patch
     # replaces its minor's pin.

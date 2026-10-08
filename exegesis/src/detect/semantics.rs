@@ -17,28 +17,180 @@
 use crate::bundle::{IoOperationKind, LayoutSelection, ResourceKind, SemanticRuleKind};
 use crate::provenance::rustc_version;
 
+/// One release: `(major, minor, patch)`.
+pub type Release = (u64, u64, u64);
+
+/// The releases a review read, as inclusive spans in ascending order.
+/// A crate that only ever releases forward needs one span. One that
+/// ships patches into older minors — tokio's LTS lines, rustc's point
+/// releases — gets a span per minor, ending at the newest patch read:
+/// a patch released into that minor afterwards falls between two
+/// spans, outside the review, instead of inside one long range that
+/// would vouch for it unread.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Releases(pub &'static [(Release, Release)]);
+
+impl Releases {
+    pub fn floor(&self) -> Release {
+        self.0
+            .first()
+            .expect("a review reads at least one release")
+            .0
+    }
+
+    pub fn ceiling(&self) -> Release {
+        self.0
+            .last()
+            .expect("a review reads at least one release")
+            .1
+    }
+
+    /// Whether a span holds the version. A pre-release — a nightly or
+    /// beta rustc, a crate's release candidate — is none of the
+    /// releases a review read, however close its number.
+    pub fn covers(&self, version: &semver::Version) -> bool {
+        let release = release(version);
+        version.pre.is_empty()
+            && self
+                .0
+                .iter()
+                .any(|&(floor, ceiling)| release >= floor && release <= ceiling)
+    }
+
+    /// The span the review read of the version's own minor, if any: of
+    /// a minor split in two — tokio 1.52, whose 1.52.0 is a layout
+    /// family of its own — the last that starts at or before it, else
+    /// the minor's first.
+    fn span_of(&self, version: &semver::Version) -> Option<(Release, Release)> {
+        let minor: Vec<(Release, Release)> = self
+            .0
+            .iter()
+            .copied()
+            .filter(|&((major, minor, _), _)| (major, minor) == (version.major, version.minor))
+            .collect();
+        minor
+            .iter()
+            .rev()
+            .find(|&&(floor, _)| at(floor) <= *version)
+            .or(minor.first())
+            .copied()
+    }
+
+    /// The version's place against the spans, in semver order, so a
+    /// pre-release sorts before its release: reviewed inside one; else
+    /// placed against what was read of its own minor — below that span
+    /// for a patch older than its first release, above it for one newer
+    /// than its last — or, for a minor no span reads, against the whole
+    /// range.
+    pub fn select(&self, version: &semver::Version) -> LayoutSelection {
+        if self.covers(version) {
+            return LayoutSelection::ReviewedRange;
+        }
+        let floor = match self.span_of(version) {
+            Some((floor, _)) => floor,
+            None => self.floor(),
+        };
+        if *version < at(floor) {
+            LayoutSelection::BelowFloor
+        } else {
+            LayoutSelection::AboveReviewedRange
+        }
+    }
+
+    /// The whole range as a warning names it: `1.47.0-1.53.2`.
+    pub fn range(&self) -> String {
+        release_range(self.floor(), self.ceiling())
+    }
+
+    /// The range a version outside the review is told it misses: what
+    /// was read of its own minor — `1.51.0-1.51.5` for an unread 1.51.6,
+    /// `1.52.1-1.52.4` for a 1.52.0 left out — else, past every span,
+    /// the whole range, and between two spans of other minors the one
+    /// below it.
+    pub fn range_for(&self, version: &semver::Version) -> String {
+        if let Some((floor, ceiling)) = self.span_of(version) {
+            return release_range(floor, ceiling);
+        }
+        if *version < at(self.floor()) || *version > at(self.ceiling()) {
+            return self.range();
+        }
+        let &(floor, ceiling) = self
+            .0
+            .iter()
+            .rev()
+            .find(|&&(floor, _)| at(floor) <= *version)
+            .expect("a version at or above the floor has a span below it");
+        release_range(floor, ceiling)
+    }
+}
+
+/// A release as a semver version, to compare with one in semver order.
+fn at((major, minor, patch): Release) -> semver::Version {
+    semver::Version::new(major, minor, patch)
+}
+
+impl std::fmt::Display for Releases {
+    /// Every span, a one-release span as that release:
+    /// `1.47.0-1.47.5,1.48.0,1.49.0`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let spans: Vec<String> = self
+            .0
+            .iter()
+            .map(|&(floor, ceiling)| match floor == ceiling {
+                true => dotted(floor),
+                false => release_range(floor, ceiling),
+            })
+            .collect();
+        f.write_str(&spans.join(","))
+    }
+}
+
+fn release(version: &semver::Version) -> Release {
+    (version.major, version.minor, version.patch)
+}
+
+fn dotted((major, minor, patch): Release) -> String {
+    format!("{major}.{minor}.{patch}")
+}
+
+fn release_range(floor: Release, ceiling: Release) -> String {
+    format!("{}-{}", dotted(floor), dotted(ceiling))
+}
+
+/// The rustc releases every rustc convention was reviewed at: each
+/// minor from `.0` through the newest patch the version matrix
+/// (`test-programs/matrix.toml`) builds. A span advances by hand when a
+/// toolchain is onboarded, after its cells' goldens and the files each
+/// convention names have been read; the matrix suite holds each span's
+/// newest patch to the matrix's.
+pub const RUSTC_RELEASES: Releases = Releases(&[
+    ((1, 97, 0), (1, 97, 1)),
+    ((1, 98, 0), (1, 98, 1)),
+    ((1, 99, 0), (1, 99, 0)),
+]);
+
 /// One reviewed rustc convention: its name, as the bundle's `Rustc`
-/// origin records it, and the inclusive `(major, minor)` range of
-/// compiler versions it was reviewed against.
+/// origin records it, the compiler releases it was reviewed at, and
+/// the checksums of the standard library files it read, as `rust-src`
+/// ships them (`library/…`). A convention about what the compiler
+/// itself emits reads compiler sources, which no toolchain ships, and
+/// lists none: its releases alone gate it.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct RustcConvention {
     pub family: &'static str,
-    pub floor: (u64, u64),
-    pub ceiling: (u64, u64),
+    pub releases: Releases,
+    /// `(file, md5)` for every reviewed revision of each library file.
+    pub checksums: &'static [(&'static str, [u8; 16])],
 }
 
 impl RustcConvention {
-    fn covers(&self, version: (u64, u64)) -> bool {
-        version >= self.floor && version <= self.ceiling
-    }
-
     fn subject(&self) -> &'static str {
         subject(self.family)
     }
 
-    /// The range as a warning names it: `1.97-1.98`.
+    /// The range as a warning names it: `1.97.0-1.99.0`.
     pub fn range(&self) -> String {
-        minor_range(self.floor, self.ceiling)
+        self.releases.range()
     }
 }
 
@@ -53,12 +205,7 @@ pub(crate) fn subject(family: &'static str) -> &'static str {
         .map_or(family, |(subject, _)| subject)
 }
 
-/// A `(major, minor)` range as a warning names it: `1.97-1.98`.
-fn minor_range((a, b): (u64, u64), (x, y): (u64, u64)) -> String {
-    format!("{a}.{b}-{x}.{y}")
-}
-
-/// The coroutine state-machine convention rustc 1.97 and 1.98 emit,
+/// The coroutine state-machine convention rustc 1.97 through 1.99 emit,
 /// reviewed against `rustc_codegen_llvm::debuginfo::metadata::enums`'
 /// coroutine variant naming and `rustc_mir_transform::coroutine`'s
 /// layout: the env is an enum whose variant members are numbered in
@@ -69,20 +216,19 @@ fn minor_range((a, b): (u64, u64), (x, y): (u64, u64)) -> String {
 /// across that await, `__awaitee` among them. An async block's suspend
 /// states also list its captures, moved or not.
 ///
-/// The ceiling is the newest toolchain in `test-programs/matrix.toml`;
-/// it advances by hand when a release is onboarded and its cells'
-/// goldens have been read. A newer compiler emitting the same shape
-/// stays unbound: identical fields do not prove identical meaning.
+/// Its releases are [`RUSTC_RELEASES`]. A newer compiler emitting the
+/// same shape stays unbound: identical fields do not prove identical
+/// meaning.
 pub const RUSTC_COROUTINE_V1_97: RustcConvention = RustcConvention {
     family: "rustc-coroutine-1.97",
-    floor: (1, 97),
-    ceiling: (1, 98),
+    releases: RUSTC_RELEASES,
+    checksums: &[],
 };
 
-/// The standard pointer adapters rustc 1.97 and 1.98 build, reviewed
+/// The standard pointer adapters rustc 1.97 through 1.99 build, reviewed
 /// against `library/core/src/future/future.rs` and
-/// `library/alloc/src/boxed.rs` (identical across the three matrix
-/// toolchains), and the layouts their debuginfo spells: `Pin<Ptr>` is a
+/// `library/alloc/src/boxed.rs` (the adapters' types and `Future` impls
+/// identical across the range), and the layouts their debuginfo spells: `Pin<Ptr>` is a
 /// struct whose one member `pointer` is its `Ptr`; a sized `Box<F, Global>`
 /// and a `&mut F` are thin pointers named in full; their unsized forms
 /// over a trait object are `{ pointer, vtable }` wide pointers. Each
@@ -93,11 +239,44 @@ pub const RUSTC_COROUTINE_V1_97: RustcConvention = RustcConvention {
 /// else, which is what lets these rules carry the exclusive bit.
 pub const RUSTC_STD_ADAPTERS_V1_97: RustcConvention = RustcConvention {
     family: "rustc-std-adapters-1.97",
-    floor: (1, 97),
-    ceiling: (1, 98),
+    releases: RUSTC_RELEASES,
+    checksums: &[
+        // library/core/src/future/future.rs, 1.97.0 through 1.99.0
+        (
+            "library/core/src/future/future.rs",
+            [
+                0x51, 0xc8, 0x9e, 0xd2, 0x1e, 0x52, 0xa7, 0x8e, 0x60, 0x5a, 0xd8, 0x46, 0xee, 0x1a,
+                0x13, 0xf2,
+            ],
+        ),
+        // library/alloc/src/boxed.rs, 1.97.0 and 1.97.1
+        (
+            "library/alloc/src/boxed.rs",
+            [
+                0xab, 0x31, 0x10, 0xed, 0xd6, 0xf8, 0xce, 0x3c, 0xea, 0x85, 0x72, 0xce, 0x2a, 0x68,
+                0x72, 0xf1,
+            ],
+        ),
+        // library/alloc/src/boxed.rs, 1.98.0 and 1.98.1
+        (
+            "library/alloc/src/boxed.rs",
+            [
+                0x5d, 0x44, 0x4a, 0xcb, 0x5e, 0xae, 0x77, 0xea, 0xc4, 0x89, 0xba, 0x4a, 0xd0, 0x24,
+                0xdb, 0x1b,
+            ],
+        ),
+        // library/alloc/src/boxed.rs, 1.99.0
+        (
+            "library/alloc/src/boxed.rs",
+            [
+                0xd0, 0x81, 0x67, 0xce, 0x38, 0x61, 0x56, 0x23, 0x85, 0x2d, 0x82, 0xb0, 0xb0, 0x76,
+                0x4c, 0x28,
+            ],
+        ),
+    ],
 };
 
-/// The `dyn Future` vtable rustc 1.97 and 1.98 lay out: the drop-in-place
+/// The `dyn Future` vtable rustc 1.97 through 1.99 lay out: the drop-in-place
 /// pointer, the size and the alignment words, then the trait's methods
 /// in declaration order — `poll` alone for `Future` — so a wide pointer's
 /// metadata is at least four words and slot 3 is the poll. Reviewed
@@ -106,8 +285,8 @@ pub const RUSTC_STD_ADAPTERS_V1_97: RustcConvention = RustcConvention {
 /// `&[usize; N]`.
 pub const RUSTC_DYN_FUTURE_ABI_V1_97: RustcConvention = RustcConvention {
     family: "rustc-dyn-future-abi-1.97",
-    floor: (1, 97),
-    ceiling: (1, 98),
+    releases: RUSTC_RELEASES,
+    checksums: &[],
 };
 
 fn rustc_convention(
@@ -115,8 +294,10 @@ fn rustc_convention(
     reviewed: &[&'static RustcConvention],
 ) -> Option<&'static RustcConvention> {
     let version = rustc_version(producer)?;
-    let version = (version.major, version.minor);
-    reviewed.iter().copied().find(|c| c.covers(version))
+    reviewed
+        .iter()
+        .copied()
+        .find(|c| c.releases.covers(&version))
 }
 
 /// The coroutine convention a producer string is covered by, if any:
@@ -133,18 +314,27 @@ pub fn rustc_std_adapter_convention(producer: &str) -> Option<&'static RustcConv
     rustc_convention(producer, &[&RUSTC_STD_ADAPTERS_V1_97])
 }
 
-/// core's `future::pending::Pending<T>` as rustc 1.97 and 1.98 ship it,
-/// reviewed against `library/core/src/future/pending.rs` (identical
-/// across the three matrix toolchains): a zero-sized struct whose one
+/// core's `future::pending::Pending<T>` as rustc 1.97 through 1.99 ship
+/// it, reviewed against `library/core/src/future/pending.rs` (identical
+/// across the range): a zero-sized struct whose one
 /// member is a `PhantomData`, and a `Future::poll` that returns
 /// `Poll::Pending` without touching its `Context` — no waker
 /// registered, nothing polled, never `Ready`. The source ships with
 /// the toolchain, so the producer version says which source was read,
-/// and the ceiling advances by hand with the others.
+/// and the releases advance by hand with the others.
 pub const RUSTC_CORE_PENDING_V1_97: RustcConvention = RustcConvention {
     family: "rustc-core-pending-1.97",
-    floor: (1, 97),
-    ceiling: (1, 98),
+    releases: RUSTC_RELEASES,
+    checksums: &[
+        // library/core/src/future/pending.rs, 1.97.0 through 1.99.0
+        (
+            "library/core/src/future/pending.rs",
+            [
+                0x62, 0xc4, 0xbb, 0xc3, 0xc5, 0x71, 0x3e, 0x4e, 0x87, 0x26, 0xa2, 0x19, 0x35, 0x73,
+                0x65, 0xc3,
+            ],
+        ),
+    ],
 };
 
 /// The `Pending` convention covering a producer, selected like
@@ -159,7 +349,7 @@ pub fn rustc_dyn_future_abi_convention(producer: &str) -> Option<&'static RustcC
     rustc_convention(producer, &[&RUSTC_DYN_FUTURE_ABI_V1_97])
 }
 
-/// std's refcounted allocation headers as rustc 1.97 and 1.98 ship
+/// std's refcounted allocation headers as rustc 1.97 through 1.99 ship
 /// them, reviewed against `library/alloc/src/sync.rs` and `rc.rs` (the
 /// two headers identical across the range but for comments):
 /// `ArcInner<T> { strong, weak, data: T }` and `RcInner<T> { strong,
@@ -168,8 +358,57 @@ pub fn rustc_dyn_future_abi_convention(producer: &str) -> Option<&'static RustcC
 /// a member of.
 pub const RUSTC_STD_REFCOUNT_V1_97: RustcConvention = RustcConvention {
     family: "rustc-std-refcount-1.97",
-    floor: (1, 97),
-    ceiling: (1, 98),
+    releases: RUSTC_RELEASES,
+    checksums: &[
+        // library/alloc/src/sync.rs, 1.97.0 and 1.97.1
+        (
+            "library/alloc/src/sync.rs",
+            [
+                0x20, 0x55, 0x38, 0xb2, 0x45, 0x18, 0x49, 0xa3, 0xc6, 0x90, 0xf0, 0x1d, 0x0b, 0xb8,
+                0x25, 0xf1,
+            ],
+        ),
+        // library/alloc/src/sync.rs, 1.98.0 and 1.98.1
+        (
+            "library/alloc/src/sync.rs",
+            [
+                0x09, 0x22, 0x59, 0x34, 0x38, 0x84, 0x84, 0xc2, 0x24, 0xb4, 0x57, 0x12, 0xd0, 0xc1,
+                0x5c, 0xde,
+            ],
+        ),
+        // library/alloc/src/sync.rs, 1.99.0
+        (
+            "library/alloc/src/sync.rs",
+            [
+                0x8b, 0x43, 0xa5, 0x3d, 0xcc, 0x02, 0xe6, 0xdc, 0xa0, 0xe1, 0x2f, 0x2a, 0xb1, 0xca,
+                0x94, 0x8e,
+            ],
+        ),
+        // library/alloc/src/rc.rs, 1.97.0 and 1.97.1
+        (
+            "library/alloc/src/rc.rs",
+            [
+                0x9a, 0xcd, 0x46, 0xdc, 0x14, 0xa1, 0xa2, 0x96, 0x43, 0x5f, 0x86, 0x28, 0x8b, 0x48,
+                0xc3, 0x4e,
+            ],
+        ),
+        // library/alloc/src/rc.rs, 1.98.0 and 1.98.1
+        (
+            "library/alloc/src/rc.rs",
+            [
+                0x03, 0x37, 0x2b, 0xd0, 0x88, 0xf2, 0x40, 0x72, 0x1d, 0x43, 0x80, 0x34, 0xad, 0x17,
+                0x9c, 0x4b,
+            ],
+        ),
+        // library/alloc/src/rc.rs, 1.99.0
+        (
+            "library/alloc/src/rc.rs",
+            [
+                0xa6, 0xf9, 0x30, 0xe5, 0xde, 0x5e, 0x5d, 0xb1, 0x3a, 0xc0, 0xef, 0xed, 0x74, 0xf8,
+                0x94, 0x7a,
+            ],
+        ),
+    ],
 };
 
 /// The refcount header convention covering a producer, selected like
@@ -178,16 +417,34 @@ pub fn rustc_std_refcount_convention(producer: &str) -> Option<&'static RustcCon
     rustc_convention(producer, &[&RUSTC_STD_REFCOUNT_V1_97])
 }
 
-/// std's futex mutex as rustc 1.97 and 1.98 ship it, reviewed against
-/// `library/std/src/sys/sync/mutex/futex.rs` (identical across the
-/// range): `Mutex { futex }`, one futex word that reads `UNLOCKED` (0)
+/// std's futex mutex as rustc 1.97 through 1.99 ship it, reviewed
+/// against `library/std/src/sys/sync/mutex/futex.rs` (identical across
+/// the range but for 1.99's path to the futex functions it imports):
+/// `Mutex { futex }`, one futex word that reads `UNLOCKED` (0)
 /// while no thread holds the lock, `LOCKED` (1) or `CONTENDED` (2)
 /// while one does — held whenever the word is nonzero, whatever width
 /// the platform's futex word is.
 pub const RUSTC_STD_FUTEX_MUTEX_V1_97: RustcConvention = RustcConvention {
     family: "rustc-std-futex-mutex-1.97",
-    floor: (1, 97),
-    ceiling: (1, 98),
+    releases: RUSTC_RELEASES,
+    checksums: &[
+        // library/std/src/sys/sync/mutex/futex.rs, 1.97.0 through 1.98.1
+        (
+            "library/std/src/sys/sync/mutex/futex.rs",
+            [
+                0x28, 0xfe, 0x35, 0xba, 0xd6, 0xff, 0x34, 0x0a, 0xf7, 0x07, 0xb9, 0x97, 0xfc, 0xc6,
+                0xda, 0x8c,
+            ],
+        ),
+        // library/std/src/sys/sync/mutex/futex.rs, 1.99.0
+        (
+            "library/std/src/sys/sync/mutex/futex.rs",
+            [
+                0x83, 0x12, 0xc9, 0x46, 0xdb, 0x5f, 0x27, 0xf9, 0xe3, 0x0e, 0x33, 0x71, 0x69, 0xeb,
+                0xf6, 0x09,
+            ],
+        ),
+    ],
 };
 
 /// The futex mutex convention covering a producer, selected like
@@ -218,25 +475,27 @@ pub fn rustc_conventions_outgrown(
 }
 
 /// The rustc versions the compiler convention reviews span between
-/// them, as a warning names it: `1.97-1.98`.
+/// them, as a warning names it: `1.97.0-1.99.0`.
 pub fn rustc_reviewed_range() -> String {
-    let floor = RUSTC_CONVENTIONS.iter().map(|c| c.floor).min();
-    let ceiling = RUSTC_CONVENTIONS.iter().map(|c| c.ceiling).max();
-    minor_range(
+    let floor = RUSTC_CONVENTIONS.iter().map(|c| c.releases.floor()).min();
+    let ceiling = RUSTC_CONVENTIONS.iter().map(|c| c.releases.ceiling()).max();
+    release_range(
         floor.expect("at least one convention"),
         ceiling.expect("at least one convention"),
     )
 }
 
-/// The reviews in `reviewed` of every subject the producer's rustc is
-/// newer than each review of. A subject a later review covers the
-/// version of is not outgrown.
+/// The reviews in `reviewed` of every subject whose releases the
+/// producer's rustc is not one of, though at or past the review's
+/// first: newer than its ceiling, a patch its minor's span did not
+/// read, or a nightly or beta. A subject a later review covers the
+/// version of is not outgrown, and one the version predates is left to
+/// the floor's own warning.
 fn outgrown(
     producer: &str,
     reviewed: &[&'static RustcConvention],
 ) -> Option<(semver::Version, Vec<&'static RustcConvention>)> {
     let version = rustc_version(producer)?;
-    let minor = (version.major, version.minor);
     let outgrown: Vec<&'static RustcConvention> = reviewed
         .iter()
         .copied()
@@ -244,40 +503,34 @@ fn outgrown(
             reviewed
                 .iter()
                 .filter(|other| other.subject() == c.subject())
-                .all(|other| minor > other.ceiling)
+                .all(|other| !other.releases.covers(&version))
+                && version >= at(c.releases.floor())
         })
         .collect();
     (!outgrown.is_empty()).then_some((version, outgrown))
 }
 
 /// One reviewed third-party implementation: the crate, the family name
-/// the bundle's delegation origin records, the inclusive version range
-/// the implementation was read at, and the checksums of its reviewed
+/// the bundle's delegation origin records, the releases the
+/// implementation was read at, and the checksums of its reviewed
 /// source file — a corroborating check when a line table carries one,
-/// which rustc's DWARF 4 output never does.
+/// which rustc's DWARF 4 output never does, and the matrix suite's
+/// check of every release it builds.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct LibraryConvention {
     pub package: &'static str,
     pub family: &'static str,
-    pub floor: (u64, u64, u64),
-    pub ceiling: (u64, u64, u64),
+    pub releases: Releases,
     /// `(file, md5)` for every reviewed revision of the implementing file.
     pub checksums: &'static [(&'static str, [u8; 16])],
 }
 
 impl LibraryConvention {
-    /// The version's place against the reviewed range: reviewed inside
-    /// it, or which side it falls on. A delegation rule binds only
-    /// inside; the other two are the decline's reason.
+    /// The version's place against the reviewed releases: reviewed
+    /// inside them, or which side it falls on. A delegation rule binds
+    /// only inside; the other two are the decline's reason.
     pub fn select(&self, version: &semver::Version) -> LayoutSelection {
-        let version = (version.major, version.minor, version.patch);
-        if version < self.floor {
-            LayoutSelection::BelowFloor
-        } else if version > self.ceiling {
-            LayoutSelection::AboveReviewedRange
-        } else {
-            LayoutSelection::ReviewedRange
-        }
+        self.releases.select(version)
     }
 
     /// Whether a checksum the line table carried is one of the reviewed
@@ -288,9 +541,7 @@ impl LibraryConvention {
 
     /// The range as a decline reason writes it: `0.1.40-0.1.44`.
     pub fn range(&self) -> String {
-        let (a, b, c) = self.floor;
-        let (x, y, z) = self.ceiling;
-        format!("{a}.{b}.{c}-{x}.{y}.{z}")
+        self.releases.range()
     }
 }
 
@@ -309,15 +560,14 @@ impl LibraryConvention {
 pub const TRACING_INSTRUMENTED_V0_1_40: LibraryConvention = LibraryConvention {
     package: "tracing",
     family: "tracing-instrumented-0.1.40",
-    floor: (0, 1, 40),
-    ceiling: (0, 1, 44),
+    releases: Releases(&[((0, 1, 40), (0, 1, 44))]),
     checksums: &[
         // 0.1.40 and 0.1.41.
         (
             "src/instrument.rs",
             [
-                0xd3, 0xe1, 0xa1, 0x87, 0xc6, 0x25, 0x37, 0xd0, 0xbc, 0x26, 0x3d, 0x97, 0x2f, 0x8e,
-                0xaf, 0xe5,
+                0xd3, 0xe1, 0xa1, 0x87, 0xc6, 0x25, 0x37, 0xd0, 0xdb, 0xc2, 0x63, 0xd9, 0x72, 0xf8,
+                0xea, 0xfe,
             ],
         ),
         // 0.1.42 through 0.1.44.
@@ -343,8 +593,7 @@ pub const TRACING_INSTRUMENTED_V0_1_40: LibraryConvention = LibraryConvention {
 pub const PARKING_LOT_RAW_MUTEX_V0_11_0: LibraryConvention = LibraryConvention {
     package: "parking_lot",
     family: "parking_lot-raw-mutex-0.11.0",
-    floor: (0, 11, 0),
-    ceiling: (0, 12, 5),
+    releases: Releases(&[((0, 11, 0), (0, 11, 2)), ((0, 12, 0), (0, 12, 5))]),
     checksums: &[
         // 0.11.0 through 0.11.2.
         (
@@ -404,8 +653,7 @@ pub const PARKING_LOT_RAW_MUTEX_V0_11_0: LibraryConvention = LibraryConvention {
 pub const FUTURES_UTIL_ADAPTERS_V0_3_30: LibraryConvention = LibraryConvention {
     package: "futures-util",
     family: "futures-util-adapters-0.3.30",
-    floor: (0, 3, 30),
-    ceiling: (0, 3, 34),
+    releases: Releases(&[((0, 3, 30), (0, 3, 34))]),
     checksums: &[
         // src/lib.rs, 0.3.30
         (
@@ -551,8 +799,7 @@ pub const FUTURES_UTIL_ADAPTERS_V0_3_30: LibraryConvention = LibraryConvention {
 pub const HYPER_UTIL_AUTO_CONN_V0_1_10: LibraryConvention = LibraryConvention {
     package: "hyper-util",
     family: "hyper-util-auto-conn-0.1.10",
-    floor: (0, 1, 10),
-    ceiling: (0, 1, 20),
+    releases: Releases(&[((0, 1, 10), (0, 1, 20))]),
     checksums: &[
         // src/server/conn/auto/mod.rs, 0.1.10
         (
@@ -640,8 +887,7 @@ pub const HYPER_UTIL_AUTO_CONN_V0_1_10: LibraryConvention = LibraryConvention {
 pub const HYPER_UTIL_IO_V0_1_10: LibraryConvention = LibraryConvention {
     package: "hyper-util",
     family: "hyper-util-io-0.1.10",
-    floor: (0, 1, 10),
-    ceiling: (0, 1, 20),
+    releases: Releases(&[((0, 1, 10), (0, 1, 20))]),
     checksums: &[
         // src/common/rewind.rs, 0.1.10 and 0.1.11
         (
@@ -752,8 +998,7 @@ pub const HYPER_UTIL_IO_V0_1_10: LibraryConvention = LibraryConvention {
 pub const HYPER_UTIL_TOKIO_SLEEP_V0_1_10: LibraryConvention = LibraryConvention {
     package: "hyper-util",
     family: "hyper-util-tokio-sleep-0.1.10",
-    floor: (0, 1, 10),
-    ceiling: (0, 1, 20),
+    releases: Releases(&[((0, 1, 10), (0, 1, 20))]),
     checksums: &[
         // src/rt/tokio.rs, 0.1.10
         (
@@ -810,8 +1055,7 @@ pub const HYPER_UTIL_TOKIO_SLEEP_V0_1_10: LibraryConvention = LibraryConvention 
 pub const HYPER_UTIL_POOL_V0_1_16: LibraryConvention = LibraryConvention {
     package: "hyper-util",
     family: "hyper-util-pool-0.1.16",
-    floor: (0, 1, 16),
-    ceiling: (0, 1, 20),
+    releases: Releases(&[((0, 1, 16), (0, 1, 20))]),
     checksums: &[
         // src/client/legacy/pool.rs, 0.1.16
         (
@@ -897,8 +1141,7 @@ pub const HYPER_UTIL_POOL_V0_1_16: LibraryConvention = LibraryConvention {
 pub const HYPER_UTIL_CONNECTED_V0_1_10: LibraryConvention = LibraryConvention {
     package: "hyper-util",
     family: "hyper-util-connected-0.1.10",
-    floor: (0, 1, 10),
-    ceiling: (0, 1, 20),
+    releases: Releases(&[((0, 1, 10), (0, 1, 20))]),
     checksums: &[
         // src/client/legacy/connect/mod.rs, 0.1.10 through 0.1.11
         (
@@ -935,8 +1178,7 @@ pub const EXTRA_INNER_SET_SLOT: u32 = 4;
 pub const HYPER_UTIL_RESPONSE_V0_1_10: LibraryConvention = LibraryConvention {
     package: "hyper-util",
     family: "hyper-util-response-0.1.10",
-    floor: (0, 1, 10),
-    ceiling: (0, 1, 20),
+    releases: Releases(&[((0, 1, 10), (0, 1, 20))]),
     checksums: &[
         // src/client/legacy/client.rs, 0.1.10
         (
@@ -1017,8 +1259,7 @@ pub const HYPER_UTIL_RESPONSE_V0_1_10: LibraryConvention = LibraryConvention {
 pub const TOWER_RETRY_V0_5_2: LibraryConvention = LibraryConvention {
     package: "tower",
     family: "tower-retry-0.5.2",
-    floor: (0, 5, 2),
-    ceiling: (0, 5, 3),
+    releases: Releases(&[((0, 5, 2), (0, 5, 3))]),
     checksums: &[
         // src/retry/future.rs, 0.5.2
         (
@@ -1039,18 +1280,18 @@ pub const TOWER_RETRY_V0_5_2: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// reqwest's cookie layer as 0.12.24 through 0.13.4 implement it,
-/// reviewed in `src/cookie.rs` of each (byte-identical): the service's
-/// `ResponseFuture<S, B>` is `{ future: S::Future, cookie_store, url }`,
-/// and its `poll` clones the store and the URL, then polls `future`,
-/// reading the other two only once the response is in. So it forwards
-/// exclusively to `future`. Before 0.12.24 the file has no `service`
-/// module: the layer did not exist.
+/// reqwest's cookie layer as 0.12.24 through 0.13.5 implement it,
+/// reviewed in `src/cookie.rs` of each (byte-identical through 0.13.4):
+/// the service's `ResponseFuture<S, B>` is `{ future: S::Future,
+/// cookie_store, url }`, and its `poll` polls `future`, reading the
+/// other two only once the response is in (through 0.13.4 it clones
+/// them first; 0.13.5 reads them through the projection). So it
+/// forwards exclusively to `future`. Before 0.12.24 the file has no
+/// `service` module: the layer did not exist.
 pub const REQWEST_COOKIE_V0_12_24: LibraryConvention = LibraryConvention {
     package: "reqwest",
     family: "reqwest-cookie-0.12.24",
-    floor: (0, 12, 24),
-    ceiling: (0, 13, 4),
+    releases: Releases(&[((0, 12, 24), (0, 12, 28)), ((0, 13, 0), (0, 13, 5))]),
     checksums: &[
         // src/cookie.rs, 0.12.24 through 0.13.4
         (
@@ -1058,6 +1299,14 @@ pub const REQWEST_COOKIE_V0_12_24: LibraryConvention = LibraryConvention {
             [
                 0xb7, 0x07, 0x01, 0x0e, 0x05, 0x11, 0x1e, 0x6c, 0x25, 0xd1, 0xe6, 0xd0, 0x5c, 0x75,
                 0x81, 0x1c,
+            ],
+        ),
+        // src/cookie.rs, 0.13.5
+        (
+            "src/cookie.rs",
+            [
+                0xa1, 0x58, 0x4c, 0xda, 0x48, 0xef, 0xb7, 0x06, 0x1c, 0x69, 0x1e, 0xc7, 0xd1, 0xae,
+                0xdc, 0xb9,
             ],
         ),
     ],
@@ -1088,8 +1337,7 @@ pub const REQWEST_COOKIE_V0_12_24: LibraryConvention = LibraryConvention {
 pub const DROPSHOT_SERVER_V0_17_0: LibraryConvention = LibraryConvention {
     package: "dropshot",
     family: "dropshot-server-0.17.0",
-    floor: (0, 17, 0),
-    ceiling: (0, 17, 1),
+    releases: Releases(&[((0, 17, 0), (0, 17, 1))]),
     checksums: &[
         // src/server.rs, 0.17.0
         (
@@ -1110,7 +1358,7 @@ pub const DROPSHOT_SERVER_V0_17_0: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// reqwest's client request as 0.12.0 through 0.13.2 implement it,
+/// reqwest's client request as 0.12.0 through 0.13.5 implement it,
 /// reviewed in `src/async_impl/client.rs` of each release: `send()`
 /// returns a `Pending` whose `PendingInner::Request` holds the
 /// `PendingRequest` the client polls — inline through 0.12.19, behind a
@@ -1124,14 +1372,11 @@ pub const DROPSHOT_SERVER_V0_17_0: LibraryConvention = LibraryConvention {
 /// as its own future either way. `url.serialization` is the whole URL
 /// as text, which is what the `url` crate keeps its parsed form as.
 ///
-/// The ceiling is the newest release the cores on hand build; it
-/// advances by hand when a newer one is read (0.13.3 and 0.13.4 match
-/// on every addressed declaration).
+/// The ceiling advances by hand when a newer release is read.
 pub const REQWEST_PENDING_REQUEST_V0_12_0: LibraryConvention = LibraryConvention {
     package: "reqwest",
     family: "reqwest-pending-request-0.12.0",
-    floor: (0, 12, 0),
-    ceiling: (0, 13, 2),
+    releases: Releases(&[((0, 12, 0), (0, 12, 28)), ((0, 13, 0), (0, 13, 5))]),
     checksums: &[
         // src/async_impl/client.rs, 0.12.0
         (
@@ -1325,6 +1570,30 @@ pub const REQWEST_PENDING_REQUEST_V0_12_0: LibraryConvention = LibraryConvention
                 0xfa, 0xd8,
             ],
         ),
+        // src/async_impl/client.rs, 0.13.3
+        (
+            "src/async_impl/client.rs",
+            [
+                0x7a, 0x3b, 0x94, 0xfd, 0x3b, 0xc3, 0xba, 0x65, 0x74, 0x24, 0x54, 0xd3, 0x1b, 0x23,
+                0x3e, 0xdf,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.13.4
+        (
+            "src/async_impl/client.rs",
+            [
+                0xaf, 0x6e, 0x02, 0x0d, 0x36, 0x29, 0xbe, 0x26, 0x36, 0x85, 0xbf, 0x01, 0xae, 0x6e,
+                0xfe, 0x4c,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.13.5
+        (
+            "src/async_impl/client.rs",
+            [
+                0x68, 0xaf, 0xd0, 0xdc, 0x0d, 0x15, 0xe9, 0xfd, 0x8b, 0xde, 0x08, 0xe1, 0x85, 0xa2,
+                0x5f, 0x77,
+            ],
+        ),
     ],
 };
 
@@ -1346,8 +1615,13 @@ pub const REQWEST_PENDING_REQUEST_V0_12_0: LibraryConvention = LibraryConvention
 pub const HTTP_REQUEST_V1_0_0: LibraryConvention = LibraryConvention {
     package: "http",
     family: "http-request-1.0.0",
-    floor: (1, 0, 0),
-    ceiling: (1, 4, 2),
+    releases: Releases(&[
+        ((1, 0, 0), (1, 0, 0)),
+        ((1, 1, 0), (1, 1, 0)),
+        ((1, 2, 0), (1, 2, 0)),
+        ((1, 3, 0), (1, 3, 1)),
+        ((1, 4, 0), (1, 4, 2)),
+    ]),
     checksums: &[
         // src/request.rs, 1.0.0
         (
@@ -1583,8 +1857,7 @@ pub const HTTP_REQUEST_V1_0_0: LibraryConvention = LibraryConvention {
 pub const DROPSHOT_HANDLER_V0_17_0: LibraryConvention = LibraryConvention {
     package: "dropshot",
     family: "dropshot-handler-0.17.0",
-    floor: (0, 17, 0),
-    ceiling: (0, 17, 1),
+    releases: Releases(&[((0, 17, 0), (0, 17, 1))]),
     checksums: &[
         // src/handler.rs, 0.17.0
         (
@@ -1665,8 +1938,13 @@ pub const DROPSHOT_HANDLER_V0_17_0: LibraryConvention = LibraryConvention {
 pub const HYPER_H1_CONN_V1_6_0: LibraryConvention = LibraryConvention {
     package: "hyper",
     family: "hyper-h1-conn-1.6.0",
-    floor: (1, 6, 0),
-    ceiling: (1, 10, 1),
+    releases: Releases(&[
+        ((1, 6, 0), (1, 6, 0)),
+        ((1, 7, 0), (1, 7, 0)),
+        ((1, 8, 0), (1, 8, 1)),
+        ((1, 9, 0), (1, 9, 0)),
+        ((1, 10, 0), (1, 10, 1)),
+    ]),
     checksums: &[
         // src/proto/h1/conn.rs, 1.6.0
         (
@@ -1903,6 +2181,33 @@ pub const HYPER_H1_CONN_V1_6_0: LibraryConvention = LibraryConvention {
     ],
 };
 
+/// The tokio releases every tokio review was read at — `select!`,
+/// `Interval::tick`, the state protocols, the acquire owners and the
+/// layout families: each minor from `.0` through the patch the version
+/// matrix (`test-programs/matrix.toml`) pins it at. tokio backports
+/// fixes into older minors, so each minor is its own span, and a patch
+/// released into one after its review falls outside until a span is
+/// raised to it. That happens by hand when the patch is onboarded,
+/// after every file the reviews name has been read at it and its
+/// checksum listed; the matrix suite holds each span's newest patch to
+/// the matrix's pin and each listed checksum to the sources the matrix
+/// builds.
+///
+/// A minor splits where a layout family changes inside it: 1.52.0's
+/// sharded `spawn_blocking` queue, which 1.52.1 reverted, is a family
+/// of its own, so 1.52.0 is a span apart, pinned by the matrix beside
+/// 1.52.4.
+pub const TOKIO_RELEASES: Releases = Releases(&[
+    ((1, 47, 0), (1, 47, 5)),
+    ((1, 48, 0), (1, 48, 0)),
+    ((1, 49, 0), (1, 49, 0)),
+    ((1, 50, 0), (1, 50, 0)),
+    ((1, 51, 0), (1, 51, 5)),
+    ((1, 52, 0), (1, 52, 0)),
+    ((1, 52, 1), (1, 52, 4)),
+    ((1, 53, 0), (1, 53, 2)),
+]);
+
 /// tokio's `select!` as 1.47 through 1.53 expand it (`src/macros/select.rs`;
 /// the releases differ only in doc comments and in spelling `Poll`,
 /// `Pin` and `ready!` through `$crate::macros::support`). The macro
@@ -1926,22 +2231,21 @@ pub const HYPER_H1_CONN_V1_6_0: LibraryConvention = LibraryConvention {
 pub const TOKIO_SELECT_V1_47: LibraryConvention = LibraryConvention {
     package: "tokio",
     family: "tokio-select-1.47",
-    floor: (1, 47, 0),
-    ceiling: (1, 53, 1),
+    releases: TOKIO_RELEASES,
     checksums: &[
         // src/macros/select.rs, 1.47.0 through 1.47.5
         (
             "src/macros/select.rs",
             [
                 0x28, 0x0b, 0xf9, 0x6d, 0xd4, 0xe7, 0x0d, 0xd5, 0x88, 0xdb, 0x17, 0xda, 0x06, 0x6e,
-                0xcf, 0xc0,
+                0xfc, 0xf0,
             ],
         ),
         // src/macros/select.rs, 1.48.0 and 1.49.0
         (
             "src/macros/select.rs",
             [
-                0x37, 0x45, 0xb7, 0x7b, 0xf6, 0xb0, 0x12, 0x2c, 0x6c, 0xb2, 0x8b, 0xca, 0x26, 0x12,
+                0x37, 0x45, 0xb7, 0x7f, 0xb6, 0xf0, 0x12, 0x2c, 0x6c, 0xb2, 0x8b, 0xca, 0x26, 0x12,
                 0x59, 0x6f,
             ],
         ),
@@ -1950,23 +2254,23 @@ pub const TOKIO_SELECT_V1_47: LibraryConvention = LibraryConvention {
             "src/macros/select.rs",
             [
                 0xc4, 0x36, 0x6c, 0xb2, 0xaf, 0x3e, 0xfa, 0xa2, 0xd9, 0x28, 0xbb, 0x8d, 0x92, 0xc8,
-                0x75, 0x5d,
+                0x75, 0x5f,
             ],
         ),
-        // src/macros/select.rs, 1.51.4 through 1.52.4
+        // src/macros/select.rs, 1.51.0 through 1.52.4
         (
             "src/macros/select.rs",
             [
-                0x7d, 0xa7, 0x40, 0x76, 0xc7, 0x0a, 0xb9, 0x7d, 0x76, 0xe5, 0x98, 0xb2, 0x2d, 0x57,
-                0x38, 0x50,
+                0x7d, 0xa7, 0x40, 0x76, 0xc7, 0x0a, 0xb9, 0x7d, 0x76, 0xe5, 0x98, 0xa8, 0xd2, 0xd5,
+                0x78, 0x50,
             ],
         ),
-        // src/macros/select.rs, 1.53.0 and 1.53.1
+        // src/macros/select.rs, 1.53.0 through 1.53.2
         (
             "src/macros/select.rs",
             [
-                0xc9, 0xe7, 0xff, 0xf5, 0xf8, 0x88, 0x9c, 0xe2, 0x55, 0x88, 0x62, 0x1c, 0x40, 0x18,
-                0xb0, 0xf5,
+                0xc9, 0xe7, 0xff, 0xf5, 0xf8, 0x88, 0x9e, 0x2c, 0x55, 0x88, 0x62, 0x1c, 0x4c, 0x01,
+                0x8f, 0x5a,
             ],
         ),
     ],
@@ -1990,8 +2294,7 @@ pub const TOKIO_SELECT_V1_47: LibraryConvention = LibraryConvention {
 pub const TOKIO_INTERVAL_TICK_V1_47: LibraryConvention = LibraryConvention {
     package: "tokio",
     family: "tokio-interval-tick-1.47",
-    floor: (1, 47, 0),
-    ceiling: (1, 53, 1),
+    releases: TOKIO_RELEASES,
     checksums: &[
         // src/time/interval.rs, 1.47.0 through 1.47.5
         (
@@ -2009,7 +2312,7 @@ pub const TOKIO_INTERVAL_TICK_V1_47: LibraryConvention = LibraryConvention {
                 0xf7, 0xfa,
             ],
         ),
-        // src/time/interval.rs, 1.53.0 and 1.53.1
+        // src/time/interval.rs, 1.53.0 through 1.53.2
         (
             "src/time/interval.rs",
             [
@@ -2033,8 +2336,7 @@ pub const TOKIO_INTERVAL_TICK_V1_47: LibraryConvention = LibraryConvention {
 pub const TOKIO_STREAM_WATCH_V0_1_14: LibraryConvention = LibraryConvention {
     package: "tokio-stream",
     family: "tokio-stream-watch-0.1.14",
-    floor: (0, 1, 14),
-    ceiling: (0, 1, 19),
+    releases: Releases(&[((0, 1, 14), (0, 1, 19))]),
     checksums: &[
         // src/wrappers/watch.rs, 0.1.14
         (
@@ -2085,8 +2387,7 @@ pub const TOKIO_STREAM_WATCH_V0_1_14: LibraryConvention = LibraryConvention {
 pub const TOKIO_UTIL_REUSABLE_BOX_V0_7_11: LibraryConvention = LibraryConvention {
     package: "tokio-util",
     family: "tokio-util-reusable-box-0.7.11",
-    floor: (0, 7, 11),
-    ceiling: (0, 7, 19),
+    releases: Releases(&[((0, 7, 11), (0, 7, 19))]),
     checksums: &[
         // src/sync/reusable_box.rs, 0.7.11 through 0.7.19
         (
@@ -2115,8 +2416,7 @@ pub const TOKIO_UTIL_REUSABLE_BOX_V0_7_11: LibraryConvention = LibraryConvention
 pub const TOKIO_STREAM_MAP_V0_1_14: LibraryConvention = LibraryConvention {
     package: "tokio-stream",
     family: "tokio-stream-map-0.1.14",
-    floor: (0, 1, 14),
-    ceiling: (0, 1, 19),
+    releases: Releases(&[((0, 1, 14), (0, 1, 19))]),
     checksums: &[
         // src/stream_map.rs, 0.1.14
         (
@@ -2182,8 +2482,7 @@ pub const TOKIO_STREAM_MAP_V0_1_14: LibraryConvention = LibraryConvention {
 pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
     package: "tokio-rustls",
     family: "tokio-rustls-stream-0.26.0",
-    floor: (0, 26, 0),
-    ceiling: (0, 26, 6),
+    releases: Releases(&[((0, 26, 0), (0, 26, 6))]),
     checksums: &[
         // src/lib.rs, 0.26.0
         (
@@ -2309,7 +2608,10 @@ pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
 };
 
 /// rustls's connection state as 0.23.23 through 0.23.45 lay it out,
-/// read in every release of that range: `ConnectionCommon<Data>` holds
+/// read in every release of that range (`src/conn.rs`,
+/// `src/common_state.rs`, `src/record_layer.rs`; 0.23.28 retypes
+/// `CommonState`'s `alpn_protocol` and adds `tls13_tickets_received`,
+/// neither on a route): `ConnectionCommon<Data>` holds
 /// `core: ConnectionCore<Data>`, whose `state` is a `Result<Box<dyn
 /// State<Data>>, Error>` that turns `Err` when the connection fails and
 /// stays so, and whose `common_state: CommonState` holds `side`, the
@@ -2327,13 +2629,134 @@ pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
 /// be sent, while a fatal alert (`send_fatal_alert`) always comes with
 /// the error the state then holds. The
 /// release is read off the type's own method declarations, as
-/// hashbrown's is; rustc's DWARF 4 records no checksum to check.
+/// hashbrown's is; the checksums are of every reviewed revision, which
+/// rustc's DWARF 4 never records but the matrix suite checks.
 pub const RUSTLS_SESSION_V0_23_23: LibraryConvention = LibraryConvention {
     package: "rustls",
     family: "rustls-session-0.23.23",
-    floor: (0, 23, 23),
-    ceiling: (0, 23, 45),
-    checksums: &[],
+    releases: Releases(&[((0, 23, 23), (0, 23, 45))]),
+    checksums: &[
+        // src/conn.rs, 0.23.23
+        (
+            "src/conn.rs",
+            [
+                0x4b, 0xe9, 0xec, 0xc7, 0xda, 0xdc, 0x70, 0x0f, 0x3b, 0xbb, 0xbf, 0x90, 0xd0, 0xea,
+                0x4f, 0x5f,
+            ],
+        ),
+        // src/conn.rs, 0.23.24 through 0.23.26
+        (
+            "src/conn.rs",
+            [
+                0x15, 0x67, 0x4c, 0x26, 0xef, 0xce, 0xc4, 0xbb, 0xef, 0x99, 0xc4, 0x62, 0x63, 0x11,
+                0x24, 0x1f,
+            ],
+        ),
+        // src/conn.rs, 0.23.27
+        (
+            "src/conn.rs",
+            [
+                0x84, 0xb9, 0x87, 0x76, 0x46, 0xc0, 0x17, 0x92, 0x6e, 0x43, 0x12, 0x3c, 0xf4, 0x6a,
+                0x11, 0xaf,
+            ],
+        ),
+        // src/conn.rs, 0.23.28 and 0.23.29
+        (
+            "src/conn.rs",
+            [
+                0x94, 0xc2, 0xea, 0x9f, 0x80, 0x6b, 0xbf, 0x52, 0x0c, 0x70, 0x90, 0xa4, 0x21, 0xf3,
+                0x1b, 0x6b,
+            ],
+        ),
+        // src/conn.rs, 0.23.30
+        (
+            "src/conn.rs",
+            [
+                0xac, 0x5d, 0xec, 0x93, 0x7b, 0xd6, 0xb2, 0x71, 0x9f, 0x42, 0x91, 0x8c, 0xfa, 0x11,
+                0x37, 0x8e,
+            ],
+        ),
+        // src/conn.rs, 0.23.31 through 0.23.40
+        (
+            "src/conn.rs",
+            [
+                0x33, 0xbc, 0xb4, 0x3f, 0xae, 0x3d, 0x2c, 0xca, 0xee, 0x70, 0xda, 0xf6, 0xc5, 0xac,
+                0x82, 0xb3,
+            ],
+        ),
+        // src/conn.rs, 0.23.41 through 0.23.44
+        (
+            "src/conn.rs",
+            [
+                0x8f, 0xa3, 0x7e, 0xb2, 0x55, 0xc2, 0x79, 0xd2, 0x65, 0xeb, 0xf4, 0x55, 0x33, 0x08,
+                0xf2, 0xa6,
+            ],
+        ),
+        // src/conn.rs, 0.23.45
+        (
+            "src/conn.rs",
+            [
+                0x1e, 0x63, 0xf0, 0xda, 0x2b, 0x28, 0x4d, 0xbb, 0x5f, 0x01, 0x54, 0x0f, 0x44, 0xc8,
+                0x46, 0x30,
+            ],
+        ),
+        // src/common_state.rs, 0.23.23
+        (
+            "src/common_state.rs",
+            [
+                0x5a, 0x72, 0x91, 0xec, 0x53, 0x89, 0x47, 0x80, 0xc2, 0xf3, 0x62, 0x24, 0x52, 0x25,
+                0x21, 0xf5,
+            ],
+        ),
+        // src/common_state.rs, 0.23.24 through 0.23.26
+        (
+            "src/common_state.rs",
+            [
+                0xb9, 0xdc, 0xf7, 0x7f, 0x89, 0xdf, 0x2d, 0xc0, 0x50, 0x0d, 0x7f, 0x02, 0x90, 0x20,
+                0x8e, 0x49,
+            ],
+        ),
+        // src/common_state.rs, 0.23.27
+        (
+            "src/common_state.rs",
+            [
+                0xff, 0x03, 0x3f, 0x97, 0xb7, 0xca, 0x5f, 0x8c, 0xea, 0x86, 0xb5, 0x12, 0x5d, 0xcc,
+                0x9e, 0xd8,
+            ],
+        ),
+        // src/common_state.rs, 0.23.28 through 0.23.32
+        (
+            "src/common_state.rs",
+            [
+                0xa6, 0xab, 0xcc, 0x1e, 0xdc, 0x14, 0x48, 0x4c, 0x17, 0x3f, 0x7e, 0x8d, 0x45, 0x4a,
+                0x03, 0x38,
+            ],
+        ),
+        // src/common_state.rs, 0.23.33 through 0.23.42
+        (
+            "src/common_state.rs",
+            [
+                0x29, 0xf2, 0x08, 0xb6, 0xde, 0xf3, 0x56, 0x8a, 0xcd, 0x8d, 0x58, 0x90, 0x97, 0xa9,
+                0xfa, 0x54,
+            ],
+        ),
+        // src/common_state.rs, 0.23.43 through 0.23.45
+        (
+            "src/common_state.rs",
+            [
+                0x86, 0xdf, 0x07, 0x52, 0x5f, 0x81, 0x1f, 0x24, 0x6f, 0xcc, 0x0c, 0xa9, 0xcb, 0x5e,
+                0x74, 0x7c,
+            ],
+        ),
+        // src/record_layer.rs, 0.23.23 through 0.23.45
+        (
+            "src/record_layer.rs",
+            [
+                0x7b, 0x19, 0xf9, 0xd4, 0x00, 0x63, 0xfa, 0xe6, 0x52, 0x0b, 0xe7, 0xfe, 0x5e, 0xca,
+                0x80, 0xfa,
+            ],
+        ),
+    ],
 };
 
 /// reqwest's connection types as 0.12.14 through 0.13.5 implement them,
@@ -2355,8 +2778,7 @@ pub const RUSTLS_SESSION_V0_23_23: LibraryConvention = LibraryConvention {
 pub const REQWEST_CONN_V0_12_14: LibraryConvention = LibraryConvention {
     package: "reqwest",
     family: "reqwest-conn-0.12.14",
-    floor: (0, 12, 14),
-    ceiling: (0, 13, 5),
+    releases: Releases(&[((0, 12, 14), (0, 12, 28)), ((0, 13, 0), (0, 13, 5))]),
     checksums: &[
         // src/connect.rs, 0.12.14 and 0.12.15
         (
@@ -2479,8 +2901,7 @@ pub const REQWEST_CONN_READ_SLOT: u32 = 3;
 pub const HYPER_RUSTLS_STREAM_V0_27_0: LibraryConvention = LibraryConvention {
     package: "hyper-rustls",
     family: "hyper-rustls-stream-0.27.0",
-    floor: (0, 27, 0),
-    ceiling: (0, 27, 10),
+    releases: Releases(&[((0, 27, 0), (0, 27, 10))]),
     checksums: &[
         // src/stream.rs, 0.27.0 through 0.27.3
         (
@@ -2528,8 +2949,7 @@ pub const HYPER_RUSTLS_STREAM_V0_27_0: LibraryConvention = LibraryConvention {
 pub const TOKIO_RUSTLS_HANDSHAKE_V0_26_0: LibraryConvention = LibraryConvention {
     package: "tokio-rustls",
     family: "tokio-rustls-handshake-0.26.0",
-    floor: (0, 26, 0),
-    ceiling: (0, 26, 6),
+    releases: Releases(&[((0, 26, 0), (0, 26, 6))]),
     checksums: &[
         // src/common/handshake.rs, 0.26.0 through 0.26.2
         (
@@ -2854,7 +3274,8 @@ pub const SPROCKETS_TLS_SERVER_D2B68E4: GitConvention = GitConvention {
 
 /// hashbrown's `RawTable` as 0.12.3 through 0.17.1 lay it out, read in
 /// every release of that range (`src/raw/mod.rs`, `src/raw.rs` from
-/// 0.17.0, beside `src/map.rs` and `src/set.rs`): `HashMap` is
+/// 0.17.0, beside `src/map.rs` and `src/set.rs`, and `is_full` in
+/// `src/control/tag.rs` from 0.15.2): `HashMap` is
 /// `{ hash_builder, table: RawTable<(K, V), A> }`, `HashSet` is
 /// `{ map: HashMap<T, (), S, A> }`, and a `RawTable`'s `table` is the
 /// `RawTableInner` holding `bucket_mask`, `ctrl: NonNull<u8>`,
@@ -2866,14 +3287,430 @@ pub const SPROCKETS_TLS_SERVER_D2B68E4: GitConvention = GitConvention {
 /// `i` is the `T` ending `i` buckets below it (`from_base_index` takes
 /// `base.sub(index)`, `as_ptr` one `T` below that). std vendors the
 /// crate, so its maps follow whichever release the toolchain carries;
-/// the version is read off the declarations either way. No reviewed
-/// file's checksum is listed: rustc's DWARF 4 records none to check.
+/// the version is read off the declarations either way. The checksums
+/// are of every reviewed revision, which rustc's DWARF 4 never records
+/// but the matrix suite checks.
 pub const HASHBROWN_TABLE_V0_12_3: LibraryConvention = LibraryConvention {
     package: "hashbrown",
     family: "hashbrown-table-0.12.3",
-    floor: (0, 12, 3),
-    ceiling: (0, 17, 1),
-    checksums: &[],
+    releases: Releases(&[
+        ((0, 12, 3), (0, 12, 3)),
+        ((0, 13, 0), (0, 13, 2)),
+        ((0, 14, 0), (0, 14, 5)),
+        ((0, 15, 0), (0, 15, 5)),
+        ((0, 16, 0), (0, 16, 1)),
+        ((0, 17, 0), (0, 17, 1)),
+    ]),
+    checksums: &[
+        // src/map.rs, 0.12.3
+        (
+            "src/map.rs",
+            [
+                0x41, 0x62, 0x93, 0x69, 0xcf, 0xa4, 0xfe, 0x48, 0x27, 0xec, 0xbc, 0xd0, 0x0a, 0xe0,
+                0x9f, 0x37,
+            ],
+        ),
+        // src/map.rs, 0.13.0 and 0.13.1
+        (
+            "src/map.rs",
+            [
+                0x0c, 0x94, 0xab, 0x52, 0x69, 0x43, 0x13, 0x5a, 0x9a, 0x3f, 0x39, 0xf1, 0x75, 0xc5,
+                0x85, 0x9a,
+            ],
+        ),
+        // src/map.rs, 0.13.2
+        (
+            "src/map.rs",
+            [
+                0x1d, 0x6a, 0x5d, 0x74, 0xdf, 0xba, 0x52, 0x46, 0x1b, 0x40, 0xac, 0x24, 0x82, 0x6b,
+                0x84, 0x32,
+            ],
+        ),
+        // src/map.rs, 0.14.0
+        (
+            "src/map.rs",
+            [
+                0x5c, 0xc7, 0xb6, 0x07, 0x6e, 0xf6, 0x67, 0x48, 0xdf, 0x2f, 0xba, 0x5a, 0x28, 0xa2,
+                0x35, 0x02,
+            ],
+        ),
+        // src/map.rs, 0.14.1
+        (
+            "src/map.rs",
+            [
+                0x34, 0xf5, 0xd0, 0x83, 0x6d, 0x98, 0xe1, 0x59, 0x3b, 0x76, 0x07, 0x8b, 0x56, 0x81,
+                0xd6, 0xea,
+            ],
+        ),
+        // src/map.rs, 0.14.2
+        (
+            "src/map.rs",
+            [
+                0xc4, 0x06, 0x24, 0x5c, 0x4e, 0xc4, 0x97, 0x67, 0x6f, 0x29, 0x0a, 0xe1, 0x0f, 0xec,
+                0x10, 0x51,
+            ],
+        ),
+        // src/map.rs, 0.14.3
+        (
+            "src/map.rs",
+            [
+                0x90, 0x31, 0xa7, 0x89, 0xc1, 0x9c, 0x8e, 0x60, 0x7d, 0x4f, 0xec, 0x2f, 0xde, 0x97,
+                0xc9, 0x1a,
+            ],
+        ),
+        // src/map.rs, 0.14.4 and 0.14.5
+        (
+            "src/map.rs",
+            [
+                0x05, 0xfc, 0xd0, 0x83, 0xad, 0x7c, 0x6b, 0xcf, 0x07, 0xbe, 0x92, 0xdd, 0x12, 0x8f,
+                0x94, 0x68,
+            ],
+        ),
+        // src/map.rs, 0.15.0
+        (
+            "src/map.rs",
+            [
+                0xd1, 0xb1, 0x36, 0x8b, 0x60, 0xb3, 0x9d, 0xb6, 0xb8, 0x08, 0xe7, 0xc2, 0x16, 0x33,
+                0x9d, 0xc0,
+            ],
+        ),
+        // src/map.rs, 0.15.1
+        (
+            "src/map.rs",
+            [
+                0xee, 0x63, 0x6b, 0xc4, 0x3e, 0x4e, 0xf2, 0xac, 0x17, 0x9f, 0x44, 0x22, 0x6b, 0x5b,
+                0x27, 0xc1,
+            ],
+        ),
+        // src/map.rs, 0.15.2
+        (
+            "src/map.rs",
+            [
+                0xfd, 0xc2, 0x24, 0x3f, 0x81, 0x06, 0xcb, 0xdb, 0x72, 0xff, 0x32, 0xb5, 0x83, 0x3e,
+                0xbe, 0x8b,
+            ],
+        ),
+        // src/map.rs, 0.15.3
+        (
+            "src/map.rs",
+            [
+                0xe1, 0x13, 0x48, 0x38, 0x3c, 0xf5, 0xcb, 0x9a, 0xcf, 0x85, 0x5b, 0x40, 0x86, 0xc4,
+                0xf0, 0xb7,
+            ],
+        ),
+        // src/map.rs, 0.15.4
+        (
+            "src/map.rs",
+            [
+                0xf3, 0x9f, 0xc6, 0x12, 0x8f, 0x43, 0xd0, 0xe8, 0xf3, 0x1e, 0x8d, 0x5a, 0x42, 0xde,
+                0xc8, 0x6f,
+            ],
+        ),
+        // src/map.rs, 0.15.5
+        (
+            "src/map.rs",
+            [
+                0x75, 0x01, 0x9d, 0x1d, 0x6b, 0x73, 0xc8, 0x0a, 0x86, 0x84, 0x3e, 0x5b, 0xab, 0x7c,
+                0xac, 0x12,
+            ],
+        ),
+        // src/map.rs, 0.16.0
+        (
+            "src/map.rs",
+            [
+                0x30, 0xa9, 0x31, 0x8b, 0x67, 0x03, 0x17, 0xd3, 0x59, 0xb7, 0xfd, 0xbe, 0xad, 0x86,
+                0x26, 0x84,
+            ],
+        ),
+        // src/map.rs, 0.16.1
+        (
+            "src/map.rs",
+            [
+                0x1d, 0xff, 0x53, 0x18, 0xb3, 0x84, 0x1f, 0xf7, 0x36, 0x71, 0xad, 0xde, 0x53, 0x0b,
+                0x5f, 0x2e,
+            ],
+        ),
+        // src/map.rs, 0.17.0 and 0.17.1
+        (
+            "src/map.rs",
+            [
+                0x5f, 0x06, 0x4d, 0x32, 0xfe, 0x49, 0x6a, 0x8e, 0xf3, 0x19, 0x52, 0x65, 0x99, 0x24,
+                0x10, 0x68,
+            ],
+        ),
+        // src/set.rs, 0.12.3
+        (
+            "src/set.rs",
+            [
+                0x5a, 0xfc, 0xfa, 0x1b, 0xba, 0x1e, 0xc9, 0x11, 0xf3, 0xb0, 0x85, 0x33, 0xba, 0x87,
+                0xe4, 0xc6,
+            ],
+        ),
+        // src/set.rs, 0.13.0 and 0.13.1
+        (
+            "src/set.rs",
+            [
+                0x0d, 0x22, 0x7a, 0x84, 0x81, 0x16, 0x0f, 0x38, 0xf2, 0x24, 0x7d, 0xaf, 0xcd, 0x9c,
+                0x8c, 0xf9,
+            ],
+        ),
+        // src/set.rs, 0.13.2
+        (
+            "src/set.rs",
+            [
+                0xaa, 0x29, 0x2f, 0x56, 0x8c, 0xb0, 0x22, 0x2b, 0x2c, 0x17, 0x78, 0x32, 0x9c, 0x09,
+                0x29, 0xab,
+            ],
+        ),
+        // src/set.rs, 0.14.0
+        (
+            "src/set.rs",
+            [
+                0x43, 0xe6, 0x06, 0x77, 0x95, 0x61, 0x13, 0xdc, 0x28, 0xc4, 0x2d, 0xaa, 0x6e, 0x58,
+                0x40, 0x8e,
+            ],
+        ),
+        // src/set.rs, 0.14.1
+        (
+            "src/set.rs",
+            [
+                0x26, 0x4c, 0xc9, 0x38, 0x32, 0x66, 0x51, 0xdb, 0x8e, 0x92, 0x96, 0x11, 0x1c, 0xee,
+                0xf4, 0x92,
+            ],
+        ),
+        // src/set.rs, 0.14.2
+        (
+            "src/set.rs",
+            [
+                0x85, 0xa1, 0xa7, 0x40, 0x3e, 0x4f, 0x0e, 0x0f, 0xc4, 0x59, 0x73, 0x0c, 0xb4, 0x12,
+                0x71, 0x8d,
+            ],
+        ),
+        // src/set.rs, 0.14.3
+        (
+            "src/set.rs",
+            [
+                0xf3, 0xb0, 0x58, 0x40, 0x01, 0xd1, 0x3a, 0x94, 0x95, 0xdd, 0xcf, 0xd2, 0x8a, 0xef,
+                0x26, 0xa0,
+            ],
+        ),
+        // src/set.rs, 0.14.4
+        (
+            "src/set.rs",
+            [
+                0xcb, 0xb8, 0xdd, 0xb7, 0x81, 0x08, 0x34, 0xc9, 0x02, 0xf8, 0x5d, 0x77, 0x42, 0x0f,
+                0x1f, 0x5d,
+            ],
+        ),
+        // src/set.rs, 0.14.5
+        (
+            "src/set.rs",
+            [
+                0xc5, 0x12, 0x60, 0x1e, 0xae, 0x9e, 0x5f, 0xc6, 0x3f, 0xae, 0x2b, 0x33, 0xc4, 0xd7,
+                0x74, 0x0e,
+            ],
+        ),
+        // src/set.rs, 0.15.0
+        (
+            "src/set.rs",
+            [
+                0x37, 0xc3, 0xc9, 0xae, 0xbe, 0x4c, 0x59, 0xf2, 0xe1, 0xb9, 0x3a, 0x3a, 0x5c, 0x86,
+                0xe1, 0x03,
+            ],
+        ),
+        // src/set.rs, 0.15.1
+        (
+            "src/set.rs",
+            [
+                0x54, 0x52, 0x71, 0xf8, 0x80, 0x31, 0x0f, 0x3b, 0x9b, 0xe9, 0x54, 0xd6, 0xf2, 0x20,
+                0xdd, 0xed,
+            ],
+        ),
+        // src/set.rs, 0.15.2
+        (
+            "src/set.rs",
+            [
+                0xb5, 0xd4, 0x44, 0x38, 0xef, 0x1f, 0x92, 0x7a, 0x23, 0xe4, 0x1b, 0x8b, 0x27, 0xe3,
+                0x8c, 0x33,
+            ],
+        ),
+        // src/set.rs, 0.15.3
+        (
+            "src/set.rs",
+            [
+                0x2f, 0x75, 0x91, 0xa8, 0xc9, 0x7e, 0x2c, 0xb0, 0xbc, 0xf0, 0xeb, 0x87, 0x36, 0x4d,
+                0x12, 0xae,
+            ],
+        ),
+        // src/set.rs, 0.15.4 through 0.16.0
+        (
+            "src/set.rs",
+            [
+                0x83, 0xb6, 0xa5, 0xc0, 0xfe, 0x68, 0x50, 0x18, 0x1d, 0x34, 0x60, 0x65, 0x7a, 0x05,
+                0x85, 0x4c,
+            ],
+        ),
+        // src/set.rs, 0.16.1
+        (
+            "src/set.rs",
+            [
+                0x99, 0xc6, 0xb7, 0xca, 0x83, 0x2c, 0xdb, 0xa9, 0xbd, 0x8d, 0x8b, 0xb0, 0x84, 0x58,
+                0xc8, 0xef,
+            ],
+        ),
+        // src/set.rs, 0.17.0 and 0.17.1
+        (
+            "src/set.rs",
+            [
+                0x87, 0xa6, 0x02, 0xd9, 0x0a, 0x47, 0xf2, 0x6d, 0xa5, 0x01, 0xaf, 0xa2, 0x85, 0xc4,
+                0x25, 0x16,
+            ],
+        ),
+        // src/raw/mod.rs, 0.12.3
+        (
+            "src/raw/mod.rs",
+            [
+                0xf3, 0xeb, 0xca, 0x7c, 0x61, 0x98, 0x34, 0xfb, 0xc5, 0xaf, 0x49, 0x05, 0xb3, 0x4b,
+                0xb2, 0x4d,
+            ],
+        ),
+        // src/raw/mod.rs, 0.13.0
+        (
+            "src/raw/mod.rs",
+            [
+                0x9a, 0x00, 0xd3, 0xce, 0x50, 0x98, 0x06, 0x56, 0x04, 0x9c, 0xdd, 0x5b, 0xfd, 0xe9,
+                0x1b, 0x99,
+            ],
+        ),
+        // src/raw/mod.rs, 0.13.1
+        (
+            "src/raw/mod.rs",
+            [
+                0xf2, 0x71, 0x97, 0xb4, 0xa4, 0xfc, 0x1d, 0x4c, 0x94, 0xae, 0x6c, 0xa0, 0x70, 0x2e,
+                0x3a, 0xe6,
+            ],
+        ),
+        // src/raw/mod.rs, 0.13.2
+        (
+            "src/raw/mod.rs",
+            [
+                0xf4, 0x59, 0x7e, 0x1d, 0x44, 0x55, 0x25, 0x8c, 0x7c, 0x2d, 0xbc, 0x2c, 0x60, 0x9c,
+                0xe2, 0x33,
+            ],
+        ),
+        // src/raw/mod.rs, 0.14.0
+        (
+            "src/raw/mod.rs",
+            [
+                0xa5, 0xd5, 0x34, 0xa9, 0xa1, 0xa0, 0x2c, 0x1c, 0x43, 0xdd, 0xbf, 0x1f, 0x02, 0x3c,
+                0x11, 0x29,
+            ],
+        ),
+        // src/raw/mod.rs, 0.14.1
+        (
+            "src/raw/mod.rs",
+            [
+                0xa5, 0x9a, 0xa5, 0xfc, 0x96, 0xcb, 0x91, 0x97, 0x12, 0xb8, 0x53, 0x4f, 0x07, 0xe0,
+                0xfc, 0xaf,
+            ],
+        ),
+        // src/raw/mod.rs, 0.14.2
+        (
+            "src/raw/mod.rs",
+            [
+                0x05, 0x58, 0x72, 0x7e, 0x46, 0xf9, 0xf3, 0xa4, 0xc8, 0xa7, 0xd4, 0xf2, 0xea, 0x95,
+                0x95, 0xb0,
+            ],
+        ),
+        // src/raw/mod.rs, 0.14.3
+        (
+            "src/raw/mod.rs",
+            [
+                0x55, 0x1b, 0x64, 0x6f, 0x50, 0x7a, 0xf1, 0xdb, 0x8f, 0xdb, 0x7a, 0x79, 0xfb, 0x23,
+                0x0b, 0x7c,
+            ],
+        ),
+        // src/raw/mod.rs, 0.14.4
+        (
+            "src/raw/mod.rs",
+            [
+                0x05, 0x74, 0x6b, 0xaa, 0xf0, 0x20, 0x5e, 0x11, 0xde, 0x58, 0x78, 0x13, 0xc9, 0xba,
+                0x07, 0xf5,
+            ],
+        ),
+        // src/raw/mod.rs, 0.14.5
+        (
+            "src/raw/mod.rs",
+            [
+                0x39, 0x53, 0xd5, 0x31, 0xe4, 0x60, 0x6f, 0xc7, 0xb2, 0x52, 0xf4, 0xfd, 0x90, 0xa4,
+                0x70, 0x79,
+            ],
+        ),
+        // src/raw/mod.rs, 0.15.0
+        (
+            "src/raw/mod.rs",
+            [
+                0x23, 0xc5, 0xba, 0xab, 0x03, 0x46, 0x75, 0x6e, 0xdb, 0x95, 0xee, 0xa1, 0x39, 0xad,
+                0xe5, 0x60,
+            ],
+        ),
+        // src/raw/mod.rs, 0.15.1
+        (
+            "src/raw/mod.rs",
+            [
+                0x66, 0x4a, 0x30, 0xf7, 0x32, 0x53, 0xda, 0x4c, 0xce, 0xbb, 0x54, 0xab, 0x1f, 0x0e,
+                0x15, 0xdc,
+            ],
+        ),
+        // src/raw/mod.rs, 0.15.2
+        (
+            "src/raw/mod.rs",
+            [
+                0x3f, 0x78, 0x3b, 0x11, 0xaf, 0x11, 0x19, 0xf7, 0x3d, 0xc1, 0xf1, 0x8f, 0x1f, 0x19,
+                0x3d, 0x5e,
+            ],
+        ),
+        // src/raw/mod.rs, 0.15.3 through 0.16.0
+        (
+            "src/raw/mod.rs",
+            [
+                0x5d, 0x3b, 0x64, 0x71, 0x9e, 0xe6, 0x4b, 0x75, 0x78, 0xbc, 0x74, 0xbe, 0x56, 0xa5,
+                0xef, 0x35,
+            ],
+        ),
+        // src/raw/mod.rs, 0.16.1
+        (
+            "src/raw/mod.rs",
+            [
+                0xd4, 0x74, 0x3e, 0x4e, 0x52, 0x6b, 0x3c, 0xa0, 0x80, 0x4e, 0x46, 0x7d, 0xc6, 0xa5,
+                0xbf, 0x88,
+            ],
+        ),
+        // src/raw.rs, 0.17.0 and 0.17.1
+        (
+            "src/raw.rs",
+            [
+                0xda, 0x13, 0x52, 0x10, 0x4b, 0x49, 0x38, 0xbc, 0x72, 0x89, 0xa2, 0xca, 0xd1, 0xb5,
+                0xe1, 0xe6,
+            ],
+        ),
+        // src/control/tag.rs, 0.15.2 through 0.16.1
+        (
+            "src/control/tag.rs",
+            [
+                0x8d, 0x1d, 0xbc, 0x37, 0x6b, 0x4c, 0x6e, 0x81, 0xb1, 0x28, 0xda, 0xf6, 0x0e, 0xb1,
+                0xea, 0xa3,
+            ],
+        ),
+        // src/control/tag.rs, 0.17.0 and 0.17.1
+        (
+            "src/control/tag.rs",
+            [
+                0x29, 0xb0, 0x20, 0x44, 0x8e, 0x8b, 0x8a, 0xbb, 0xc2, 0x10, 0x13, 0xf0, 0x51, 0xb6,
+                0x5e, 0x9a,
+            ],
+        ),
+    ],
 };
 
 /// The reviewed implementation a version selects, or which side of the
@@ -2892,38 +3729,38 @@ pub fn library_convention(
 
 /// One reviewed tokio state protocol: how a bound resource's raw words
 /// are to be read as readiness or a wait, reviewed against the tokio
-/// sources for an inclusive `(major, minor)` range. A layout binding
-/// says where the words are; only a protocol says what they mean, and
-/// the read side's assessor refuses to call a resource ready or waited
-/// on without one. Separate from the layout families on purpose: a
-/// family is selected for every version, newest as a guess, while a
-/// protocol binds inside its reviewed range and nowhere else.
+/// sources at [`TOKIO_RELEASES`]. A layout binding says where the words
+/// are; only a protocol says what they mean, and the read side's
+/// assessor refuses to call a resource ready or waited on without one.
+/// Separate from the layout families on purpose: a family is selected
+/// for every version, newest as a guess, while a protocol binds at its
+/// reviewed releases and nowhere else.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct StateProtocol {
     pub kind: SemanticRuleKind,
     /// The review's name, as a warning that it declines names it.
     pub family: &'static str,
-    pub floor: (u64, u64),
-    pub ceiling: (u64, u64),
-}
-
-impl StateProtocol {
-    fn covers(&self, version: &semver::Version) -> bool {
-        let version = (version.major, version.minor);
-        version >= self.floor && version <= self.ceiling
-    }
+    pub releases: Releases,
+    /// `(file, md5)` for every reviewed revision of each file the
+    /// protocol was read from, relative to the crate root.
+    pub checksums: &'static [(&'static str, [u8; 16])],
 }
 
 /// `batch_semaphore::Acquire`'s protocol, tokio 1.47 through 1.53
 /// (`sync/batch_semaphore.rs`, unchanged across the range but for the
 /// queue's type alias, the closed bit surviving `forget_permits`'
-/// compare-exchange from 1.53, and the trace hook's signature):
-/// `Acquire::poll` forwards to `poll_acquire` with the node embedded in
-/// the future; a `Pending` sets `queued` and a `Ready(Ok)` clears it,
-/// so `queued` records that a poll linked the node and outlives the
-/// grant. `poll_acquire` returns the closed error on the permit word's
-/// low bit or the wait list's own flag, takes what the permit word
-/// holds, and — with permits still needed — stores the task's waker
+/// compare-exchange from 1.53, the trace hook's signature, and where
+/// 1.51.5 and 1.53.2 set `queued`): `Acquire::poll` forwards to
+/// `poll_acquire` with the node embedded in the future; a `Pending`
+/// leaves `queued` set and a `Ready(Ok)` clears it, so `queued` records
+/// that a poll linked the node and outlives the grant. (1.51.5 and
+/// 1.53.2 set it inside `poll_acquire`, before the node is assigned
+/// permits or linked, and zero the node's counter on an immediate
+/// grant, so that a future
+/// dropped mid-poll returns what it holds; what a returned poll leaves
+/// is the same.) `poll_acquire` returns the closed error on the permit
+/// word's low bit or the wait list's own flag, takes what the permit
+/// word holds, and — with permits still needed — stores the task's waker
 /// in the node and pushes it at the list's front, under the list's
 /// lock. `add_permits_locked` assigns released permits to the list's
 /// back node, pops it and takes its waker once its counter reaches
@@ -2937,8 +3774,57 @@ impl StateProtocol {
 pub const TOKIO_ACQUIRE_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioAcquireState,
     family: "tokio-acquire-state-1.47",
-    floor: (1, 47),
-    ceiling: (1, 53),
+    releases: TOKIO_RELEASES,
+    checksums: &[
+        // src/sync/batch_semaphore.rs, 1.47.0 through 1.48.0
+        (
+            "src/sync/batch_semaphore.rs",
+            [
+                0x42, 0xfa, 0xa0, 0x59, 0xa6, 0xc9, 0xf8, 0x6c, 0x90, 0xd0, 0xd4, 0x06, 0x5d, 0x80,
+                0x8c, 0xcd,
+            ],
+        ),
+        // src/sync/batch_semaphore.rs, 1.49.0 through 1.51.0
+        (
+            "src/sync/batch_semaphore.rs",
+            [
+                0xfb, 0x27, 0xb0, 0xc9, 0x48, 0xd6, 0x42, 0x3f, 0x29, 0xb4, 0xfc, 0xa0, 0xa0, 0xa0,
+                0x33, 0xf5,
+            ],
+        ),
+        // src/sync/batch_semaphore.rs, 1.51.1 through 1.51.4, 1.52.0 through 1.52.4
+        (
+            "src/sync/batch_semaphore.rs",
+            [
+                0xda, 0x55, 0xcb, 0xcf, 0x9d, 0xdb, 0x37, 0xab, 0x8e, 0xc5, 0xf5, 0xc9, 0x4b, 0x7d,
+                0x49, 0x22,
+            ],
+        ),
+        // src/sync/batch_semaphore.rs, 1.51.5
+        (
+            "src/sync/batch_semaphore.rs",
+            [
+                0x64, 0x2f, 0x17, 0xc9, 0x3f, 0xc5, 0x1f, 0xd8, 0x84, 0x23, 0xc7, 0x52, 0x60, 0xfd,
+                0x43, 0x19,
+            ],
+        ),
+        // src/sync/batch_semaphore.rs, 1.53.0 and 1.53.1
+        (
+            "src/sync/batch_semaphore.rs",
+            [
+                0x9e, 0x5a, 0x0f, 0xbb, 0x5b, 0xd8, 0xa8, 0x02, 0x7e, 0xb5, 0x82, 0x34, 0x96, 0x8f,
+                0x45, 0xed,
+            ],
+        ),
+        // src/sync/batch_semaphore.rs, 1.53.2
+        (
+            "src/sync/batch_semaphore.rs",
+            [
+                0xdb, 0x0f, 0xca, 0x05, 0x85, 0x2c, 0xa6, 0x09, 0x50, 0x68, 0x97, 0xa2, 0xab, 0x3a,
+                0xf5, 0x7e,
+            ],
+        ),
+    ],
 };
 
 /// `JoinHandle<T>`'s protocol, tokio 1.47 through 1.53
@@ -2952,8 +3838,65 @@ pub const TOKIO_ACQUIRE_STATE_V1_47: StateProtocol = StateProtocol {
 pub const TOKIO_JOIN_HANDLE_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioJoinHandleState,
     family: "tokio-join-handle-state-1.47",
-    floor: (1, 47),
-    ceiling: (1, 53),
+    releases: TOKIO_RELEASES,
+    checksums: &[
+        // src/runtime/task/join.rs, 1.47.0 through 1.47.5
+        (
+            "src/runtime/task/join.rs",
+            [
+                0x81, 0xaf, 0x8c, 0x64, 0xbf, 0xb1, 0xe9, 0x78, 0x4f, 0xb8, 0x3d, 0xf4, 0xb1, 0x9f,
+                0x92, 0x3d,
+            ],
+        ),
+        // src/runtime/task/join.rs, 1.48.0
+        (
+            "src/runtime/task/join.rs",
+            [
+                0x3f, 0x34, 0x2f, 0x97, 0x75, 0x0f, 0x67, 0x32, 0x20, 0x82, 0xf6, 0x96, 0xdd, 0x0a,
+                0x62, 0x25,
+            ],
+        ),
+        // src/runtime/task/join.rs, 1.49.0
+        (
+            "src/runtime/task/join.rs",
+            [
+                0x37, 0x6d, 0x00, 0x13, 0x14, 0x87, 0x41, 0xcf, 0x11, 0xb8, 0x6a, 0xa6, 0xbe, 0x0f,
+                0x3c, 0x3a,
+            ],
+        ),
+        // src/runtime/task/join.rs, 1.50.0 through 1.52.4
+        (
+            "src/runtime/task/join.rs",
+            [
+                0x3a, 0x69, 0x54, 0x68, 0x60, 0x38, 0x02, 0x5c, 0x03, 0x98, 0x8f, 0x37, 0x18, 0x6a,
+                0xbc, 0x64,
+            ],
+        ),
+        // src/runtime/task/join.rs, 1.53.0 and 1.53.1
+        (
+            "src/runtime/task/join.rs",
+            [
+                0xcf, 0xf0, 0x25, 0x53, 0x0c, 0xad, 0x34, 0x43, 0xd2, 0x36, 0xed, 0x4a, 0x06, 0x25,
+                0x1b, 0x98,
+            ],
+        ),
+        // src/runtime/task/join.rs, 1.53.2
+        (
+            "src/runtime/task/join.rs",
+            [
+                0x1f, 0x66, 0x22, 0xed, 0xd2, 0x4f, 0x07, 0x78, 0x0d, 0x91, 0x61, 0x00, 0x85, 0x6a,
+                0x2f, 0xfd,
+            ],
+        ),
+        // src/runtime/task/harness.rs, 1.47.0 through 1.53.2
+        (
+            "src/runtime/task/harness.rs",
+            [
+                0xc1, 0x61, 0x78, 0x2e, 0xb1, 0xb8, 0x5e, 0x89, 0x3f, 0x54, 0xe2, 0x2a, 0x48, 0x56,
+                0xd0, 0xb4,
+            ],
+        ),
+    ],
 };
 
 /// `time::Sleep`'s protocol, tokio 1.47 through 1.53 (`time/sleep.rs`
@@ -2969,16 +3912,83 @@ pub const TOKIO_JOIN_HANDLE_STATE_V1_47: StateProtocol = StateProtocol {
 pub const TOKIO_SLEEP_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioSleepState,
     family: "tokio-sleep-state-1.47",
-    floor: (1, 47),
-    ceiling: (1, 53),
+    releases: TOKIO_RELEASES,
+    checksums: &[
+        // src/time/sleep.rs, 1.47.0 through 1.47.5
+        (
+            "src/time/sleep.rs",
+            [
+                0x0e, 0x71, 0x9b, 0x8c, 0x3c, 0x75, 0x60, 0x94, 0x01, 0x3d, 0xc3, 0xf4, 0xa6, 0xc8,
+                0x73, 0x09,
+            ],
+        ),
+        // src/time/sleep.rs, 1.48.0
+        (
+            "src/time/sleep.rs",
+            [
+                0xa5, 0x4e, 0xde, 0x66, 0x30, 0xdc, 0x0b, 0x53, 0xb8, 0x0b, 0x0e, 0x33, 0x12, 0xce,
+                0xf6, 0xaf,
+            ],
+        ),
+        // src/time/sleep.rs, 1.49.0 through 1.52.4
+        (
+            "src/time/sleep.rs",
+            [
+                0xa9, 0x8f, 0x88, 0xb2, 0x80, 0x9f, 0xab, 0x35, 0x9f, 0xec, 0xba, 0x05, 0xa4, 0xbd,
+                0x1b, 0xa6,
+            ],
+        ),
+        // src/time/sleep.rs, 1.53.0 and 1.53.1
+        (
+            "src/time/sleep.rs",
+            [
+                0xf1, 0xd4, 0xf1, 0xff, 0xba, 0x94, 0x6c, 0xf9, 0xb5, 0x7d, 0x0a, 0xdf, 0xf5, 0x7d,
+                0x04, 0xac,
+            ],
+        ),
+        // src/time/sleep.rs, 1.53.2
+        (
+            "src/time/sleep.rs",
+            [
+                0x15, 0x89, 0xdb, 0x63, 0x3e, 0x74, 0xe0, 0x32, 0x31, 0x7e, 0x79, 0x54, 0x9d, 0xd3,
+                0xd2, 0x78,
+            ],
+        ),
+        // src/runtime/time/entry.rs, 1.47.0 through 1.48.0
+        (
+            "src/runtime/time/entry.rs",
+            [
+                0x5b, 0xdf, 0xe6, 0xed, 0x44, 0x15, 0x9c, 0x26, 0x15, 0xc4, 0x79, 0xde, 0x00, 0xcf,
+                0x09, 0x87,
+            ],
+        ),
+        // src/runtime/time/entry.rs, 1.49.0 through 1.52.4
+        (
+            "src/runtime/time/entry.rs",
+            [
+                0x00, 0x55, 0xeb, 0x76, 0x07, 0xcc, 0x11, 0x39, 0x9c, 0x48, 0x58, 0x6b, 0xb3, 0x19,
+                0x59, 0x56,
+            ],
+        ),
+        // src/runtime/time/entry.rs, 1.53.0 through 1.53.2
+        (
+            "src/runtime/time/entry.rs",
+            [
+                0xe3, 0x82, 0x16, 0x9a, 0xa7, 0x1c, 0x06, 0x35, 0x6a, 0x69, 0xb4, 0xbb, 0x98, 0x57,
+                0x77, 0x5b,
+            ],
+        ),
+    ],
 };
 
 /// The io operations' protocol, tokio 1.47 through 1.53
 /// (`runtime/io/scheduled_io.rs`, `runtime/io/registration.rs`,
 /// `runtime/io/driver.rs`, and `io/util/{read,read_exact,read_buf,
 /// write,write_all,write_buf,flush,shutdown}.rs`, unchanged across the
-/// range but for a list type alias): the registration's readiness word
-/// packs the delivered `Ready` bits in its low sixteen, a tick above
+/// range but for a list type alias, the trace hook's signature, and
+/// 1.51.5's and 1.53.2's driver keeping a registration whose OS
+/// deregister failed): the registration's readiness word packs the
+/// delivered `Ready` bits in its low sixteen, a tick above
 /// them and the shutdown flag at bit 31. Each operation future polls
 /// the stream its `&mut` names and nothing else — `poll_read` for the
 /// three reads, `poll_write` for the three writes, `poll_flush` and
@@ -3004,19 +4014,190 @@ pub const TOKIO_SLEEP_STATE_V1_47: StateProtocol = StateProtocol {
 pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioIoState,
     family: "tokio-io-state-1.47",
-    floor: (1, 47),
-    ceiling: (1, 53),
+    releases: TOKIO_RELEASES,
+    checksums: &[
+        // src/runtime/io/scheduled_io.rs, 1.47.0 through 1.48.0
+        (
+            "src/runtime/io/scheduled_io.rs",
+            [
+                0x8e, 0x3f, 0x24, 0xa3, 0x72, 0xd9, 0xfc, 0x89, 0xcf, 0xde, 0x45, 0x7e, 0x62, 0xbc,
+                0xdb, 0x40,
+            ],
+        ),
+        // src/runtime/io/scheduled_io.rs, 1.49.0 through 1.52.4
+        (
+            "src/runtime/io/scheduled_io.rs",
+            [
+                0x07, 0xd6, 0xf5, 0x10, 0xe9, 0x81, 0x75, 0x4c, 0x75, 0xcc, 0x37, 0xbe, 0x32, 0x9c,
+                0x67, 0xb7,
+            ],
+        ),
+        // src/runtime/io/scheduled_io.rs, 1.53.0 through 1.53.2
+        (
+            "src/runtime/io/scheduled_io.rs",
+            [
+                0x85, 0x38, 0x6f, 0x7e, 0x13, 0x3b, 0x7d, 0xa3, 0x03, 0xe6, 0x3f, 0xb8, 0x9d, 0xa3,
+                0x00, 0x47,
+            ],
+        ),
+        // src/runtime/io/registration.rs, 1.47.0 through 1.50.0
+        (
+            "src/runtime/io/registration.rs",
+            [
+                0x97, 0x2b, 0x7b, 0xb8, 0xa6, 0x39, 0xda, 0x73, 0x6c, 0xea, 0x81, 0x71, 0xa2, 0x4b,
+                0xbd, 0x17,
+            ],
+        ),
+        // src/runtime/io/registration.rs, 1.51.0 through 1.52.4, 1.53.2
+        (
+            "src/runtime/io/registration.rs",
+            [
+                0xc3, 0x7a, 0x68, 0xd3, 0x55, 0xf7, 0xbf, 0x3f, 0x88, 0x3d, 0x8b, 0xe0, 0xfb, 0x50,
+                0xdd, 0xdd,
+            ],
+        ),
+        // src/runtime/io/registration.rs, 1.53.0 and 1.53.1
+        (
+            "src/runtime/io/registration.rs",
+            [
+                0xf6, 0x54, 0x2b, 0x83, 0xf4, 0xf4, 0xcc, 0x36, 0xc9, 0x93, 0xa1, 0xe3, 0x8f, 0x39,
+                0x3e, 0x92,
+            ],
+        ),
+        // src/runtime/io/driver.rs, 1.47.0 through 1.47.5
+        (
+            "src/runtime/io/driver.rs",
+            [
+                0x99, 0xe9, 0x27, 0x79, 0xa1, 0x77, 0x25, 0x6c, 0x23, 0x54, 0x4f, 0x9c, 0xeb, 0xf8,
+                0xcf, 0x59,
+            ],
+        ),
+        // src/runtime/io/driver.rs, 1.48.0 and 1.49.0
+        (
+            "src/runtime/io/driver.rs",
+            [
+                0xd0, 0x9c, 0xfa, 0x8a, 0x26, 0x2c, 0x1c, 0x49, 0x0d, 0xb1, 0x0e, 0x3c, 0x35, 0xd5,
+                0x76, 0x14,
+            ],
+        ),
+        // src/runtime/io/driver.rs, 1.50.0 through 1.51.4, 1.52.0 through 1.52.4
+        (
+            "src/runtime/io/driver.rs",
+            [
+                0x84, 0xc8, 0x25, 0x0e, 0x92, 0x93, 0x1e, 0xe1, 0x4d, 0xc3, 0x83, 0xbc, 0x40, 0x9e,
+                0x92, 0x78,
+            ],
+        ),
+        // src/runtime/io/driver.rs, 1.51.5
+        (
+            "src/runtime/io/driver.rs",
+            [
+                0xf8, 0xc0, 0xf6, 0x59, 0x3f, 0x21, 0xc1, 0x20, 0x96, 0xb1, 0xb2, 0x03, 0xc2, 0x70,
+                0xd5, 0x17,
+            ],
+        ),
+        // src/runtime/io/driver.rs, 1.53.0 and 1.53.1
+        (
+            "src/runtime/io/driver.rs",
+            [
+                0x2f, 0x8e, 0xd0, 0x80, 0xe2, 0x6b, 0x82, 0x2f, 0xb6, 0xec, 0x6f, 0xb1, 0x6c, 0x0d,
+                0xee, 0xfc,
+            ],
+        ),
+        // src/runtime/io/driver.rs, 1.53.2
+        (
+            "src/runtime/io/driver.rs",
+            [
+                0x74, 0xb1, 0x09, 0x36, 0x14, 0xfe, 0xb1, 0x58, 0xe8, 0x95, 0xb3, 0x0d, 0x7c, 0xf8,
+                0x7a, 0x37,
+            ],
+        ),
+        // src/io/util/read.rs, 1.47.0 through 1.53.2
+        (
+            "src/io/util/read.rs",
+            [
+                0x66, 0x1e, 0x10, 0x4b, 0x7c, 0x02, 0x4f, 0x1d, 0xdf, 0x2b, 0xa8, 0xe0, 0xff, 0xba,
+                0xa9, 0xd2,
+            ],
+        ),
+        // src/io/util/read_exact.rs, 1.47.0 through 1.53.2
+        (
+            "src/io/util/read_exact.rs",
+            [
+                0x34, 0x70, 0x30, 0x5e, 0x5a, 0x97, 0x5b, 0x9a, 0xaa, 0xe5, 0x0f, 0x80, 0x39, 0xe9,
+                0x71, 0x07,
+            ],
+        ),
+        // src/io/util/read_buf.rs, 1.47.0 through 1.53.2
+        (
+            "src/io/util/read_buf.rs",
+            [
+                0xb5, 0xfb, 0xcf, 0xe6, 0x08, 0x62, 0x49, 0xdd, 0x82, 0x7a, 0xc9, 0x91, 0xe0, 0x5d,
+                0x29, 0x00,
+            ],
+        ),
+        // src/io/util/write.rs, 1.47.0 through 1.53.2
+        (
+            "src/io/util/write.rs",
+            [
+                0x99, 0xbf, 0xb4, 0x55, 0x4b, 0x2c, 0xd5, 0x41, 0x49, 0xdf, 0x86, 0xfb, 0x6b, 0xee,
+                0x0e, 0x62,
+            ],
+        ),
+        // src/io/util/write_all.rs, 1.47.0 through 1.53.2
+        (
+            "src/io/util/write_all.rs",
+            [
+                0x17, 0xad, 0x81, 0x4a, 0x2c, 0xe0, 0x50, 0x01, 0xeb, 0xdb, 0xd1, 0x29, 0xfa, 0xf9,
+                0xfd, 0x90,
+            ],
+        ),
+        // src/io/util/write_buf.rs, 1.47.0 through 1.49.0
+        (
+            "src/io/util/write_buf.rs",
+            [
+                0x64, 0x20, 0xba, 0x1d, 0x0b, 0x88, 0x30, 0xa2, 0x63, 0x1c, 0x0a, 0xff, 0x3b, 0x22,
+                0xc0, 0x88,
+            ],
+        ),
+        // src/io/util/write_buf.rs, 1.50.0 through 1.53.2
+        (
+            "src/io/util/write_buf.rs",
+            [
+                0xd7, 0x03, 0x5e, 0xb6, 0xc9, 0x86, 0x9a, 0xbc, 0x07, 0x75, 0xc2, 0x95, 0x0c, 0xd1,
+                0xbd, 0x87,
+            ],
+        ),
+        // src/io/util/flush.rs, 1.47.0 through 1.53.2
+        (
+            "src/io/util/flush.rs",
+            [
+                0x92, 0xaf, 0xf4, 0x0b, 0x85, 0x4d, 0xcd, 0x67, 0xe3, 0x4e, 0x79, 0x88, 0x9a, 0x1f,
+                0x09, 0x5f,
+            ],
+        ),
+        // src/io/util/shutdown.rs, 1.47.0 through 1.53.2
+        (
+            "src/io/util/shutdown.rs",
+            [
+                0x19, 0xc4, 0xfc, 0x4f, 0x6e, 0xe8, 0xe0, 0x29, 0x3b, 0x96, 0xcf, 0xb9, 0xab, 0x33,
+                0xd6, 0x74,
+            ],
+        ),
+    ],
 };
 
 /// The bounded mpsc receiver's `recv` protocol, tokio 1.47 through 1.53
 /// (`sync/mpsc/chan.rs`, `sync/mpsc/list.rs`, `sync/mpsc/block.rs` and
 /// `sync/task/atomic_waker.rs`; across the range `chan.rs` differs only
-/// in the trace hook's signature and a `take_waker` on the receiver's
-/// drop, `list.rs` and `block.rs` only in `len`'s closed-marker
-/// accounting and `unsafe` block reflows — `pop`, `try_advancing_head`
-/// and `Block::read` are byte-identical — and `atomic_waker.rs` not at
-/// all): `Receiver::recv` awaits `poll_fn(|cx| self.chan.recv(cx))`,
-/// and `Rx::recv` checks the cooperative budget, then pops: the head
+/// in the trace hook's signature, a `take_waker` on the receiver's
+/// drop and a test-only constructor, `list.rs` and `block.rs` only in
+/// `len`'s closed-marker accounting, `unsafe` block reflows and the
+/// wrapping block indices 1.51.5 and 1.53.2 use in `grow`, `has_value`
+/// and `reclaim_blocks` — `pop`, `try_advancing_head` and `Block::read`
+/// are byte-identical — and `atomic_waker.rs` not at all):
+/// `Receiver::recv` awaits `poll_fn(|cx| self.chan.recv(cx))`, and
+/// `Rx::recv` checks the cooperative budget, then pops: the head
 /// block is advanced to the one whose `start_index` is the read index's
 /// block (a missing successor reads as nothing), and in that block the
 /// slot's bit in `ready_slots` yields the value, the `TX_CLOSED` flag
@@ -3031,14 +4212,169 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
 pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioMpscRecvState,
     family: "tokio-mpsc-recv-state-1.47",
-    floor: (1, 47),
-    ceiling: (1, 53),
+    releases: TOKIO_RELEASES,
+    checksums: &[
+        // src/sync/mpsc/chan.rs, 1.47.0 through 1.47.2, 1.48.0
+        (
+            "src/sync/mpsc/chan.rs",
+            [
+                0x5a, 0x99, 0xc6, 0xbf, 0xce, 0x6d, 0xb8, 0x0a, 0x5d, 0x2e, 0x6e, 0x71, 0xaf, 0x20,
+                0x12, 0x27,
+            ],
+        ),
+        // src/sync/mpsc/chan.rs, 1.47.3, 1.49.0 and 1.50.0
+        (
+            "src/sync/mpsc/chan.rs",
+            [
+                0xc6, 0x12, 0x40, 0x82, 0x47, 0xb1, 0xae, 0x12, 0x2c, 0x93, 0x8f, 0xb6, 0xc9, 0xeb,
+                0x66, 0x64,
+            ],
+        ),
+        // src/sync/mpsc/chan.rs, 1.47.4, 1.51.0 through 1.51.2, 1.52.0 through 1.52.2
+        (
+            "src/sync/mpsc/chan.rs",
+            [
+                0xaf, 0x93, 0x46, 0xd5, 0x2a, 0x3d, 0xe4, 0x7c, 0x77, 0x6e, 0x96, 0x7f, 0xfe, 0x6e,
+                0x72, 0x40,
+            ],
+        ),
+        // src/sync/mpsc/chan.rs, 1.47.5, 1.51.3 and 1.51.4, 1.52.3 and 1.52.4
+        (
+            "src/sync/mpsc/chan.rs",
+            [
+                0x71, 0x3a, 0xce, 0xaf, 0xe4, 0x54, 0x7f, 0x82, 0xd0, 0x31, 0x22, 0x82, 0xb1, 0xe3,
+                0x2f, 0x09,
+            ],
+        ),
+        // src/sync/mpsc/chan.rs, 1.51.5
+        (
+            "src/sync/mpsc/chan.rs",
+            [
+                0x1b, 0x3b, 0x6a, 0x24, 0x2c, 0x2b, 0xd1, 0x3f, 0xd0, 0x39, 0xe5, 0x93, 0xfa, 0xfb,
+                0x12, 0x25,
+            ],
+        ),
+        // src/sync/mpsc/chan.rs, 1.53.0 and 1.53.1
+        (
+            "src/sync/mpsc/chan.rs",
+            [
+                0xe5, 0xb1, 0xfe, 0xb2, 0xa3, 0x49, 0x71, 0x84, 0x5c, 0x08, 0x7c, 0x21, 0xa3, 0x4e,
+                0x2f, 0x5f,
+            ],
+        ),
+        // src/sync/mpsc/chan.rs, 1.53.2
+        (
+            "src/sync/mpsc/chan.rs",
+            [
+                0x85, 0x20, 0x15, 0xe3, 0x3e, 0x30, 0x97, 0x2b, 0xf5, 0xc5, 0x4c, 0x33, 0x92, 0xbb,
+                0x12, 0x9b,
+            ],
+        ),
+        // src/sync/mpsc/list.rs, 1.47.0 through 1.47.2, 1.48.0
+        (
+            "src/sync/mpsc/list.rs",
+            [
+                0x8f, 0x06, 0xc5, 0x57, 0x14, 0xa3, 0xa3, 0x72, 0x7c, 0x27, 0xce, 0x9b, 0x9d, 0x60,
+                0x45, 0x64,
+            ],
+        ),
+        // src/sync/mpsc/list.rs, 1.47.3 and 1.47.4
+        (
+            "src/sync/mpsc/list.rs",
+            [
+                0xa1, 0x51, 0xdd, 0x61, 0x31, 0x21, 0x85, 0x0f, 0x1e, 0x65, 0xad, 0x41, 0xc0, 0x47,
+                0xee, 0x8a,
+            ],
+        ),
+        // src/sync/mpsc/list.rs, 1.47.5
+        (
+            "src/sync/mpsc/list.rs",
+            [
+                0x78, 0x0e, 0x9c, 0x9a, 0x6c, 0xfe, 0x41, 0x7f, 0xf2, 0x70, 0xca, 0x1a, 0x08, 0xaf,
+                0x68, 0x80,
+            ],
+        ),
+        // src/sync/mpsc/list.rs, 1.49.0 through 1.51.2, 1.52.0 through 1.52.2
+        (
+            "src/sync/mpsc/list.rs",
+            [
+                0xea, 0xa2, 0xe2, 0x1a, 0x49, 0x69, 0xf7, 0xb4, 0x1b, 0xa2, 0x3a, 0x50, 0xe4, 0x36,
+                0x42, 0x32,
+            ],
+        ),
+        // src/sync/mpsc/list.rs, 1.51.3 and 1.51.4, 1.52.3 through 1.53.1
+        (
+            "src/sync/mpsc/list.rs",
+            [
+                0xeb, 0x14, 0xd3, 0xe7, 0x82, 0x6e, 0xd2, 0x67, 0x5c, 0x3b, 0xe0, 0x8f, 0xe4, 0x59,
+                0x53, 0xba,
+            ],
+        ),
+        // src/sync/mpsc/list.rs, 1.51.5, 1.53.2
+        (
+            "src/sync/mpsc/list.rs",
+            [
+                0x03, 0x6f, 0x12, 0x2b, 0xbb, 0xe3, 0x26, 0xc3, 0xac, 0x23, 0x83, 0xd5, 0xfd, 0xac,
+                0xbf, 0xd4,
+            ],
+        ),
+        // src/sync/mpsc/block.rs, 1.47.0 through 1.47.4, 1.48.0
+        (
+            "src/sync/mpsc/block.rs",
+            [
+                0xfb, 0xf0, 0xa8, 0x5f, 0xe2, 0xd1, 0xf6, 0xa3, 0xf1, 0x50, 0x0a, 0xc7, 0x13, 0x02,
+                0x76, 0xdf,
+            ],
+        ),
+        // src/sync/mpsc/block.rs, 1.47.5
+        (
+            "src/sync/mpsc/block.rs",
+            [
+                0xb4, 0x0b, 0xd1, 0x5b, 0xcb, 0x81, 0x8d, 0xf1, 0x6a, 0xcd, 0x87, 0x35, 0x23, 0xd9,
+                0x25, 0x8f,
+            ],
+        ),
+        // src/sync/mpsc/block.rs, 1.49.0 through 1.51.2, 1.52.0 through 1.52.2
+        (
+            "src/sync/mpsc/block.rs",
+            [
+                0xe6, 0x29, 0x91, 0x81, 0x15, 0x30, 0x38, 0x0d, 0xaa, 0xb5, 0xbc, 0xe7, 0xb1, 0x3c,
+                0x9c, 0x5a,
+            ],
+        ),
+        // src/sync/mpsc/block.rs, 1.51.3 and 1.51.4, 1.52.3 through 1.53.1
+        (
+            "src/sync/mpsc/block.rs",
+            [
+                0xf8, 0xce, 0x09, 0x77, 0xed, 0xa7, 0x41, 0x5d, 0x8f, 0x13, 0xb4, 0x4e, 0x73, 0x61,
+                0x49, 0xc6,
+            ],
+        ),
+        // src/sync/mpsc/block.rs, 1.51.5, 1.53.2
+        (
+            "src/sync/mpsc/block.rs",
+            [
+                0x4d, 0x3c, 0xb0, 0x08, 0x8c, 0xc7, 0x50, 0x01, 0x52, 0x91, 0xdc, 0xea, 0x6a, 0x79,
+                0x8a, 0x0b,
+            ],
+        ),
+        // src/sync/task/atomic_waker.rs, 1.47.0 through 1.53.2
+        (
+            "src/sync/task/atomic_waker.rs",
+            [
+                0x6c, 0x0e, 0xb2, 0xdd, 0x6b, 0x8e, 0x9d, 0xfd, 0xdb, 0x09, 0x69, 0x81, 0x3b, 0xdd,
+                0xc6, 0xd1,
+            ],
+        ),
+    ],
 };
 
 /// `Notified`'s protocol, tokio 1.47 through 1.53 (`sync/notify.rs`;
 /// across the range the wait list's type alias changed, `notify_waiters`
-/// gained a guard type, and 1.53 re-checks the `notify_waiters` count
-/// under the lock in the `Waiting` arm): in `Init`, `poll_notified`
+/// gained a guard type, 1.53 re-checks the `notify_waiters` count
+/// under the lock in the `Waiting` arm, and 1.53.2 passes
+/// `poll_notified` the poll's `Context`, not its waker, for the trace
+/// hook): in `Init`, `poll_notified`
 /// consumes a stored `notify_one` — the state word's `NOTIFIED` — or a
 /// `notify_waiters` that ran since the future was created — the count
 /// above the state bits differs from the future's copy — and is `Done`;
@@ -3055,8 +4391,57 @@ pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
 pub const TOKIO_NOTIFIED_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioNotifiedState,
     family: "tokio-notified-state-1.47",
-    floor: (1, 47),
-    ceiling: (1, 53),
+    releases: TOKIO_RELEASES,
+    checksums: &[
+        // src/sync/notify.rs, 1.47.0 through 1.47.5
+        (
+            "src/sync/notify.rs",
+            [
+                0x51, 0x27, 0x05, 0xa0, 0x58, 0xfe, 0x9a, 0x1a, 0xf6, 0x4f, 0x42, 0xba, 0xb4, 0x23,
+                0x18, 0x88,
+            ],
+        ),
+        // src/sync/notify.rs, 1.48.0
+        (
+            "src/sync/notify.rs",
+            [
+                0x0a, 0x9c, 0x7e, 0xc1, 0x97, 0x2b, 0x3c, 0xfa, 0x93, 0xfa, 0x69, 0x0e, 0xec, 0x17,
+                0x6b, 0x41,
+            ],
+        ),
+        // src/sync/notify.rs, 1.49.0 and 1.50.0
+        (
+            "src/sync/notify.rs",
+            [
+                0xed, 0xbe, 0xcb, 0xd7, 0xfe, 0x6c, 0x5f, 0xd2, 0x5a, 0x0e, 0xcd, 0x06, 0xb9, 0xec,
+                0x54, 0xca,
+            ],
+        ),
+        // src/sync/notify.rs, 1.51.0 through 1.52.4
+        (
+            "src/sync/notify.rs",
+            [
+                0x82, 0x8b, 0xaf, 0x96, 0x71, 0x71, 0x37, 0x83, 0x03, 0xb2, 0xcd, 0x2c, 0x7a, 0xf1,
+                0x46, 0xae,
+            ],
+        ),
+        // src/sync/notify.rs, 1.53.0 and 1.53.1
+        (
+            "src/sync/notify.rs",
+            [
+                0x77, 0xf3, 0x63, 0xb8, 0xd4, 0x2e, 0x62, 0x7b, 0x22, 0x7c, 0x60, 0xdf, 0x1e, 0xa2,
+                0xf7, 0xe0,
+            ],
+        ),
+        // src/sync/notify.rs, 1.53.2
+        (
+            "src/sync/notify.rs",
+            [
+                0x73, 0xb4, 0x6f, 0x28, 0xc0, 0x7e, 0x37, 0xdf, 0x0e, 0x9a, 0x44, 0xf7, 0xef, 0x62,
+                0x31, 0x6d,
+            ],
+        ),
+    ],
 };
 
 /// The oneshot receiver's protocol, tokio 1.47 through 1.53
@@ -3078,8 +4463,65 @@ pub const TOKIO_NOTIFIED_STATE_V1_47: StateProtocol = StateProtocol {
 pub const TOKIO_ONESHOT_RECV_STATE_V1_47: StateProtocol = StateProtocol {
     kind: SemanticRuleKind::TokioOneshotRecvState,
     family: "tokio-oneshot-recv-state-1.47",
-    floor: (1, 47),
-    ceiling: (1, 53),
+    releases: TOKIO_RELEASES,
+    checksums: &[
+        // src/sync/oneshot.rs, 1.47.0 through 1.47.5
+        (
+            "src/sync/oneshot.rs",
+            [
+                0x6b, 0xa8, 0xe8, 0x59, 0x79, 0x42, 0xa6, 0x8f, 0x68, 0x6e, 0xb9, 0x76, 0x66, 0x77,
+                0xd4, 0xfd,
+            ],
+        ),
+        // src/sync/oneshot.rs, 1.48.0
+        (
+            "src/sync/oneshot.rs",
+            [
+                0xe2, 0x7b, 0x99, 0x43, 0x5f, 0xee, 0x9b, 0x4d, 0x8e, 0xaf, 0xe7, 0xd7, 0x4d, 0x96,
+                0xbf, 0x97,
+            ],
+        ),
+        // src/sync/oneshot.rs, 1.49.0
+        (
+            "src/sync/oneshot.rs",
+            [
+                0x72, 0xa7, 0x25, 0x68, 0x4a, 0x5d, 0x1c, 0x41, 0x9b, 0x45, 0x11, 0xd6, 0x1f, 0xe3,
+                0x56, 0x7e,
+            ],
+        ),
+        // src/sync/oneshot.rs, 1.50.0 through 1.51.5
+        (
+            "src/sync/oneshot.rs",
+            [
+                0xfa, 0x44, 0xb4, 0x9b, 0xfd, 0xed, 0xa9, 0xa3, 0xb6, 0x4c, 0x21, 0x9a, 0x9d, 0x02,
+                0x0d, 0x4b,
+            ],
+        ),
+        // src/sync/oneshot.rs, 1.52.0 through 1.52.4
+        (
+            "src/sync/oneshot.rs",
+            [
+                0xcf, 0x62, 0x7c, 0xa4, 0xb0, 0xf9, 0x47, 0xfc, 0x35, 0x27, 0x52, 0x7c, 0x9a, 0x61,
+                0x9a, 0xb3,
+            ],
+        ),
+        // src/sync/oneshot.rs, 1.53.0 and 1.53.1
+        (
+            "src/sync/oneshot.rs",
+            [
+                0xbc, 0x33, 0x05, 0xef, 0x1f, 0x48, 0x03, 0x5a, 0xae, 0x08, 0x93, 0xc6, 0x97, 0x95,
+                0xb5, 0xee,
+            ],
+        ),
+        // src/sync/oneshot.rs, 1.53.2
+        (
+            "src/sync/oneshot.rs",
+            [
+                0xcb, 0xb3, 0x46, 0x03, 0x98, 0x16, 0xa6, 0xae, 0x02, 0x08, 0x6a, 0xe4, 0xee, 0x30,
+                0xd6, 0x4e,
+            ],
+        ),
+    ],
 };
 
 /// The tokio futures that acquire a batch semaphore on behalf of a
@@ -3095,8 +4537,153 @@ pub const TOKIO_ONESHOT_RECV_STATE_V1_47: StateProtocol = StateProtocol {
 /// path is the key; the primitive is named as a listing names it.
 pub const TOKIO_ACQUIRE_OWNERS_V1_47: AcquireOwners = AcquireOwners {
     family: "tokio-acquire-owners-1.47",
-    floor: (1, 47),
-    ceiling: (1, 53),
+    releases: TOKIO_RELEASES,
+    checksums: &[
+        // src/sync/mutex.rs, 1.47.0 through 1.47.5
+        (
+            "src/sync/mutex.rs",
+            [
+                0x0d, 0x34, 0x22, 0x3d, 0x92, 0xb9, 0xe0, 0xf0, 0xd5, 0xae, 0xac, 0x1a, 0xd5, 0xb3,
+                0xdb, 0xd1,
+            ],
+        ),
+        // src/sync/mutex.rs, 1.48.0 through 1.53.2
+        (
+            "src/sync/mutex.rs",
+            [
+                0x5a, 0x1f, 0x44, 0x94, 0x02, 0x04, 0xa7, 0xb3, 0x86, 0x47, 0x80, 0x3c, 0x9d, 0x9c,
+                0xa2, 0x9f,
+            ],
+        ),
+        // src/sync/rwlock.rs, 1.47.0 through 1.47.4
+        (
+            "src/sync/rwlock.rs",
+            [
+                0x1d, 0xfe, 0xee, 0x5d, 0x9b, 0x63, 0x24, 0xe0, 0xb6, 0x8d, 0xa3, 0x0e, 0x32, 0xf2,
+                0x81, 0x3e,
+            ],
+        ),
+        // src/sync/rwlock.rs, 1.47.5
+        (
+            "src/sync/rwlock.rs",
+            [
+                0x30, 0x40, 0xa8, 0x6b, 0x6f, 0x7d, 0x56, 0x50, 0x7c, 0xc4, 0xc6, 0x51, 0xde, 0xf2,
+                0xd6, 0xaa,
+            ],
+        ),
+        // src/sync/rwlock.rs, 1.48.0 and 1.49.0
+        (
+            "src/sync/rwlock.rs",
+            [
+                0xc2, 0x07, 0x1f, 0x9e, 0x62, 0x12, 0x21, 0x9f, 0xe3, 0x2a, 0x79, 0x57, 0x52, 0x8b,
+                0xa6, 0x37,
+            ],
+        ),
+        // src/sync/rwlock.rs, 1.50.0 through 1.51.2, 1.52.0 through 1.52.2
+        (
+            "src/sync/rwlock.rs",
+            [
+                0x36, 0x18, 0x40, 0x46, 0x79, 0x3a, 0xc8, 0x26, 0x66, 0x26, 0xd2, 0xb6, 0x86, 0xce,
+                0x74, 0x42,
+            ],
+        ),
+        // src/sync/rwlock.rs, 1.51.3 through 1.51.5, 1.52.3 through 1.53.2
+        (
+            "src/sync/rwlock.rs",
+            [
+                0xec, 0x26, 0xe1, 0x57, 0xae, 0x85, 0xa8, 0x43, 0x69, 0xa3, 0x94, 0x21, 0x49, 0xfe,
+                0xd7, 0xad,
+            ],
+        ),
+        // src/sync/semaphore.rs, 1.47.0 through 1.47.5
+        (
+            "src/sync/semaphore.rs",
+            [
+                0x8d, 0xf3, 0xe5, 0x5d, 0xb7, 0x91, 0x8c, 0x4b, 0x97, 0xb8, 0x84, 0xb6, 0x85, 0xe6,
+                0x0b, 0xfb,
+            ],
+        ),
+        // src/sync/semaphore.rs, 1.48.0 through 1.52.4
+        (
+            "src/sync/semaphore.rs",
+            [
+                0xb5, 0xe9, 0x5d, 0xf0, 0x9b, 0xa8, 0xec, 0x01, 0x10, 0x52, 0x30, 0xad, 0x56, 0xed,
+                0x37, 0xeb,
+            ],
+        ),
+        // src/sync/semaphore.rs, 1.53.0 through 1.53.2
+        (
+            "src/sync/semaphore.rs",
+            [
+                0xf9, 0xb0, 0x48, 0xbe, 0xc2, 0x33, 0x45, 0xf1, 0x1f, 0x7f, 0x94, 0x6b, 0xef, 0x04,
+                0xc6, 0x44,
+            ],
+        ),
+        // src/sync/mpsc/bounded.rs, 1.47.0 through 1.47.4
+        (
+            "src/sync/mpsc/bounded.rs",
+            [
+                0x6f, 0x81, 0x25, 0xb6, 0xd4, 0x8a, 0x58, 0xfa, 0xea, 0xcf, 0x46, 0x7f, 0x24, 0xc6,
+                0xb2, 0xb7,
+            ],
+        ),
+        // src/sync/mpsc/bounded.rs, 1.47.5
+        (
+            "src/sync/mpsc/bounded.rs",
+            [
+                0xc7, 0xac, 0x30, 0x59, 0xf8, 0x42, 0x4c, 0x08, 0x8f, 0xde, 0x2e, 0xe6, 0x45, 0x8b,
+                0xe9, 0xf7,
+            ],
+        ),
+        // src/sync/mpsc/bounded.rs, 1.48.0
+        (
+            "src/sync/mpsc/bounded.rs",
+            [
+                0x98, 0xcf, 0x47, 0x65, 0x76, 0x22, 0x4d, 0xca, 0xaf, 0x2b, 0x94, 0xb6, 0x26, 0x99,
+                0xde, 0x32,
+            ],
+        ),
+        // src/sync/mpsc/bounded.rs, 1.49.0 through 1.51.2, 1.52.0 through 1.52.2
+        (
+            "src/sync/mpsc/bounded.rs",
+            [
+                0x40, 0xbb, 0x34, 0x0d, 0x5a, 0x8b, 0x8d, 0x2b, 0xe1, 0x8b, 0x32, 0x66, 0x85, 0x77,
+                0x22, 0xaa,
+            ],
+        ),
+        // src/sync/mpsc/bounded.rs, 1.51.3 and 1.51.4, 1.52.3 and 1.52.4
+        (
+            "src/sync/mpsc/bounded.rs",
+            [
+                0x82, 0x2a, 0x1a, 0x86, 0x1a, 0xb3, 0x64, 0x52, 0x99, 0x2c, 0x52, 0xaa, 0xb4, 0x9b,
+                0xc2, 0x0d,
+            ],
+        ),
+        // src/sync/mpsc/bounded.rs, 1.51.5
+        (
+            "src/sync/mpsc/bounded.rs",
+            [
+                0x4f, 0x18, 0x59, 0x42, 0x0d, 0x5f, 0x2a, 0x61, 0xd3, 0x80, 0xd2, 0xaa, 0x74, 0xb8,
+                0x82, 0x51,
+            ],
+        ),
+        // src/sync/mpsc/bounded.rs, 1.53.0 and 1.53.1
+        (
+            "src/sync/mpsc/bounded.rs",
+            [
+                0xcf, 0x02, 0x2c, 0x9f, 0x41, 0xaa, 0x45, 0xb3, 0xd9, 0x20, 0xe3, 0x8c, 0xe2, 0xdb,
+                0xbe, 0x68,
+            ],
+        ),
+        // src/sync/mpsc/bounded.rs, 1.53.2
+        (
+            "src/sync/mpsc/bounded.rs",
+            [
+                0xf4, 0x9f, 0xa5, 0x97, 0x97, 0x3f, 0x73, 0x8f, 0x07, 0x95, 0x29, 0xe2, 0x59, 0x22,
+                0x67, 0xcc,
+            ],
+        ),
+    ],
     owners: &[
         ("tokio::sync::mutex::", "tokio::sync::Mutex"),
         ("tokio::sync::rwlock::", "tokio::sync::RwLock"),
@@ -3109,26 +4696,26 @@ pub const TOKIO_ACQUIRE_OWNERS_V1_47: AcquireOwners = AcquireOwners {
 };
 
 /// A reviewed map from the modules whose futures acquire a batch
-/// semaphore to the primitive each acquires for, over an inclusive
-/// range of tokio versions.
+/// semaphore to the primitive each acquires for, at the tokio releases
+/// it was read at, with the checksums of the files it read.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct AcquireOwners {
     /// The review's name, as a warning that it declines names it.
     pub family: &'static str,
-    pub floor: (u64, u64),
-    pub ceiling: (u64, u64),
+    pub releases: Releases,
+    /// `(file, md5)` for every reviewed revision of each owner's file,
+    /// relative to the crate root.
+    pub checksums: &'static [(&'static str, [u8; 16])],
     pub owners: &'static [(&'static str, &'static str)],
 }
 
 /// The primitive a future named `name` acquires a batch semaphore for,
 /// at a recovered tokio version: `None` for a future in no owner's
-/// module, and for any at all where no version was recovered or it
-/// falls outside the reviewed range.
+/// module, and for any at all where no version was recovered or the
+/// review did not read it.
 pub fn tokio_acquire_owner(name: &str, version: Option<&semver::Version>) -> Option<&'static str> {
     let owners = &TOKIO_ACQUIRE_OWNERS_V1_47;
-    let version = version?;
-    let version = (version.major, version.minor);
-    if version < owners.floor || version > owners.ceiling {
+    if !owners.releases.covers(version?) {
         return None;
     }
     owners
@@ -3139,8 +4726,8 @@ pub fn tokio_acquire_owner(name: &str, version: Option<&semver::Version>) -> Opt
 }
 
 /// The reviewed state protocol for a resource kind at a recovered tokio
-/// version: `None` when no version was recovered or it falls outside
-/// the protocol's range. A layout family is selected regardless; a
+/// version: `None` when no version was recovered or the protocol's
+/// review did not read it. A layout family is selected regardless; a
 /// protocol is not.
 pub fn tokio_state_protocol(
     kind: ResourceKind,
@@ -3161,7 +4748,7 @@ pub fn tokio_state_protocol(
         // convention its own rule binds under.
         ResourceKind::HttpConn => return None,
     };
-    protocol.covers(version?).then_some(protocol)
+    protocol.releases.covers(version?).then_some(protocol)
 }
 
 /// Every reviewed tokio state protocol.
@@ -3194,32 +4781,32 @@ pub fn tokio_protocols_outside(version: &semver::Version) -> Option<Vec<Protocol
     let owners = &TOKIO_ACQUIRE_OWNERS_V1_47;
     let reviewed: Vec<Review> = TOKIO_STATE_PROTOCOLS
         .iter()
-        .map(|p| (p.family, p.floor, p.ceiling))
-        .chain([(owners.family, owners.floor, owners.ceiling)])
+        .map(|p| (p.family, p.releases))
+        .chain([(owners.family, owners.releases)])
         .collect();
     let outside = outside(version, &reviewed);
     (!outside.is_empty()).then_some(outside)
 }
 
-/// A review as [`outside`] weighs it: its family, floor and ceiling.
-type Review = (&'static str, (u64, u64), (u64, u64));
+/// A review as [`outside`] weighs it: its family and releases.
+type Review = (&'static str, Releases);
 
 /// The reviews in `reviewed` of every subject no review covers the
-/// version of. A subject a later review covers is not outside.
+/// version of. A subject a later review covers is not outside. A
+/// version between two spans is newer than the one below it, and the
+/// range it is told it misses is that span.
 fn outside(version: &semver::Version, reviewed: &[Review]) -> Vec<ProtocolOutside> {
-    let minor = (version.major, version.minor);
-    let covers = |&(_, floor, ceiling): &Review| minor >= floor && minor <= ceiling;
     reviewed
         .iter()
         .filter(|(family, ..)| {
-            !reviewed
-                .iter()
-                .any(|other| subject(other.0) == subject(family) && covers(other))
+            !reviewed.iter().any(|(other, releases)| {
+                subject(other) == subject(family) && releases.covers(version)
+            })
         })
-        .map(|&(family, floor, ceiling)| ProtocolOutside {
+        .map(|&(family, releases)| ProtocolOutside {
             family,
-            range: minor_range(floor, ceiling),
-            newer: minor.cmp(&ceiling).is_gt(),
+            range: releases.range_for(version),
+            newer: releases.select(version) != LayoutSelection::BelowFloor,
         })
         .collect()
 }
@@ -3234,7 +4821,7 @@ mod tests {
             "clang LLVM (rustc version 1.97.0 (2d8144b78 2026-07-07))",
             "rustc version 1.97.1 (ccdd 2026-07-08)",
             "rustc version 1.98.0 (88d9e12ae 2026-08-18)",
-            "rustc version 1.98.3-nightly (eeff 2026-09-01)",
+            "rustc version 1.99.0 (b940084d7 2026-09-28)",
         ] {
             assert_eq!(
                 rustc_coroutine_convention(producer).map(|c| c.family),
@@ -3244,6 +4831,12 @@ mod tests {
         }
         for producer in [
             "rustc version 1.96.0 (aabb 2026-05-01)",
+            // A nightly or beta is none of the releases read.
+            "rustc version 1.98.0-nightly (eeff 2026-07-01)",
+            "rustc version 1.98.1-beta.2 (eeff 2026-08-30)",
+            // A patch past its minor's span, and one between two spans.
+            "rustc version 1.98.9 (aabb 2026-12-01)",
+            "rustc version 1.97.2 (aabb 2026-09-01)",
             "rustc version 2.999.0 (aabb 2026-10-01)",
             "rustc version 2.0.0 (aabb 2027-01-01)",
             "GNU C17 14.2.0 -mtune=generic -g",
@@ -3304,8 +4897,30 @@ mod tests {
             RUSTC_CONVENTIONS.map(|c| c.family),
             "2.999 is newer than every review"
         );
+        // A patch released into a reviewed minor after its review is
+        // outgrown like a newer minor, against what was read of it.
+        let (version, outgrown) =
+            rustc_conventions_outgrown("rustc version 1.97.2 (aabb 2026-09-01)")
+                .expect("an unread 1.97 patch outgrows the reviews");
+        assert_eq!(outgrown.len(), RUSTC_CONVENTIONS.len());
+        assert_eq!(
+            RUSTC_COROUTINE_V1_97.releases.range_for(&version),
+            "1.97.0-1.97.1"
+        );
+        // A nightly of a reviewed release is outgrown like an unread
+        // patch, placed before its minor's span.
+        let (version, _) =
+            rustc_conventions_outgrown("rustc version 1.98.0-nightly (eeff 2026-07-01)")
+                .expect("a nightly outgrows the reviews");
+        assert_eq!(
+            RUSTC_COROUTINE_V1_97.releases.range_for(&version),
+            "1.98.0-1.98.1"
+        );
+        assert_eq!(
+            RUSTC_COROUTINE_V1_97.releases.select(&version),
+            LayoutSelection::BelowFloor
+        );
         for producer in [
-            "rustc version 1.98.3-nightly (eeff 2026-09-01)",
             "rustc version 1.97.0 (2d8144b78 2026-07-07)",
             "rustc version 1.96.0 (aabb 2026-05-01)",
             "GNU C17 14.2.0 -mtune=generic -g",
@@ -3318,7 +4933,8 @@ mod tests {
             RUSTC_STD_FUTEX_MUTEX_V1_97.subject(),
             "rustc-std-futex-mutex"
         );
-        assert_eq!(RUSTC_COROUTINE_V1_97.range(), "1.97-1.98");
+        assert_eq!(RUSTC_COROUTINE_V1_97.range(), "1.97.0-1.99.0");
+        assert_eq!(rustc_reviewed_range(), "1.97.0-1.99.0");
     }
 
     /// A later review of one subject keeps that subject covered, and
@@ -3329,8 +4945,8 @@ mod tests {
     fn test_a_later_review_covers_its_own_subject_only() {
         const COROUTINE_V2_999: RustcConvention = RustcConvention {
             family: "rustc-coroutine-2.999",
-            floor: (2, 999),
-            ceiling: (2, 999),
+            releases: Releases(&[((2, 999, 0), (2, 999, 0))]),
+            checksums: &[],
         };
         let reviewed = [
             &RUSTC_COROUTINE_V1_97,
@@ -3357,8 +4973,10 @@ mod tests {
     }
 
     /// Every tokio protocol review is outside a version past either
-    /// edge of its range, on the side the version falls, and none is
-    /// at either edge.
+    /// edge of its releases, on the side the version falls, and outside
+    /// a patch released into a reviewed minor after its review, named
+    /// against what was read of that minor; none is at a reviewed
+    /// release.
     #[test]
     fn test_tokio_protocols_are_outside_a_version_past_their_range() {
         let v = |s: &str| semver::Version::parse(s).unwrap();
@@ -3366,7 +4984,14 @@ mod tests {
             .iter()
             .map(|p| p.family)
             .chain([TOKIO_ACQUIRE_OWNERS_V1_47.family]);
-        for (version, newer) in [("1.54.0", true), ("1.46.3", false)] {
+        for (version, range, newer) in [
+            ("1.54.0", "1.47.0-1.53.2", true),
+            ("1.53.3", "1.53.0-1.53.2", true),
+            ("1.51.6", "1.51.0-1.51.5", true),
+            // Past the later of a split minor's two spans.
+            ("1.52.5", "1.52.1-1.52.4", true),
+            ("1.46.3", "1.47.0-1.53.2", false),
+        ] {
             assert_eq!(
                 tokio_protocols_outside(&v(version)),
                 Some(
@@ -3374,7 +4999,7 @@ mod tests {
                         .clone()
                         .map(|family| ProtocolOutside {
                             family,
-                            range: "1.47-1.53".to_owned(),
+                            range: range.to_owned(),
                             newer,
                         })
                         .collect()
@@ -3382,7 +5007,9 @@ mod tests {
                 "{version}"
             );
         }
-        for version in ["1.47.0", "1.53.9"] {
+        for version in [
+            "1.47.0", "1.47.5", "1.48.0", "1.51.4", "1.52.0", "1.52.1", "1.53.2",
+        ] {
             assert_eq!(tokio_protocols_outside(&v(version)), None, "{version}");
         }
     }
@@ -3392,10 +5019,14 @@ mod tests {
     /// version is outside the io review alone.
     #[test]
     fn test_a_later_protocol_review_covers_its_own_subject_only() {
+        let through_1_53 = Releases(&[((1, 47, 0), (1, 53, 9))]);
         let reviewed: [Review; 3] = [
-            ("tokio-sleep-state-1.47", (1, 47), (1, 53)),
-            ("tokio-sleep-state-1.54", (1, 54), (1, 55)),
-            ("tokio-io-state-1.47", (1, 47), (1, 53)),
+            ("tokio-sleep-state-1.47", through_1_53),
+            (
+                "tokio-sleep-state-1.54",
+                Releases(&[((1, 54, 0), (1, 55, 9))]),
+            ),
+            ("tokio-io-state-1.47", through_1_53),
         ];
         let families = |version: &str| -> Vec<&str> {
             outside(&semver::Version::parse(version).unwrap(), &reviewed)
@@ -3465,9 +5096,9 @@ mod tests {
             ),
             (
                 &REQWEST_COOKIE_V0_12_24,
-                ["0.12.24", "0.12.28", "0.13.0", "0.13.2", "0.13.4"].as_slice(),
+                ["0.12.24", "0.12.28", "0.13.0", "0.13.4", "0.13.5"].as_slice(),
                 "0.12.23",
-                "0.13.5",
+                "0.13.6",
             ),
             (
                 &TOKIO_STREAM_WATCH_V0_1_14,
@@ -3489,9 +5120,9 @@ mod tests {
             ),
             (
                 &TOKIO_INTERVAL_TICK_V1_47,
-                ["1.47.0", "1.47.5", "1.48.0", "1.52.4", "1.53.0", "1.53.1"].as_slice(),
+                ["1.47.0", "1.47.5", "1.48.0", "1.52.4", "1.53.0", "1.53.2"].as_slice(),
                 "1.46.1",
-                "1.53.2",
+                "1.53.3",
             ),
             (
                 &HYPER_H1_CONN_V1_6_0,
@@ -3511,11 +5142,11 @@ mod tests {
             (
                 &REQWEST_PENDING_REQUEST_V0_12_0,
                 [
-                    "0.12.0", "0.12.19", "0.12.20", "0.12.28", "0.13.0", "0.13.2",
+                    "0.12.0", "0.12.19", "0.12.20", "0.12.28", "0.13.0", "0.13.2", "0.13.5",
                 ]
                 .as_slice(),
                 "0.11.27",
-                "0.13.3",
+                "0.13.6",
             ),
             (
                 &HTTP_REQUEST_V1_0_0,
@@ -3598,7 +5229,7 @@ mod tests {
         assert_eq!(HYPER_UTIL_TOKIO_SLEEP_V0_1_10.range(), "0.1.10-0.1.20");
         assert_eq!(TOKIO_STREAM_WATCH_V0_1_14.range(), "0.1.14-0.1.19");
         assert_eq!(TOKIO_UTIL_REUSABLE_BOX_V0_7_11.range(), "0.7.11-0.7.19");
-        assert_eq!(TOKIO_INTERVAL_TICK_V1_47.range(), "1.47.0-1.53.1");
+        assert_eq!(TOKIO_INTERVAL_TICK_V1_47.range(), "1.47.0-1.53.2");
         // Seven files reviewed at seven releases: every revision of
         // each is listed once.
         assert_eq!(HYPER_H1_CONN_V1_6_0.range(), "1.6.0-1.10.1");
@@ -3609,8 +5240,8 @@ mod tests {
         assert_eq!(HYPER_UTIL_AUTO_CONN_V0_1_10.checksums.len(), 8);
         assert_eq!(DROPSHOT_SERVER_V0_17_0.range(), "0.17.0-0.17.1");
         assert_eq!(DROPSHOT_SERVER_V0_17_0.checksums.len(), 2);
-        assert_eq!(REQWEST_PENDING_REQUEST_V0_12_0.range(), "0.12.0-0.13.2");
-        assert_eq!(REQWEST_PENDING_REQUEST_V0_12_0.checksums.len(), 24);
+        assert_eq!(REQWEST_PENDING_REQUEST_V0_12_0.range(), "0.12.0-0.13.5");
+        assert_eq!(REQWEST_PENDING_REQUEST_V0_12_0.checksums.len(), 27);
         assert_eq!(HTTP_REQUEST_V1_0_0.range(), "1.0.0-1.4.2");
         assert_eq!(HTTP_REQUEST_V1_0_0.checksums.len(), 27);
         assert_eq!(DROPSHOT_HANDLER_V0_17_0.range(), "0.17.0-0.17.1");
@@ -3686,14 +5317,14 @@ mod tests {
             ),
         ];
         for (kind, rule) in kinds {
-            for version in ["1.47.0", "1.47.5", "1.49.0", "1.52.4", "1.53.1", "1.53.9"] {
+            for version in ["1.47.0", "1.47.5", "1.49.0", "1.51.0", "1.52.4", "1.53.2"] {
                 assert_eq!(
                     tokio_state_protocol(kind, Some(&v(version))).map(|p| p.kind),
                     Some(rule),
                     "{kind:?} at {version}"
                 );
             }
-            for version in ["1.46.9", "1.54.0", "2.0.0"] {
+            for version in ["1.46.9", "1.51.6", "1.52.5", "1.53.3", "1.54.0", "2.0.0"] {
                 assert_eq!(
                     tokio_state_protocol(kind, Some(&v(version))),
                     None,
@@ -3712,21 +5343,24 @@ mod tests {
         }
     }
 
-    /// An acquire's owner is named by its module inside the reviewed
-    /// tokio range, floor and ceiling included, and for no version
-    /// outside it or unrecovered.
+    /// An acquire's owner is named by its module at the reviewed tokio
+    /// releases, floor and ceiling included, and for no version outside
+    /// them — an unread patch of a reviewed minor among them — or
+    /// unrecovered.
     #[test]
     fn test_acquire_owners_bind_only_inside_the_reviewed_tokio_range() {
         let v = |s: &str| semver::Version::parse(s).unwrap();
         let lock = "tokio::sync::mutex::{impl#3}::lock::{async_fn_env#0}<u32>";
-        for version in ["1.47.0", "1.49.0", "1.53.0", "1.53.9"] {
+        for version in ["1.47.0", "1.49.0", "1.51.2", "1.53.0", "1.53.2"] {
             assert_eq!(
                 tokio_acquire_owner(lock, Some(&v(version))),
                 Some("tokio::sync::Mutex"),
                 "{version}"
             );
         }
-        for version in ["1.46.9", "1.54.0", "0.47.0", "2.47.0"] {
+        for version in [
+            "1.46.9", "1.51.6", "1.52.5", "1.53.3", "1.54.0", "0.47.0", "2.47.0",
+        ] {
             assert_eq!(
                 tokio_acquire_owner(lock, Some(&v(version))),
                 None,

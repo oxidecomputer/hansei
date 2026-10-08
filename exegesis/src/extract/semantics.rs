@@ -4631,7 +4631,7 @@ impl UnreviewedRelease {
             package: convention.package,
             version: version.clone(),
             newer: side != LayoutSelection::BelowFloor,
-            range: convention.range(),
+            range: convention.releases.range_for(version),
         }
     }
 }
@@ -4817,7 +4817,7 @@ fn layout_release(
             UnreviewedRelease::outside(convention, version, side),
             format!(
                 "{package} {version} is {word} the reviewed range {}",
-                convention.range()
+                convention.releases.range_for(version)
             ),
         ));
     }
@@ -6514,7 +6514,7 @@ fn delegation_origin(
                         "declared in both {} and {}, and {outside} is outside the reviewed range {}",
                         first.0,
                         last.0,
-                        convention.range()
+                        convention.releases.range_for(outside)
                     ),
                 ));
             }
@@ -6533,7 +6533,7 @@ fn delegation_origin(
                 UnreviewedRelease::outside(convention, &version, side),
                 format!(
                     "{package} {version} is {word} the reviewed range {}",
-                    convention.range()
+                    convention.releases.range_for(&version)
                 ),
             ));
         }
@@ -8718,12 +8718,12 @@ mod tests {
             );
             // The release just below the floor: the previous patch, or
             // the previous minor where the floor is a `.0`.
-            let (a, b, c) = convention.floor;
+            let (a, b, c) = convention.releases.floor();
             let below = match c {
                 0 => format!("{a}.{}.0", b - 1),
                 c => format!("{a}.{b}.{}", c - 1),
             };
-            let (x, y, z) = convention.ceiling;
+            let (x, y, z) = convention.releases.ceiling();
             let above = format!("{x}.{y}.{}", z + 1);
             assert!(
                 declined(&[source(&at(&below), None)])
@@ -9938,7 +9938,7 @@ mod tests {
                 "not the tokio crate",
             ),
             (
-                &format!("{ROOT}/tokio-1.53.2/src/time/interval.rs"),
+                &format!("{ROOT}/tokio-1.53.3/src/time/interval.rs"),
                 None,
                 "above the reviewed range",
             ),

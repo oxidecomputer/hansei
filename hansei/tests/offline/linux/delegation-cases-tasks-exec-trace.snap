@@ -65,7 +65,7 @@ task 2008
 #0  future  delegation_cases::Probe<6>
       defined at src/bin/delegation-cases.rs:33 (<no_state>, 3 locals)
 #1  future  Box<delegation_cases::Probe<6>>
-      defined at library/alloc/src/boxed.rs:2458 (<no_state>, 0 locals)
+      defined at library/alloc/src/boxed.rs:2478 (<no_state>, 0 locals)
 #2  future  Pin<Box<Box<delegation_cases::Probe<6>>>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
 

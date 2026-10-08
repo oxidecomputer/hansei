@@ -40,11 +40,24 @@
 //! reports every cell that diverged rather than the first. A cell whose
 //! toolchain is not rustup-installed fails, naming the command that
 //! installs it, rather than skip: a run that skipped cells would pass
-//! without having built them. Run it alone (`cargo test -p
+//! without having built them.
+//!
+//! The cells pin each minor's newest patch. `HANSEI_MATRIX_ALL=1` adds
+//! every other reviewed patch — each tokio patch on the primary
+//! toolchain, each rustc patch with the primary tokio — and holds its
+//! walk, formats and summary reports to its span's pinned cell's
+//! goldens, versions and rustc's ordering of `dyn` bindings aside. Run it alone (`cargo test -p
 //! hansei-runtime --test matrix`), not under a workspace-wide
 //! `cargo test`: the
 //! primary cell shares its fixture dirs with the extraction goldens,
 //! and two test binaries rebuilding one fixture dir race.
+//!
+//! The same run holds every review to its sources at every release it
+//! covers, not only the ones the cells build: each file a review read
+//! must hash to a revision it lists in every crate release and rustc
+//! patch inside its spans, fetched once into `fixtures/sources`. A
+//! further test, which needs no build, holds each reviewed tokio and
+//! rustc span to the newest release the matrix pins in that minor.
 //!
 //! The goldens are the rendering in the Linux test image
 //! (`.github/image/`): blessed there (`test-programs/matrix.sh bless`),
@@ -57,11 +70,14 @@
 
 use exegesis::describe::{describe_debug_format, describe_semantics};
 use exegesis::detect::Family;
+use exegesis::detect::reviewed::{Subject, sources};
+use exegesis::detect::semantics::{RUSTC_RELEASES, Release, Releases, TOKIO_RELEASES};
 use exegesis::extract::{ExtractOptions, extract_file};
 use exegesis::summary::portable_summary;
 use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::testkit::matrix::Matrix;
 use hansei_runtime::tokio::contract::verify_walk_contract;
+use md5::{Digest, Md5};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -133,6 +149,7 @@ fn cells(m: &Matrix) -> Vec<Cell> {
         tokio,
         unstable,
         ct_only,
+        pin: None,
     };
     let mut cells = Vec::new();
     for tokio in &m.tokio.versions {
@@ -155,6 +172,63 @@ fn cells(m: &Matrix) -> Vec<Cell> {
     cells
 }
 
+/// The every-version run's further cells: every reviewed tokio patch
+/// the matrix does not pin, on the primary toolchain, and every
+/// reviewed rustc patch it does not pin, with the primary tokio — each
+/// held to its minor's pinned cell on the same axis. A minor's .0 and
+/// later patches are what deployed targets may still run, so each is
+/// built once; the combinations stay the pins'.
+fn patch_cells(m: &Matrix) -> Vec<Cell> {
+    // A patch's pin is the end of its span, which the matrix pins.
+    let unpinned = |releases: Releases, pins: &[String]| -> Vec<(Release, String)> {
+        releases
+            .0
+            .iter()
+            .flat_map(|&((major, minor, lo), (_, _, hi))| {
+                let pin = format!("{major}.{minor}.{hi}");
+                assert!(pins.contains(&pin), "the matrix does not pin {pin}");
+                (lo..hi).map(move |patch| ((major, minor, patch), pin.clone()))
+            })
+            .collect()
+    };
+    let cell = |toolchain: &str, tokio: &str, pin: &Cell| Cell {
+        toolchain: toolchain.to_owned(),
+        tokio: tokio.to_owned(),
+        unstable: true,
+        ct_only: false,
+        pin: Some(pin.name()),
+    };
+    let pinned = |toolchain: &str, tokio: &str| Cell {
+        toolchain: toolchain.to_owned(),
+        tokio: tokio.to_owned(),
+        unstable: true,
+        ct_only: false,
+        pin: None,
+    };
+    let primary = (&m.primary.toolchain, &m.primary.tokio);
+    let tokio_patches = crate_releases(
+        "tokio",
+        &TOKIO_RELEASES.0.iter().map(|&(_, c)| c).collect::<Vec<_>>(),
+    );
+    let mut cells = Vec::new();
+    for ((major, minor, patch), pin) in unpinned(TOKIO_RELEASES, &m.tokio.versions) {
+        // Only releases crates.io lists: a patch number tokio skipped
+        // has nothing to build.
+        let exists = tokio_patches
+            .iter()
+            .any(|v| (v.major, v.minor, v.patch) == (major, minor, patch));
+        if exists {
+            let version = format!("{major}.{minor}.{patch}");
+            cells.push(cell(primary.0, &version, &pinned(primary.0, &pin)));
+        }
+    }
+    for ((major, minor, patch), pin) in unpinned(RUSTC_RELEASES, &m.toolchain.versions) {
+        let version = format!("{major}.{minor}.{patch}");
+        cells.push(cell(&version, primary.1, &pinned(&pin, primary.1)));
+    }
+    cells
+}
+
 // ---------------------------------------------------------------------------
 // Cells
 // ---------------------------------------------------------------------------
@@ -167,6 +241,10 @@ struct Cell {
     /// only `ct-runtime` compiles, so the cell holds one fixture, and
     /// its goldens pin the multi_thread rows as flavor absences.
     ct_only: bool,
+    /// For a patch the matrix does not pin, built only by the
+    /// every-version run: the pinned cell of its minor, whose goldens
+    /// it is held to in place of goldens of its own.
+    pin: Option<String>,
 }
 
 impl Cell {
@@ -239,9 +317,15 @@ impl Cell {
                 for program in self.programs() {
                     inputs.text(&recipe.inputs(&dir, &matrix, program));
                 }
+                // A derived lockfile comes from the primary one.
+                inputs.file(&dir.join("Cargo.lock"));
                 inputs.finish()
             },
             || {
+                let checked_in = dir.join(format!("locks/tokio-{}.lock", self.tokio));
+                if self.tokio != matrix.primary.tokio && !checked_in.exists() {
+                    derive_lock(&self.tokio, &matrix.primary.toolchain);
+                }
                 // Through bash: a copied tree need not keep the mode bit.
                 let status = Command::new("bash")
                     .arg(dir.join("regen.sh"))
@@ -262,6 +346,471 @@ impl Cell {
                 assert!(status.success(), "regen.sh failed for cell {}", self.name());
             },
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The sources the reviews read
+// ---------------------------------------------------------------------------
+
+/// Where the source check keeps what it fetched: each crate's index
+/// entry and every release it unpacked, and each toolchain's
+/// standard library sources.
+fn sources_dir() -> PathBuf {
+    test_programs_dir().join("fixtures/sources")
+}
+
+/// Run a command, panicking with its name and stderr on failure.
+fn run(cmd: &mut Command) -> Vec<u8> {
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run {cmd:?}: {e}"));
+    assert!(
+        out.status.success(),
+        "{cmd:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
+}
+
+/// crates.io's sparse-index path for a crate.
+fn index_path(name: &str) -> String {
+    match name.len() {
+        1 | 2 => format!("{}/{name}", name.len()),
+        3 => format!("3/{}/{name}", &name[..1]),
+        _ => format!("{}/{}/{name}", &name[..2], &name[2..4]),
+    }
+}
+
+/// Every release of a crate crates.io lists, yanked ones included, less
+/// pre-releases, which no review covers. The index entry is fetched
+/// once and kept; it is fetched again only when it lacks a release the
+/// reviews end a span at, as after a span is raised.
+fn crate_releases(name: &str, ceilings: &[Release]) -> Vec<semver::Version> {
+    let vers = regex::Regex::new(r#""vers":"([^"]+)""#).unwrap();
+    let path = sources_dir().join(format!("index-{name}.json"));
+    let parse = |text: &str| -> Vec<semver::Version> {
+        vers.captures_iter(text)
+            .filter_map(|c| semver::Version::parse(&c[1]).ok())
+            .filter(|v| v.pre.is_empty())
+            .collect()
+    };
+    let cached = std::fs::read_to_string(&path).unwrap_or_default();
+    let has = |releases: &[semver::Version]| {
+        ceilings.iter().all(|&(a, b, c)| {
+            releases
+                .iter()
+                .any(|v| (v.major, v.minor, v.patch) == (a, b, c))
+        })
+    };
+    let releases = parse(&cached);
+    if !cached.is_empty() && has(&releases) {
+        return releases;
+    }
+    let url = format!("https://index.crates.io/{}", index_path(name));
+    let text = String::from_utf8(run(Command::new("curl").args(["-fsSL", &url])))
+        .expect("the index is UTF-8");
+    std::fs::create_dir_all(sources_dir()).expect("failed to create the sources dir");
+    std::fs::write(&path, &text).expect("failed to cache the index entry");
+    parse(&text)
+}
+
+/// A crate release's sources: cargo's unpacked registry copy when it
+/// has one, else the release fetched from crates.io once and kept.
+fn crate_sources(name: &str, version: &semver::Version) -> PathBuf {
+    if let Some(root) = crate_root(name, version) {
+        return root;
+    }
+    let crates = sources_dir().join("crates");
+    let root = crates.join(format!("{name}-{version}"));
+    if !root.is_dir() {
+        std::fs::create_dir_all(&crates).expect("failed to create the crate cache");
+        let url = format!("https://static.crates.io/crates/{name}/{name}-{version}.crate");
+        let tarball = crates.join(format!("{name}-{version}.crate"));
+        run(Command::new("curl")
+            .args(["-fsSL", "-o"])
+            .arg(&tarball)
+            .arg(&url));
+        run(Command::new("tar")
+            .arg("-xzf")
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&crates));
+        std::fs::remove_file(&tarball).expect("failed to remove the tarball");
+    }
+    root
+}
+
+/// A rustc release's standard library sources: an installed
+/// toolchain's `rust-src` when it has one, else the release's `rust-src`
+/// fetched from the Rust distribution once and kept.
+fn rustc_sources(version: &semver::Version) -> PathBuf {
+    let installed = toolchain_installed(&version.to_string())
+        .then(|| rust_src(&version.to_string()))
+        .filter(|root| root.is_dir());
+    if let Some(root) = installed {
+        return root;
+    }
+    let dir = sources_dir().join(format!("rust-src-{version}"));
+    let root = dir.join(format!("rust-src-{version}/rust-src/lib/rustlib/src/rust"));
+    if !root.is_dir() {
+        std::fs::create_dir_all(&dir).expect("failed to create the rust-src cache");
+        let url = format!("https://static.rust-lang.org/dist/rust-src-{version}.tar.xz");
+        let tarball = dir.join("rust-src.tar.xz");
+        run(Command::new("curl")
+            .args(["-fsSL", "-o"])
+            .arg(&tarball)
+            .arg(&url));
+        run(Command::new("tar")
+            .arg("-xJf")
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&dir));
+        std::fs::remove_file(&tarball).expect("failed to remove the tarball");
+    }
+    root
+}
+
+/// The root of a toolchain's `rust-src`, the standard library sources
+/// as the toolchain ships them.
+fn rust_src(toolchain: &str) -> PathBuf {
+    let out = Command::new("rustup")
+        .args(["run", toolchain, "rustc", "--print", "sysroot"])
+        .output()
+        .expect("failed to run rustc --print sysroot");
+    let sysroot = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    PathBuf::from(sysroot).join("lib/rustlib/src/rust")
+}
+
+/// Where cargo unpacked a registry release: `<CARGO_HOME>/registry/src/
+/// <index>/<package>-<version>`, in whichever index holds it.
+fn crate_root(package: &str, version: &semver::Version) -> Option<PathBuf> {
+    let home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cargo")))?;
+    std::fs::read_dir(home.join("registry/src"))
+        .ok()?
+        .flatten()
+        .map(|index| index.path().join(format!("{package}-{version}")))
+        .find(|dir| dir.is_dir())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Every review holds at every release it covers: each file it read
+/// must hash, in every release inside its spans, to a revision it lists
+/// — so a checksum copied wrong, or a release whose file changed with
+/// nobody reading it, fails here rather than vouching for code no one
+/// saw. A crate's releases are what crates.io lists inside the spans;
+/// rustc's are every patch of each span, which Rust numbers without
+/// gaps. A file absent from a release is the review's to explain, not
+/// a mismatch; a review none of whose files a release ships is one.
+/// Part of the matrix run, and like it opt-in: the first run fetches
+/// every release's sources, which later runs reuse.
+#[test]
+fn test_every_reviewed_release_matches_its_checksums() {
+    if std::env::var_os("HANSEI_MATRIX").is_none() {
+        eprintln!("SKIP: set HANSEI_MATRIX=1 to check the reviews' sources");
+        return;
+    }
+    let mut failures = Vec::new();
+    let mut checked = 0usize;
+    for review in sources() {
+        if review.checksums.is_empty() {
+            continue;
+        }
+        let ceilings: Vec<Release> = review.releases.0.iter().map(|&(_, c)| c).collect();
+        let releases: Vec<(String, semver::Version, PathBuf)> = match review.subject {
+            Subject::Rustc => review
+                .releases
+                .0
+                .iter()
+                .flat_map(|&((major, minor, lo), (_, _, hi))| {
+                    (lo..=hi).map(move |patch| semver::Version::new(major, minor, patch))
+                })
+                .map(|v| ("rustc".to_owned(), v.clone(), rustc_sources(&v)))
+                .collect(),
+            Subject::Crate(name) => crate_releases(name, &ceilings)
+                .into_iter()
+                .filter(|v| review.releases.covers(v))
+                .map(|v| (name.to_owned(), v.clone(), crate_sources(name, &v)))
+                .collect(),
+        };
+        for &(a, b, c) in &ceilings {
+            assert!(
+                releases
+                    .iter()
+                    .any(|(_, v, _)| (v.major, v.minor, v.patch) == (a, b, c)),
+                "{}: no release {a}.{b}.{c} to check, though a span ends there",
+                review.family
+            );
+        }
+        let files: BTreeSet<&str> = review.checksums.iter().map(|&(f, _)| f).collect();
+        for (subject, version, root) in releases {
+            checked += 1;
+            let mut shipped = 0;
+            for &file in &files {
+                let Ok(bytes) = std::fs::read(root.join(file)) else {
+                    continue;
+                };
+                shipped += 1;
+                let actual: [u8; 16] = Md5::digest(&bytes).into();
+                let reviewed = review
+                    .checksums
+                    .iter()
+                    .any(|&(f, md5)| f == file && md5 == actual);
+                if !reviewed {
+                    failures.push(format!(
+                        "{subject} {version}'s {file} hashes to {}, not a revision {} lists",
+                        hex(&actual),
+                        review.family
+                    ));
+                }
+            }
+            if shipped == 0 {
+                failures.push(format!(
+                    "{subject} {version} ships none of the files {} read",
+                    review.family
+                ));
+            }
+        }
+    }
+    eprintln!("checked {checked} reviewed releases");
+    assert!(
+        failures.is_empty(),
+        "{} reviewed source(s) do not match their releases:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
+}
+
+/// The tokio and rustc releases the reviews read end exactly at the
+/// releases the matrix pins: each span at a pin, each pin at a span.
+/// A patch onboarded into the matrix raises its span in the same
+/// change, no span reaches a release the matrix never built, and a
+/// minor split where a layout family changes inside it — tokio 1.52,
+/// with 1.52.0 a family of its own — is two spans and two pins.
+#[test]
+fn test_reviewed_releases_end_at_the_matrix_pins() {
+    let m = Matrix::load();
+    let check = |what: &str, releases: Releases, versions: &[String]| {
+        let ends: BTreeSet<Release> = releases.0.iter().map(|&(_, ceiling)| ceiling).collect();
+        let pins: BTreeSet<Release> = versions
+            .iter()
+            .map(|v| {
+                let v = semver::Version::parse(v).expect("a matrix version");
+                (v.major, v.minor, v.patch)
+            })
+            .collect();
+        assert_eq!(
+            ends, pins,
+            "the reviewed {what} releases ({releases}) and test-programs/matrix.toml's \
+             {what} versions disagree: onboard and review a release in one change"
+        );
+    };
+    check("tokio", TOKIO_RELEASES, &m.tokio.versions);
+    check("rustc", RUSTC_RELEASES, &m.toolchain.versions);
+}
+
+/// Derive a lockfile for a tokio patch the matrix does not pin, as
+/// `matrix.sh add` derives a pinned one: the primary lock with tokio
+/// moved to the patch, so only tokio and its dependents move. It lands
+/// in `fixtures/locks`, where `regen.sh` looks for an unpinned patch.
+fn derive_lock(tokio: &str, toolchain: &str) {
+    let dir = test_programs_dir();
+    let locks = dir.join("fixtures/locks");
+    let scratch = locks.join(format!("derive-{tokio}"));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("failed to create the derivation dir");
+    run(Command::new("cp")
+        .arg("-R")
+        .arg(dir.join("Cargo.toml"))
+        .arg(dir.join("Cargo.lock"))
+        .arg(dir.join("src"))
+        .arg(&scratch));
+    run(Command::new("cargo")
+        .arg(format!("+{toolchain}"))
+        .args([
+            "update",
+            "-q",
+            "-p",
+            "tokio",
+            "--precise",
+            tokio,
+            "--manifest-path",
+        ])
+        .arg(scratch.join("Cargo.toml")));
+    std::fs::copy(
+        scratch.join("Cargo.lock"),
+        locks.join(format!("tokio-{tokio}.lock")),
+    )
+    .expect("failed to keep the derived lockfile");
+    std::fs::remove_dir_all(&scratch).expect("failed to remove the derivation dir");
+}
+
+/// A report, made comparable across two patches of one minor: the
+/// tokio patch written as the pin's, every rustc producer string and
+/// version header one placeholder, every declaration line a
+/// placeholder, and each generic argument list's associated-type
+/// bindings sorted. The fixtures are the same source in both builds,
+/// so a declaration line that moves is a dependency's — tokio's `join!`
+/// moved two lines between 1.47.1 and 1.47.2 — and says nothing of a
+/// layout; and rustc names a `dyn Trait<A, X=…, Y=…>` with its bindings
+/// in an order that varies between point releases, though the type is
+/// the same.
+fn comparable(report: &str, tokio: &str, pin_tokio: &str) -> String {
+    let rustc =
+        regex::Regex::new(r"rustc( version)? \d+\.\d+\.\d+(-\S+)? \([0-9a-f]+ [0-9-]+\)").unwrap();
+    let line = regex::Regex::new(r"@ (\S+\.rs):\d+").unwrap();
+    let report = report
+        .replace(&format!("tokio {tokio}"), &format!("tokio {pin_tokio}"))
+        .replace(&format!("tokio-{tokio}"), &format!("tokio-{pin_tokio}"));
+    let report = rustc.replace_all(&report, "rustc RUSTC");
+    let report = line.replace_all(&report, "@ $1:N");
+    sorted_bindings(&report)
+}
+
+/// Sort the `Name=…` bindings of every generic argument list, innermost
+/// first, leaving positional arguments in place ahead of them. A `>`
+/// that ends `->` closes nothing.
+fn sorted_bindings(text: &str) -> String {
+    let binding = regex::Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*=").unwrap();
+    let mut stack: Vec<String> = vec![String::new()];
+    let mut prev = '\0';
+    for c in text.chars() {
+        match c {
+            '<' => stack.push(String::new()),
+            '>' if prev != '-' && stack.len() > 1 => {
+                let args = stack.pop().expect("an open list");
+                let mut parts = Vec::new();
+                let (mut depth, mut start) = (0i32, 0usize);
+                for (i, ch) in args.char_indices() {
+                    match ch {
+                        '(' | '[' => depth += 1,
+                        ')' | ']' => depth -= 1,
+                        ',' if depth == 0 => {
+                            parts.push(args[start..i].trim().to_owned());
+                            start = i + 1;
+                        }
+                        _ => {}
+                    }
+                }
+                parts.push(args[start..].trim().to_owned());
+                let (mut bound, positional): (Vec<String>, Vec<String>) =
+                    parts.into_iter().partition(|p| binding.is_match(p));
+                bound.sort();
+                let joined = positional.into_iter().chain(bound).collect::<Vec<_>>();
+                let top = stack.last_mut().expect("an enclosing text");
+                top.push('<');
+                top.push_str(&joined.join(", "));
+                top.push('>');
+            }
+            _ => stack.last_mut().expect("an enclosing text").push(c),
+        }
+        prev = c;
+    }
+    // An unbalanced `<` (a comparison in prose) is kept as written.
+    let mut out = stack.remove(0);
+    for rest in stack {
+        out.push('<');
+        out.push_str(&rest);
+    }
+    out
+}
+
+/// The body of a checked-in golden: what follows insta's header.
+fn golden_body(cell: &str, name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/matrix")
+        .join(cell)
+        .join(format!("{name}.snap"));
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let mut parts = text.splitn(3, "---\n");
+    let _ = (parts.next(), parts.next());
+    parts.next().unwrap_or_default().to_owned()
+}
+
+/// Every type name the cell's bundles declare, made comparable like the
+/// reports, so a format line can be told apart: a type the build lacks
+/// from a type a detector declined.
+fn declared_types(bundles: &[(&str, Bundle)]) -> BTreeSet<String> {
+    bundles
+        .iter()
+        .flat_map(|(_, bundle)| {
+            bundle
+                .types
+                .name_index
+                .iter()
+                .filter_map(|&(name, _)| bundle.strings.get(name))
+                .map(sorted_bindings)
+        })
+        .collect()
+}
+
+/// Hold an every-version cell's report to its pinned cell's golden,
+/// both made comparable, and record a mismatch with its first
+/// differing lines. The walk and summary must match line for line. The
+/// formats catalog is a set: every line of the pin's must be the
+/// patch's too, but only for a type the patch's bundles declare — which
+/// types a build instantiates moves with the code, while a type present
+/// in both and formatted differently, or not at all, is the drift this
+/// run exists to catch — and a type only the patch formats is no
+/// finding.
+fn check_against_pin(
+    cell: &Cell,
+    pin: &str,
+    name: &str,
+    actual: &str,
+    pin_tokio: &str,
+    declared: &BTreeSet<String>,
+    failures: &mut Vec<String>,
+) {
+    let theirs = comparable(&golden_body(pin, name), pin_tokio, pin_tokio);
+    let ours = comparable(actual, &cell.tokio, pin_tokio);
+    // Both sides as compared, to diff by hand.
+    let out = test_programs_dir()
+        .join("fixtures/every-version")
+        .join(cell.name());
+    std::fs::create_dir_all(&out).expect("failed to create the comparison dir");
+    std::fs::write(out.join(format!("{name}.ours")), &ours).expect("failed to write ours");
+    std::fs::write(out.join(format!("{name}.pin")), &theirs).expect("failed to write the pin's");
+    // insta keeps a golden without its final newline.
+    let (theirs, ours) = (theirs.trim_end(), ours.trim_end());
+    let differing: Vec<String> = if name == "formats" {
+        let ours: BTreeSet<&str> = ours.lines().collect();
+        theirs
+            .lines()
+            .filter(|l| !ours.contains(l))
+            .filter(|l| match l.split_once(" :: ") {
+                Some((ty, _)) => declared.contains(ty),
+                None => true,
+            })
+            .map(|l| format!("- {l}"))
+            .collect()
+    } else if theirs != ours {
+        let (t, o): (Vec<&str>, Vec<&str>) = (theirs.lines().collect(), ours.lines().collect());
+        let at = t
+            .iter()
+            .zip(&o)
+            .position(|(a, b)| a != b)
+            .unwrap_or(t.len().min(o.len()));
+        vec![
+            format!("- {}", t.get(at).unwrap_or(&"<end>")),
+            format!("+ {}", o.get(at).unwrap_or(&"<end>")),
+        ]
+    } else {
+        Vec::new()
+    };
+    if !differing.is_empty() {
+        let shown: Vec<String> = differing.into_iter().take(6).collect();
+        failures.push(format!(
+            "{} {name} differs from {pin}'s:\n    {}",
+            cell.name(),
+            shown.join("\n    ")
+        ));
     }
 }
 
@@ -434,9 +983,17 @@ fn test_matrix() {
     };
     let matrix = Matrix::load();
 
+    // HANSEI_MATRIX_ALL=1 adds every reviewed patch the matrix does not
+    // pin, each held to its minor's pinned cell.
+    let every = std::env::var_os("HANSEI_MATRIX_ALL").is_some();
+    let mut all = cells(&matrix);
+    if every {
+        all.extend(patch_cells(&matrix));
+    }
+
     let mut failures = Vec::new();
     let mut matched = 0usize;
-    for cell in cells(&matrix) {
+    for cell in all {
         let name = cell.name();
         if filter != "1" && !name.contains(&filter) {
             continue;
@@ -480,6 +1037,34 @@ fn test_matrix() {
             })
             .collect();
 
+        if let Some(pin) = &cell.pin {
+            // The layout contract only: the semantic catalog moves with
+            // codegen between patches (which futures keep a poll
+            // symbol, rule order), so it is pinned per minor alone.
+            let pin_tokio = pin
+                .strip_prefix("rust-")
+                .and_then(|rest| rest.split("-tokio-").nth(1))
+                .and_then(|rest| rest.split('-').next())
+                .expect("a cell name");
+            let declared = declared_types(&bundles);
+            for (report, actual) in [
+                ("walk", walk_report(&bundles)),
+                ("formats", formats_report(&bundles)),
+                ("summary", summary_report(&bundles)),
+            ] {
+                check_against_pin(
+                    &cell,
+                    pin,
+                    report,
+                    &actual,
+                    pin_tokio,
+                    &declared,
+                    &mut failures,
+                );
+            }
+            eprintln!("matrix: checked cell {name} against {pin}");
+            continue;
+        }
         check_golden(&name, "walk", &walk_report(&bundles), &mut failures);
         check_golden(&name, "formats", &formats_report(&bundles), &mut failures);
         check_golden(&name, "summary", &summary_report(&bundles), &mut failures);

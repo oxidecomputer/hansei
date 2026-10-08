@@ -189,7 +189,9 @@ pub fn classify(role: WalkRole) -> Class {
         // the spawn_blocking cells as rows. A bundle without them
         // still lists every scheduler-owned task.
         BlockingQueue | BlockingQueueHead | BlockingQueueLen | BlockingQueueBuf
-        | BlockingQueueCap | BlockingTaskHeader => Class::Optional,
+        | BlockingQueueCap | BlockingTaskHeader | BlockingQueueShards | BlockingShardQueue => {
+            Class::Optional
+        }
         // The pool's threads, by the std id of each: what names an lwp
         // the pool's in `threads`. Without them those rows say only
         // that the thread entered the runtime.

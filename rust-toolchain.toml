@@ -1,12 +1,13 @@
-# The workspace builds with the fixtures' primary toolchain
-# (test-programs/matrix.toml), so hansei and the programs it is tested
-# against come from one compiler. Advancing one means advancing both in
-# the same commit; a testrun test fails while they differ.
+# The toolchain hansei itself builds with. It is independent of the
+# toolchains the fixture programs build with (test-programs/matrix.toml),
+# which are the compilers whose output hansei is tested against and
+# which regen.sh selects by name; nothing hansei reads depends on the
+# compiler that built it.
 #
 # The minimal profile and the two components the lint job runs: a CI
 # host installs this toolchain fresh on every run, and the default
 # profile adds only documentation, which nothing here reads.
 [toolchain]
-channel = "1.98.1"
+channel = "1.99.0"
 profile = "minimal"
 components = ["rustfmt", "clippy"]

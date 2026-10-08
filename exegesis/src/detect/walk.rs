@@ -27,7 +27,7 @@
 use super::ReachStep::{Deref, FindParam, Named, PeelTo, Variant};
 use super::{
     Family, Reach, Row, WORD, aggregate_members, raw_variants, reach, step_into, tokio_v1_47,
-    tokio_v1_49, tokio_v1_53, trace, type_label,
+    tokio_v1_49, tokio_v1_52_0, tokio_v1_53, trace, type_label,
 };
 use crate::bundle::{
     BundleTypeId, Selector, Shape, Step, StringInterner, WalkBinding, WalkOutcome, WalkRole,
@@ -225,6 +225,11 @@ enum WalkRoot {
     /// The read side iterates either with the same `elements()` call, so
     /// both root a child row here.
     Elem(WalkRole),
+    /// Wherever any of these roles' bindings landed: one value a layout
+    /// family reaches by a different route — the blocking pool's
+    /// `VecDeque`, its one queue in most releases and each shard's in
+    /// 1.52.0. Absent only if every one of them is; broken if any is.
+    EndOfAny(&'static [WalkRole]),
 }
 
 /// The ordered alternative spellings of one role, produced on demand.
@@ -302,15 +307,41 @@ static SLEEP_TIMER_STATE_SPELLINGS: [(Family, Spellings); 3] = [
 /// flavor in 1.49, so the chain from a scheduler handle to the timer
 /// wheel's levels crosses one step more from that release on. Two entries
 /// rather than three because 1.53 left the driver chain alone and a
-/// versioned row takes the highest floor at or below the target — a
-/// `v1_53` entry here would only restate `v1_49`'s spelling, and a future
-/// release that does move the chain is the one that earns a third.
-/// Everything below this row — `Level`, its slots, and the `TimerShared`
-/// nodes they link — has held identically across the supported range.
+/// versioned row falls back along the family's lineage — a `v1_53` entry
+/// here would only restate `v1_49`'s route, and a future release that
+/// does move the chain is the one that earns a third. Everything below
+/// this row — `Level`, its slots, and the `TimerShared` nodes they link —
+/// has held identically across the supported range.
 static WHEEL_LEVELS_SPELLINGS: [(Family, Spellings); 2] = [
     (Family::V1_47, tokio_v1_47::wheel_levels_walk),
     (Family::V1_49, tokio_v1_49::wheel_levels_walk),
 ];
+
+/// The blocking pool's queue: one `VecDeque` in the pool's `Shared` in
+/// every release but 1.52.0, whose `ShardedQueue` moved it out — so no
+/// such member there, and the shards row below instead.
+static BLOCKING_QUEUE_SPELLINGS: [(Family, Spellings); 2] = [
+    (Family::V1_47, || pool_shared("queue")),
+    (Family::V1_52_0, absent_here),
+];
+
+/// 1.52.0's sharded blocking queue, which no other release has.
+static BLOCKING_QUEUE_SHARDS_SPELLINGS: [(Family, Spellings); 2] = [
+    (Family::V1_47, absent_here),
+    (Family::V1_52_0, tokio_v1_52_0::blocking_queue_shards_walk),
+];
+
+/// Where the blocking pool keeps a `VecDeque` of tasks: its one queue,
+/// or each of 1.52.0's shards — whichever the family's layout has.
+const BLOCKING_QUEUES: &[WalkRole] = &[WalkRole::BlockingQueue, WalkRole::BlockingShardQueue];
+
+/// A family entry for a path its layout does not have at all: no
+/// route, which the binder records absent by the version — as a
+/// release that never had a member, not one whose member moved
+/// unnoticed.
+fn absent_here() -> Vec<Reach<'static>> {
+    Vec::new()
+}
 
 /// Every walk declaration, in [`WalkRole::ALL`] order — the report's
 /// order, which a test pins.
@@ -1426,32 +1457,51 @@ fn decls() -> Vec<WalkDecl> {
             fd_of_resource,
         ),
         // The pool's queue itself: the spawn_blocking cells no task
-        // list carries.
+        // list carries. One `VecDeque` in the pool's `Shared` in every
+        // release but 1.52.0, whose sixteen shards
+        // `BlockingQueueShards` reaches instead.
+        WalkDecl {
+            role: WalkRole::BlockingQueue,
+            root: WalkRoot::AnyHandle,
+            terminal: Aggregate,
+            spellings: Row::Versioned(&BLOCKING_QUEUE_SPELLINGS),
+            needs: None,
+        },
+        // tokio 1.52.0's sharded blocking queue: the shards on the
+        // pool's `Inner`, then each shard's `VecDeque`.
+        WalkDecl {
+            role: WalkRole::BlockingQueueShards,
+            root: WalkRoot::AnyHandle,
+            terminal: Array,
+            spellings: Row::Versioned(&BLOCKING_QUEUE_SHARDS_SPELLINGS),
+            needs: None,
+        },
         decl(
-            WalkRole::BlockingQueue,
-            WalkRoot::AnyHandle,
+            WalkRole::BlockingShardQueue,
+            Elem(WalkRole::BlockingQueueShards),
             Aggregate,
-            || pool_shared("queue"),
+            tokio_v1_52_0::shard_queue_walk,
         ),
         // The VecDeque's ring: head index, length, buffer pointer and
-        // capacity. The buffer pointer is named the whole way — the
-        // capacity shares offset zero, so a shape peel cannot pick the
-        // pointer out.
+        // capacity, wherever the pool keeps one — its one queue, or each
+        // of 1.52.0's shards. The buffer pointer is named the whole way
+        // — the capacity shares offset zero, so a shape peel cannot pick
+        // the pointer out.
         decl(
             WalkRole::BlockingQueueHead,
-            End(WalkRole::BlockingQueue),
+            WalkRoot::EndOfAny(BLOCKING_QUEUES),
             Word,
             || vec![reach![Named("head"), PeelTo(WORD)]],
         ),
         decl(
             WalkRole::BlockingQueueLen,
-            End(WalkRole::BlockingQueue),
+            WalkRoot::EndOfAny(BLOCKING_QUEUES),
             Word,
             || vec![reach![Named("len")]],
         ),
         decl(
             WalkRole::BlockingQueueBuf,
-            End(WalkRole::BlockingQueue),
+            WalkRoot::EndOfAny(BLOCKING_QUEUES),
             Pointer,
             || {
                 vec![reach![
@@ -1464,7 +1514,7 @@ fn decls() -> Vec<WalkDecl> {
         ),
         decl(
             WalkRole::BlockingQueueCap,
-            End(WalkRole::BlockingQueue),
+            WalkRoot::EndOfAny(BLOCKING_QUEUES),
             Word,
             || {
                 vec![reach![
@@ -2346,6 +2396,20 @@ fn bind_decl(
         trace.push(format!("family {} selected", family.name()));
     }
     let alts = spellings();
+    // A family whose layout has no such path at all declares it with no
+    // route (`absent_here`): absent by the version, not broken.
+    if alts.is_empty() {
+        let name = family.map_or("all", Family::name);
+        let reason = format!("family {name} lays this out otherwise");
+        trace.push(reason.clone());
+        return (
+            unbound(WalkOutcome::Absent {
+                reason: reason.clone(),
+            }),
+            Chained::Absent(reason),
+            trace,
+        );
+    }
 
     // Try the alternatives in order against every root; the first whose
     // spelling matches binds, and every root must bind it identically —
@@ -2637,6 +2701,29 @@ fn resolve_root(
                 parent
             )]),
         },
+        WalkRoot::EndOfAny(parents) => {
+            let mut types = Vec::new();
+            let mut notes = Vec::new();
+            let mut absent = Vec::new();
+            for parent in *parents {
+                match resolve_root(em, roots, chained, &WalkRoot::End(*parent)) {
+                    Roots::Types {
+                        types: landed,
+                        note,
+                    } => {
+                        types.extend(landed);
+                        notes.extend(note);
+                    }
+                    Roots::Absent(reason) => absent.push(reason),
+                    broken @ Roots::Broken(_) => return broken,
+                }
+            }
+            if types.is_empty() {
+                return Roots::Absent(absent.join("; "));
+            }
+            let note = (!notes.is_empty()).then(|| notes.join("; "));
+            Roots::Types { types, note }
+        }
         WalkRoot::Pointee(parent) => {
             match resolve_root(em, roots, chained, &WalkRoot::End(*parent)) {
                 Roots::Types { types, note } => {
@@ -2811,6 +2898,9 @@ pub fn leaf_rooted(role: WalkRole) -> bool {
             WalkRoot::End(parent) | WalkRoot::Pointee(parent) | WalkRoot::Elem(parent) => {
                 rooted.get(&parent).copied().unwrap_or(false)
             }
+            WalkRoot::EndOfAny(parents) => parents
+                .iter()
+                .any(|parent| rooted.get(parent).copied().unwrap_or(false)),
         };
         rooted.insert(decl.role, is_leaf);
     }

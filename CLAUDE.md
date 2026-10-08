@@ -119,13 +119,18 @@ a respelled member, an added wrapper, a full restructure — gets **distinct
 code covering a version range**, never an ordered fallback that would let
 one spelling bind on a version it was not written for: a `Family`
 (`detect/mod.rs`) names the range by its floor (`v1_47` covers 1.47–1.48,
-`v1_49` covers 1.49–1.52, `v1_53` from 1.53), a `tokio_v<floor>.rs` module
+`v1_49` covers 1.49–1.51 and 1.52.1–1.52, `v1_52_0` covers 1.52.0 alone,
+`v1_53` from 1.53), read at patch granularity: a release a later patch
+reverts is a family of its own between two ranges of its parent's
+(`Family::RANGES`). A `tokio_v<floor>.rs` module
 holds *only* the detectors that moved (a family whose layouts are an older
 family's plus a respelling declares its own spellings and reuses the older
 module's builders, as `tokio_v1_49.rs` does), and the dispatch row lists
-one detector per family. The tokio version recovered from the target's
-DWARF selects the family once per target: the highest floor at or below
-it, the oldest family for anything below every floor, and the newest for
+one detector per family; a row a family has no entry in falls back along
+the family's lineage (`Family::parent`), so a branch family's entry never
+serves a later release. The tokio version recovered from the target's
+DWARF selects the family once per target: the range holding it, the
+oldest family for anything below every floor, and the newest for
 anything newer or unrecovered (refused without `--allow-unsupported`
 when unrecovered and a versioned row actually ran, as is a version
 outside any supported range). Ordered alternatives inside a detector are
@@ -305,6 +310,10 @@ check:
     (any other value filters cells), **alone, not under a workspace-wide
     run** — the primary cell shares fixture dirs with the extraction
     goldens. A cell whose toolchain is missing fails.
+  - The cells pin each minor's newest patch; `HANSEI_MATRIX_ALL=1` also
+    builds every earlier reviewed patch and holds its layout reports to
+    its span's pinned cell. The same run checks every reviewed release's
+    sources against the reviews' checksums (see `matrix.rs`).
   - CI runs it only when the `matrix` workflow is dispatched by hand. A
     cold run is ~6 minutes on 32 cores, most of an hour on a runner.
   - Onboarding or retiring a version is the `onboard-tokio-release` skill
@@ -357,7 +366,7 @@ of the real detection path, and they double as a toolchain/DWARF-drift
 canary because every fixture is rebuilt from source.
 
 - **Running:** `cargo nextest run -p exegesis --test golden`. Fixtures are built on
-  demand by `test-programs/regen.sh` with the pinned toolchain (`1.98.1`).
+  demand by `test-programs/regen.sh` with the pinned toolchain (`1.99.0`).
   That default invocation builds the *primary* matrix cell — the tokio
   version pinned by `test-programs/Cargo.lock`; `regen.sh` can also build
   other cells (`--tokio`/`--toolchain`/`--no-unstable`, `--ct-only` for
@@ -367,7 +376,7 @@ canary because every fixture is rebuilt from source.
   lockfiles under `test-programs/locks/`. If
   that toolchain is not installed the affected cases **skip with a message**
   rather than fail — so a green run can mean "verified" *or* "skipped
-  everything." Install it (`rustup toolchain install 1.98.1`) before trusting a
+  everything." Install it (`rustup toolchain install 1.99.0`) before trusting a
   pass.
 - **Regenerating expectations:** after an intended change to extraction output,
   re-bless with `INSTA_UPDATE=always cargo nextest run -p exegesis --test golden`,

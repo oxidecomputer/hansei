@@ -3,9 +3,9 @@ source: hansei/src/offline.rs
 description: "`futures` over illumos/http-conns"
 ---
 ADDR  TASK  HELD IN  STATE  WAITING ON  ARMED  TYPE
-0xA1  2003  frame 1, `self`  —  futures_channel::lock::Lock  yes  future futures_channel::oneshot::Receiver<core::convert::Infallible>
-0xA2  2003  frame 1, `sleep`  —  timer  yes  future hyper_util::rt::tokio::TokioSleep
-0xA3  2003  frame 1, `on_pool_drop`  —  futures_channel::lock::Lock  yes  future futures_channel::oneshot::Receiver<core::convert::Infallible>
+0xA1  2002  frame 1, `self`  —  futures_channel::lock::Lock  yes  future futures_channel::oneshot::Receiver<core::convert::Infallible>
+0xA2  2002  frame 1, `sleep`  —  timer  yes  future hyper_util::rt::tokio::TokioSleep
+0xA3  2002  frame 1, `on_pool_drop`  —  futures_channel::lock::Lock  yes  future futures_channel::oneshot::Receiver<core::convert::Infallible>
 0xA4  2004  frame 0, `conn`  —  timer  yes  future hyper_util::rt::tokio::TokioSleep
 0xA5  2007  frame 0, `read_version`  —  unarmed: unknown at hyper_util::server::conn::auto::ReadVersion  no  future hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
 0xA6  2008  frame 0, `conn`  —  timer  yes  future hyper_util::rt::tokio::TokioSleep

@@ -104,6 +104,9 @@ jobs:
         with:
           image: ${{ steps.image.outputs.image }}
 
+      - name: Fixture toolchain
+        run: .github/scripts/in-image.sh .github/scripts/fixture-toolchain.sh
+
       # The suite's build builds the fixture example with it. `cargo run
       # -p hansei-runtime --example` would resolve features for that
       # one package and compile the workspace a second time.
@@ -177,6 +180,9 @@ jobs:
       - uses: ./.github/actions/macos-setup
         with:
           save: "true"
+
+      - name: Fixture toolchain
+        run: .github/scripts/fixture-toolchain.sh
 
       # Before any cores arrive: the Mach-O fixture builds and the
       # bundles extracted from them.
