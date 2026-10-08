@@ -170,6 +170,7 @@ unsafe extern "C" {
     pub fn mdb_object_iter(cb: mdb_object_cb_t, data: *mut c_void) -> c_int;
     pub fn mdb_get_xdata(name: *const c_char, buf: *mut c_void, nbytes: usize) -> isize;
     pub fn mdb_thread_name(tid: usize, buf: *mut c_char, bufsize: usize) -> c_int;
+    pub fn mdb_getareg(tid: usize, rname: *const c_char, rp: *mut u64) -> c_int;
 
     pub fn Pmapping_iter(p: *mut c_void, func: proc_map_f, cd: *mut c_void) -> c_int;
 }

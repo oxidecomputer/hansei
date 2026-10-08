@@ -259,6 +259,30 @@ pub unsafe extern "C" fn mdb_thread_name(tid: usize, buf: *mut c_char, size: usi
     0
 }
 
+/// A register of a thread. Thread 1 is the first lwp the core lists,
+/// standing in for illumos's main thread, whose lwp id is always 1.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mdb_getareg(tid: usize, name: *const c_char, out: *mut u64) -> c_int {
+    let Ok(lwps) = core().lwps() else {
+        return -1;
+    };
+    let lwp = lwps
+        .iter()
+        .find(|l| l.tid as usize == tid)
+        .or_else(|| (tid == 1).then(|| lwps.first()).flatten());
+    let Some(lwp) = lwp else {
+        return -1;
+    };
+    let value = match unsafe { CStr::from_ptr(name) }.to_bytes() {
+        b"rip" => lwp.regs.rip,
+        b"rbp" => lwp.regs.rbp,
+        b"rsp" => lwp.regs.rsp,
+        _ => return -1,
+    };
+    unsafe { *out = value };
+    0
+}
+
 /// illumos's `sizeof (psinfo_t)` and `pr_psargs`, for the one field the
 /// module reads.
 const PSINFO_LEN: usize = 416;

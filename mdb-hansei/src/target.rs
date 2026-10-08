@@ -348,7 +348,7 @@ fn thread_name(tid: u32) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-fn loaded_objects() -> Vec<Object> {
+pub(crate) fn loaded_objects() -> Vec<Object> {
     unsafe extern "C" fn cb(obj: *mut mdb_object_t, data: *mut c_void) -> c_int {
         let out = unsafe { &mut *data.cast::<Vec<Object>>() };
         let obj = unsafe { &*obj };

@@ -11,8 +11,10 @@ description = "An mdb module (dmod) running hansei's tokio analysis inside mdb, 
 crate-type = ["cdylib"]
 
 [dependencies]
+addr2line = { workspace = true }
 anyhow = { workspace = true }
 hansei = { workspace = true }
 hansei-bundle = { workspace = true }
+object = { workspace = true }
 proc = { workspace = true }
 rayon = { workspace = true }

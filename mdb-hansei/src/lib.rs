@@ -22,6 +22,7 @@
 //! since is a different target: `::tokio_attach` again.
 
 mod ffi;
+mod source;
 mod target;
 #[cfg(not(target_os = "illumos"))]
 mod testhost;
@@ -50,7 +51,7 @@ use std::path::PathBuf;
 // borrow: every dcmd computes its whole answer first, lets go of the
 // session, and only then prints.
 
-fn print(text: &str) {
+pub(crate) fn print(text: &str) {
     for line in text.split_inclusive('\n') {
         let c = CString::new(line.replace('\0', "\\0")).unwrap_or_default();
         let _g = mdb_lock();
@@ -201,7 +202,7 @@ fn run(attached: &Attached, line: &str) -> Result<String> {
 
 /// The dcmd's arguments as words: strings as given, numbers in hex, as
 /// mdb would spell them back.
-unsafe fn words(argc: c_int, argv: *const mdb_arg_t) -> Vec<String> {
+pub(crate) unsafe fn words(argc: c_int, argv: *const mdb_arg_t) -> Vec<String> {
     (0..argc.max(0) as usize)
         .map(|i| {
             let a = unsafe { &*argv.add(i) };
@@ -282,7 +283,7 @@ fn select(attached: &Attached, filters: &Filters) -> Result<Vec<TaskRef>> {
 
 /// Run a dcmd body: errors become `DCMD_ERR` with mdb's warning, and a
 /// panic never crosses into mdb.
-fn guard(f: impl FnOnce() -> Result<(c_int, String)>) -> c_int {
+pub(crate) fn guard(f: impl FnOnce() -> Result<(c_int, String)>) -> c_int {
     let result = catch_unwind(AssertUnwindSafe(f));
     match result {
         Ok(Ok((rc, text))) => {
@@ -678,7 +679,7 @@ const NO_DCMD: mdb_dcmd_t = mdb_dcmd_t {
     dc_tabp: std::ptr::null(),
 };
 
-static DCMDS: Sync<[mdb_dcmd_t; 7]> = Sync([
+static DCMDS: Sync<[mdb_dcmd_t; 11]> = Sync([
     dcmd(
         c"tokio_attach",
         c"[hansei flags]",
@@ -720,6 +721,34 @@ static DCMDS: Sync<[mdb_dcmd_t; 7]> = Sync([
         c"async backtrace of a tokio task",
         dcmd_trace,
         help_trace,
+    ),
+    dcmd(
+        c"whatline",
+        c":",
+        c"source file:line for an address (DWARF)",
+        source::dcmd_whatline,
+        source::help_whatline,
+    ),
+    dcmd(
+        c"srclist",
+        c":[-n ctx]",
+        c"list source around an address",
+        source::dcmd_srclist,
+        source::help_srclist,
+    ),
+    dcmd(
+        c"srcstack",
+        c"?[-t lwp] [-p pc]",
+        c"$C with source lines",
+        source::dcmd_srcstack,
+        source::help_srcstack,
+    ),
+    dcmd(
+        c"srcpath",
+        c"[-c] [-d dir] [-s from=to]",
+        c"where ::srclist finds sources",
+        source::dcmd_srcpath,
+        source::help_srcpath,
     ),
     NO_DCMD,
 ]);

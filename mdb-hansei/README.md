@@ -38,6 +38,15 @@ cp target/release/libmdb_hansei.so hansei.so    # mdb names a module after its f
 | `addr::tokio_trace [-v] [--native]` | The task's async backtrace. |
 | `::walk tokio_task` | Every task hansei finds, by header address. That is the start of the task's allocation, so `::whatis` and the rest of mdb understand it too. |
 
+Native code, from DWARF, with no hansei session needed:
+
+| | |
+|---|---|
+| `addr::whatline` | Function and `file:line:col` at an address, with every frame inlined there. Objects without DWARF (libc) give their symbol only. |
+| `addr::srclist [-n N]` | The source around an address, its line marked. |
+| `[fp]::srcstack [-t LWP] [-p PC]` | `$C` with source lines: every frame's file:line, a return address resolved to the line of its call. Piped, it emits each frame's pc. |
+| `::srcpath [-c] [-d DIR] [-s FROM=TO]` | Where `::srclist` looks for sources that moved, e.g. `-s /rustc/<hash>=$(rustc --print sysroot)/lib/rustlib/src/rust` for std. |
+
 `-w FIELD ARG` / `-W FIELD ARG` are `tasks --with` / `--without`. The fields are
 `type`, `awaiting`, `waiting-on`, `spawned`, `defined`, `state` (regexes), `rt`,
 `lwp`, `id` (exact), and `holds`, `sets`, `futures` (`'>N'`).

@@ -28,6 +28,7 @@ license = "MPL-2.0"
 repository = "https://github.com/oxidecomputer/hansei"
 
 [workspace.dependencies]
+addr2line = { version = "0.27", features = ["loader"] }
 aho-corasick = "1.1"
 anyhow = "1.0"
 bindgen = { version = "0.72", default-features = false }
