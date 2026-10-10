@@ -1,0 +1,20 @@
+[package]
+name = "review-drift"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Holds a project's dependencies and toolchain to hansei's reviews and to what its fixtures build"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+# The reviews, and holding a lockfile and a toolchain file to them.
+exegesis = { workspace = true }
+semver = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# test-programs' matrix.toml, read through the type the suites read it
+# with, and where test-programs is.
+testrun = { workspace = true }

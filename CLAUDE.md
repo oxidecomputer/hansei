@@ -27,7 +27,11 @@ However, hansei-runtime takes exegesis as an optional dependency behind its
 `hansei tokio-info` produces and inspects tokio-info files, but the DWARF
 stack reaches no further than the entry points arg handling calls
 (`hansei/src/bundle_cmd.rs`). exegesis builds no binary of its own:
-`hansei` is the only one the workspace produces. No session, runtime or
+`hansei` is the only one the workspace ships. The other binaries are
+repository tooling that means nothing outside a checkout — `genfix`,
+and `review-drift`, which reads exegesis's reviews and holds a
+project's lockfile and toolchain to them and to the fixtures — and
+`default-members` leaves both out of a bare `cargo build`. No session, runtime or
 render code imports exegesis types; if read-side code seems to need
 something from it, it wants `hansei-bundle`.
 
@@ -212,8 +216,10 @@ cost is not small: acceptance took ~200 s per test that way, against 57 s for
 the whole suite now. `once_per_run` does the work under a lock and stamps it
 with `NEXTEST_RUN_ID`, so a run does it once whether it is one process or
 thirty-two, and the next run — named differently — still rebuilds everything
-it reads. `testrun` is a dev-dependency-only crate, which is also why the
-helper is not `#[cfg(test)]`: that cfg is set only while a crate compiles its
+it reads. `testrun` is a dev-dependency of every crate but
+`review-drift`, which reads `test-programs/matrix.toml` through it; that
+it is linked outside a crate's own unit tests is also why the helper is
+not `#[cfg(test)]`: that cfg is set only while a crate compiles its
 own unit tests, and an integration test links the library built without it.
 
 Each caller also passes a digest of what its fixtures are built *from*, and
