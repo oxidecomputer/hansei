@@ -125,15 +125,15 @@ pub fn assert_instrumented_origin(bundle: &Bundle) -> String {
         unreachable!()
     };
     assert_eq!(s(*package), "tracing");
-    assert_eq!(s(*version), "0.1.40", "the fixture pins tracing 0.1.40");
+    assert_eq!(s(*version), "0.1.44", "the fixture pins tracing 0.1.44");
     assert_eq!(s(*family), TRACING_INSTRUMENTED_V0_1_40.family);
     let source = s(*source).to_owned();
     let parsed = crate::bundle::origin::registry_origin(&source)
         .unwrap_or_else(|| panic!("{source} is not a registry path"));
     assert_eq!(parsed.package, "tracing");
-    assert_eq!(parsed.version.to_string(), "0.1.40");
+    assert_eq!(parsed.version.to_string(), "0.1.44");
     assert!(
-        source.ends_with("/tracing-0.1.40/src/instrument.rs"),
+        source.ends_with("/tracing-0.1.44/src/instrument.rs"),
         "{source}"
     );
     // rustc emits no line-table checksums today; a build that carried

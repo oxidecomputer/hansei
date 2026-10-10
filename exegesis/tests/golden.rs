@@ -2281,7 +2281,7 @@ fn assert_delegation_programs(program: &str, bundle: &Bundle) {
     let source = exegesis::testkit::assert_instrumented_origin(bundle);
     assert!(
         table.contains(&format!(
-            "delegation tracing 0.1.40 family tracing-instrumented-0.1.40 from {source} \
+            "delegation tracing 0.1.44 family tracing-instrumented-0.1.40 from {source} \
              (0 checksummed files)"
         )),
         "{program}: {table}"
@@ -2464,7 +2464,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 package, version, ..
             } => match s(*package) {
                 "tracing" => {
-                    assert_eq!(s(*version), "0.1.40", "{program}");
+                    assert_eq!(s(*version), "0.1.44", "{program}");
                     // The delegation fixture instruments a future itself;
                     // the hyper fixtures link h2 through hyper-util's
                     // version-choosing server, and h2's handshake wraps its
@@ -2835,7 +2835,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 selection,
             } if s(*package) == "rustls" => {
                 use exegesis::detect::semantics::RUSTLS_SESSION_V0_23_23;
-                assert_eq!(version.map(s), Some("0.23.41"), "{program}");
+                assert_eq!(version.map(s), Some("0.23.45"), "{program}");
                 assert_eq!(s(*family), RUSTLS_SESSION_V0_23_23.family, "{program}");
                 assert_eq!(*selection, LayoutSelection::ReviewedRange, "{program}");
                 assert_eq!(program, "tls-conns", "{program}");

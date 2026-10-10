@@ -91,7 +91,7 @@ task 2012
 #0  future  delegation_cases::Probe<8>
       defined at src/bin/delegation-cases.rs:33 (<no_state>, 3 locals)
 #1  future  tracing::instrument::Instrumented<delegation_cases::Probe<8>>
-      defined at tracing-0.1.40/src/instrument.rs:318 (<no_state>, 2 locals)
+      defined at tracing-0.1.44/src/instrument.rs:318 (<no_state>, 2 locals)
 #2  future  Pin<Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
 [Executed against 12 tasks, 0 failed]

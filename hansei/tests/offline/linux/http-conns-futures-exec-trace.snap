@@ -52,7 +52,7 @@ future 0xA7: future reqwest::async_impl::client::PendingRequest
 Held by: task 2011 — async fn http_conns::reqwest_requester (frame 0, `inner`)
 
 #0  future  reqwest::async_impl::client::PendingRequest
-      defined at reqwest-0.13.2/src/async_impl/client.rs:3039 (<no_state>, 8 locals; holds 1 pending future)
+      defined at reqwest-0.13.5/src/async_impl/client.rs:3096 (<no_state>, 8 locals; holds 1 pending future)
 
 future 0xA7: future tower_http::follow_redirect::ResponseFuture<reqwest::cookie::service::CookieService<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>>, reqwest::async_impl::body::Body, reqwest::redirect::TowerRedirectPolicy>
 future 0xA7: future tower_http::follow_redirect::ResponseFuture<reqwest::cookie::service::CookieService<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>>, reqwest::async_impl::body::Body, reqwest::redirect::TowerRedirectPolicy>
