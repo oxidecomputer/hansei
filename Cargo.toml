@@ -12,6 +12,11 @@ members = [
     "test-programs/genfix",
     "unwind",
 ]
+# A bare `cargo build` or `cargo run` builds the tool and nothing else:
+# every other member is a library it links or tooling for working on
+# it. A command meant for the whole tree says `--workspace`, since one
+# that does not quietly covers hansei alone.
+default-members = ["hansei"]
 # A fixture crate, not product code: it owns its Cargo.lock so the
 # fixture matrix can pin tokio per cell independently of the workspace
 # resolution. Built only through test-programs/regen.sh.

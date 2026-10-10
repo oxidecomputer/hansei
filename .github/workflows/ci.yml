@@ -111,7 +111,7 @@ jobs:
       # -p hansei-runtime --example` would resolve features for that
       # one package and compile the workspace a second time.
       - name: Build
-        run: .github/scripts/in-image.sh cargo nextest run --locked --no-run --cargo-profile ci
+        run: .github/scripts/in-image.sh cargo nextest run --workspace --locked --no-run --cargo-profile ci
 
       # Outside the suite, so no test waits on it under the per-test
       # limit (.config/nextest.toml) or holds a slot while it does.
@@ -119,7 +119,7 @@ jobs:
         run: .github/scripts/in-image.sh target/ci/examples/build_fixtures
 
       - name: Test
-        run: .github/scripts/in-image.sh cargo nextest run --locked --no-fail-fast --profile ci --cargo-profile ci
+        run: .github/scripts/in-image.sh cargo nextest run --workspace --locked --no-fail-fast --profile ci --cargo-profile ci
 
       - name: Disk
         if: always()
@@ -188,7 +188,7 @@ jobs:
       # bundles extracted from them.
       - name: Build
         run: |
-          cargo nextest run --locked --no-run --cargo-profile ci
+          cargo nextest run --workspace --locked --no-run --cargo-profile ci
           target/ci/examples/build_fixtures
 
       - id: linux
@@ -223,7 +223,7 @@ jobs:
         run: target/ci/examples/build_fixtures
 
       - name: Test
-        run: cargo nextest run --locked --no-fail-fast --profile ci --cargo-profile ci
+        run: cargo nextest run --workspace --locked --no-fail-fast --profile ci --cargo-profile ci
 
       - name: Every set read?
         if: ${{ !cancelled() }}

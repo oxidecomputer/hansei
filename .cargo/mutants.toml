@@ -10,7 +10,7 @@
 #
 #     git diff origin/main > mutants.diff
 #     HANSEI_REUSE_FIXTURES=1 .github/scripts/in-image.sh \
-#         cargo mutants --in-diff mutants.diff
+#         cargo mutants --workspace --in-diff mutants.diff
 #
 # and a sweep of one crate is `cargo mutants -p hansei-runtime`: about
 # twenty seconds a mutant at -j 6 on a 32-core host (3,831 mutants, so

@@ -175,10 +175,13 @@ bundles from build B at test time.
 
 ### Testing
 
-**Run tests with `cargo nextest run --no-fail-fast`.** nextest stops at the
-first failure by default, so that flag is not optional — the point of a sweep
-is every failure at once. It cannot run doctests (the tree has none —
-`cargo test --doc` if that changes). Every invocation this file spells
+**Run tests with `cargo nextest run --workspace --no-fail-fast`.** Neither
+flag is optional. The workspace's `default-members` is `hansei` alone, so
+that a bare `cargo build` builds only the tool; a run without `--workspace`
+tests that one crate and passes without having run the rest. And nextest
+stops at the first failure by default, while the point of a sweep is every
+failure at once. It cannot run doctests (the tree has none —
+`cargo test --doc` if that changes). Every invocation this file names
 translates directly to `cargo test` where nextest is unavailable.
 
 Green means green on **all three platforms**: macOS, illumos and Linux.
@@ -325,11 +328,13 @@ is what tells a test that *pins* behavior from one that merely runs the
 code. Nearly every suite here asserts over a frozen capture, so nearly
 every test executes the same lines and line coverage says almost
 nothing. The per-change loop is the diff — `git diff origin/main >
-mutants.diff`, then `cargo mutants --in-diff mutants.diff` run as below —
-and it replaces hand-writing mutations to check a new test actually
-bites. A whole-crate sweep (`cargo mutants -p hansei-runtime -j 4`) is
-~25 minutes; triage its `missed.txt` into tests, or into an
-`exclude_re` entry with a comment where the mutant is equivalent.
+mutants.diff`, then `cargo mutants --workspace --in-diff mutants.diff` run
+as below — and it replaces hand-writing mutations to check a new test
+actually bites. `--workspace` because cargo-mutants, like cargo, mutates
+only `default-members` (`hansei`) when no package is named. A
+whole-crate sweep (`cargo mutants -p hansei-runtime -j 4`) is ~25
+minutes; triage its `missed.txt` into tests, or into an `exclude_re`
+entry with a comment where the mutant is equivalent.
 
 Every `cargo mutants` run, `--in-diff` included, goes in the Linux test
 image on a Linux host:
