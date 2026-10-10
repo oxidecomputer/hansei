@@ -476,6 +476,7 @@ dependencies = [
  "tempfile",
  "testrun",
  "thiserror",
+ "toml",
  "tracing",
  "zstd",
  "zstd-sys",
@@ -638,7 +639,6 @@ dependencies = [
  "tempfile",
  "terminal_size",
  "testrun",
- "toml",
  "tracing-subscriber",
  "unwind",
 ]
