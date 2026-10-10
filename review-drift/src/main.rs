@@ -9,6 +9,8 @@
 //! finding per line, or with `--json` one document. The kinds are
 //! described in [`drift::Finding`]. It exits 0 with no findings, 1 with
 //! some, and 2 when the check itself fails.
+//! `.github/scripts/review-drift.sh` runs it weekly over omicron and
+//! opens an issue for each finding.
 //!
 //! It is repository tooling, not part of hansei: it reads this
 //! checkout's `test-programs`, so it means nothing outside one.

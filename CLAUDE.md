@@ -30,8 +30,9 @@ stack reaches no further than the entry points arg handling calls
 `hansei` is the only one the workspace ships. The other binaries are
 repository tooling that means nothing outside a checkout — `genfix`,
 and `review-drift`, which reads exegesis's reviews and holds a
-project's lockfile and toolchain to them and to the fixtures — and
-`default-members` leaves both out of a bare `cargo build`. No session, runtime or
+project's lockfile and toolchain to them and to the fixtures (CI runs
+it weekly over omicron) — and `default-members` leaves both out of a
+bare `cargo build`. No session, runtime or
 render code imports exegesis types; if read-side code seems to need
 something from it, it wants `hansei-bundle`.
 

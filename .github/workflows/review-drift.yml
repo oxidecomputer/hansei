@@ -1,8 +1,9 @@
 # Weekly: hold omicron's dependencies and toolchain to what hansei was
-# reviewed against, and open an issue for each release outside that
-# no issue has named yet, and for each tokio or rustc minor newer than
-# the matrix's primary pin; close those once the primary catches up.
-# See .github/scripts/review-drift.sh.
+# reviewed against and what its fixtures build, and open an issue for
+# each release outside that no issue has named yet, for each tokio or
+# rustc minor newer than the matrix's primary pin, and for each
+# reviewed crate newer than the fixtures lock; close the last two once
+# a run no longer finds them. See .github/scripts/review-drift.sh.
 name: review drift
 
 on:
@@ -19,8 +20,8 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
-      - name: Build hansei
-        run: cargo build --locked -p hansei
+      - name: Build review-drift
+        run: cargo build --locked -p review-drift
       - name: Hold omicron to the reviews
         env:
           GH_TOKEN: ${{ github.token }}
