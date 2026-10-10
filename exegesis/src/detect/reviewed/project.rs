@@ -158,6 +158,51 @@ mod tests {
     use super::{lockfile_findings, toolchain_findings};
     use crate::detect::reviewed::{GIT_CONVENTIONS, reviews};
 
+    use testrun::fixture::test_programs_dir;
+
+    /// The fixtures build only releases the reviews cover: the primary
+    /// cell's lockfile, and every other pinned cell's, is inside every
+    /// review of each crate it locks. A `cargo update` in test-programs
+    /// moves each crate as far as its requirement admits, and that can
+    /// be past the newest reviewed release (tokio-util's `0.7.11` admits
+    /// every 0.7): fixtures built from it would exercise a release no
+    /// detector was checked against, and every suite reading them would
+    /// still pass.
+    #[test]
+    fn test_the_fixture_lockfiles_stay_inside_the_reviews() {
+        let dir = test_programs_dir();
+        let locks = dir.join("locks");
+        let mut lockfiles: Vec<_> = std::fs::read_dir(&locks)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", locks.display()))
+            .map(|entry| entry.expect("a directory entry").path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "lock"))
+            .collect();
+        assert!(!lockfiles.is_empty(), "no lockfiles in {}", locks.display());
+        lockfiles.push(dir.join("Cargo.lock"));
+        lockfiles.sort();
+
+        let reviews = reviews();
+        let mut outside = Vec::new();
+        for path in &lockfiles {
+            let text = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+            let findings = lockfile_findings(&text, &reviews)
+                .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
+            let name = path.strip_prefix(&dir).unwrap_or(path).display();
+            outside.extend(
+                findings
+                    .iter()
+                    .map(|f| format!("test-programs/{name}: {f}")),
+            );
+        }
+        assert!(
+            outside.is_empty(),
+            "the fixtures lock releases outside the reviews; review them, or pin \
+             the fixtures inside:\n{}",
+            outside.join("\n")
+        );
+    }
+
     /// A lockfile of the given `(name, version, source)` packages.
     fn lockfile(packages: &[(&str, &str, Option<&str>)]) -> String {
         let mut text = String::from("version = 4\n");
