@@ -140,7 +140,7 @@ task 2010
 
 task 2011
 #0  future  reqwest::async_impl::client::Pending
-      defined at reqwest-0.13.2/src/async_impl/client.rs:3025 (<no_state>, 1 local; holds 1 pending future)
+      defined at reqwest-0.13.5/src/async_impl/client.rs:3082 (<no_state>, 1 local; holds 1 pending future)
 #1  async fn  http_conns::reqwest_requester
       awaiting at src/bin/http-conns.rs:180 (Suspend0, 1 local)
 

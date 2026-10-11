@@ -27,7 +27,12 @@ However, hansei-runtime takes exegesis as an optional dependency behind its
 `hansei tokio-info` produces and inspects tokio-info files, but the DWARF
 stack reaches no further than the entry points arg handling calls
 (`hansei/src/bundle_cmd.rs`). exegesis builds no binary of its own:
-`hansei` is the only one the workspace produces. No session, runtime or
+`hansei` is the only one the workspace ships. The other binaries are
+repository tooling that means nothing outside a checkout — `genfix`,
+and `review-drift`, which reads exegesis's reviews and holds a
+project's lockfile and toolchain to them and to the fixtures (CI runs
+it weekly over omicron) — and `default-members` leaves both out of a
+bare `cargo build`. No session, runtime or
 render code imports exegesis types; if read-side code seems to need
 something from it, it wants `hansei-bundle`.
 
@@ -175,10 +180,13 @@ bundles from build B at test time.
 
 ### Testing
 
-**Run tests with `cargo nextest run --no-fail-fast`.** nextest stops at the
-first failure by default, so that flag is not optional — the point of a sweep
-is every failure at once. It cannot run doctests (the tree has none —
-`cargo test --doc` if that changes). Every invocation this file spells
+**Run tests with `cargo nextest run --workspace --no-fail-fast`.** Neither
+flag is optional. The workspace's `default-members` is `hansei` alone, so
+that a bare `cargo build` builds only the tool; a run without `--workspace`
+tests that one crate and passes without having run the rest. And nextest
+stops at the first failure by default, while the point of a sweep is every
+failure at once. It cannot run doctests (the tree has none —
+`cargo test --doc` if that changes). Every invocation this file names
 translates directly to `cargo test` where nextest is unavailable.
 
 Green means green on **all three platforms**: macOS, illumos and Linux.
@@ -209,8 +217,10 @@ cost is not small: acceptance took ~200 s per test that way, against 57 s for
 the whole suite now. `once_per_run` does the work under a lock and stamps it
 with `NEXTEST_RUN_ID`, so a run does it once whether it is one process or
 thirty-two, and the next run — named differently — still rebuilds everything
-it reads. `testrun` is a dev-dependency-only crate, which is also why the
-helper is not `#[cfg(test)]`: that cfg is set only while a crate compiles its
+it reads. `testrun` is a dev-dependency of every crate but
+`review-drift`, which reads `test-programs/matrix.toml` through it; that
+it is linked outside a crate's own unit tests is also why the helper is
+not `#[cfg(test)]`: that cfg is set only while a crate compiles its
 own unit tests, and an integration test links the library built without it.
 
 Each caller also passes a digest of what its fixtures are built *from*, and
@@ -325,11 +335,13 @@ is what tells a test that *pins* behavior from one that merely runs the
 code. Nearly every suite here asserts over a frozen capture, so nearly
 every test executes the same lines and line coverage says almost
 nothing. The per-change loop is the diff — `git diff origin/main >
-mutants.diff`, then `cargo mutants --in-diff mutants.diff` run as below —
-and it replaces hand-writing mutations to check a new test actually
-bites. A whole-crate sweep (`cargo mutants -p hansei-runtime -j 4`) is
-~25 minutes; triage its `missed.txt` into tests, or into an
-`exclude_re` entry with a comment where the mutant is equivalent.
+mutants.diff`, then `cargo mutants --workspace --in-diff mutants.diff` run
+as below — and it replaces hand-writing mutations to check a new test
+actually bites. `--workspace` because cargo-mutants, like cargo, mutates
+only `default-members` (`hansei`) when no package is named. A
+whole-crate sweep (`cargo mutants -p hansei-runtime -j 4`) is ~25
+minutes; triage its `missed.txt` into tests, or into an `exclude_re`
+entry with a comment where the mutant is equivalent.
 
 Every `cargo mutants` run, `--in-diff` included, goes in the Linux test
 image on a Linux host:

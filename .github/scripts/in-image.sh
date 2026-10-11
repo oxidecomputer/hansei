@@ -10,7 +10,7 @@
 # environment.
 #
 #   in-image.sh COMMAND [ARG]...
-#   in-image.sh cargo nextest run --no-fail-fast
+#   in-image.sh cargo nextest run --workspace --no-fail-fast
 #
 # The checkout is mounted at the path it has on the host, and so is
 # HANSEI_CORES when it names a directory outside the checkout, so a

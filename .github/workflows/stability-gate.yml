@@ -62,7 +62,7 @@ jobs:
         run: .github/scripts/in-image.sh .github/scripts/fixture-toolchain.sh
 
       - name: Build
-        run: .github/scripts/in-image.sh cargo nextest run --locked --no-run --cargo-profile ci
+        run: .github/scripts/in-image.sh cargo nextest run --workspace --locked --no-run --cargo-profile ci
 
       - name: Fixtures
         run: .github/scripts/in-image.sh target/ci/examples/build_fixtures
@@ -73,7 +73,7 @@ jobs:
         env:
           INSTA_UPDATE: new
         run: |
-          .github/scripts/in-image.sh cargo nextest run --locked --no-fail-fast --profile ci --cargo-profile ci 2>&1 \
+          .github/scripts/in-image.sh cargo nextest run --workspace --locked --no-fail-fast --profile ci --cargo-profile ci 2>&1 \
             | tee "$RUNNER_TEMP/test.log"
 
       # The rejected goldens are gitignored, so they are found rather

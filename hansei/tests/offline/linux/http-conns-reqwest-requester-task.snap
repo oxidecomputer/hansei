@@ -12,7 +12,7 @@ task 2011
             held in: frame 0 `inner`
             awaiting on: unknown
             request: GET http://127.0.0.1:PORT/park
-            type defined at: reqwest-0.13.2/src/async_impl/client.rs:3039
+            type defined at: reqwest-0.13.5/src/async_impl/client.rs:3096
         oneshot rx 0xA1 (response for http1 client 0xA2)
             waker: the response callback's receiver cell, held by task 2001
     spawned at: src/bin/http-conns.rs:253:34

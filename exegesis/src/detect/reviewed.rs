@@ -9,9 +9,11 @@
 //! The reviews themselves live beside the code each one gates, mostly
 //! in [`super::semantics`], and their gates read them there. This list
 //! is for the questions asked of all of them at once — what does this
-//! hansei cover, and does a project's lockfile stay inside it — and a
-//! test holds it to every review the source declares, so a new one
-//! cannot be left out of it.
+//! hansei cover, and does a project's lockfile stay inside it
+//! ([`project`]) — and a test holds it to every review the source
+//! declares, so a new one cannot be left out of it.
+
+pub mod project;
 
 use super::semantics::{
     AcquireOwners, DROPSHOT_HANDLER_V0_17_0, DROPSHOT_SERVER_V0_17_0,

@@ -556,7 +556,7 @@ fn exegesis_free_origin_check(bundle: &Bundle) {
     let [(index, package, version, family, source, checksums)] = delegations.as_slice() else {
         panic!("expected the tracing delegation origin beside it: {delegations:?}");
     };
-    let expected = ("tracing", "0.1.40", "tracing-instrumented-0.1.40");
+    let expected = ("tracing", "0.1.44", "tracing-instrumented-0.1.40");
     assert_eq!((*package, *version, *family), expected);
     let parsed = hansei_bundle::origin::registry_origin(source).expect("registry path");
     assert_eq!(

@@ -83,7 +83,7 @@ banner build
 # The suite's build builds the fixture example with it. `cargo run -p
 # hansei-runtime --example` would resolve features for that one package
 # and compile the workspace a second time.
-ptime -m cargo nextest run --locked --no-run --cargo-profile ci
+ptime -m cargo nextest run --workspace --locked --no-run --cargo-profile ci
 
 banner fixtures
 # Outside the suite, so no test waits on it under the per-test limit
@@ -92,7 +92,7 @@ ptime -m target/ci/examples/build_fixtures
 
 banner test
 status=0
-ptime -m timeout 2h cargo nextest run --locked --no-fail-fast --profile ci --cargo-profile ci || status=$?
+ptime -m timeout 2h cargo nextest run --workspace --locked --no-fail-fast --profile ci --cargo-profile ci || status=$?
 
 if (( status != 0 )); then
 	mkdir -p /work/failed
