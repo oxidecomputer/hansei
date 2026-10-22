@@ -55,15 +55,15 @@ use crate::detect::semantics::{
     HYPER_UTIL_CONNECTED_V0_1_10, HYPER_UTIL_IO_V0_1_10, HYPER_UTIL_POOL_V0_1_16,
     HYPER_UTIL_RESPONSE_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
     PARKING_LOT_RAW_MUTEX_V0_11_0, REQWEST_CONN_READ_SLOT, REQWEST_CONN_V0_12_14,
-    REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0, RUSTLS_SESSION_V0_23_23,
-    RustcConvention, SPROCKETS_TLS_CLIENT_D2B68E4, SPROCKETS_TLS_SERVER_D2B68E4,
-    SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_INTERVAL_TICK_V1_47, TOKIO_RUSTLS_HANDSHAKE_V0_25_0,
-    TOKIO_RUSTLS_STREAM_V0_25_0, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
-    TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2,
-    TRACING_INSTRUMENTED_V0_1_40, library_convention, rustc_core_pending_convention,
-    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
-    rustc_std_futex_mutex_convention, rustc_std_refcount_convention, tokio_acquire_owner,
-    tokio_state_protocol,
+    REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0, RUSTLS_SESSION_0_22,
+    RUSTLS_SESSION_V0_22_0, Releases, RustcConvention, SPROCKETS_TLS_CLIENT_D2B68E4,
+    SPROCKETS_TLS_SERVER_D2B68E4, SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_INTERVAL_TICK_V1_47,
+    TOKIO_RUSTLS_HANDSHAKE_V0_25_0, TOKIO_RUSTLS_STREAM_V0_25_0, TOKIO_SELECT_V1_47,
+    TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
+    TOWER_RETRY_V0_5_2, TRACING_INSTRUMENTED_V0_1_40, library_convention,
+    rustc_core_pending_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
+    rustc_std_adapter_convention, rustc_std_futex_mutex_convention, rustc_std_refcount_convention,
+    tokio_acquire_owner, tokio_state_protocol,
 };
 
 use std::borrow::Cow;
@@ -4958,7 +4958,7 @@ struct TlsSessionPlan {
     version: TypedPath,
     may_send_application_data: TypedPath,
     may_receive_application_data: TypedPath,
-    has_sent_close_notify: TypedPath,
+    has_sent_close_notify: Option<TypedPath>,
     has_received_close_notify: TypedPath,
     has_seen_eof: TypedPath,
     sent_fatal_alert: TypedPath,
@@ -4985,6 +4985,8 @@ const SENDABLE_RECORD: &str = "alloc::vec::Vec<u8, alloc::alloc::Global>";
 /// an enum, the side a C-like enum, the flags single bytes and the
 /// sequence counts unsigned words; the outgoing records' ring by std's
 /// member names, its storage a pointer, its record `Vec<u8>` by name.
+/// The span the release falls in selects the layout: one in rustls
+/// 0.22's has no close_notify flag and no written prefix to read.
 fn plan_tls_session(
     ty: BundleTypeId,
     sources: &BTreeSet<PollSource>,
@@ -4993,8 +4995,11 @@ fn plan_tls_session(
     strings: &StringInterner,
 ) -> Result<TlsSessionPlan, Decline> {
     use Hop::{Member, Variant};
-    let convention = &RUSTLS_SESSION_V0_23_23;
+    let convention = &RUSTLS_SESSION_V0_22_0;
     let version = layout_release(sources, convention)?;
+    let v0_22 = version
+        .parse::<semver::Version>()
+        .is_ok_and(|release| Releases(&[RUSTLS_SESSION_0_22]).covers(&release));
     let rule = RuleKey::Layout {
         kind: SemanticRuleKind::RustlsSession,
         package: convention.package,
@@ -5158,14 +5163,25 @@ fn plan_tls_session(
         version,
         may_send_application_data: flag("may_send_application_data")?,
         may_receive_application_data: flag("may_receive_application_data")?,
-        has_sent_close_notify: flag("has_sent_close_notify")?,
+        has_sent_close_notify: (!v0_22)
+            .then(|| flag("has_sent_close_notify"))
+            .transpose()?,
         has_received_close_notify: flag("has_received_close_notify")?,
         has_seen_eof: flag("has_seen_eof")?,
         sent_fatal_alert: flag("sent_fatal_alert")?,
         read_seq: seq("read_seq")?,
         write_seq: seq("write_seq")?,
-        sendable: plan_sendable(ty, "sendable_tls", &count, types, names, strings)?,
-        received: plan_sendable(ty, "received_plaintext", &count, types, names, strings).ok(),
+        sendable: plan_sendable(ty, "sendable_tls", !v0_22, &count, types, names, strings)?,
+        received: plan_sendable(
+            ty,
+            "received_plaintext",
+            !v0_22,
+            &count,
+            types,
+            names,
+            strings,
+        )
+        .ok(),
         handshake_kind,
         suites,
         alpn,
@@ -5184,10 +5200,13 @@ type WordPlan<'a> = dyn Fn(&[Hop<'_>], &str) -> Result<TypedPath, Decline> + 'a;
 /// capacity are words the standard library wraps in a newtype
 /// (`WrappedIndex`, `UsizeNoHighBit`) in some releases and not in
 /// others, which the toolchain decides, not rustls: each is the word
-/// itself or its newtype's `__0`.
+/// itself or its newtype's `__0`. `prefix` says whether the release
+/// counts the first record's written bytes in `prefix_used`, as 0.23
+/// does, or drains them from the record, as 0.22 does.
 fn plan_sendable(
     ty: BundleTypeId,
     field: &'static str,
+    prefix: bool,
     count: &WordPlan<'_>,
     types: &TypeTable,
     names: &[Option<String>],
@@ -5249,7 +5268,9 @@ fn plan_sendable(
         return Err(missing("its outgoing record's length is no word"));
     }
     Ok(SendableBinding {
-        prefix_used: count(&at(&[Member("prefix_used")]), "sent prefix")?,
+        prefix_used: prefix
+            .then(|| count(&at(&[Member("prefix_used")]), "sent prefix"))
+            .transpose()?,
         head: wrapped(&[Member("chunks"), Member("head")], "ring's head")?,
         len: wrapped(&[Member("chunks"), Member("len")], "ring's length")?,
         buf,
@@ -10272,6 +10293,221 @@ mod tests {
         );
     }
 
+    /// A final table built member after member, each laid out after the
+    /// last so that every path into it is in bounds.
+    #[derive(Default)]
+    struct Layout {
+        types: Vec<TypeDef>,
+        names: Vec<Option<String>>,
+        strings: StringInterner,
+    }
+
+    impl Layout {
+        fn add(&mut self, name: &str, def: TypeDef) -> BundleTypeId {
+            self.types.push(def);
+            self.names.push(Some(name.to_owned()));
+            BundleTypeId(self.types.len() as u32 - 1)
+        }
+
+        fn table(&self) -> TypeTable {
+            TypeTable {
+                types: self.types.clone(),
+                ..Default::default()
+            }
+        }
+
+        fn word(&mut self, name: &str, size: u64) -> BundleTypeId {
+            let interned = self.strings.intern(name);
+            self.add(
+                name,
+                TypeDef::Base {
+                    name: interned,
+                    size,
+                    encoding: crate::Encoding::Unsigned,
+                },
+            )
+        }
+
+        fn record(&mut self, name: &str, members: &[(&str, BundleTypeId)]) -> BundleTypeId {
+            let table = self.table();
+            let mut offset = 0;
+            let mut defs = Vec::new();
+            for &(member, ty) in members {
+                defs.push(MemberDef {
+                    name: self.strings.intern(member),
+                    ty,
+                    offset,
+                });
+                offset += table.size_of(ty).unwrap();
+            }
+            let interned = self.strings.intern(name);
+            self.add(
+                name,
+                TypeDef::Struct {
+                    name: interned,
+                    size: offset,
+                    members: defs,
+                },
+            )
+        }
+
+        fn either(&mut self, name: &str, variants: &[(&str, BundleTypeId)]) -> BundleTypeId {
+            let table = self.table();
+            let mut size = 0;
+            let mut defs = Vec::new();
+            for &(variant, payload) in variants {
+                size = size.max(table.size_of(payload).unwrap());
+                let key = self.strings.intern(variant);
+                defs.push(VariantDef {
+                    name: key,
+                    discr_values: None,
+                    payload: MemberDef {
+                        name: key,
+                        ty: payload,
+                        offset: 0,
+                    },
+                    decl: None,
+                    await_site: None,
+                });
+            }
+            let interned = self.strings.intern(name);
+            self.add(
+                name,
+                TypeDef::Enum {
+                    name: interned,
+                    size,
+                    shape: VariantShape {
+                        discr: None,
+                        variants: defs,
+                    },
+                },
+            )
+        }
+    }
+
+    /// A rustls connection with every word the session review reads;
+    /// `v0_23` adds the two that rustls 0.23 keeps and 0.22 does not,
+    /// `has_sent_close_notify` and each buffer's `prefix_used`.
+    fn rustls_connection(v0_23: bool) -> (Layout, BundleTypeId) {
+        let mut l = Layout::default();
+        let u64_t = l.word("u64", 8);
+        let flag = l.word("bool", 1);
+        let side_name = l.strings.intern("rustls::common_state::Side");
+        let client = l.strings.intern("Client");
+        let side = l.add(
+            "rustls::common_state::Side",
+            TypeDef::CEnum {
+                name: side_name,
+                size: 1,
+                repr: flag,
+                enumerators: vec![(client, 0)],
+            },
+        );
+        let empty = l.record("()", &[]);
+        let version = l.either("rustls::enums::ProtocolVersion", &[("TLSv1_3", empty)]);
+        let some = l.record("Some", &[("__0", version)]);
+        let negotiated = l.either(
+            "core::option::Option<rustls::enums::ProtocolVersion>",
+            &[("None", empty), ("Some", some)],
+        );
+        let ok = l.record("Ok", &[("__0", u64_t)]);
+        let state = l.either("core::result::Result", &[("Ok", ok), ("Err", ok)]);
+        let records = l.record(
+            "rustls::record_layer::RecordLayer",
+            &[("write_seq", u64_t), ("read_seq", u64_t)],
+        );
+        let byte_ptr = l.add(
+            "*const u8",
+            TypeDef::Pointer {
+                name: None,
+                target: flag,
+            },
+        );
+        let non_null = l.record("core::ptr::non_null::NonNull<u8>", &[("pointer", byte_ptr)]);
+        let unique = l.record("core::ptr::unique::Unique<u8>", &[("pointer", non_null)]);
+        let inner = l.record(
+            "alloc::raw_vec::RawVecInner",
+            &[("ptr", unique), ("cap", u64_t)],
+        );
+        let raw_vec = l.record("alloc::raw_vec::RawVec", &[("inner", inner)]);
+        let ring = l.record(
+            &format!("{SENDABLE_RING}alloc::alloc::Global>"),
+            &[("buf", raw_vec), ("head", u64_t), ("len", u64_t)],
+        );
+        l.record(SENDABLE_RECORD, &[("buf", raw_vec), ("len", u64_t)]);
+        let buffer = if v0_23 {
+            l.record(
+                "rustls::vecbuf::ChunkVecBuffer",
+                &[("prefix_used", u64_t), ("chunks", ring)],
+            )
+        } else {
+            l.record("rustls::vecbuf::ChunkVecBuffer", &[("chunks", ring)])
+        };
+        let mut common = vec![
+            ("side", side),
+            ("negotiated_version", negotiated),
+            ("record_layer", records),
+            ("may_send_application_data", flag),
+            ("may_receive_application_data", flag),
+            ("sent_fatal_alert", flag),
+            ("has_received_close_notify", flag),
+            ("has_seen_eof", flag),
+            ("received_plaintext", buffer),
+            ("sendable_tls", buffer),
+        ];
+        if v0_23 {
+            common.push(("has_sent_close_notify", flag));
+        }
+        let common = l.record("rustls::common_state::CommonState", &common);
+        let core = l.record(
+            "rustls::conn::ConnectionCore",
+            &[("state", state), ("common_state", common)],
+        );
+        let connection = l.record("rustls::conn::ConnectionCommon", &[("core", core)]);
+        (l, connection)
+    }
+
+    /// The span the release falls in selects the session layout, not
+    /// the members the table happens to hold: a 0.22 release binds
+    /// without the close_notify flag and the written prefixes, a 0.23
+    /// one requires them, and a 0.23 table read as 0.22 leaves them out.
+    #[test]
+    fn test_the_rustls_release_selects_the_session_words() {
+        const ROOT: &str = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
+        let at = |version: &str| {
+            BTreeSet::from([source(
+                &format!("{ROOT}/rustls-{version}/src/conn.rs"),
+                None,
+            )])
+        };
+        let plan = |v0_23: bool, release: &str| {
+            let (l, connection) = rustls_connection(v0_23);
+            plan_tls_session(connection, &at(release), &l.table(), &l.names, &l.strings)
+        };
+        let kept = |plan: &TlsSessionPlan| {
+            (
+                plan.has_sent_close_notify.is_some(),
+                plan.sendable.prefix_used.is_some(),
+                plan.received.as_ref().map(|r| r.prefix_used.is_some()),
+            )
+        };
+        assert_eq!(
+            kept(&plan(false, "0.22.4").unwrap()),
+            (false, false, Some(false))
+        );
+        assert_eq!(
+            kept(&plan(true, "0.23.41").unwrap()),
+            (true, true, Some(true))
+        );
+        assert_eq!(
+            kept(&plan(true, "0.22.0").unwrap()),
+            (false, false, Some(false))
+        );
+        let (kind, detail) = plan(false, "0.23.41").unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::AmbiguousLayout);
+        assert!(detail.contains("has_sent_close_notify"), "{detail}");
+    }
+
     /// Each origin gate notes the release it refuses, saying which side
     /// of the range a version falls on or which revision is unread, and
     /// notes nothing for a release it binds or a decline that names no
@@ -10295,11 +10531,11 @@ mod tests {
         assert_eq!(
             refused(&|| layout_release(
                 &registry("rustls-0.23.22", "src/conn.rs"),
-                &RUSTLS_SESSION_V0_23_23
+                &RUSTLS_SESSION_V0_22_0
             )
             .is_err()),
             [(
-                RUSTLS_SESSION_V0_23_23.family,
+                RUSTLS_SESSION_V0_22_0.family,
                 "rustls 0.23.22 is older than the supported version range: 0.23.23-0.23.45"
                     .to_owned()
             )]
@@ -10346,13 +10582,13 @@ mod tests {
         // A decline that names no release notes nothing, and neither
         // does a release that binds.
         assert!(
-            refused(&|| layout_release(&BTreeSet::new(), &RUSTLS_SESSION_V0_23_23).is_err())
+            refused(&|| layout_release(&BTreeSet::new(), &RUSTLS_SESSION_V0_22_0).is_err())
                 .is_empty()
         );
         let (bound, refusals) = refusals::capture(|| {
             layout_release(
                 &registry("rustls-0.23.41", "src/conn.rs"),
-                &RUSTLS_SESSION_V0_23_23,
+                &RUSTLS_SESSION_V0_22_0,
             )
         });
         assert_eq!(bound.unwrap(), "0.23.41");
@@ -10360,7 +10596,7 @@ mod tests {
         // Outside a capture a refusal is dropped, not kept for the next.
         let _ = layout_release(
             &registry("rustls-0.24.0", "src/conn.rs"),
-            &RUSTLS_SESSION_V0_23_23,
+            &RUSTLS_SESSION_V0_22_0,
         );
         let ((), refusals) = refusals::capture(|| ());
         assert!(refusals.is_empty());

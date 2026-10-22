@@ -2636,35 +2636,92 @@ pub const TOKIO_RUSTLS_STREAM_V0_25_0: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// rustls's connection state as 0.23.23 through 0.23.45 lay it out,
-/// read in every release of that range (`src/conn.rs`,
-/// `src/common_state.rs`, `src/record_layer.rs`; 0.23.28 retypes
-/// `CommonState`'s `alpn_protocol` and adds `tls13_tickets_received`,
-/// neither on a route): `ConnectionCommon<Data>` holds
-/// `core: ConnectionCore<Data>`, whose `state` is a `Result<Box<dyn
+/// rustls 0.22's span of [`RUSTLS_SESSION_V0_22_0`], whose layout keeps
+/// two words fewer than the 0.23 span's.
+pub const RUSTLS_SESSION_0_22: (Release, Release) = ((0, 22, 0), (0, 22, 4));
+
+/// rustls 0.23's span of [`RUSTLS_SESSION_V0_22_0`].
+pub const RUSTLS_SESSION_0_23: (Release, Release) = ((0, 23, 23), (0, 23, 45));
+
+/// rustls's connection state as 0.22.0 through 0.22.4 and 0.23.23
+/// through 0.23.45 lay it out, read in every release of those spans
+/// (`src/conn.rs`, `src/common_state.rs`, `src/record_layer.rs`; 0.23.28
+/// retypes `CommonState`'s `alpn_protocol` and adds
+/// `tls13_tickets_received`, neither on a route): `ConnectionCommon<Data>`
+/// holds `core: ConnectionCore<Data>`, whose `state` is a `Result<Box<dyn
 /// State<Data>>, Error>` that turns `Err` when the connection fails and
 /// stays so, and whose `common_state: CommonState` holds `side`, the
 /// `negotiated_version: Option<ProtocolVersion>`, the
 /// `may_send_application_data` and `may_receive_application_data` flags
 /// the handshake sets on finishing (`start_outgoing_traffic`,
 /// `start_traffic`; `is_handshaking` is their conjunction negated),
-/// `has_sent_close_notify` (added at 0.23.23, the floor),
+/// `has_sent_close_notify` (added at 0.23.23, the 0.23 span's floor),
 /// `has_received_close_notify`, `has_seen_eof`, `sent_fatal_alert`, and
 /// `record_layer: RecordLayer` with its `read_seq` and `write_seq`
 /// counts. Every assignment of those flags is the same text across the
-/// range, so the words mean the same thing in each release — including
-/// `send_close_notify` setting `sent_fatal_alert` beside
+/// 0.23 span, so the words mean the same thing in each release —
+/// including `send_close_notify` setting `sent_fatal_alert` beside
 /// `has_sent_close_notify`, the flag meaning that no further alert will
 /// be sent, while a fatal alert (`send_fatal_alert`) always comes with
-/// the error the state then holds. The
-/// release is read off the type's own method declarations, as
-/// hashbrown's is; the checksums are of every reviewed revision, which
-/// rustc's DWARF 4 never records but the matrix suite checks.
-pub const RUSTLS_SESSION_V0_23_23: LibraryConvention = LibraryConvention {
+/// the error the state then holds.
+///
+/// rustls 0.22 ([`RUSTLS_SESSION_0_22`]) keeps every one of those words
+/// as the same member of the same type but two. It has no
+/// `has_sent_close_notify`: `send_close_notify` queues the alert and
+/// records nothing, and `send_fatal_alert` alone sets
+/// `sent_fatal_alert`, which so means a fatal alert and nothing else.
+/// And its `ChunkVecBuffer` has no `prefix_used`: `consume` drains the
+/// bytes written out of the first record (`src/vecbuf.rs`, the same
+/// text in every 0.22 release but an import), so every byte the ring
+/// holds is unsent. The span's plan leaves both words out. 0.22.4 sets
+/// `has_received_close_notify` only for a close_notify received once
+/// application data may flow, as 0.23 does, where earlier 0.22 releases
+/// set it for any; either way the flag says the peer sent one. 0.22 has
+/// no `handshake_kind`, and its `alpn_protocol` is the bare
+/// `Option<Vec<u8>>` 0.23.23 through 0.23.27 keep; neither is on the
+/// verdict, and each is left out where it does not bind.
+///
+/// The release is read off the type's own method declarations, as
+/// hashbrown's is, and its span selects the layout; the checksums are
+/// of every reviewed revision, which rustc's DWARF 4 never records but
+/// the matrix suite checks.
+pub const RUSTLS_SESSION_V0_22_0: LibraryConvention = LibraryConvention {
     package: "rustls",
-    family: "rustls-session-0.23.23",
-    releases: Releases(&[((0, 23, 23), (0, 23, 45))]),
+    family: "rustls-session-0.22.0",
+    releases: Releases(&[RUSTLS_SESSION_0_22, RUSTLS_SESSION_0_23]),
     checksums: &[
+        // src/conn.rs, 0.22.0
+        (
+            "src/conn.rs",
+            [
+                0x12, 0x2d, 0xbd, 0x2a, 0x9c, 0x56, 0xbe, 0xef, 0x0d, 0x41, 0x01, 0x84, 0xd0, 0x8c,
+                0xb4, 0x53,
+            ],
+        ),
+        // src/conn.rs, 0.22.1 and 0.22.2
+        (
+            "src/conn.rs",
+            [
+                0x51, 0x04, 0x42, 0x73, 0x46, 0x3d, 0xc6, 0x46, 0x43, 0x21, 0x38, 0xd0, 0x6f, 0x8a,
+                0x1c, 0x34,
+            ],
+        ),
+        // src/conn.rs, 0.22.3
+        (
+            "src/conn.rs",
+            [
+                0x28, 0x35, 0xdc, 0x8a, 0xca, 0xae, 0x60, 0x96, 0x88, 0xde, 0xa1, 0xc7, 0x33, 0xea,
+                0x21, 0x93,
+            ],
+        ),
+        // src/conn.rs, 0.22.4
+        (
+            "src/conn.rs",
+            [
+                0xc1, 0xfb, 0x68, 0x71, 0xb8, 0xcc, 0xc0, 0x39, 0xeb, 0xb6, 0x9e, 0xe3, 0x46, 0xda,
+                0x20, 0x94,
+            ],
+        ),
         // src/conn.rs, 0.23.23
         (
             "src/conn.rs",
@@ -2729,6 +2786,30 @@ pub const RUSTLS_SESSION_V0_23_23: LibraryConvention = LibraryConvention {
                 0x46, 0x30,
             ],
         ),
+        // src/common_state.rs, 0.22.0
+        (
+            "src/common_state.rs",
+            [
+                0xe7, 0xce, 0x26, 0x7e, 0xfc, 0x5f, 0x48, 0x3d, 0x02, 0xe7, 0xb5, 0x0a, 0x43, 0x7e,
+                0xd4, 0xed,
+            ],
+        ),
+        // src/common_state.rs, 0.22.1 through 0.22.3
+        (
+            "src/common_state.rs",
+            [
+                0x58, 0xa8, 0x43, 0x12, 0x19, 0xb5, 0xd0, 0xbc, 0x7e, 0xd7, 0x62, 0x55, 0x5c, 0x3c,
+                0x14, 0x83,
+            ],
+        ),
+        // src/common_state.rs, 0.22.4
+        (
+            "src/common_state.rs",
+            [
+                0x4d, 0x86, 0x72, 0x84, 0xa8, 0x9a, 0xa3, 0xaf, 0x36, 0x40, 0x7d, 0x03, 0xe3, 0xac,
+                0x48, 0x36,
+            ],
+        ),
         // src/common_state.rs, 0.23.23
         (
             "src/common_state.rs",
@@ -2775,6 +2856,22 @@ pub const RUSTLS_SESSION_V0_23_23: LibraryConvention = LibraryConvention {
             [
                 0x86, 0xdf, 0x07, 0x52, 0x5f, 0x81, 0x1f, 0x24, 0x6f, 0xcc, 0x0c, 0xa9, 0xcb, 0x5e,
                 0x74, 0x7c,
+            ],
+        ),
+        // src/record_layer.rs, 0.22.0 through 0.22.2
+        (
+            "src/record_layer.rs",
+            [
+                0xad, 0xa1, 0x33, 0xf9, 0xe8, 0xbf, 0x78, 0x80, 0x94, 0x58, 0x0a, 0xd4, 0x78, 0x90,
+                0x60, 0x92,
+            ],
+        ),
+        // src/record_layer.rs, 0.22.3 and 0.22.4
+        (
+            "src/record_layer.rs",
+            [
+                0x35, 0xfd, 0x0e, 0xd1, 0xc2, 0x20, 0xfb, 0x61, 0xd7, 0xd2, 0xf5, 0xd1, 0xd7, 0x84,
+                0x58, 0x05,
             ],
         ),
         // src/record_layer.rs, 0.23.23 through 0.23.45
@@ -5270,9 +5367,9 @@ mod tests {
                 "0.26.7",
             ),
             (
-                &RUSTLS_SESSION_V0_23_23,
-                ["0.23.23", "0.23.41", "0.23.45"].as_slice(),
-                "0.23.22",
+                &RUSTLS_SESSION_V0_22_0,
+                ["0.22.0", "0.22.4", "0.23.23", "0.23.41", "0.23.45"].as_slice(),
+                "0.21.12",
                 "0.23.46",
             ),
         ] {
@@ -5302,6 +5399,19 @@ mod tests {
                 assert!(family.reviewed_checksum(checksum));
             }
             assert!(!family.reviewed_checksum(&[0; 16]));
+        }
+        // Between rustls's two spans: a 0.22 patch past the first is
+        // above it, and a 0.23 release before the second below it.
+        for (version, side) in [
+            ("0.22.5", LayoutSelection::AboveReviewedRange),
+            ("0.23.0", LayoutSelection::BelowFloor),
+            ("0.23.22", LayoutSelection::BelowFloor),
+        ] {
+            assert_eq!(
+                library_convention(&RUSTLS_SESSION_V0_22_0, &v(version)),
+                Err(side),
+                "{version}"
+            );
         }
         assert_eq!(TRACING_INSTRUMENTED_V0_1_40.range(), "0.1.40-0.1.44");
         assert_eq!(FUTURES_UTIL_ADAPTERS_V0_3_30.range(), "0.3.30-0.3.34");

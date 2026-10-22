@@ -4128,7 +4128,7 @@ fn tls_session() -> Bundle {
     ] = [
         "rustls",
         "0.23.41",
-        "rustls-session-0.23.23",
+        "rustls-session-0.22.0",
         "Result",
         "Side",
         "ProtocolVersion",
@@ -4288,14 +4288,14 @@ fn tls_session() -> Bundle {
         version: path(vec![named(negotiated), Step::Variant(some)], version_t),
         may_send_application_data: flag(send),
         may_receive_application_data: flag(receive),
-        has_sent_close_notify: flag(sent_close),
+        has_sent_close_notify: Some(flag(sent_close)),
         has_received_close_notify: flag(received_close),
         has_seen_eof: flag(eof),
         sent_fatal_alert: flag(fatal),
         read_seq: word(read_seq),
         write_seq: word(write_seq),
         sendable: SendableBinding {
-            prefix_used: word(read_seq),
+            prefix_used: Some(word(read_seq)),
             head: word(read_seq),
             len: word(write_seq),
             buf: path(vec![named(buf)], ring_t),
@@ -4330,6 +4330,31 @@ fn tls_session() -> Bundle {
     });
     b.validate().unwrap();
     b
+}
+
+/// A release that keeps no close_notify flag and no written prefix, as
+/// rustls 0.22 does not, binds without either word; one that names
+/// them holds each to its shape as before.
+#[test]
+fn test_tls_words_a_release_does_not_keep_are_absent() {
+    let b = tls_session();
+    fn session(b: &mut Bundle) -> &mut TlsSessionBinding {
+        b.semantics.types[5].tls_session.as_mut().unwrap()
+    }
+    let words = session(&mut b.clone()).clone();
+
+    let mut absent = b.clone();
+    session(&mut absent).has_sent_close_notify = None;
+    session(&mut absent).sendable.prefix_used = None;
+    absent.validate().unwrap();
+
+    let mut wide_close = b.clone();
+    session(&mut wide_close).has_sent_close_notify = Some(words.read_seq.clone());
+    bad(&wide_close, "TLS session flag is not one byte");
+
+    let mut narrow_prefix = b.clone();
+    session(&mut narrow_prefix).sendable.prefix_used = Some(words.sent_fatal_alert.clone());
+    bad(&narrow_prefix, "TLS session count is not an unsigned word");
 }
 
 /// A TLS stream binds its connection under its route's rule, landing

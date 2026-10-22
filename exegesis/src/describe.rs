@@ -1047,26 +1047,29 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
             );
         }
         if let Some(session) = &record.tls_session {
-            let words = [
-                ("state", &session.state),
-                ("side", &session.side),
-                ("negotiated", &session.negotiated_version),
-                ("version", &session.version),
-                ("send", &session.may_send_application_data),
-                ("receive", &session.may_receive_application_data),
-                ("sent-close", &session.has_sent_close_notify),
-                ("received-close", &session.has_received_close_notify),
-                ("eof", &session.has_seen_eof),
-                ("fatal", &session.sent_fatal_alert),
-                ("read-seq", &session.read_seq),
-                ("write-seq", &session.write_seq),
-                ("unsent-prefix", &session.sendable.prefix_used),
-                ("unsent-head", &session.sendable.head),
-                ("unsent-len", &session.sendable.len),
-                ("unsent-buf", &session.sendable.buf),
-                ("unsent-cap", &session.sendable.cap),
+            // A word the release does not keep is left out.
+            let words: Vec<String> = [
+                ("state", Some(&session.state)),
+                ("side", Some(&session.side)),
+                ("negotiated", Some(&session.negotiated_version)),
+                ("version", Some(&session.version)),
+                ("send", Some(&session.may_send_application_data)),
+                ("receive", Some(&session.may_receive_application_data)),
+                ("sent-close", session.has_sent_close_notify.as_ref()),
+                ("received-close", Some(&session.has_received_close_notify)),
+                ("eof", Some(&session.has_seen_eof)),
+                ("fatal", Some(&session.sent_fatal_alert)),
+                ("read-seq", Some(&session.read_seq)),
+                ("write-seq", Some(&session.write_seq)),
+                ("unsent-prefix", session.sendable.prefix_used.as_ref()),
+                ("unsent-head", Some(&session.sendable.head)),
+                ("unsent-len", Some(&session.sendable.len)),
+                ("unsent-buf", Some(&session.sendable.buf)),
+                ("unsent-cap", Some(&session.sendable.cap)),
             ]
-            .map(|(what, word)| format!("{what} {}", path(record.ty, word)));
+            .into_iter()
+            .filter_map(|(what, word)| Some(format!("{what} {}", path(record.ty, word?))))
+            .collect();
             let _ = write!(
                 line,
                 " tls-session rule {} {} unsent-record {} len {}",

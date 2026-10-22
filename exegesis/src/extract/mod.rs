@@ -2105,7 +2105,7 @@ mod tests {
     #[test]
     fn test_unsupported_names_what_the_reviews_do_not_cover() {
         use crate::detect::semantics::{
-            RUSTC_COROUTINE_V1_97, RUSTC_STD_ADAPTERS_V1_97, RUSTLS_SESSION_V0_23_23,
+            RUSTC_COROUTINE_V1_97, RUSTC_STD_ADAPTERS_V1_97, RUSTLS_SESSION_V0_22_0,
             SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_RUSTLS_HANDSHAKE_V0_25_0,
             TOKIO_RUSTLS_STREAM_V0_25_0, tokio_protocols_outside,
         };
@@ -2145,7 +2145,7 @@ mod tests {
                     ]
                     .into(),
                 ),
-                (rustls, [RUSTLS_SESSION_V0_23_23.family].into()),
+                (rustls, [RUSTLS_SESSION_V0_22_0.family].into()),
                 (sprockets, [SPROCKETS_TLS_STREAM_D2B68E4.family].into()),
             ]),
             ..Default::default()

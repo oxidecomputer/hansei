@@ -854,8 +854,12 @@ fn assert_tls_stream(program: &str, bundle: &Bundle, key: &str) {
                 &session.may_receive_application_data,
                 format!("{common}.may_receive_application_data"),
             ),
+            // rustls 0.23 keeps both words 0.22 has not.
             (
-                &session.has_sent_close_notify,
+                session
+                    .has_sent_close_notify
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{program}: {name} binds no close_notify flag")),
                 format!("{common}.has_sent_close_notify"),
             ),
             (
@@ -873,7 +877,11 @@ fn assert_tls_stream(program: &str, bundle: &Bundle, key: &str) {
                 format!("{common}.record_layer.write_seq"),
             ),
             (
-                &session.sendable.prefix_used,
+                session
+                    .sendable
+                    .prefix_used
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{program}: {name} binds no written prefix")),
                 format!("{common}.sendable_tls.prefix_used"),
             ),
             // The pinned toolchain wraps the ring's head and capacity
@@ -2834,9 +2842,9 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 family,
                 selection,
             } if s(*package) == "rustls" => {
-                use exegesis::detect::semantics::RUSTLS_SESSION_V0_23_23;
+                use exegesis::detect::semantics::RUSTLS_SESSION_V0_22_0;
                 assert_eq!(version.map(s), Some("0.23.45"), "{program}");
-                assert_eq!(s(*family), RUSTLS_SESSION_V0_23_23.family, "{program}");
+                assert_eq!(s(*family), RUSTLS_SESSION_V0_22_0.family, "{program}");
                 assert_eq!(*selection, LayoutSelection::ReviewedRange, "{program}");
                 assert_eq!(program, "tls-conns", "{program}");
             }

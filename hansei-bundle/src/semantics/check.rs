@@ -1008,13 +1008,16 @@ impl<'a> Check<'a> {
             "TLS session version name is not selected from its option",
         )?;
         for flag in [
-            &binding.may_send_application_data,
-            &binding.may_receive_application_data,
-            &binding.has_sent_close_notify,
-            &binding.has_received_close_notify,
-            &binding.has_seen_eof,
-            &binding.sent_fatal_alert,
-        ] {
+            Some(&binding.may_send_application_data),
+            Some(&binding.may_receive_application_data),
+            binding.has_sent_close_notify.as_ref(),
+            Some(&binding.has_received_close_notify),
+            Some(&binding.has_seen_eof),
+            Some(&binding.sent_fatal_alert),
+        ]
+        .into_iter()
+        .flatten()
+        {
             self.path(record.ty, flag)?;
             require(
                 self.0.types.size_of(flag.target) == Some(1),
@@ -1074,11 +1077,14 @@ impl<'a> Check<'a> {
     /// each one a sized record whose length is a word.
     fn chunks(&self, record: &TypeSemantics, sendable: &SendableBinding) -> Result<()> {
         for seq in [
-            &sendable.prefix_used,
-            &sendable.head,
-            &sendable.len,
-            &sendable.cap,
-        ] {
+            sendable.prefix_used.as_ref(),
+            Some(&sendable.head),
+            Some(&sendable.len),
+            Some(&sendable.cap),
+        ]
+        .into_iter()
+        .flatten()
+        {
             self.path(record.ty, seq)?;
             self.unsigned_word(seq, "TLS session count is not an unsigned word")?;
         }

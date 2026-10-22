@@ -496,7 +496,10 @@ fn print_tls(
     writeln!(out, "        stream state: {}", reading.stream_state)?;
     let mut closed = Vec::new();
     for (set, word) in [
-        (reading.has_sent_close_notify, "close_notify sent"),
+        (
+            reading.has_sent_close_notify == Some(true),
+            "close_notify sent",
+        ),
         (reading.has_received_close_notify, "close_notify received"),
         (reading.has_seen_eof, "eof seen"),
         (reading.sent_fatal_alert, "fatal alert sent"),

@@ -3751,7 +3751,7 @@ origin 6: delegation parking_lot 0.12.5 family parking_lot-raw-mutex-0.11.0 from
 origin 7: delegation tokio-rustls 0.26.4 family tokio-rustls-stream-0.25.0 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.26.4/src/server.rs (0 checksummed files)
 origin 8: delegation hyper-util 0.1.20 family hyper-util-auto-conn-0.1.10 from registry/src/index.crates.io-1949cf8c6b5b557f/hyper-util-0.1.20/src/server/conn/auto/mod.rs (0 checksummed files)
 origin 9: layout tokio 1.52.0 family v1_52_0 (ReviewedRange)
-origin 10: layout rustls 0.23.45 family rustls-session-0.23.23 (ReviewedRange)
+origin 10: layout rustls 0.23.45 family rustls-session-0.22.0 (ReviewedRange)
 origin 11: delegation hyper 1.10.1 family hyper-h1-conn-1.6.0 from registry/src/index.crates.io-1949cf8c6b5b557f/hyper-1.10.1/src/server/conn/http1.rs (0 checksummed files)
 origin 12: delegation hyper-util 0.1.20 family hyper-util-io-0.1.10 from registry/src/index.crates.io-1949cf8c6b5b557f/hyper-util-0.1.20/src/rt/tokio.rs (0 checksummed files)
 origin 13: delegation hyper 1.10.1 family hyper-h1-conn-1.6.0 from registry/src/index.crates.io-1949cf8c6b5b557f/hyper-1.10.1/src/proto/h1/dispatch.rs (0 checksummed files)

@@ -4436,7 +4436,11 @@ impl<'b, T: Target> Context<'b, T> {
                 &words.may_receive_application_data,
                 "receive flag",
             )?,
-            has_sent_close_notify: flag(&words.has_sent_close_notify, "sent close_notify flag")?,
+            has_sent_close_notify: words
+                .has_sent_close_notify
+                .as_ref()
+                .map(|path| flag(path, "sent close_notify flag"))
+                .transpose()?,
             has_received_close_notify: flag(
                 &words.has_received_close_notify,
                 "received close_notify flag",
@@ -4484,9 +4488,10 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     /// The records in rustls's outgoing ring and their bytes, less the
-    /// first one's prefix already written: the ring's `len` slots from
-    /// `head`, wrapping at `cap`, each a record read as its recorded
-    /// type at its stride.
+    /// first one's prefix already written where the release counts it
+    /// (a release that drains it holds only unsent bytes): the ring's
+    /// `len` slots from `head`, wrapping at `cap`, each a record read
+    /// as its recorded type at its stride.
     fn unsent_records(
         &self,
         ring: &SendableBinding,
@@ -4520,7 +4525,10 @@ impl<'b, T: Target> Context<'b, T> {
                 .parse::<u64>(self.proc)?;
             bytes = bytes.saturating_add(len);
         }
-        let sent = seq(&ring.prefix_used, "outgoing prefix written")?;
+        let sent = match &ring.prefix_used {
+            Some(prefix) => seq(prefix, "outgoing prefix written")?,
+            None => 0,
+        };
         ensure!(
             sent <= bytes,
             "the outgoing ring's written prefix {sent} exceeds its {bytes} bytes"
