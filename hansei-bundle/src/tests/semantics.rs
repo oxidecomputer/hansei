@@ -428,10 +428,16 @@ fn test_semantic_paths_reject_invalid_storage_and_endpoints() {
                 }],
             }
         }),
+        ("unsized", |b| {
+            b.types.types[1] = TypeDef::Opaque {
+                name: FIELD,
+                size: None,
+            }
+        }),
         ("out of bounds", |b| {
             b.types.types[1] = TypeDef::Opaque {
                 name: FIELD,
-                size: Some(8),
+                size: Some(16),
             }
         }),
     ];
@@ -441,6 +447,21 @@ fn test_semantic_paths_reject_invalid_storage_and_endpoints() {
         mutate(&mut b);
         bad(&b, expected);
     }
+}
+
+/// An opaque whose size is recorded, as a type demoted for a member
+/// that overruns it is, is as sized as any other type: a semantic path
+/// may cross or land on it.
+#[test]
+fn test_semantic_paths_accept_an_opaque_of_recorded_size() {
+    let mut b = forwarding();
+    b.semantics.types.remove(0);
+    b.types.types[CHILD.0 as usize] = TypeDef::Opaque {
+        name: FIELD,
+        size: Some(8),
+    };
+    assert_eq!(b.types.size_of(CHILD), Some(8));
+    b.validate().unwrap();
 }
 
 #[test]

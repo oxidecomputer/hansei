@@ -198,8 +198,9 @@ pub(super) fn demote_types_with_members_out_of_bounds(
             .is_some_and(|member_size| m.offset.saturating_add(member_size) > size)
     };
 
-    // Collected first: demoting as we go would turn a type into an `Opaque` of
-    // unknown member size and change the verdict for whatever embeds it.
+    // Collected first, since the scan reads the table the demotions rewrite.
+    // A demoted type keeps its size, so demoting one does not change the
+    // verdict for whatever embeds it.
     let mut demote = Vec::new();
     for (i, def) in types.types.iter().enumerate() {
         let (name, size, bad) = match def {

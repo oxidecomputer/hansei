@@ -1094,7 +1094,7 @@ impl TypeTable {
                     seen.pop();
                     size
                 }
-                TypeDef::Opaque { .. } => None,
+                TypeDef::Opaque { size, .. } => *size,
             }
         }
         go(self, id, &mut Vec::new())
