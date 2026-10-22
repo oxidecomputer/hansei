@@ -1620,7 +1620,9 @@ pub struct TlsReading {
     pub failed: bool,
     pub may_send_application_data: bool,
     pub may_receive_application_data: bool,
-    pub has_sent_close_notify: bool,
+    /// `None` for a rustls release that keeps no such flag (0.22), whose
+    /// `sent_fatal_alert` then means a fatal alert alone.
+    pub has_sent_close_notify: Option<bool>,
     pub has_received_close_notify: bool,
     pub has_seen_eof: bool,
     pub sent_fatal_alert: bool,
@@ -1665,9 +1667,10 @@ pub enum TlsVerdict {
     /// end of stream was seen.
     Closed,
     /// The connection's state is an error, or this end sent a fatal
-    /// alert. rustls sets the flag it keeps for that on sending a
+    /// alert. rustls 0.23 sets the flag it keeps for that on sending a
     /// close_notify too — no alert of any kind follows either — so
-    /// only a flag without a close_notify beside it is a failure.
+    /// only a flag without a close_notify beside it is a failure; 0.22
+    /// sets it for a fatal alert alone.
     Failed,
 }
 
@@ -1695,11 +1698,12 @@ impl TlsReading {
     /// outranks a close, a close a half-close, and a half-close an
     /// unfinished handshake.
     pub fn verdict(&self) -> TlsVerdict {
-        if self.failed || (self.sent_fatal_alert && !self.has_sent_close_notify) {
+        let sent_close_notify = self.has_sent_close_notify == Some(true);
+        if self.failed || (self.sent_fatal_alert && !sent_close_notify) {
             TlsVerdict::Failed
         } else if self.stream_state == "FullyShutdown" || self.has_seen_eof {
             TlsVerdict::Closed
-        } else if self.has_sent_close_notify
+        } else if sent_close_notify
             || self.has_received_close_notify
             || matches!(self.stream_state.as_str(), "ReadShutdown" | "WriteShutdown")
         {
@@ -2703,7 +2707,7 @@ mod tests {
             failed: false,
             may_send_application_data: true,
             may_receive_application_data: true,
-            has_sent_close_notify: false,
+            has_sent_close_notify: Some(false),
             has_received_close_notify: false,
             has_seen_eof: false,
             sent_fatal_alert: false,
@@ -2754,7 +2758,7 @@ mod tests {
         // A close_notify either way, or one direction shut, is closing,
         // and outranks a handshake.
         for close in [
-            &|r: &mut TlsReading| r.has_sent_close_notify = true,
+            &|r: &mut TlsReading| r.has_sent_close_notify = Some(true),
             &|r: &mut TlsReading| r.has_received_close_notify = true,
             &|r: &mut TlsReading| r.stream_state = "ReadShutdown".to_owned(),
             &|r: &mut TlsReading| r.stream_state = "WriteShutdown".to_owned(),
@@ -2778,7 +2782,7 @@ mod tests {
         assert_eq!(
             verdict(&|r| {
                 r.has_seen_eof = true;
-                r.has_sent_close_notify = true;
+                r.has_sent_close_notify = Some(true);
             }),
             TlsVerdict::Closed
         );
@@ -2794,10 +2798,23 @@ mod tests {
         // A close_notify sets the same flag, and is a close.
         assert_eq!(
             verdict(&|r| {
-                r.has_sent_close_notify = true;
+                r.has_sent_close_notify = Some(true);
                 r.sent_fatal_alert = true;
             }),
             TlsVerdict::Closing
+        );
+        // A release that keeps no close_notify flag sets the fatal one
+        // for a fatal alert alone, and is established without either.
+        assert_eq!(
+            verdict(&|r| {
+                r.has_sent_close_notify = None;
+                r.sent_fatal_alert = true;
+            }),
+            TlsVerdict::Failed
+        );
+        assert_eq!(
+            verdict(&|r| r.has_sent_close_notify = None),
+            TlsVerdict::Established
         );
         // No version before the handshake picks one; counts that differ
         // are given each.

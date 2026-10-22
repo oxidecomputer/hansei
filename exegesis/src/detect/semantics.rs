@@ -2461,7 +2461,7 @@ pub const TOKIO_STREAM_MAP_V0_1_14: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// tokio-rustls's streams as 0.26.0 through 0.26.6 implement them. The
+/// tokio-rustls's streams as 0.25.0 through 0.26.6 implement them. The
 /// `TlsStream<T>` enum (`src/lib.rs`) is `Client(client::TlsStream<T>)
 /// | Server(server::TlsStream<T>)`, and every `AsyncRead`/`AsyncWrite`
 /// method matches on the variant and calls the same method on its
@@ -2475,15 +2475,28 @@ pub const TOKIO_STREAM_MAP_V0_1_14: LibraryConvention = LibraryConvention {
 /// exception is the client's `early-data` feature: a read in the
 /// early-data state parks in the stream's own `early_waker`, which no
 /// reader following the route to the socket finds holding the task, so
-/// such a wait verifies nothing rather than the wrong thing. The file
-/// checksums move with docs, visibility and those two members; the
-/// forwarding is the same text throughout. Each type's origin is its
-/// own method declarations, which name its file.
-pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
+/// such a wait verifies nothing rather than the wrong thing. 0.25.0
+/// implements no vectored write of its own: tokio's default
+/// `poll_write_vectored` writes the first non-empty buffer through
+/// `poll_write`, which parks where any write does. 0.26.0 adds the
+/// vectored writes and moves the client's early-data write into a
+/// helper without changing what it does. The file checksums move with
+/// docs, visibility, those two members and the vectored writes; the
+/// forwarding is otherwise the same text throughout. Each type's origin
+/// is its own method declarations, which name its file.
+pub const TOKIO_RUSTLS_STREAM_V0_25_0: LibraryConvention = LibraryConvention {
     package: "tokio-rustls",
-    family: "tokio-rustls-stream-0.26.0",
-    releases: Releases(&[((0, 26, 0), (0, 26, 6))]),
+    family: "tokio-rustls-stream-0.25.0",
+    releases: Releases(&[((0, 25, 0), (0, 26, 6))]),
     checksums: &[
+        // src/lib.rs, 0.25.0
+        (
+            "src/lib.rs",
+            [
+                0xfb, 0x17, 0x7e, 0x1d, 0x43, 0x92, 0x41, 0xb0, 0xa7, 0x83, 0xa6, 0x68, 0x72, 0x52,
+                0x26, 0x41,
+            ],
+        ),
         // src/lib.rs, 0.26.0
         (
             "src/lib.rs",
@@ -2524,6 +2537,14 @@ pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
                 0x60, 0x09,
             ],
         ),
+        // src/client.rs, 0.25.0
+        (
+            "src/client.rs",
+            [
+                0x47, 0x57, 0x65, 0x30, 0xad, 0x6c, 0x49, 0x28, 0x40, 0x5b, 0x76, 0xa8, 0x1d, 0xa4,
+                0x90, 0x54,
+            ],
+        ),
         // src/client.rs, 0.26.0 and 0.26.1
         (
             "src/client.rs",
@@ -2562,6 +2583,14 @@ pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
             [
                 0x8c, 0x55, 0x3b, 0x19, 0x44, 0xb7, 0x03, 0x55, 0x7b, 0x87, 0x93, 0xed, 0x72, 0xf6,
                 0xc8, 0xcc,
+            ],
+        ),
+        // src/server.rs, 0.25.0
+        (
+            "src/server.rs",
+            [
+                0x08, 0x64, 0x81, 0x90, 0x12, 0x94, 0x89, 0x5e, 0x35, 0xa4, 0x2c, 0x27, 0x20, 0x18,
+                0xca, 0xf2,
             ],
         ),
         // src/server.rs, 0.26.0 and 0.26.1
@@ -2607,35 +2636,92 @@ pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// rustls's connection state as 0.23.23 through 0.23.45 lay it out,
-/// read in every release of that range (`src/conn.rs`,
-/// `src/common_state.rs`, `src/record_layer.rs`; 0.23.28 retypes
-/// `CommonState`'s `alpn_protocol` and adds `tls13_tickets_received`,
-/// neither on a route): `ConnectionCommon<Data>` holds
-/// `core: ConnectionCore<Data>`, whose `state` is a `Result<Box<dyn
+/// rustls 0.22's span of [`RUSTLS_SESSION_V0_22_0`], whose layout keeps
+/// two words fewer than the 0.23 span's.
+pub const RUSTLS_SESSION_0_22: (Release, Release) = ((0, 22, 0), (0, 22, 4));
+
+/// rustls 0.23's span of [`RUSTLS_SESSION_V0_22_0`].
+pub const RUSTLS_SESSION_0_23: (Release, Release) = ((0, 23, 23), (0, 23, 45));
+
+/// rustls's connection state as 0.22.0 through 0.22.4 and 0.23.23
+/// through 0.23.45 lay it out, read in every release of those spans
+/// (`src/conn.rs`, `src/common_state.rs`, `src/record_layer.rs`; 0.23.28
+/// retypes `CommonState`'s `alpn_protocol` and adds
+/// `tls13_tickets_received`, neither on a route): `ConnectionCommon<Data>`
+/// holds `core: ConnectionCore<Data>`, whose `state` is a `Result<Box<dyn
 /// State<Data>>, Error>` that turns `Err` when the connection fails and
 /// stays so, and whose `common_state: CommonState` holds `side`, the
 /// `negotiated_version: Option<ProtocolVersion>`, the
 /// `may_send_application_data` and `may_receive_application_data` flags
 /// the handshake sets on finishing (`start_outgoing_traffic`,
 /// `start_traffic`; `is_handshaking` is their conjunction negated),
-/// `has_sent_close_notify` (added at 0.23.23, the floor),
+/// `has_sent_close_notify` (added at 0.23.23, the 0.23 span's floor),
 /// `has_received_close_notify`, `has_seen_eof`, `sent_fatal_alert`, and
 /// `record_layer: RecordLayer` with its `read_seq` and `write_seq`
 /// counts. Every assignment of those flags is the same text across the
-/// range, so the words mean the same thing in each release — including
-/// `send_close_notify` setting `sent_fatal_alert` beside
+/// 0.23 span, so the words mean the same thing in each release —
+/// including `send_close_notify` setting `sent_fatal_alert` beside
 /// `has_sent_close_notify`, the flag meaning that no further alert will
 /// be sent, while a fatal alert (`send_fatal_alert`) always comes with
-/// the error the state then holds. The
-/// release is read off the type's own method declarations, as
-/// hashbrown's is; the checksums are of every reviewed revision, which
-/// rustc's DWARF 4 never records but the matrix suite checks.
-pub const RUSTLS_SESSION_V0_23_23: LibraryConvention = LibraryConvention {
+/// the error the state then holds.
+///
+/// rustls 0.22 ([`RUSTLS_SESSION_0_22`]) keeps every one of those words
+/// as the same member of the same type but two. It has no
+/// `has_sent_close_notify`: `send_close_notify` queues the alert and
+/// records nothing, and `send_fatal_alert` alone sets
+/// `sent_fatal_alert`, which so means a fatal alert and nothing else.
+/// And its `ChunkVecBuffer` has no `prefix_used`: `consume` drains the
+/// bytes written out of the first record (`src/vecbuf.rs`, the same
+/// text in every 0.22 release but an import), so every byte the ring
+/// holds is unsent. The span's plan leaves both words out. 0.22.4 sets
+/// `has_received_close_notify` only for a close_notify received once
+/// application data may flow, as 0.23 does, where earlier 0.22 releases
+/// set it for any; either way the flag says the peer sent one. 0.22 has
+/// no `handshake_kind`, and its `alpn_protocol` is the bare
+/// `Option<Vec<u8>>` 0.23.23 through 0.23.27 keep; neither is on the
+/// verdict, and each is left out where it does not bind.
+///
+/// The release is read off the type's own method declarations, as
+/// hashbrown's is, and its span selects the layout; the checksums are
+/// of every reviewed revision, which rustc's DWARF 4 never records but
+/// the matrix suite checks.
+pub const RUSTLS_SESSION_V0_22_0: LibraryConvention = LibraryConvention {
     package: "rustls",
-    family: "rustls-session-0.23.23",
-    releases: Releases(&[((0, 23, 23), (0, 23, 45))]),
+    family: "rustls-session-0.22.0",
+    releases: Releases(&[RUSTLS_SESSION_0_22, RUSTLS_SESSION_0_23]),
     checksums: &[
+        // src/conn.rs, 0.22.0
+        (
+            "src/conn.rs",
+            [
+                0x12, 0x2d, 0xbd, 0x2a, 0x9c, 0x56, 0xbe, 0xef, 0x0d, 0x41, 0x01, 0x84, 0xd0, 0x8c,
+                0xb4, 0x53,
+            ],
+        ),
+        // src/conn.rs, 0.22.1 and 0.22.2
+        (
+            "src/conn.rs",
+            [
+                0x51, 0x04, 0x42, 0x73, 0x46, 0x3d, 0xc6, 0x46, 0x43, 0x21, 0x38, 0xd0, 0x6f, 0x8a,
+                0x1c, 0x34,
+            ],
+        ),
+        // src/conn.rs, 0.22.3
+        (
+            "src/conn.rs",
+            [
+                0x28, 0x35, 0xdc, 0x8a, 0xca, 0xae, 0x60, 0x96, 0x88, 0xde, 0xa1, 0xc7, 0x33, 0xea,
+                0x21, 0x93,
+            ],
+        ),
+        // src/conn.rs, 0.22.4
+        (
+            "src/conn.rs",
+            [
+                0xc1, 0xfb, 0x68, 0x71, 0xb8, 0xcc, 0xc0, 0x39, 0xeb, 0xb6, 0x9e, 0xe3, 0x46, 0xda,
+                0x20, 0x94,
+            ],
+        ),
         // src/conn.rs, 0.23.23
         (
             "src/conn.rs",
@@ -2700,6 +2786,30 @@ pub const RUSTLS_SESSION_V0_23_23: LibraryConvention = LibraryConvention {
                 0x46, 0x30,
             ],
         ),
+        // src/common_state.rs, 0.22.0
+        (
+            "src/common_state.rs",
+            [
+                0xe7, 0xce, 0x26, 0x7e, 0xfc, 0x5f, 0x48, 0x3d, 0x02, 0xe7, 0xb5, 0x0a, 0x43, 0x7e,
+                0xd4, 0xed,
+            ],
+        ),
+        // src/common_state.rs, 0.22.1 through 0.22.3
+        (
+            "src/common_state.rs",
+            [
+                0x58, 0xa8, 0x43, 0x12, 0x19, 0xb5, 0xd0, 0xbc, 0x7e, 0xd7, 0x62, 0x55, 0x5c, 0x3c,
+                0x14, 0x83,
+            ],
+        ),
+        // src/common_state.rs, 0.22.4
+        (
+            "src/common_state.rs",
+            [
+                0x4d, 0x86, 0x72, 0x84, 0xa8, 0x9a, 0xa3, 0xaf, 0x36, 0x40, 0x7d, 0x03, 0xe3, 0xac,
+                0x48, 0x36,
+            ],
+        ),
         // src/common_state.rs, 0.23.23
         (
             "src/common_state.rs",
@@ -2746,6 +2856,22 @@ pub const RUSTLS_SESSION_V0_23_23: LibraryConvention = LibraryConvention {
             [
                 0x86, 0xdf, 0x07, 0x52, 0x5f, 0x81, 0x1f, 0x24, 0x6f, 0xcc, 0x0c, 0xa9, 0xcb, 0x5e,
                 0x74, 0x7c,
+            ],
+        ),
+        // src/record_layer.rs, 0.22.0 through 0.22.2
+        (
+            "src/record_layer.rs",
+            [
+                0xad, 0xa1, 0x33, 0xf9, 0xe8, 0xbf, 0x78, 0x80, 0x94, 0x58, 0x0a, 0xd4, 0x78, 0x90,
+                0x60, 0x92,
+            ],
+        ),
+        // src/record_layer.rs, 0.22.3 and 0.22.4
+        (
+            "src/record_layer.rs",
+            [
+                0x35, 0xfd, 0x0e, 0xd1, 0xc2, 0x20, 0xfb, 0x61, 0xd7, 0xd2, 0xf5, 0xd1, 0xd7, 0x84,
+                0x58, 0x05,
             ],
         ),
         // src/record_layer.rs, 0.23.23 through 0.23.45
@@ -2930,27 +3056,38 @@ pub const HYPER_RUSTLS_STREAM_V0_27_0: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// tokio-rustls's handshake as 0.26.0 through 0.26.6 implement it.
+/// tokio-rustls's handshake as 0.25.0 through 0.26.6 implement it.
 /// `MidHandshake<IS>` (`src/common/handshake.rs`) is the enum
 /// `Handshaking(IS) | End | SendAlert { io, alert, error } | Error { io,
-/// error }`, the same in every release, and its `poll` in `Handshaking`
-/// drives rustls's handshake over the stream it holds (`Stream::handshake`
-/// in `src/common/mod.rs`), which returns `Pending` only when writing,
-/// flushing or reading the stream would block and nothing moved that
-/// round — so the task's waker is in the socket's writer slot, its
+/// error }`, the same in every release from 0.26.0; 0.25.0 has no
+/// `SendAlert`. Its `poll` in `Handshaking` drives rustls's handshake
+/// over the stream it holds (`Stream::handshake` in `src/common/mod.rs`,
+/// the same text in every release), which returns `Pending` only when
+/// writing, flushing or reading the stream would block and nothing moved
+/// that round — so the task's waker is in the socket's writer slot, its
 /// reader slot, or both, and nowhere else. In `SendAlert` it writes the
 /// alert to the bare `io`; `Error` returns at once, and `End` is never
-/// polled. The releases differ in a zero-length write's error (0.26.1)
-/// and in carrying the flush flag across polls (0.26.3), neither of
-/// which moves a wait. `Connect`, `Accept`, `FallibleConnect` and
-/// `FallibleAccept` (`src/lib.rs` through 0.26.2, `src/client.rs` and
-/// `src/server.rs` from 0.26.3) are newtypes over it whose `poll` polls
-/// it and nothing else. Each type's origin is its own `poll`.
-pub const TOKIO_RUSTLS_HANDSHAKE_V0_26_0: LibraryConvention = LibraryConvention {
+/// polled. Only `Handshaking` is navigated, and its payload is the
+/// stream in every release. The releases differ in a zero-length
+/// write's error (0.26.1) and in carrying the flush flag across polls
+/// (0.26.3), neither of which moves a wait. `Connect`, `Accept`,
+/// `FallibleConnect` and `FallibleAccept` (`src/lib.rs` through 0.26.2,
+/// `src/client.rs` and `src/server.rs` from 0.26.3) are newtypes over
+/// it whose `poll` polls it and nothing else. Each type's origin is its
+/// own `poll`.
+pub const TOKIO_RUSTLS_HANDSHAKE_V0_25_0: LibraryConvention = LibraryConvention {
     package: "tokio-rustls",
-    family: "tokio-rustls-handshake-0.26.0",
-    releases: Releases(&[((0, 26, 0), (0, 26, 6))]),
+    family: "tokio-rustls-handshake-0.25.0",
+    releases: Releases(&[((0, 25, 0), (0, 26, 6))]),
     checksums: &[
+        // src/common/handshake.rs, 0.25.0
+        (
+            "src/common/handshake.rs",
+            [
+                0x9c, 0x82, 0xe6, 0x4e, 0xcc, 0x33, 0xdd, 0x71, 0x40, 0x77, 0x8b, 0x50, 0x15, 0xdf,
+                0x22, 0x29,
+            ],
+        ),
         // src/common/handshake.rs, 0.26.0 through 0.26.2
         (
             "src/common/handshake.rs",
@@ -2965,6 +3102,14 @@ pub const TOKIO_RUSTLS_HANDSHAKE_V0_26_0: LibraryConvention = LibraryConvention 
             [
                 0xea, 0x26, 0x32, 0x7f, 0xd2, 0xcb, 0x60, 0x73, 0x88, 0xf1, 0x74, 0x15, 0x23, 0xf5,
                 0x26, 0xb9,
+            ],
+        ),
+        // src/lib.rs, 0.25.0
+        (
+            "src/lib.rs",
+            [
+                0xfb, 0x17, 0x7e, 0x1d, 0x43, 0x92, 0x41, 0xb0, 0xa7, 0x83, 0xa6, 0x68, 0x72, 0x52,
+                0x26, 0x41,
             ],
         ),
         // src/lib.rs, 0.26.0
@@ -3007,6 +3152,14 @@ pub const TOKIO_RUSTLS_HANDSHAKE_V0_26_0: LibraryConvention = LibraryConvention 
                 0x60, 0x09,
             ],
         ),
+        // src/client.rs, 0.25.0
+        (
+            "src/client.rs",
+            [
+                0x47, 0x57, 0x65, 0x30, 0xad, 0x6c, 0x49, 0x28, 0x40, 0x5b, 0x76, 0xa8, 0x1d, 0xa4,
+                0x90, 0x54,
+            ],
+        ),
         // src/client.rs, 0.26.0 and 0.26.1
         (
             "src/client.rs",
@@ -3045,6 +3198,14 @@ pub const TOKIO_RUSTLS_HANDSHAKE_V0_26_0: LibraryConvention = LibraryConvention 
             [
                 0x8c, 0x55, 0x3b, 0x19, 0x44, 0xb7, 0x03, 0x55, 0x7b, 0x87, 0x93, 0xed, 0x72, 0xf6,
                 0xc8, 0xcc,
+            ],
+        ),
+        // src/server.rs, 0.25.0
+        (
+            "src/server.rs",
+            [
+                0x08, 0x64, 0x81, 0x90, 0x12, 0x94, 0x89, 0x5e, 0x35, 0xa4, 0x2c, 0x27, 0x20, 0x18,
+                0xca, 0xf2,
             ],
         ),
         // src/server.rs, 0.26.0 and 0.26.1
@@ -5176,9 +5337,9 @@ mod tests {
                 "0.17.2",
             ),
             (
-                &TOKIO_RUSTLS_STREAM_V0_26_0,
-                ["0.26.0", "0.26.3", "0.26.6"].as_slice(),
-                "0.25.0",
+                &TOKIO_RUSTLS_STREAM_V0_25_0,
+                ["0.25.0", "0.26.0", "0.26.3", "0.26.6"].as_slice(),
+                "0.24.1",
                 "0.26.7",
             ),
             (
@@ -5200,15 +5361,15 @@ mod tests {
                 "0.27.11",
             ),
             (
-                &TOKIO_RUSTLS_HANDSHAKE_V0_26_0,
-                ["0.26.0", "0.26.3", "0.26.6"].as_slice(),
-                "0.25.0",
+                &TOKIO_RUSTLS_HANDSHAKE_V0_25_0,
+                ["0.25.0", "0.26.0", "0.26.3", "0.26.6"].as_slice(),
+                "0.24.1",
                 "0.26.7",
             ),
             (
-                &RUSTLS_SESSION_V0_23_23,
-                ["0.23.23", "0.23.41", "0.23.45"].as_slice(),
-                "0.23.22",
+                &RUSTLS_SESSION_V0_22_0,
+                ["0.22.0", "0.22.4", "0.23.23", "0.23.41", "0.23.45"].as_slice(),
+                "0.21.12",
                 "0.23.46",
             ),
         ] {
@@ -5238,6 +5399,19 @@ mod tests {
                 assert!(family.reviewed_checksum(checksum));
             }
             assert!(!family.reviewed_checksum(&[0; 16]));
+        }
+        // Between rustls's two spans: a 0.22 patch past the first is
+        // above it, and a 0.23 release before the second below it.
+        for (version, side) in [
+            ("0.22.5", LayoutSelection::AboveReviewedRange),
+            ("0.23.0", LayoutSelection::BelowFloor),
+            ("0.23.22", LayoutSelection::BelowFloor),
+        ] {
+            assert_eq!(
+                library_convention(&RUSTLS_SESSION_V0_22_0, &v(version)),
+                Err(side),
+                "{version}"
+            );
         }
         assert_eq!(TRACING_INSTRUMENTED_V0_1_40.range(), "0.1.40-0.1.44");
         assert_eq!(FUTURES_UTIL_ADAPTERS_V0_3_30.range(), "0.3.30-0.3.34");

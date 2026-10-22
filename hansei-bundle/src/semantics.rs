@@ -720,7 +720,10 @@ pub struct TlsSessionBinding {
     /// The common state's one-byte flags.
     pub may_send_application_data: TypedPath,
     pub may_receive_application_data: TypedPath,
-    pub has_sent_close_notify: TypedPath,
+    /// `None` for a release that keeps no such flag: rustls 0.22 sends
+    /// a close_notify without recording it, and sets `sent_fatal_alert`
+    /// for a fatal alert alone.
+    pub has_sent_close_notify: Option<TypedPath>,
     pub has_received_close_notify: TypedPath,
     pub has_seen_eof: TypedPath,
     pub sent_fatal_alert: TypedPath,
@@ -731,8 +734,8 @@ pub struct TlsSessionBinding {
     /// `core.common_state.sendable_tls`: the records written into the
     /// connection and not yet written to its socket — a `VecDeque` ring
     /// of encoded records, one `Vec<u8>` each, whose first one has
-    /// `prefix_used` bytes already sent. What the next flush or write
-    /// would send, and nothing else will.
+    /// `prefix_used` bytes already sent where the release counts them.
+    /// What the next flush or write would send, and nothing else will.
     pub sendable: SendableBinding,
     /// `core.common_state.received_plaintext`, a buffer of the same
     /// shape: the records decrypted and not yet read by the
@@ -766,8 +769,10 @@ pub struct TlsSessionBinding {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct SendableBinding {
     /// `….sendable_tls.prefix_used`: the bytes of the first record
-    /// already written.
-    pub prefix_used: TypedPath,
+    /// already written. `None` for a release that removes them from the
+    /// record instead, as rustls 0.22 does, so every byte the ring holds
+    /// is unsent.
+    pub prefix_used: Option<TypedPath>,
     /// `….sendable_tls.chunks.head` and `.len`: the ring's first slot
     /// and how many records it holds, unsigned words (through the index
     /// newtype where the standard library wraps one).

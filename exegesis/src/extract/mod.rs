@@ -2105,16 +2105,16 @@ mod tests {
     #[test]
     fn test_unsupported_names_what_the_reviews_do_not_cover() {
         use crate::detect::semantics::{
-            RUSTC_COROUTINE_V1_97, RUSTC_STD_ADAPTERS_V1_97, RUSTLS_SESSION_V0_23_23,
-            SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_RUSTLS_HANDSHAKE_V0_26_0,
-            TOKIO_RUSTLS_STREAM_V0_26_0, tokio_protocols_outside,
+            RUSTC_COROUTINE_V1_97, RUSTC_STD_ADAPTERS_V1_97, RUSTLS_SESSION_V0_22_0,
+            SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_RUSTLS_HANDSHAKE_V0_25_0,
+            TOKIO_RUSTLS_STREAM_V0_25_0, tokio_protocols_outside,
         };
 
         let tokio_rustls = UnreviewedRelease::Version {
             package: "tokio-rustls",
             version: semver::Version::new(0, 27, 0),
             newer: true,
-            range: "0.26.0-0.26.6".to_owned(),
+            range: "0.25.0-0.26.6".to_owned(),
         };
         let rustls = UnreviewedRelease::Version {
             package: "rustls",
@@ -2140,12 +2140,12 @@ mod tests {
                 (
                     tokio_rustls,
                     [
-                        TOKIO_RUSTLS_STREAM_V0_26_0.family,
-                        TOKIO_RUSTLS_HANDSHAKE_V0_26_0.family,
+                        TOKIO_RUSTLS_STREAM_V0_25_0.family,
+                        TOKIO_RUSTLS_HANDSHAKE_V0_25_0.family,
                     ]
                     .into(),
                 ),
-                (rustls, [RUSTLS_SESSION_V0_23_23.family].into()),
+                (rustls, [RUSTLS_SESSION_V0_22_0.family].into()),
                 (sprockets, [SPROCKETS_TLS_STREAM_D2B68E4.family].into()),
             ]),
             ..Default::default()
@@ -2158,7 +2158,7 @@ mod tests {
                 "rustls 0.23.22 is older than the supported version range: \
                  0.23.23-0.23.45",
                 "tokio-rustls 0.27.0 is newer than the supported version range: \
-                 0.26.0-0.26.6",
+                 0.25.0-0.26.6",
                 "sprockets-tls revision 0123abc is not a reviewed revision of \
                  sprockets-tls-stream",
             ]
