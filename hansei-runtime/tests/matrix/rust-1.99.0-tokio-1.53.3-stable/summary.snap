@@ -589,7 +589,7 @@ task: select_combinator::joiner::{async_fn_env#0}
     Unresumed @ select-combinator.rs:42
     Returned @ select-combinator.rs:46
     Panicked @ select-combinator.rs:46
-    Suspend0 @ join.rs:203 (awaited at select-combinator.rs:44)
+    Suspend0 @ join.rs:207 (awaited at select-combinator.rs:44)
 task: select_combinator::mapper::{async_fn_env#0}
   kind: AsyncFn
   decl: select-combinator.rs:93

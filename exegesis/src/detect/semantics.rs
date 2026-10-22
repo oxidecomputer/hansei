@@ -97,13 +97,13 @@ impl Releases {
         }
     }
 
-    /// The whole range as a warning names it: `1.47.0-1.53.2`.
+    /// The whole range as a warning names it: `1.47.0-1.53.3`.
     pub fn range(&self) -> String {
         release_range(self.floor(), self.ceiling())
     }
 
     /// The range a version outside the review is told it misses: what
-    /// was read of its own minor — `1.51.0-1.51.5` for an unread 1.51.6,
+    /// was read of its own minor — `1.51.0-1.51.6` for an unread 1.51.7,
     /// `1.52.1-1.52.4` for a 1.52.0 left out — else, past every span,
     /// the whole range, and between two spans of other minors the one
     /// below it.
@@ -2202,10 +2202,10 @@ pub const TOKIO_RELEASES: Releases = Releases(&[
     ((1, 48, 0), (1, 48, 0)),
     ((1, 49, 0), (1, 49, 0)),
     ((1, 50, 0), (1, 50, 0)),
-    ((1, 51, 0), (1, 51, 5)),
+    ((1, 51, 0), (1, 51, 6)),
     ((1, 52, 0), (1, 52, 0)),
     ((1, 52, 1), (1, 52, 4)),
-    ((1, 53, 0), (1, 53, 2)),
+    ((1, 53, 0), (1, 53, 3)),
 ]);
 
 /// tokio's `select!` as 1.47 through 1.53 expand it (`src/macros/select.rs`;
@@ -2265,7 +2265,7 @@ pub const TOKIO_SELECT_V1_47: LibraryConvention = LibraryConvention {
                 0x78, 0x50,
             ],
         ),
-        // src/macros/select.rs, 1.53.0 through 1.53.2
+        // src/macros/select.rs, 1.53.0 through 1.53.3
         (
             "src/macros/select.rs",
             [
@@ -2312,7 +2312,7 @@ pub const TOKIO_INTERVAL_TICK_V1_47: LibraryConvention = LibraryConvention {
                 0xf7, 0xfa,
             ],
         ),
-        // src/time/interval.rs, 1.53.0 through 1.53.2
+        // src/time/interval.rs, 1.53.0 through 1.53.3
         (
             "src/time/interval.rs",
             [
@@ -3910,14 +3910,15 @@ pub struct StateProtocol {
 /// `batch_semaphore::Acquire`'s protocol, tokio 1.47 through 1.53
 /// (`sync/batch_semaphore.rs`, unchanged across the range but for the
 /// queue's type alias, the closed bit surviving `forget_permits`'
-/// compare-exchange from 1.53, the trace hook's signature, and where
-/// 1.51.5 and 1.53.2 set `queued`): `Acquire::poll` forwards to
+/// compare-exchange from 1.53, the trace hook's signature, where 1.51.5,
+/// 1.51.6, 1.53.2 and 1.53.3 set `queued`, and how 1.51.6's and 1.53.3's
+/// `close` wakes the nodes it pops): `Acquire::poll` forwards to
 /// `poll_acquire` with the node embedded in the future; a `Pending`
 /// leaves `queued` set and a `Ready(Ok)` clears it, so `queued` records
-/// that a poll linked the node and outlives the grant. (1.51.5 and
-/// 1.53.2 set it inside `poll_acquire`, before the node is assigned
-/// permits or linked, and zero the node's counter on an immediate
-/// grant, so that a future
+/// that a poll linked the node and outlives the grant. (1.51.5, 1.51.6,
+/// 1.53.2 and 1.53.3 set it inside `poll_acquire`, before the node is
+/// assigned permits or linked, and zero the node's counter on an
+/// immediate grant, so that a future
 /// dropped mid-poll returns what it holds; what a returned poll leaves
 /// is the same.) `poll_acquire` returns the closed error on the permit
 /// word's low bit or the wait list's own flag, takes what the permit
@@ -3926,7 +3927,9 @@ pub struct StateProtocol {
 /// lock. `add_permits_locked` assigns released permits to the list's
 /// back node, pops it and takes its waker once its counter reaches
 /// zero, and hands leftovers back to the permit word only when the
-/// list is empty; `close` sets both closed flags and pops every node.
+/// list is empty; `close` sets both closed flags and pops every node
+/// (1.51.6 and 1.53.3 in batches, waking each with the list's lock
+/// released, where earlier releases wake every node under it).
 /// Hence: a node whose counter is zero has been granted whole and
 /// left the queue; a node still needing permits is queued exactly when
 /// `queued` is set and the semaphore is open; and a nonzero permit
@@ -3969,6 +3972,14 @@ pub const TOKIO_ACQUIRE_STATE_V1_47: StateProtocol = StateProtocol {
                 0x43, 0x19,
             ],
         ),
+        // src/sync/batch_semaphore.rs, 1.51.6
+        (
+            "src/sync/batch_semaphore.rs",
+            [
+                0x70, 0x74, 0x62, 0x8e, 0x48, 0x88, 0xa5, 0xbd, 0xe5, 0x3b, 0x16, 0x72, 0x3e, 0xf8,
+                0x5f, 0x22,
+            ],
+        ),
         // src/sync/batch_semaphore.rs, 1.53.0 and 1.53.1
         (
             "src/sync/batch_semaphore.rs",
@@ -3983,6 +3994,14 @@ pub const TOKIO_ACQUIRE_STATE_V1_47: StateProtocol = StateProtocol {
             [
                 0xdb, 0x0f, 0xca, 0x05, 0x85, 0x2c, 0xa6, 0x09, 0x50, 0x68, 0x97, 0xa2, 0xab, 0x3a,
                 0xf5, 0x7e,
+            ],
+        ),
+        // src/sync/batch_semaphore.rs, 1.53.3
+        (
+            "src/sync/batch_semaphore.rs",
+            [
+                0xe7, 0xbf, 0x07, 0xe6, 0xe4, 0x1b, 0xed, 0x2c, 0x61, 0xf3, 0x07, 0x47, 0x77, 0x56,
+                0xdf, 0xb3,
             ],
         ),
     ],
@@ -4041,7 +4060,7 @@ pub const TOKIO_JOIN_HANDLE_STATE_V1_47: StateProtocol = StateProtocol {
                 0x1b, 0x98,
             ],
         ),
-        // src/runtime/task/join.rs, 1.53.2
+        // src/runtime/task/join.rs, 1.53.2 and 1.53.3
         (
             "src/runtime/task/join.rs",
             [
@@ -4049,7 +4068,7 @@ pub const TOKIO_JOIN_HANDLE_STATE_V1_47: StateProtocol = StateProtocol {
                 0x2f, 0xfd,
             ],
         ),
-        // src/runtime/task/harness.rs, 1.47.0 through 1.53.2
+        // src/runtime/task/harness.rs, 1.47.0 through 1.53.3
         (
             "src/runtime/task/harness.rs",
             [
@@ -4107,7 +4126,7 @@ pub const TOKIO_SLEEP_STATE_V1_47: StateProtocol = StateProtocol {
                 0x04, 0xac,
             ],
         ),
-        // src/time/sleep.rs, 1.53.2
+        // src/time/sleep.rs, 1.53.2 and 1.53.3
         (
             "src/time/sleep.rs",
             [
@@ -4131,7 +4150,7 @@ pub const TOKIO_SLEEP_STATE_V1_47: StateProtocol = StateProtocol {
                 0x59, 0x56,
             ],
         ),
-        // src/runtime/time/entry.rs, 1.53.0 through 1.53.2
+        // src/runtime/time/entry.rs, 1.53.0 through 1.53.3
         (
             "src/runtime/time/entry.rs",
             [
@@ -4146,9 +4165,11 @@ pub const TOKIO_SLEEP_STATE_V1_47: StateProtocol = StateProtocol {
 /// (`runtime/io/scheduled_io.rs`, `runtime/io/registration.rs`,
 /// `runtime/io/driver.rs`, and `io/util/{read,read_exact,read_buf,
 /// write,write_all,write_buf,flush,shutdown}.rs`, unchanged across the
-/// range but for a list type alias, the trace hook's signature, and
-/// 1.51.5's and 1.53.2's driver keeping a registration whose OS
-/// deregister failed): the registration's readiness word packs the
+/// range but for a list type alias, the trace hook's signature,
+/// 1.51.5's, 1.51.6's, 1.53.2's and 1.53.3's driver keeping a
+/// registration whose OS deregister failed, and 1.53.3's driver
+/// re-exporting io_uring's register result): the registration's
+/// readiness word packs the
 /// delivered `Ready` bits in its low sixteen, a tick above
 /// them and the shutdown flag at bit 31. Each operation future polls
 /// the stream its `&mut` names and nothing else — `poll_read` for the
@@ -4193,7 +4214,7 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
                 0x67, 0xb7,
             ],
         ),
-        // src/runtime/io/scheduled_io.rs, 1.53.0 through 1.53.2
+        // src/runtime/io/scheduled_io.rs, 1.53.0 through 1.53.3
         (
             "src/runtime/io/scheduled_io.rs",
             [
@@ -4209,7 +4230,7 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
                 0xbd, 0x17,
             ],
         ),
-        // src/runtime/io/registration.rs, 1.51.0 through 1.52.4, 1.53.2
+        // src/runtime/io/registration.rs, 1.51.0 through 1.52.4, 1.53.2 and 1.53.3
         (
             "src/runtime/io/registration.rs",
             [
@@ -4249,7 +4270,7 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
                 0x92, 0x78,
             ],
         ),
-        // src/runtime/io/driver.rs, 1.51.5
+        // src/runtime/io/driver.rs, 1.51.5 and 1.51.6
         (
             "src/runtime/io/driver.rs",
             [
@@ -4273,7 +4294,15 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
                 0x7a, 0x37,
             ],
         ),
-        // src/io/util/read.rs, 1.47.0 through 1.53.2
+        // src/runtime/io/driver.rs, 1.53.3
+        (
+            "src/runtime/io/driver.rs",
+            [
+                0xf1, 0x2b, 0xe3, 0x13, 0x13, 0xc6, 0xde, 0x5c, 0xb3, 0x56, 0x75, 0x4d, 0x79, 0x22,
+                0x44, 0xff,
+            ],
+        ),
+        // src/io/util/read.rs, 1.47.0 through 1.53.3
         (
             "src/io/util/read.rs",
             [
@@ -4281,7 +4310,7 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
                 0xa9, 0xd2,
             ],
         ),
-        // src/io/util/read_exact.rs, 1.47.0 through 1.53.2
+        // src/io/util/read_exact.rs, 1.47.0 through 1.53.3
         (
             "src/io/util/read_exact.rs",
             [
@@ -4289,7 +4318,7 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
                 0x71, 0x07,
             ],
         ),
-        // src/io/util/read_buf.rs, 1.47.0 through 1.53.2
+        // src/io/util/read_buf.rs, 1.47.0 through 1.53.3
         (
             "src/io/util/read_buf.rs",
             [
@@ -4297,7 +4326,7 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
                 0x29, 0x00,
             ],
         ),
-        // src/io/util/write.rs, 1.47.0 through 1.53.2
+        // src/io/util/write.rs, 1.47.0 through 1.53.3
         (
             "src/io/util/write.rs",
             [
@@ -4305,7 +4334,7 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
                 0x0e, 0x62,
             ],
         ),
-        // src/io/util/write_all.rs, 1.47.0 through 1.53.2
+        // src/io/util/write_all.rs, 1.47.0 through 1.53.3
         (
             "src/io/util/write_all.rs",
             [
@@ -4321,7 +4350,7 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
                 0xc0, 0x88,
             ],
         ),
-        // src/io/util/write_buf.rs, 1.50.0 through 1.53.2
+        // src/io/util/write_buf.rs, 1.50.0 through 1.53.3
         (
             "src/io/util/write_buf.rs",
             [
@@ -4329,7 +4358,7 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
                 0xbd, 0x87,
             ],
         ),
-        // src/io/util/flush.rs, 1.47.0 through 1.53.2
+        // src/io/util/flush.rs, 1.47.0 through 1.53.3
         (
             "src/io/util/flush.rs",
             [
@@ -4337,7 +4366,7 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
                 0x09, 0x5f,
             ],
         ),
-        // src/io/util/shutdown.rs, 1.47.0 through 1.53.2
+        // src/io/util/shutdown.rs, 1.47.0 through 1.53.3
         (
             "src/io/util/shutdown.rs",
             [
@@ -4354,8 +4383,8 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
 /// in the trace hook's signature, a `take_waker` on the receiver's
 /// drop and a test-only constructor, `list.rs` and `block.rs` only in
 /// `len`'s closed-marker accounting, `unsafe` block reflows and the
-/// wrapping block indices 1.51.5 and 1.53.2 use in `grow`, `has_value`
-/// and `reclaim_blocks` — `pop`, `try_advancing_head` and `Block::read`
+/// wrapping block indices 1.51.5, 1.51.6, 1.53.2 and 1.53.3 use in
+/// `grow`, `has_value` and `reclaim_blocks` — `pop`, `try_advancing_head` and `Block::read`
 /// are byte-identical — and `atomic_waker.rs` not at all):
 /// `Receiver::recv` awaits `poll_fn(|cx| self.chan.recv(cx))`, and
 /// `Rx::recv` checks the cooperative budget, then pops: the head
@@ -4407,7 +4436,7 @@ pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
                 0x2f, 0x09,
             ],
         ),
-        // src/sync/mpsc/chan.rs, 1.51.5
+        // src/sync/mpsc/chan.rs, 1.51.5 and 1.51.6
         (
             "src/sync/mpsc/chan.rs",
             [
@@ -4423,7 +4452,7 @@ pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
                 0x2f, 0x5f,
             ],
         ),
-        // src/sync/mpsc/chan.rs, 1.53.2
+        // src/sync/mpsc/chan.rs, 1.53.2 and 1.53.3
         (
             "src/sync/mpsc/chan.rs",
             [
@@ -4471,7 +4500,7 @@ pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
                 0x53, 0xba,
             ],
         ),
-        // src/sync/mpsc/list.rs, 1.51.5, 1.53.2
+        // src/sync/mpsc/list.rs, 1.51.5 and 1.51.6, 1.53.2 and 1.53.3
         (
             "src/sync/mpsc/list.rs",
             [
@@ -4511,7 +4540,7 @@ pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
                 0x49, 0xc6,
             ],
         ),
-        // src/sync/mpsc/block.rs, 1.51.5, 1.53.2
+        // src/sync/mpsc/block.rs, 1.51.5 and 1.51.6, 1.53.2 and 1.53.3
         (
             "src/sync/mpsc/block.rs",
             [
@@ -4519,7 +4548,7 @@ pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
                 0x8a, 0x0b,
             ],
         ),
-        // src/sync/task/atomic_waker.rs, 1.47.0 through 1.53.2
+        // src/sync/task/atomic_waker.rs, 1.47.0 through 1.53.3
         (
             "src/sync/task/atomic_waker.rs",
             [
@@ -4533,7 +4562,7 @@ pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
 /// `Notified`'s protocol, tokio 1.47 through 1.53 (`sync/notify.rs`;
 /// across the range the wait list's type alias changed, `notify_waiters`
 /// gained a guard type, 1.53 re-checks the `notify_waiters` count
-/// under the lock in the `Waiting` arm, and 1.53.2 passes
+/// under the lock in the `Waiting` arm, and 1.53.2 and 1.53.3 pass
 /// `poll_notified` the poll's `Context`, not its waker, for the trace
 /// hook): in `Init`, `poll_notified`
 /// consumes a stored `notify_one` — the state word's `NOTIFIED` — or a
@@ -4594,7 +4623,7 @@ pub const TOKIO_NOTIFIED_STATE_V1_47: StateProtocol = StateProtocol {
                 0xf7, 0xe0,
             ],
         ),
-        // src/sync/notify.rs, 1.53.2
+        // src/sync/notify.rs, 1.53.2 and 1.53.3
         (
             "src/sync/notify.rs",
             [
@@ -4650,7 +4679,7 @@ pub const TOKIO_ONESHOT_RECV_STATE_V1_47: StateProtocol = StateProtocol {
                 0x56, 0x7e,
             ],
         ),
-        // src/sync/oneshot.rs, 1.50.0 through 1.51.5
+        // src/sync/oneshot.rs, 1.50.0 through 1.51.6
         (
             "src/sync/oneshot.rs",
             [
@@ -4674,7 +4703,7 @@ pub const TOKIO_ONESHOT_RECV_STATE_V1_47: StateProtocol = StateProtocol {
                 0xb5, 0xee,
             ],
         ),
-        // src/sync/oneshot.rs, 1.53.2
+        // src/sync/oneshot.rs, 1.53.2 and 1.53.3
         (
             "src/sync/oneshot.rs",
             [
@@ -4708,7 +4737,7 @@ pub const TOKIO_ACQUIRE_OWNERS_V1_47: AcquireOwners = AcquireOwners {
                 0xdb, 0xd1,
             ],
         ),
-        // src/sync/mutex.rs, 1.48.0 through 1.53.2
+        // src/sync/mutex.rs, 1.48.0 through 1.53.3
         (
             "src/sync/mutex.rs",
             [
@@ -4748,7 +4777,7 @@ pub const TOKIO_ACQUIRE_OWNERS_V1_47: AcquireOwners = AcquireOwners {
                 0x74, 0x42,
             ],
         ),
-        // src/sync/rwlock.rs, 1.51.3 through 1.51.5, 1.52.3 through 1.53.2
+        // src/sync/rwlock.rs, 1.51.3 through 1.51.6, 1.52.3 through 1.53.3
         (
             "src/sync/rwlock.rs",
             [
@@ -4772,7 +4801,7 @@ pub const TOKIO_ACQUIRE_OWNERS_V1_47: AcquireOwners = AcquireOwners {
                 0x37, 0xeb,
             ],
         ),
-        // src/sync/semaphore.rs, 1.53.0 through 1.53.2
+        // src/sync/semaphore.rs, 1.53.0 through 1.53.3
         (
             "src/sync/semaphore.rs",
             [
@@ -4820,7 +4849,7 @@ pub const TOKIO_ACQUIRE_OWNERS_V1_47: AcquireOwners = AcquireOwners {
                 0xc2, 0x0d,
             ],
         ),
-        // src/sync/mpsc/bounded.rs, 1.51.5
+        // src/sync/mpsc/bounded.rs, 1.51.5 and 1.51.6
         (
             "src/sync/mpsc/bounded.rs",
             [
@@ -4836,7 +4865,7 @@ pub const TOKIO_ACQUIRE_OWNERS_V1_47: AcquireOwners = AcquireOwners {
                 0xbe, 0x68,
             ],
         ),
-        // src/sync/mpsc/bounded.rs, 1.53.2
+        // src/sync/mpsc/bounded.rs, 1.53.2 and 1.53.3
         (
             "src/sync/mpsc/bounded.rs",
             [
@@ -5161,12 +5190,12 @@ mod tests {
             .map(|p| p.family)
             .chain([TOKIO_ACQUIRE_OWNERS_V1_47.family]);
         for (version, range, newer) in [
-            ("1.54.0", "1.47.0-1.53.2", true),
-            ("1.53.3", "1.53.0-1.53.2", true),
-            ("1.51.6", "1.51.0-1.51.5", true),
+            ("1.54.0", "1.47.0-1.53.3", true),
+            ("1.53.4", "1.53.0-1.53.3", true),
+            ("1.51.7", "1.51.0-1.51.6", true),
             // Past the later of a split minor's two spans.
             ("1.52.5", "1.52.1-1.52.4", true),
-            ("1.46.3", "1.47.0-1.53.2", false),
+            ("1.46.3", "1.47.0-1.53.3", false),
         ] {
             assert_eq!(
                 tokio_protocols_outside(&v(version)),
@@ -5184,7 +5213,7 @@ mod tests {
             );
         }
         for version in [
-            "1.47.0", "1.47.5", "1.48.0", "1.51.4", "1.52.0", "1.52.1", "1.53.2",
+            "1.47.0", "1.47.5", "1.48.0", "1.51.4", "1.52.0", "1.52.1", "1.53.3",
         ] {
             assert_eq!(tokio_protocols_outside(&v(version)), None, "{version}");
         }
@@ -5296,9 +5325,9 @@ mod tests {
             ),
             (
                 &TOKIO_INTERVAL_TICK_V1_47,
-                ["1.47.0", "1.47.5", "1.48.0", "1.52.4", "1.53.0", "1.53.2"].as_slice(),
+                ["1.47.0", "1.47.5", "1.48.0", "1.52.4", "1.53.0", "1.53.3"].as_slice(),
                 "1.46.1",
-                "1.53.3",
+                "1.53.4",
             ),
             (
                 &HYPER_H1_CONN_V1_6_0,
@@ -5418,7 +5447,7 @@ mod tests {
         assert_eq!(HYPER_UTIL_TOKIO_SLEEP_V0_1_10.range(), "0.1.10-0.1.20");
         assert_eq!(TOKIO_STREAM_WATCH_V0_1_14.range(), "0.1.14-0.1.19");
         assert_eq!(TOKIO_UTIL_REUSABLE_BOX_V0_7_11.range(), "0.7.11-0.7.19");
-        assert_eq!(TOKIO_INTERVAL_TICK_V1_47.range(), "1.47.0-1.53.2");
+        assert_eq!(TOKIO_INTERVAL_TICK_V1_47.range(), "1.47.0-1.53.3");
         // Seven files reviewed at seven releases: every revision of
         // each is listed once.
         assert_eq!(HYPER_H1_CONN_V1_6_0.range(), "1.6.0-1.10.1");
@@ -5506,14 +5535,14 @@ mod tests {
             ),
         ];
         for (kind, rule) in kinds {
-            for version in ["1.47.0", "1.47.5", "1.49.0", "1.51.0", "1.52.4", "1.53.2"] {
+            for version in ["1.47.0", "1.47.5", "1.49.0", "1.51.0", "1.52.4", "1.53.3"] {
                 assert_eq!(
                     tokio_state_protocol(kind, Some(&v(version))).map(|p| p.kind),
                     Some(rule),
                     "{kind:?} at {version}"
                 );
             }
-            for version in ["1.46.9", "1.51.6", "1.52.5", "1.53.3", "1.54.0", "2.0.0"] {
+            for version in ["1.46.9", "1.51.7", "1.52.5", "1.53.4", "1.54.0", "2.0.0"] {
                 assert_eq!(
                     tokio_state_protocol(kind, Some(&v(version))),
                     None,
@@ -5540,7 +5569,7 @@ mod tests {
     fn test_acquire_owners_bind_only_inside_the_reviewed_tokio_range() {
         let v = |s: &str| semver::Version::parse(s).unwrap();
         let lock = "tokio::sync::mutex::{impl#3}::lock::{async_fn_env#0}<u32>";
-        for version in ["1.47.0", "1.49.0", "1.51.2", "1.53.0", "1.53.2"] {
+        for version in ["1.47.0", "1.49.0", "1.51.2", "1.53.0", "1.53.3"] {
             assert_eq!(
                 tokio_acquire_owner(lock, Some(&v(version))),
                 Some("tokio::sync::Mutex"),
@@ -5548,7 +5577,7 @@ mod tests {
             );
         }
         for version in [
-            "1.46.9", "1.51.6", "1.52.5", "1.53.3", "1.54.0", "0.47.0", "2.47.0",
+            "1.46.9", "1.51.7", "1.52.5", "1.53.4", "1.54.0", "0.47.0", "2.47.0",
         ] {
             assert_eq!(
                 tokio_acquire_owner(lock, Some(&v(version))),
