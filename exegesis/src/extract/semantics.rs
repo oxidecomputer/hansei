@@ -2437,7 +2437,8 @@ pub(super) fn bind_semantics(
             // shape this enum then actually has; anything less leaves the
             // storage unavailable, with the reason beside it.
             match bind_coroutine(ty, seed, types, names, strings) {
-                Ok((rule, layout)) => {
+                Ok((rule, layout, mut unlisted)) => {
+                    draft.issues.append(&mut unlisted);
                     draft.plan = Some(coroutine_plan(ty, &rule, &layout, types, strings));
                     draft.coroutine = Some(layout);
                     draft.coroutine_rule = Some(rule);
@@ -6905,14 +6906,15 @@ fn coroutine_kind_rule(ty: BundleTypeId, seed: &Seed, names: &[Option<String>]) 
 /// each state's members are classed: an `Unresumed`'s are its arguments,
 /// a suspended state's are the locals live across its await, except
 /// that an async block's captures, which the state kept whether or not
-/// the body has moved them out, are uncertain.
+/// the body has moved them out, are uncertain. A member the layout
+/// cannot list comes back as a decline beside the layout that stands.
 fn bind_coroutine(
     ty: BundleTypeId,
     seed: &Seed,
     types: &TypeTable,
     names: &[Option<String>],
     strings: &mut StringInterner,
-) -> Result<(RuleKey, CoroutineLayout), Decline> {
+) -> Result<(RuleKey, CoroutineLayout, Vec<Decline>), Decline> {
     let (producer, convention) = match &seed.compiler {
         Some(CompilerVerdict::Supported {
             producer,
@@ -6942,7 +6944,7 @@ fn bind_coroutine(
             ));
         }
     };
-    let states = coroutine_states(
+    let (states, unlisted) = coroutine_states(
         ty,
         kind == SemanticRuleKind::RustcAsyncBlock,
         types,
@@ -6961,18 +6963,25 @@ fn bind_coroutine(
             rule: SemanticRuleId(u32::MAX),
             states,
         },
+        unlisted,
     ))
 }
 
 /// Hold the final enum to the convention's shape and class each state's
 /// members. `strings` is read only, for the variant keys.
+///
+/// A state lists a member only when the path to it meets the
+/// validator's rule: a member whose type has no known size (a DIE the
+/// reader did not model) is left out of the state, and a decline that
+/// names it is returned beside the states. The rest of the layout still
+/// binds.
 fn coroutine_states(
     ty: BundleTypeId,
     is_block: bool,
     types: &TypeTable,
     names: &[Option<String>],
     strings: &StringInterner,
-) -> Result<Vec<CoroutineState>, Decline> {
+) -> Result<(Vec<CoroutineState>, Vec<Decline>), Decline> {
     let Some(TypeDef::Enum { shape, .. }) = types.get(ty) else {
         return Err((
             SemanticIssueKind::MissingLayout,
@@ -6994,6 +7003,7 @@ fn coroutine_states(
             .map(|m| (m.name, m.ty, m.offset))
             .collect();
     let mut states = Vec::with_capacity(shape.variants.len());
+    let mut unlisted = Vec::new();
     for (index, variant) in shape.variants.iter().enumerate() {
         let key = strings.get(variant.name).unwrap_or_default();
         if key != index.to_string() {
@@ -7029,6 +7039,23 @@ fn coroutine_states(
                 ));
             }
         }
+        let mut listed = Vec::with_capacity(members.len());
+        for member in members {
+            let steps = vec![
+                Step::Variant(variant.name),
+                Step::Member(MemberRef::Named(member.name)),
+            ];
+            match checked_path(types, ty, steps, member.ty) {
+                Ok(_) => listed.push(member),
+                Err((kind, detail)) => unlisted.push((
+                    kind,
+                    format!(
+                        "{expected} cannot list {:?}: {detail}",
+                        strings.get(member.name).unwrap_or_default()
+                    ),
+                )),
+            }
+        }
         let (locals, uncertain_locals): (Vec<StrRef>, Vec<StrRef>) = match stage {
             CoroutinePhase::Returned | CoroutinePhase::Panicked => {
                 if !members.is_empty() {
@@ -7039,10 +7066,10 @@ fn coroutine_states(
                 }
                 (Vec::new(), Vec::new())
             }
-            CoroutinePhase::Unresumed => (members.iter().map(|m| m.name).collect(), Vec::new()),
+            CoroutinePhase::Unresumed => (listed.iter().map(|m| m.name).collect(), Vec::new()),
             CoroutinePhase::Suspended => {
-                let (captures, live): (Vec<_>, Vec<_>) = members
-                    .iter()
+                let (captures, live): (Vec<_>, Vec<_>) = listed
+                    .into_iter()
                     .partition(|m| is_block && unresumed.contains(&(m.name, m.ty, m.offset)));
                 (
                     live.into_iter().map(|m| m.name).collect(),
@@ -7058,7 +7085,7 @@ fn coroutine_states(
             uncertain_locals,
         });
     }
-    Ok(states)
+    Ok((states, unlisted))
 }
 
 #[cfg(test)]
@@ -7308,7 +7335,9 @@ mod tests {
     #[test]
     fn test_async_fn_states_class_arguments_and_live_locals() {
         let e = env("async_fn", FN, &[]);
-        let states = coroutine_states(e.env, false, &e.types, &e.names, &e.strings).unwrap();
+        let states = coroutine_states(e.env, false, &e.types, &e.names, &e.strings)
+            .unwrap()
+            .0;
         assert_eq!(
             render(&e, &states),
             [
@@ -7336,13 +7365,73 @@ mod tests {
             ],
             &[],
         );
-        let states = coroutine_states(e.env, true, &e.types, &e.names, &e.strings).unwrap();
+        let states = coroutine_states(e.env, true, &e.types, &e.names, &e.strings)
+            .unwrap()
+            .0;
         // `cap` sits at slot 0 in both; `other` moved from slot 4 to 8.
         assert_eq!(render(&e, &states)[3], "3:Suspended[__awaitee,other](cap)");
         // The same shape as an async fn admits every member as live: its
         // arguments were already stripped from the suspended states.
-        let states = coroutine_states(e.env, false, &e.types, &e.names, &e.strings).unwrap();
+        let states = coroutine_states(e.env, false, &e.types, &e.names, &e.strings)
+            .unwrap()
+            .0;
         assert_eq!(render(&e, &states)[3], "3:Suspended[cap,__awaitee,other]()");
+    }
+
+    /// A member whose type has no known size (a DIE the reader did not
+    /// model) has no path the validator accepts, so its state leaves it
+    /// out, a decline names it, and the rest of the layout binds. An
+    /// opaque whose size is recorded, as a demoted type's is, is listed
+    /// like any other member.
+    #[test]
+    fn test_coroutine_states_leave_out_an_unsized_member() {
+        let mut e = env(
+            "async_fn",
+            &[
+                ("Unresumed", &["arg", "unmodelled"]),
+                ("Returned", &[]),
+                ("Panicked", &[]),
+                ("Suspend0", &["demoted", "unmodelled", "__awaitee"]),
+            ],
+            &[],
+        );
+        let unresolved = e.strings.intern("<unresolved>");
+        let unsized_ty = BundleTypeId(e.types.types.len() as u32);
+        let demoted_ty = BundleTypeId(unsized_ty.0 + 1);
+        e.types.types.push(TypeDef::Opaque {
+            name: unresolved,
+            size: None,
+        });
+        e.types.types.push(TypeDef::Opaque {
+            name: unresolved,
+            size: Some(4),
+        });
+        e.names.extend([None, None]);
+        for def in &mut e.types.types {
+            let TypeDef::Struct { members, .. } = def else {
+                continue;
+            };
+            for m in members {
+                match e.strings.get(m.name) {
+                    Some("unmodelled") => m.ty = unsized_ty,
+                    Some("demoted") => m.ty = demoted_ty,
+                    _ => {}
+                }
+            }
+        }
+        let (states, unlisted) =
+            coroutine_states(e.env, false, &e.types, &e.names, &e.strings).unwrap();
+        let rendered = render(&e, &states);
+        assert_eq!(rendered[0], "0:Unresumed[arg]()");
+        assert_eq!(rendered[3], "3:Suspended[demoted,__awaitee]()");
+        assert_eq!(unlisted.len(), 2, "{unlisted:?}");
+        for ((kind, detail), state) in unlisted.iter().zip(["Unresumed", "Suspend0"]) {
+            assert_eq!(*kind, SemanticIssueKind::MissingLayout);
+            assert!(
+                detail.starts_with(&format!("{state} cannot list \"unmodelled\": ")),
+                "{detail}"
+            );
+        }
     }
 
     #[test]
@@ -10929,7 +11018,9 @@ mod tests {
             ],
             &[],
         );
-        let states = coroutine_states(e.env, false, &e.types, &e.names, &e.strings).unwrap();
+        let states = coroutine_states(e.env, false, &e.types, &e.names, &e.strings)
+            .unwrap()
+            .0;
         let layout = CoroutineLayout {
             rule: SemanticRuleId(u32::MAX),
             states,
@@ -10986,7 +11077,9 @@ mod tests {
             ],
             &[],
         );
-        let states = coroutine_states(e.env, true, &e.types, &e.names, &e.strings).unwrap();
+        let states = coroutine_states(e.env, true, &e.types, &e.names, &e.strings)
+            .unwrap()
+            .0;
         assert_eq!(render(&e, &states)[3], "3:Suspended[](__awaitee)");
         let layout = CoroutineLayout {
             rule: SemanticRuleId(u32::MAX),
