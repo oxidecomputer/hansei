@@ -166,7 +166,7 @@ fn release_range(floor: Release, ceiling: Release) -> String {
 pub const RUSTC_RELEASES: Releases = Releases(&[
     ((1, 97, 0), (1, 97, 1)),
     ((1, 98, 0), (1, 98, 1)),
-    ((1, 99, 0), (1, 99, 0)),
+    ((1, 99, 0), (1, 99, 1)),
 ]);
 
 /// One reviewed rustc convention: its name, as the bundle's `Rustc`
@@ -188,7 +188,7 @@ impl RustcConvention {
         subject(self.family)
     }
 
-    /// The range as a warning names it: `1.97.0-1.99.0`.
+    /// The range as a warning names it: `1.97.0-1.99.1`.
     pub fn range(&self) -> String {
         self.releases.range()
     }
@@ -241,7 +241,7 @@ pub const RUSTC_STD_ADAPTERS_V1_97: RustcConvention = RustcConvention {
     family: "rustc-std-adapters-1.97",
     releases: RUSTC_RELEASES,
     checksums: &[
-        // library/core/src/future/future.rs, 1.97.0 through 1.99.0
+        // library/core/src/future/future.rs, 1.97.0 through 1.99.1
         (
             "library/core/src/future/future.rs",
             [
@@ -265,7 +265,7 @@ pub const RUSTC_STD_ADAPTERS_V1_97: RustcConvention = RustcConvention {
                 0xdb, 0x1b,
             ],
         ),
-        // library/alloc/src/boxed.rs, 1.99.0
+        // library/alloc/src/boxed.rs, 1.99.0 and 1.99.1
         (
             "library/alloc/src/boxed.rs",
             [
@@ -326,7 +326,7 @@ pub const RUSTC_CORE_PENDING_V1_97: RustcConvention = RustcConvention {
     family: "rustc-core-pending-1.97",
     releases: RUSTC_RELEASES,
     checksums: &[
-        // library/core/src/future/pending.rs, 1.97.0 through 1.99.0
+        // library/core/src/future/pending.rs, 1.97.0 through 1.99.1
         (
             "library/core/src/future/pending.rs",
             [
@@ -376,7 +376,7 @@ pub const RUSTC_STD_REFCOUNT_V1_97: RustcConvention = RustcConvention {
                 0x5c, 0xde,
             ],
         ),
-        // library/alloc/src/sync.rs, 1.99.0
+        // library/alloc/src/sync.rs, 1.99.0 and 1.99.1
         (
             "library/alloc/src/sync.rs",
             [
@@ -400,7 +400,7 @@ pub const RUSTC_STD_REFCOUNT_V1_97: RustcConvention = RustcConvention {
                 0x9c, 0x4b,
             ],
         ),
-        // library/alloc/src/rc.rs, 1.99.0
+        // library/alloc/src/rc.rs, 1.99.0 and 1.99.1
         (
             "library/alloc/src/rc.rs",
             [
@@ -436,7 +436,7 @@ pub const RUSTC_STD_FUTEX_MUTEX_V1_97: RustcConvention = RustcConvention {
                 0xda, 0x8c,
             ],
         ),
-        // library/std/src/sys/sync/mutex/futex.rs, 1.99.0
+        // library/std/src/sys/sync/mutex/futex.rs, 1.99.0 and 1.99.1
         (
             "library/std/src/sys/sync/mutex/futex.rs",
             [
@@ -475,7 +475,7 @@ pub fn rustc_conventions_outgrown(
 }
 
 /// The rustc versions the compiler convention reviews span between
-/// them, as a warning names it: `1.97.0-1.99.0`.
+/// them, as a warning names it: `1.97.0-1.99.1`.
 pub fn rustc_reviewed_range() -> String {
     let floor = RUSTC_CONVENTIONS.iter().map(|c| c.releases.floor()).min();
     let ceiling = RUSTC_CONVENTIONS.iter().map(|c| c.releases.ceiling()).max();
@@ -5138,8 +5138,8 @@ mod tests {
             RUSTC_STD_FUTEX_MUTEX_V1_97.subject(),
             "rustc-std-futex-mutex"
         );
-        assert_eq!(RUSTC_COROUTINE_V1_97.range(), "1.97.0-1.99.0");
-        assert_eq!(rustc_reviewed_range(), "1.97.0-1.99.0");
+        assert_eq!(RUSTC_COROUTINE_V1_97.range(), "1.97.0-1.99.1");
+        assert_eq!(rustc_reviewed_range(), "1.97.0-1.99.1");
     }
 
     /// A later review of one subject keeps that subject covered, and
