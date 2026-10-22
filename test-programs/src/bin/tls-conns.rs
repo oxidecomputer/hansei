@@ -364,13 +364,13 @@ async fn https_client(
 }
 
 /// (h) The client end: write until the socket takes no more, then read
-/// a reply without flushing. Each write hands its bytes to rustls,
-/// which writes the records the socket takes and keeps the rest; the
-/// write that leaves records behind is the one the socket refused, and
-/// nothing writes them again but another write or a flush.
+/// a reply without flushing. Each write is one record's worth, which
+/// rustls writes as far as the socket takes: the write the socket
+/// refuses leaves that one record behind, wherever the kernel cut it,
+/// and nothing writes it again but another write or a flush.
 async fn unflushed_client(mut stream: client::TlsStream<TcpStream>, ready: oneshot::Sender<()>) {
     census_expect::task("tls_conns::unflushed_client");
-    let chunk = vec![0u8; 64 * 1024];
+    let chunk = vec![0u8; 16 * 1024];
     while !stream.get_ref().1.wants_write() {
         let _ = stream
             .write(&chunk)
