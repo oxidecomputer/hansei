@@ -449,6 +449,32 @@ fn test_semantic_paths_reject_invalid_storage_and_endpoints() {
     }
 }
 
+/// A path the validator refuses is reported with the step that failed
+/// and the path named in full, since a bundle that fails validation is
+/// never written and its type ids cannot be looked up afterwards.
+#[test]
+fn test_semantic_path_errors_name_the_step_and_the_path() {
+    let cases = [
+        (
+            None,
+            "semantic path for type 3: step 0 reaches type 1, which is unsized \
+             (path child from Parent)",
+        ),
+        (
+            Some(16),
+            "semantic path for type 3: step 0 reaches 16 bytes at offset 8, \
+             out of bounds of type 3's 16 bytes (path child from Parent)",
+        ),
+    ];
+    for (size, expected) in cases {
+        let mut b = forwarding();
+        b.semantics.types.remove(0);
+        b.types.types[CHILD.0 as usize] = TypeDef::Opaque { name: FIELD, size };
+        let err = b.validate().unwrap_err().to_string();
+        assert_eq!(err, format!("corrupt tokio info: {expected}"));
+    }
+}
+
 /// An opaque whose size is recorded, as a type demoted for a member
 /// that overruns it is, is as sized as any other type: a semantic path
 /// may cross or land on it.

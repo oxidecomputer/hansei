@@ -377,11 +377,49 @@ impl<'a> Check<'a> {
             }
         }
         let target =
-            crate::io::semantic_path_target(&self.0.types, root, &Selector(path.steps.clone()))?;
+            crate::io::semantic_path_target(&self.0.types, root, &Selector(path.steps.clone()))
+                .map_err(|e| self.on_path(e, root, path))?;
         require(
             target == path.target,
             "path endpoint type differs from recorded target",
         )
+    }
+
+    /// `e` with the path it was found on named: the root type's name and
+    /// each step's, as `tokio-info dump` writes a walk's steps. A bundle
+    /// that fails validation is never written, so the ids the walk
+    /// reports cannot be looked up afterwards.
+    fn on_path(&self, e: Error, root: BundleTypeId, path: &TypedPath) -> Error {
+        let Error::Corrupt(message) = e else {
+            return e;
+        };
+        let s = |name| self.0.strings.get(name).unwrap_or("?");
+        let root_name = match self.0.types.get(root) {
+            Some(
+                TypeDef::Base { name, .. }
+                | TypeDef::Struct { name, .. }
+                | TypeDef::Union { name, .. }
+                | TypeDef::Enum { name, .. }
+                | TypeDef::CEnum { name, .. }
+                | TypeDef::Opaque { name, .. },
+            ) => s(*name),
+            _ => "?",
+        };
+        let steps: Vec<String> = path
+            .steps
+            .iter()
+            .map(|step| match step {
+                Step::Member(MemberRef::Named(name)) => s(*name).to_owned(),
+                Step::Member(MemberRef::Index(index)) => format!("%{index}"),
+                Step::Deref => "*".to_owned(),
+                Step::Variant(name) => format!("<{}>", s(*name)),
+                Step::ActiveVariant => "<active variant>".to_owned(),
+            })
+            .collect();
+        Error::Corrupt(format!(
+            "{message} (path {} from {root_name})",
+            steps.join(".")
+        ))
     }
 
     /// A path from `root` that lands on a pointer.

@@ -123,20 +123,31 @@ fn selector_target_with_policy(
         .ok_or_else(|| Error::Corrupt(format!("{what}: invalid root type {}", root.0)))?;
     let mut seen = vec![root];
     let mut offset = 0u64;
-    let inline = |parent, member: &MemberDef, offset: u64| -> Result<u64> {
-        let size = types.size_of(member.ty);
-        let end = size.and_then(|size| member.offset.checked_add(size));
+    let inline = |step: usize, parent: BundleTypeId, member: &MemberDef, offset: u64| {
+        let Some(size) = types.size_of(member.ty) else {
+            return Err(Error::Corrupt(format!(
+                "{what} for type {}: step {step} reaches type {}, which is unsized",
+                root.0, member.ty.0
+            )));
+        };
+        let parent_size = types.size_of(parent);
+        let end = member.offset.checked_add(size);
         if end
-            .zip(types.size_of(parent))
-            .is_none_or(|(end, size)| end > size)
+            .zip(parent_size)
+            .is_none_or(|(end, parent_size)| end > parent_size)
         {
             return Err(Error::Corrupt(format!(
-                "{what}: inline member is unsized or out of bounds"
+                "{what} for type {}: step {step} reaches {size} bytes at offset {}, \
+                 out of bounds of type {}'s {}",
+                root.0,
+                member.offset,
+                parent.0,
+                parent_size.map_or("unknown size".to_owned(), |s| format!("{s} bytes")),
             )));
         }
         offset
             .checked_add(member.offset)
-            .and_then(|offset| offset.checked_add(size?).map(|_| offset))
+            .and_then(|offset| offset.checked_add(size).map(|_| offset))
             .ok_or_else(|| Error::Corrupt(format!("{what}: inline offset overflow")))
     };
     for (step, item) in sel.steps().iter().enumerate() {
@@ -166,7 +177,7 @@ fn selector_target_with_policy(
                     ))
                 })?;
                 if semantic {
-                    offset = inline(current, member, offset)?;
+                    offset = inline(step, current, member, offset)?;
                 }
                 if seen.contains(&member.ty) {
                     return Err(Error::Corrupt(format!(
@@ -208,7 +219,7 @@ fn selector_target_with_policy(
                     ))
                 })?;
                 if semantic {
-                    offset = inline(current, &variant.payload, offset)?;
+                    offset = inline(step, current, &variant.payload, offset)?;
                 }
                 if seen.contains(&variant.payload.ty) {
                     return Err(Error::Corrupt(format!(
@@ -237,7 +248,8 @@ fn selector_target_with_policy(
     }
     if semantic && types.size_of(current).is_none() {
         return Err(Error::Corrupt(format!(
-            "{what}: unsized or opaque endpoint"
+            "{what} for type {}: endpoint type {} is unsized",
+            root.0, current.0
         )));
     }
     Ok(current)
