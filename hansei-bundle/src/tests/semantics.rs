@@ -96,7 +96,7 @@ fn base() -> Bundle {
         "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/time/interval.rs",
         "tokio-rustls",
         "0.26.4",
-        "tokio-rustls-stream-0.26.0",
+        "tokio-rustls-stream-0.25.0",
         "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.26.4/src/lib.rs",
         "sprockets-tls",
         "sprockets",

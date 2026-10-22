@@ -2762,12 +2762,12 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 // reviewed files.
                 "tokio-rustls" => {
                     use exegesis::detect::semantics::{
-                        TOKIO_RUSTLS_HANDSHAKE_V0_26_0, TOKIO_RUSTLS_STREAM_V0_26_0,
+                        TOKIO_RUSTLS_HANDSHAKE_V0_25_0, TOKIO_RUSTLS_STREAM_V0_25_0,
                     };
                     let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
                         unreachable!()
                     };
-                    let convention = [TOKIO_RUSTLS_STREAM_V0_26_0, TOKIO_RUSTLS_HANDSHAKE_V0_26_0]
+                    let convention = [TOKIO_RUSTLS_STREAM_V0_25_0, TOKIO_RUSTLS_HANDSHAKE_V0_25_0]
                         .into_iter()
                         .find(|convention| convention.family == s(*family))
                         .unwrap_or_else(|| panic!("{program}: family {}", s(*family)));

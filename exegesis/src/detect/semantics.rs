@@ -2461,7 +2461,7 @@ pub const TOKIO_STREAM_MAP_V0_1_14: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// tokio-rustls's streams as 0.26.0 through 0.26.6 implement them. The
+/// tokio-rustls's streams as 0.25.0 through 0.26.6 implement them. The
 /// `TlsStream<T>` enum (`src/lib.rs`) is `Client(client::TlsStream<T>)
 /// | Server(server::TlsStream<T>)`, and every `AsyncRead`/`AsyncWrite`
 /// method matches on the variant and calls the same method on its
@@ -2475,15 +2475,28 @@ pub const TOKIO_STREAM_MAP_V0_1_14: LibraryConvention = LibraryConvention {
 /// exception is the client's `early-data` feature: a read in the
 /// early-data state parks in the stream's own `early_waker`, which no
 /// reader following the route to the socket finds holding the task, so
-/// such a wait verifies nothing rather than the wrong thing. The file
-/// checksums move with docs, visibility and those two members; the
-/// forwarding is the same text throughout. Each type's origin is its
-/// own method declarations, which name its file.
-pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
+/// such a wait verifies nothing rather than the wrong thing. 0.25.0
+/// implements no vectored write of its own: tokio's default
+/// `poll_write_vectored` writes the first non-empty buffer through
+/// `poll_write`, which parks where any write does. 0.26.0 adds the
+/// vectored writes and moves the client's early-data write into a
+/// helper without changing what it does. The file checksums move with
+/// docs, visibility, those two members and the vectored writes; the
+/// forwarding is otherwise the same text throughout. Each type's origin
+/// is its own method declarations, which name its file.
+pub const TOKIO_RUSTLS_STREAM_V0_25_0: LibraryConvention = LibraryConvention {
     package: "tokio-rustls",
-    family: "tokio-rustls-stream-0.26.0",
-    releases: Releases(&[((0, 26, 0), (0, 26, 6))]),
+    family: "tokio-rustls-stream-0.25.0",
+    releases: Releases(&[((0, 25, 0), (0, 26, 6))]),
     checksums: &[
+        // src/lib.rs, 0.25.0
+        (
+            "src/lib.rs",
+            [
+                0xfb, 0x17, 0x7e, 0x1d, 0x43, 0x92, 0x41, 0xb0, 0xa7, 0x83, 0xa6, 0x68, 0x72, 0x52,
+                0x26, 0x41,
+            ],
+        ),
         // src/lib.rs, 0.26.0
         (
             "src/lib.rs",
@@ -2524,6 +2537,14 @@ pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
                 0x60, 0x09,
             ],
         ),
+        // src/client.rs, 0.25.0
+        (
+            "src/client.rs",
+            [
+                0x47, 0x57, 0x65, 0x30, 0xad, 0x6c, 0x49, 0x28, 0x40, 0x5b, 0x76, 0xa8, 0x1d, 0xa4,
+                0x90, 0x54,
+            ],
+        ),
         // src/client.rs, 0.26.0 and 0.26.1
         (
             "src/client.rs",
@@ -2562,6 +2583,14 @@ pub const TOKIO_RUSTLS_STREAM_V0_26_0: LibraryConvention = LibraryConvention {
             [
                 0x8c, 0x55, 0x3b, 0x19, 0x44, 0xb7, 0x03, 0x55, 0x7b, 0x87, 0x93, 0xed, 0x72, 0xf6,
                 0xc8, 0xcc,
+            ],
+        ),
+        // src/server.rs, 0.25.0
+        (
+            "src/server.rs",
+            [
+                0x08, 0x64, 0x81, 0x90, 0x12, 0x94, 0x89, 0x5e, 0x35, 0xa4, 0x2c, 0x27, 0x20, 0x18,
+                0xca, 0xf2,
             ],
         ),
         // src/server.rs, 0.26.0 and 0.26.1
@@ -2930,27 +2959,38 @@ pub const HYPER_RUSTLS_STREAM_V0_27_0: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// tokio-rustls's handshake as 0.26.0 through 0.26.6 implement it.
+/// tokio-rustls's handshake as 0.25.0 through 0.26.6 implement it.
 /// `MidHandshake<IS>` (`src/common/handshake.rs`) is the enum
 /// `Handshaking(IS) | End | SendAlert { io, alert, error } | Error { io,
-/// error }`, the same in every release, and its `poll` in `Handshaking`
-/// drives rustls's handshake over the stream it holds (`Stream::handshake`
-/// in `src/common/mod.rs`), which returns `Pending` only when writing,
-/// flushing or reading the stream would block and nothing moved that
-/// round — so the task's waker is in the socket's writer slot, its
+/// error }`, the same in every release from 0.26.0; 0.25.0 has no
+/// `SendAlert`. Its `poll` in `Handshaking` drives rustls's handshake
+/// over the stream it holds (`Stream::handshake` in `src/common/mod.rs`,
+/// the same text in every release), which returns `Pending` only when
+/// writing, flushing or reading the stream would block and nothing moved
+/// that round — so the task's waker is in the socket's writer slot, its
 /// reader slot, or both, and nowhere else. In `SendAlert` it writes the
 /// alert to the bare `io`; `Error` returns at once, and `End` is never
-/// polled. The releases differ in a zero-length write's error (0.26.1)
-/// and in carrying the flush flag across polls (0.26.3), neither of
-/// which moves a wait. `Connect`, `Accept`, `FallibleConnect` and
-/// `FallibleAccept` (`src/lib.rs` through 0.26.2, `src/client.rs` and
-/// `src/server.rs` from 0.26.3) are newtypes over it whose `poll` polls
-/// it and nothing else. Each type's origin is its own `poll`.
-pub const TOKIO_RUSTLS_HANDSHAKE_V0_26_0: LibraryConvention = LibraryConvention {
+/// polled. Only `Handshaking` is navigated, and its payload is the
+/// stream in every release. The releases differ in a zero-length
+/// write's error (0.26.1) and in carrying the flush flag across polls
+/// (0.26.3), neither of which moves a wait. `Connect`, `Accept`,
+/// `FallibleConnect` and `FallibleAccept` (`src/lib.rs` through 0.26.2,
+/// `src/client.rs` and `src/server.rs` from 0.26.3) are newtypes over
+/// it whose `poll` polls it and nothing else. Each type's origin is its
+/// own `poll`.
+pub const TOKIO_RUSTLS_HANDSHAKE_V0_25_0: LibraryConvention = LibraryConvention {
     package: "tokio-rustls",
-    family: "tokio-rustls-handshake-0.26.0",
-    releases: Releases(&[((0, 26, 0), (0, 26, 6))]),
+    family: "tokio-rustls-handshake-0.25.0",
+    releases: Releases(&[((0, 25, 0), (0, 26, 6))]),
     checksums: &[
+        // src/common/handshake.rs, 0.25.0
+        (
+            "src/common/handshake.rs",
+            [
+                0x9c, 0x82, 0xe6, 0x4e, 0xcc, 0x33, 0xdd, 0x71, 0x40, 0x77, 0x8b, 0x50, 0x15, 0xdf,
+                0x22, 0x29,
+            ],
+        ),
         // src/common/handshake.rs, 0.26.0 through 0.26.2
         (
             "src/common/handshake.rs",
@@ -2965,6 +3005,14 @@ pub const TOKIO_RUSTLS_HANDSHAKE_V0_26_0: LibraryConvention = LibraryConvention 
             [
                 0xea, 0x26, 0x32, 0x7f, 0xd2, 0xcb, 0x60, 0x73, 0x88, 0xf1, 0x74, 0x15, 0x23, 0xf5,
                 0x26, 0xb9,
+            ],
+        ),
+        // src/lib.rs, 0.25.0
+        (
+            "src/lib.rs",
+            [
+                0xfb, 0x17, 0x7e, 0x1d, 0x43, 0x92, 0x41, 0xb0, 0xa7, 0x83, 0xa6, 0x68, 0x72, 0x52,
+                0x26, 0x41,
             ],
         ),
         // src/lib.rs, 0.26.0
@@ -3007,6 +3055,14 @@ pub const TOKIO_RUSTLS_HANDSHAKE_V0_26_0: LibraryConvention = LibraryConvention 
                 0x60, 0x09,
             ],
         ),
+        // src/client.rs, 0.25.0
+        (
+            "src/client.rs",
+            [
+                0x47, 0x57, 0x65, 0x30, 0xad, 0x6c, 0x49, 0x28, 0x40, 0x5b, 0x76, 0xa8, 0x1d, 0xa4,
+                0x90, 0x54,
+            ],
+        ),
         // src/client.rs, 0.26.0 and 0.26.1
         (
             "src/client.rs",
@@ -3045,6 +3101,14 @@ pub const TOKIO_RUSTLS_HANDSHAKE_V0_26_0: LibraryConvention = LibraryConvention 
             [
                 0x8c, 0x55, 0x3b, 0x19, 0x44, 0xb7, 0x03, 0x55, 0x7b, 0x87, 0x93, 0xed, 0x72, 0xf6,
                 0xc8, 0xcc,
+            ],
+        ),
+        // src/server.rs, 0.25.0
+        (
+            "src/server.rs",
+            [
+                0x08, 0x64, 0x81, 0x90, 0x12, 0x94, 0x89, 0x5e, 0x35, 0xa4, 0x2c, 0x27, 0x20, 0x18,
+                0xca, 0xf2,
             ],
         ),
         // src/server.rs, 0.26.0 and 0.26.1
@@ -5176,9 +5240,9 @@ mod tests {
                 "0.17.2",
             ),
             (
-                &TOKIO_RUSTLS_STREAM_V0_26_0,
-                ["0.26.0", "0.26.3", "0.26.6"].as_slice(),
-                "0.25.0",
+                &TOKIO_RUSTLS_STREAM_V0_25_0,
+                ["0.25.0", "0.26.0", "0.26.3", "0.26.6"].as_slice(),
+                "0.24.1",
                 "0.26.7",
             ),
             (
@@ -5200,9 +5264,9 @@ mod tests {
                 "0.27.11",
             ),
             (
-                &TOKIO_RUSTLS_HANDSHAKE_V0_26_0,
-                ["0.26.0", "0.26.3", "0.26.6"].as_slice(),
-                "0.25.0",
+                &TOKIO_RUSTLS_HANDSHAKE_V0_25_0,
+                ["0.25.0", "0.26.0", "0.26.3", "0.26.6"].as_slice(),
+                "0.24.1",
                 "0.26.7",
             ),
             (

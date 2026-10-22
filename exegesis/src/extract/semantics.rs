@@ -57,8 +57,8 @@ use crate::detect::semantics::{
     PARKING_LOT_RAW_MUTEX_V0_11_0, REQWEST_CONN_READ_SLOT, REQWEST_CONN_V0_12_14,
     REQWEST_COOKIE_V0_12_24, REQWEST_PENDING_REQUEST_V0_12_0, RUSTLS_SESSION_V0_23_23,
     RustcConvention, SPROCKETS_TLS_CLIENT_D2B68E4, SPROCKETS_TLS_SERVER_D2B68E4,
-    SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_INTERVAL_TICK_V1_47, TOKIO_RUSTLS_HANDSHAKE_V0_26_0,
-    TOKIO_RUSTLS_STREAM_V0_26_0, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
+    SPROCKETS_TLS_STREAM_D2B68E4, TOKIO_INTERVAL_TICK_V1_47, TOKIO_RUSTLS_HANDSHAKE_V0_25_0,
+    TOKIO_RUSTLS_STREAM_V0_25_0, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
     TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TOWER_RETRY_V0_5_2,
     TRACING_INSTRUMENTED_V0_1_40, library_convention, rustc_core_pending_convention,
     rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
@@ -337,7 +337,7 @@ impl LibrarySeed {
                 &HYPER_H1_CONN_V1_6_0
             }
             LibrarySeed::HyperUtilAuto { .. } => &HYPER_UTIL_AUTO_CONN_V0_1_10,
-            LibrarySeed::TokioRustlsHandshake(..) => &TOKIO_RUSTLS_HANDSHAKE_V0_26_0,
+            LibrarySeed::TokioRustlsHandshake(..) => &TOKIO_RUSTLS_HANDSHAKE_V0_25_0,
             LibrarySeed::HyperUtilResponse { .. } => &HYPER_UTIL_RESPONSE_V0_1_10,
             LibrarySeed::TowerRetry { .. } => &TOWER_RETRY_V0_5_2,
             LibrarySeed::ReqwestCookie(..) => &REQWEST_COOKIE_V0_12_24,
@@ -824,7 +824,7 @@ const IO_DELEGATIONS: [DelegatedStream; 11] = [
     DelegatedStream {
         key: "tokio_rustls::TlsStream<",
         kind: SemanticRuleKind::TokioRustlsStream,
-        review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_26_0),
+        review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_25_0),
         route: DelegatedRoute::Match(&["Client", "Server"]),
         tls: None,
         peer: None,
@@ -832,7 +832,7 @@ const IO_DELEGATIONS: [DelegatedStream; 11] = [
     DelegatedStream {
         key: "tokio_rustls::client::TlsStream<",
         kind: SemanticRuleKind::TokioRustlsStream,
-        review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_26_0),
+        review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_25_0),
         route: DelegatedRoute::Forward(&[Hop::Member("io")]),
         tls: Some(TOKIO_RUSTLS_SESSION),
         peer: None,
@@ -840,7 +840,7 @@ const IO_DELEGATIONS: [DelegatedStream; 11] = [
     DelegatedStream {
         key: "tokio_rustls::server::TlsStream<",
         kind: SemanticRuleKind::TokioRustlsStream,
-        review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_26_0),
+        review: Review::Release(&TOKIO_RUSTLS_STREAM_V0_25_0),
         route: DelegatedRoute::Forward(&[Hop::Member("io")]),
         tls: Some(TOKIO_RUSTLS_SESSION),
         peer: None,
@@ -5884,7 +5884,7 @@ fn plan_handshake(
     names: &[Option<String>],
     strings: &StringInterner,
 ) -> Result<IoOpPlan, Decline> {
-    let origin = delegation_origin(sources, &TOKIO_RUSTLS_HANDSHAKE_V0_26_0, "poll")?;
+    let origin = delegation_origin(sources, &TOKIO_RUSTLS_HANDSHAKE_V0_25_0, "poll")?;
     let stream = hop_landing(
         types,
         strings,
@@ -8748,7 +8748,7 @@ mod tests {
                 "tokio-util",
             ),
             (
-                &TOKIO_RUSTLS_STREAM_V0_26_0,
+                &TOKIO_RUSTLS_STREAM_V0_25_0,
                 "0.26.4",
                 "src/client.rs",
                 "rustls",
