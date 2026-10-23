@@ -32,7 +32,6 @@ task: futurelock::main::{async_block#0}::{async_block_env#0}
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}> (poll)
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<futurelock::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut futurelock::main::{async_block_env#0}> (poll)
 dyn: futurelock::do_async_thing::{async_fn_env#0} (poll, drop_glue)
 dyn: futurelock::do_stuff::{async_fn_env#0} (poll, drop_glue)
 dyn: futurelock::main::{async_block#0}::{async_block_env#0} (poll, drop_glue)
@@ -142,14 +141,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -171,7 +171,6 @@ task: simple_await::work::{async_fn_env#0}
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<simple_await::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut simple_await::main::{async_block_env#0}> (poll)
 dyn: simple_await::main::{async_block_env#0} (poll, drop_glue)
 dyn: simple_await::ready_value::{async_fn_env#0} (poll)
 dyn: simple_await::work::{async_fn_env#0} (poll, drop_glue)
@@ -280,14 +279,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -308,7 +308,6 @@ task: nested_await::outer::{async_fn_env#0}
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<nested_await::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut nested_await::main::{async_block_env#0}> (poll)
 dyn: nested_await::leaf::{async_fn_env#0} (poll, drop_glue)
 dyn: nested_await::main::{async_block_env#0} (poll, drop_glue)
 dyn: nested_await::middle::{async_fn_env#0} (poll, drop_glue)
@@ -406,14 +405,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -457,7 +457,6 @@ task: dyn_future::driver::{async_fn_env#0}
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<dyn_future::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut dyn_future::main::{async_block_env#0}> (poll)
 dyn: dyn_future::boxed_leaf::{async_fn_env#0} (poll, drop_glue)
 dyn: dyn_future::driver::{async_fn_env#0} (poll, drop_glue)
 dyn: dyn_future::hold_aligned::{async_fn_env#0} (poll, drop_glue)
@@ -565,14 +564,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -639,7 +639,6 @@ task: select_combinator::selector::{async_fn_env#0}
 dyn: core::future::poll_fn::PollFn<select_combinator::joiner::{async_fn#0}::{closure_env#0}> (poll)
 dyn: core::future::poll_fn::PollFn<select_combinator::selector::{async_fn#0}::{closure_env#0}> (poll)
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<select_combinator::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut select_combinator::main::{async_block_env#0}> (poll)
 dyn: core::pin::Pin<alloc::boxed::Box<dyn select_combinator::Parked<Output=u32>, alloc::alloc::Global>> (poll, drop_glue)
 dyn: select_combinator::Fallible (poll, drop_glue)
 dyn: select_combinator::Park (poll, drop_glue)
@@ -767,14 +766,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -795,7 +795,6 @@ task: many_tasks::park_task::{async_fn_env#0}
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<many_tasks::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut many_tasks::main::{async_block_env#0}> (poll)
 dyn: many_tasks::main::{async_block_env#0} (poll, drop_glue)
 dyn: many_tasks::park_task::{async_fn_env#0} (poll, drop_glue)
 
@@ -888,14 +887,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -927,7 +927,6 @@ task: sleep_join::sleeper::{async_fn_env#0}
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<sleep_join::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut sleep_join::main::{async_block_env#0}> (poll)
 dyn: sleep_join::joiner::{async_fn_env#0} (poll, drop_glue)
 dyn: sleep_join::main::{async_block_env#0} (poll, drop_glue)
 dyn: sleep_join::sleeper::{async_fn_env#0} (poll, drop_glue)
@@ -1023,14 +1022,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -1091,7 +1091,6 @@ dyn: channels::send_waiter::{async_fn#0}::{async_block_env#0} (poll)
 dyn: channels::send_waiter::{async_fn_env#0} (poll, drop_glue)
 dyn: core::future::poll_fn::PollFn<channels::send_waiter::{async_fn#0}::{closure_env#1}> (poll)
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<channels::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut channels::main::{async_block_env#0}> (poll)
 dyn: core::pin::Pin<&mut channels::send_waiter::{async_fn#0}::{async_block_env#0}> (poll)
 
 [env-decls]
@@ -1208,14 +1207,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -1242,7 +1242,6 @@ task: unordered::driver::{async_fn_env#0}
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<unordered::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut unordered::main::{async_block_env#0}> (poll)
 dyn: unordered::driver::{async_fn_env#0} (poll, drop_glue)
 dyn: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> (poll, drop_glue)
 dyn: unordered::leaf::{async_fn_env#0} (poll, drop_glue)
@@ -1355,14 +1354,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -1407,7 +1407,6 @@ task: joinset::finisher::{async_fn_env#0}
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<joinset::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut joinset::main::{async_block_env#0}> (poll)
 dyn: joinset::driver::{async_fn_env#0} (poll, drop_glue)
 dyn: joinset::finisher::{async_fn_env#0} (poll, drop_glue)
 dyn: joinset::main::{async_block_env#0} (poll, drop_glue)
@@ -1511,14 +1510,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -1550,7 +1550,6 @@ task: ct_runtime::acquirer::{async_fn_env#0}
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<ct_runtime::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut ct_runtime::main::{async_block_env#0}> (poll)
 dyn: ct_runtime::acquirer::{async_fn_env#0} (poll, drop_glue)
 dyn: ct_runtime::main::{async_block_env#0} (poll, drop_glue)
 dyn: ct_runtime::sleeper::{async_fn_env#0} (poll, drop_glue)
@@ -1646,14 +1645,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -1696,7 +1696,6 @@ task: local_set::joiner::{async_fn_env#0}
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<local_set::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut local_set::main::{async_block_env#0}> (poll)
 dyn: local_set::joiner::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set::local_acquirer::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set::local_sleeper::{async_fn_env#0} (poll, drop_glue)
@@ -1801,14 +1800,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -1851,7 +1851,6 @@ task: local_set_timer::sleeper::{async_fn_env#0}
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<local_set_timer::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut local_set_timer::main::{async_block_env#0}> (poll)
 dyn: local_set_timer::local_acquirer::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set_timer::local_sleeper::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set_timer::main::{async_block#0}::{async_block_env#0} (poll, drop_glue)
@@ -1956,14 +1955,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -2029,7 +2029,6 @@ task: local_set_io::reader::{async_fn_env#0}
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<local_set_io::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut local_set_io::main::{async_block_env#0}> (poll)
 dyn: local_set_io::local_gated_reader::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set_io::local_reader::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set_io::local_watcher::{async_fn_env#0} (poll, drop_glue)
@@ -2152,14 +2151,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -2214,8 +2214,6 @@ task: foreign_runtime::detached::{async_fn_env#0}
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<foreign_runtime::hidden_runtime::{async_block_env#0}>> (poll)
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<foreign_runtime::main::{async_block_env#1}>> (poll)
-dyn: core::pin::Pin<&mut foreign_runtime::hidden_runtime::{async_block_env#0}> (poll)
-dyn: core::pin::Pin<&mut foreign_runtime::main::{async_block_env#1}> (poll)
 dyn: foreign_runtime::detached::{async_fn_env#0} (poll, drop_glue)
 dyn: foreign_runtime::hidden_runtime::{async_block#0}::{async_block_env#0} (poll, drop_glue)
 dyn: foreign_runtime::hidden_runtime::{async_block_env#0} (poll, drop_glue)
@@ -2330,14 +2328,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -2390,7 +2389,6 @@ dyn: blocking_pool::main::{async_block_env#0} (poll, drop_glue)
 dyn: blocking_pool::queued_waiter::{async_fn_env#0} (poll, drop_glue)
 dyn: blocking_pool::running_waiter::{async_fn_env#0} (poll)
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<blocking_pool::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut blocking_pool::main::{async_block_env#0}> (poll)
 dyn: tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}> (poll, drop_glue)
 dyn: tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#1}> (poll)
 dyn: tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}> (poll)
@@ -2490,14 +2488,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -2715,14 +2714,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -2824,7 +2824,6 @@ dyn: core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closur
 dyn: core::future::poll_fn::PollFn<armed_select::ticker::{async_fn#0}::{closure_env#0}> (poll)
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<armed_select::main::{async_block_env#0}>> (poll)
 dyn: core::pin::Pin<&mut armed_select::forever::{async_fn#0}::{async_block_env#0}> (poll)
-dyn: core::pin::Pin<&mut armed_select::main::{async_block_env#0}> (poll)
 
 [env-decls]
 env: armed_select::child::{async_fn_env#0} @ armed-select.rs:83
@@ -2960,14 +2959,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -3023,7 +3023,6 @@ task: watch_stream::resolver::{async_fn_env#0}
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<watch_stream::main::{async_block_env#0}>> (poll)
 dyn: core::future::poll_fn::PollFn<watch_stream::mapper::{async_fn#0}::{closure_env#0}> (poll)
 dyn: core::future::poll_fn::PollFn<watch_stream::resolver::{async_fn#0}::{closure_env#0}> (poll)
-dyn: core::pin::Pin<&mut watch_stream::main::{async_block_env#0}> (poll)
 dyn: watch_stream::direct::{async_fn_env#0} (poll, drop_glue)
 dyn: watch_stream::fresh::{async_fn_env#0} (poll, drop_glue)
 dyn: watch_stream::main::{async_block_env#0} (poll, drop_glue)
@@ -3149,14 +3148,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -3239,7 +3239,6 @@ task: http_conns::{impl#0}::execute::{async_block_env#0}<core::pin::Pin<alloc::b
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<http_conns::main::{async_block_env#0}>> (poll)
 dyn: core::future::poll_fn::PollFn<tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn#0}::{closure_env#0}<http_conns::Event>> (poll)
-dyn: core::pin::Pin<&mut http_conns::main::{async_block_env#0}> (poll)
 dyn: http_conns::accept_loop::{async_fn_env#0} (poll, drop_glue)
 dyn: http_conns::get::{async_fn_env#0} (poll, drop_glue)
 dyn: http_conns::handle::{async_fn_env#0} (poll, drop_glue)
@@ -3392,14 +3391,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -3442,7 +3442,6 @@ task: two_releases::keeper::{async_fn_env#0}
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<two_releases::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut two_releases::main::{async_block_env#0}> (poll)
 dyn: two_releases::keeper::{async_fn_env#0} (poll, drop_glue)
 dyn: two_releases::main::{async_block_env#0} (poll, drop_glue)
 dyn: two_releases::new_waiter::{async_fn_env#0} (poll, drop_glue)
@@ -3553,14 +3552,15 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -3774,7 +3774,6 @@ dyn: core::future::poll_fn::PollFn<tls_conns::owned_split_client::{async_fn#0}::
 dyn: core::future::poll_fn::PollFn<tls_conns::split_client::{async_fn#0}::{closure_env#0}> (poll)
 dyn: core::future::poll_fn::PollFn<tls_conns::tls_pair::{async_fn#0}::{closure_env#0}> (poll)
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<tls_conns::main::{async_block_env#0}>> (poll)
-dyn: core::pin::Pin<&mut tls_conns::main::{async_block_env#0}> (poll)
 dyn: hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<tls_conns::https_server::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>, hyper::proto::h1::role::Server> (poll, drop_glue)
 dyn: hyper::proto::h2::server::H2Stream<tls_conns::https_server::{async_fn#0}::{closure#0}::{async_block_env#0}, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioExecutor> (poll, drop_glue)
 dyn: hyper::proto::h2::server::Server<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio_rustls::server::TlsStream<tokio::net::tcp::stream::TcpStream>>>, hyper::service::util::ServiceFn<tls_conns::https_server::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioExecutor> (poll, drop_glue)
@@ -3978,13 +3977,14 @@ ok      TimerShared.state
 ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
-ok      blocking::Shared.queue (spelling 1 of 3; family v1_47)
-absent  blocking::ShardedQueue.shards — family v1_47 lays this out otherwise
-absent  blocking::Shard.queue — family v1_47 lays this out otherwise
+ok      blocking::Shared.queue (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedQueue.shards (family v1_54)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_54)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_54)
+ok      blocking::ShardedCoord.worker_threads (spelling 1 of 3; family v1_54)
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)

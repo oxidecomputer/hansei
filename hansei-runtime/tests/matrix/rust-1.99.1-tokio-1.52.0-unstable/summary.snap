@@ -144,12 +144,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -282,12 +283,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -408,12 +410,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -567,12 +570,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -769,12 +773,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -890,12 +895,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -1025,12 +1031,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -1210,12 +1217,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -1357,12 +1365,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -1513,12 +1522,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -1648,12 +1658,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -1803,12 +1814,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -1958,12 +1970,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -2154,12 +2167,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -2332,12 +2346,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -2492,12 +2507,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -2717,12 +2733,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -2962,12 +2979,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -3151,12 +3169,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -3394,12 +3413,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -3555,12 +3575,13 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
@@ -3980,11 +4001,12 @@ ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 absent  blocking::Shared.queue — family v1_52_0 lays this out otherwise
 ok      blocking::ShardedQueue.shards (family v1_52_0)
-ok      blocking::Shard.queue (spelling 1 of 3)
+ok      blocking::Shard.queue (spelling 1 of 3; family v1_52_0)
 ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)

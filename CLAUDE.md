@@ -125,7 +125,7 @@ code covering a version range**, never an ordered fallback that would let
 one spelling bind on a version it was not written for: a `Family`
 (`detect/mod.rs`) names the range by its floor (`v1_47` covers 1.47–1.48,
 `v1_49` covers 1.49–1.51 and 1.52.1–1.52, `v1_52_0` covers 1.52.0 alone,
-`v1_53` from 1.53), read at patch granularity: a release a later patch
+`v1_53` covers 1.53, `v1_54` from 1.54), read at patch granularity: a release a later patch
 reverts is a family of its own between two ranges of its parent's
 (`Family::RANGES`). A `tokio_v<floor>.rs` module
 holds *only* the detectors that moved (a family whose layouts are an older

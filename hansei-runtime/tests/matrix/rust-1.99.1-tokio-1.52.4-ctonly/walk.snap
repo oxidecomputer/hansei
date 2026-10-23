@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.99.1 (58cf8f9c3 2026-10-13)): 172 entries, 0 broken, 58 absent
+walk contract (tokio 1.52.4, rustc 1.99.1 (58cf8f9c3 2026-10-13)): 173 entries, 0 broken, 59 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -119,7 +119,8 @@ walk contract (tokio 1.52.4, rustc 1.99.1 (58cf8f9c3 2026-10-13)): 172 entries, 
   ok      blocking::queue.buf (no multi_thread Handle)
   ok      blocking::queue.cap (no multi_thread Handle)
   ok      blocking::Task.header
-  ok      blocking::Shared.worker_threads (spelling 2 of 3; no multi_thread Handle)
+  ok      blocking::Shared.worker_threads (spelling 2 of 3; family v1_47; no multi_thread Handle)
+  absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
   ok      blocking::worker_threads.thread.id
   ok      Trailer.waker
   ok      Readiness.scheduled_io

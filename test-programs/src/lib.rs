@@ -43,18 +43,42 @@ pub fn allow_any_tracer() {}
 /// re-exports this same type, so both arms of [`build`] take it.
 pub use tokio::runtime::Builder;
 
+/// A multi-thread builder whose runtime, in the `unstable` builds, has
+/// a sharded blocking pool where its tokio offers one.
+///
+/// From 1.54 tokio builds either a locked pool, its default, or a
+/// sharded one, which a `tokio_unstable` builder option or the
+/// `TOKIO_UNSTABLE_SHARDED_BLOCKING_QUEUE` environment variable
+/// chooses. The variable is the one switch every release accepts:
+/// tokio 1.54 reads it when the builder is made, and earlier releases
+/// ignore it. Setting it only under `unstable` leaves a cell's stable
+/// build the default pool, so a 1.54 matrix runs both. The ct-only
+/// cell's tokio has no multi-thread builder, so it has no such
+/// function either.
+#[cfg(feature = "full-tokio")]
+pub fn sharded_pool_builder() -> Builder {
+    #[cfg(feature = "unstable")]
+    // SAFETY: the fixture calls this from `main` before it builds a
+    // runtime, so no other thread exists to read the environment.
+    unsafe {
+        std::env::set_var("TOKIO_UNSTABLE_SHARDED_BLOCKING_QUEUE", "1");
+    }
+    Builder::new_multi_thread()
+}
+
 /// Build the runtime, wait until every worker of a multi-thread one is
 /// running, then run `main` on it.
 ///
 /// A multi-thread runtime starts each worker through its blocking pool:
 /// building it queues one launch task per worker and starts a pool
 /// thread for each, and a thread runs its worker only once it pops that
-/// task. tokio 1.52.0 shards the pool's queue, so a thread that starts
-/// late can find a `spawn_blocking` cell that `main` queued meanwhile,
-/// and run that first: `blocking-pool`'s queued cells did, so they had
+/// task. tokio 1.52.0 shards the pool's queue, as 1.54 does when the
+/// runtime is built with a sharded pool, so a thread that starts late
+/// can find a `spawn_blocking` cell that `main` queued meanwhile, and
+/// run that first: `blocking-pool`'s queued cells did, so they had
 /// finished by the capture its acceptance test takes them to be queued
-/// in. Every other release keeps one FIFO queue, whose launch tasks
-/// always come first. Waiting here gives every fixture the same start
+/// in. A locked pool keeps one FIFO queue, whose launch tasks always
+/// come first. Waiting here gives every fixture the same start
 /// in every release, without touching `main`, whose type the goldens
 /// print.
 pub fn run_builder<T>(builder: &mut Builder, main: impl std::future::Future<Output = T>) -> T {

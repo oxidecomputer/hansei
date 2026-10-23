@@ -1620,6 +1620,7 @@ walk_roles! {
     BlockingQueueCap = "blocking::queue.cap",
     BlockingTaskHeader = "blocking::Task.header",
     BlockingWorkerThreads = "blocking::Shared.worker_threads",
+    BlockingShardedWorkerThreads = "blocking::ShardedCoord.worker_threads",
     PoolThreadId = "blocking::worker_threads.thread.id",
     TrailerWaker = "Trailer.waker",
     ReadinessScheduledIo = "Readiness.scheduled_io",
