@@ -257,11 +257,12 @@ cmd_update() {
 
     channel=$(curl -fsS --max-time 30 "$CHANNEL_URL") \
         || die "fetching $CHANNEL_URL failed"
+    # awk reads to the end: leaving early would break printf's pipe.
     stable=$(printf '%s\n' "$channel" | awk '
         /^\[pkg\.rust\]/ { in_rust = 1; next }
         /^\[/ { in_rust = 0 }
-        in_rust && /^version = / {
-            split($0, q, "\""); split(q[2], w, " "); print w[1]; exit
+        in_rust && /^version = / && !found {
+            split($0, q, "\""); split(q[2], w, " "); print w[1]; found = 1
         }
     ')
     [ -n "$stable" ] || die "no stable version parsed from the channel manifest"

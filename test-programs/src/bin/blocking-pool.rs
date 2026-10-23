@@ -31,7 +31,7 @@ async fn queued_waiter(ready: oneshot::Sender<()>, handle: JoinHandle<u32>) -> u
 fn main() {
     test_programs::allow_any_tracer();
 
-    let mut builder = test_programs::Builder::new_multi_thread();
+    let mut builder = test_programs::sharded_pool_builder();
     builder.worker_threads(2).max_blocking_threads(1);
     test_programs::run_builder(&mut builder, async {
         let (started_tx, started_rx) = oneshot::channel();

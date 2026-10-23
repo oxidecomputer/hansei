@@ -123,6 +123,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
-ok      blocking::Shared.worker_threads (spelling 1 of 3)
+ok      blocking::Shared.worker_threads (spelling 1 of 3; family v1_47)
+absent  blocking::ShardedCoord.worker_threads — family v1_47 lays this out otherwise
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)

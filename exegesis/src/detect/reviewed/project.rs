@@ -477,7 +477,7 @@ mod tests {
         let found = toolchain_findings(&toml("1.999.0"), &reviews);
         assert_eq!(found.len(), 1, "{found:#?}");
         assert!(
-            found[0].starts_with("rustc 1.999.0: above 1.97.0-1.99.0 ("),
+            found[0].starts_with("rustc 1.999.0: above 1.97.0-1.99.1 ("),
             "{found:#?}"
         );
         // A patch released into a reviewed minor after its review is

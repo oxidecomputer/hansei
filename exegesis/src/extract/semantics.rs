@@ -9666,7 +9666,7 @@ mod tests {
                 "not the tokio crate",
             ),
             (
-                &format!("{ROOT}/tokio-1.54.0/src/macros/select.rs"),
+                &format!("{ROOT}/tokio-1.55.0/src/macros/select.rs"),
                 "above the reviewed range",
             ),
             (
@@ -10048,7 +10048,7 @@ mod tests {
                 "not the tokio crate",
             ),
             (
-                &format!("{ROOT}/tokio-1.53.3/src/time/interval.rs"),
+                &format!("{ROOT}/tokio-1.53.4/src/time/interval.rs"),
                 None,
                 "above the reviewed range",
             ),

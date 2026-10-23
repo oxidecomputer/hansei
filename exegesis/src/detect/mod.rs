@@ -32,6 +32,7 @@ mod tokio_v1_47;
 mod tokio_v1_49;
 mod tokio_v1_52_0;
 mod tokio_v1_53;
+mod tokio_v1_54;
 pub mod walk;
 
 use self::crates::{
@@ -269,16 +270,27 @@ pub enum Family {
     /// `Shared`. 1.52.1 reverted it, so the release after this family's
     /// is [`Family::V1_49`]'s again: a family that covers part of a minor.
     V1_52_0,
-    /// tokio 1.53 onward: the timer entry holds its `TimerShared` directly,
+    /// tokio 1.53: the timer entry holds its `TimerShared` directly,
     /// registration lives in the state word with the registration tick
     /// cached beside it, and `Sleep` carries the deadline itself.
     V1_53,
+    /// tokio 1.54 onward: [`Family::V1_53`]'s layouts but for the blocking
+    /// pool, whose `Inner` holds an `InnerImpl` enum in place of its
+    /// `shared` mutex: a `Locked` variant keeping one queue, as before,
+    /// and a `Sharded` one keeping sixteen. A runtime chooses between
+    /// them when it is built.
+    V1_54,
 }
 
 impl Family {
     /// Every family, oldest floor first.
-    pub const ALL: &'static [Family] =
-        &[Family::V1_47, Family::V1_49, Family::V1_52_0, Family::V1_53];
+    pub const ALL: &'static [Family] = &[
+        Family::V1_47,
+        Family::V1_49,
+        Family::V1_52_0,
+        Family::V1_53,
+        Family::V1_54,
+    ];
 
     /// The tokio releases each family covers: from each floor, the family
     /// beside it, through to the next floor. A family may hold more than
@@ -291,6 +303,7 @@ impl Family {
         ((1, 52, 0), Family::V1_52_0),
         ((1, 52, 1), Family::V1_49),
         ((1, 53, 0), Family::V1_53),
+        ((1, 54, 0), Family::V1_54),
     ];
 
     /// The tokio `(major, minor)` of the family's first release. Public
@@ -315,6 +328,7 @@ impl Family {
             Family::V1_49 => Some(Family::V1_47),
             Family::V1_52_0 => Some(Family::V1_49),
             Family::V1_53 => Some(Family::V1_49),
+            Family::V1_54 => Some(Family::V1_53),
         }
     }
 
@@ -325,6 +339,7 @@ impl Family {
             Family::V1_49 => "v1_49",
             Family::V1_52_0 => "v1_52_0",
             Family::V1_53 => "v1_53",
+            Family::V1_54 => "v1_54",
         }
     }
 
@@ -1647,11 +1662,15 @@ mod tests {
         assert_eq!(Family::V1_52_0.floor(), (1, 52));
         assert_eq!(Family::select(Some(&v("1.53.0"))), Family::V1_53);
         assert_eq!(Family::select(Some(&v("1.53.1"))), Family::V1_53);
+        assert_eq!(Family::select(Some(&v("1.53.3"))), Family::V1_53);
+        assert_eq!(Family::select(Some(&v("1.54.0"))), Family::V1_54);
+        assert_eq!(Family::select(Some(&v("1.54.1"))), Family::V1_54);
         assert_eq!(Family::select(Some(&v("1.999.0"))), newest);
         assert_eq!(Family::select(Some(&v("1.46.9"))), Family::ALL[0]);
         assert_eq!(Family::describe(Some(&v("1.50.0"))), "v1_49 (tokio 1.50.0)");
         assert_eq!(Family::describe(Some(&v("1.53.1"))), "v1_53 (tokio 1.53.1)");
-        assert_eq!(Family::describe(None), "v1_53 (version unrecovered)");
+        assert_eq!(Family::describe(Some(&v("1.54.1"))), "v1_54 (tokio 1.54.1)");
+        assert_eq!(Family::describe(None), "v1_54 (version unrecovered)");
     }
 
     /// Row lookup: an `All` row serves every family with no family

@@ -480,11 +480,9 @@ fn mask_times(s: &str) -> String {
 ///   (`num_pending_release`): a resource dropped after the driver's
 ///   last turn began stays counted until a turn that may never come;
 /// - how much of a stalled TLS writer's output the kernel took before
-///   it refused more (`N written, N unsent (N bytes)`): the send buffer
+///   it refused more (`N written, 1 unsent (N bytes)`): the send buffer
 ///   grows by autotuning, at a pace the acknowledgments set, to a size
-///   the host's memory sets, and where it fills inside the last write's
-///   records decides how many of them stay unsent. That some do is
-///   kept, since a line names unsent records only when it has some;
+///   the host's memory sets. The one unsent record is kept;
 /// - ephemeral ports, and file descriptor numbers, which the kernel
 ///   hands out in the order threads opening sockets at once reach it;
 /// - the tick in a `ScheduledIo`'s `readiness` word, which counts the
@@ -520,8 +518,8 @@ pub fn mask_core(s: &str) -> String {
         r"|local_schedule_count|overflow_count|num_pending_release): \d+"
     ))
     .replace_all(&s, "$1: N");
-    let s = re(r"\b\d+ written, \d+ unsent \(\d+ bytes?\)")
-        .replace_all(&s, "N written, N unsent (N bytes)");
+    let s = re(r"\b\d+ written, (\d+) unsent \(\d+ bytes?\)")
+        .replace_all(&s, "N written, $1 unsent (N bytes)");
     let s = re(r"[\d.]+ [KMG]?i?B swept in \d+ chunks").replace_all(&s, "N swept in N chunks");
     let s = re(r"(?m)^(\s*(hits|by class|attributed):).*$").replace_all(&s, "$1 N");
     let s = re(r"\(\d+ caches, \d+ slabs\)").replace_all(&s, "(N caches, N slabs)");
@@ -1773,7 +1771,7 @@ mod tests {
     /// What scheduling and the kernel decide masks alike from one
     /// capture to the next, and what the program decides beside it
     /// stays: the batch's `global_queue_interval`, a TLS connection's
-    /// read count, and that it holds records unsent, however many.
+    /// record counts and its one unsent record.
     #[test]
     fn test_scheduler_counts_and_a_stalled_writer_are_masked() {
         let batch = |polls: u64, schedules: u64, pending: u64| {
@@ -1789,19 +1787,17 @@ mod tests {
         assert!(one.contains("poll_count_on_last_park: N,"), "{one}");
         assert!(one.contains("global_queue_interval: 31,"), "{one}");
 
-        let tls = |written: u64, unsent: u64, bytes: &str| {
-            format!(
-                "tls client, established, 1 record read, {written} written, \
-                 {unsent} unsent ({bytes})"
-            )
+        let tls = |written: u64, bytes: &str| {
+            format!("tls client, established, 1 record read, {written} written, 1 unsent ({bytes})")
         };
-        let masked = super::mask_core(&tls(156, 1, "3432 bytes"));
-        assert_eq!(masked, super::mask_core(&tls(8, 1, "184 bytes")));
-        assert_eq!(masked, super::mask_core(&tls(68, 3, "32904 bytes")));
-        assert_eq!(masked, super::mask_core(&tls(2, 1, "1 byte")));
+        let masked = super::mask_core(&tls(156, "3432 bytes"));
+        assert_eq!(masked, super::mask_core(&tls(8, "184 bytes")));
+        // Where the kernel cut the last write decides the record's
+        // size, down to a single byte.
+        assert_eq!(masked, super::mask_core(&tls(2, "1 byte")));
         assert_eq!(
             masked,
-            "tls client, established, 1 record read, N written, N unsent (N bytes)"
+            "tls client, established, 1 record read, N written, 1 unsent (N bytes)"
         );
         // A connection holding nothing unsent names no unsent records,
         // so the mask leaves it apart from one that does.

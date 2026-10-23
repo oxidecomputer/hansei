@@ -6,7 +6,7 @@ core:  <core>
 tokio info: <tokio info>
 symbols resolved: 27/27
 allocator evidence: libumem index (N caches, N slabs)
-waker slots: 1 copy of tokio's WAKER_VTABLE, 1 set vtable; N swept in N chunks
+waker slots: 1 copy of tokio's WAKER_VTABLE, 2 set vtables; N swept in N chunks
     hits: N
     by class: N
     attributed: N

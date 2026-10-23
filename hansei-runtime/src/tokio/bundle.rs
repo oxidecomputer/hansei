@@ -2765,7 +2765,8 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// The spawn_blocking cells parked in one runtime's pool queue, as
     /// candidates naming the queue and the runtime it belongs to: the
-    /// pool's one queue, or, in tokio 1.52.0, each of its shards. A
+    /// pool's one queue, or each of its shards where the pool is
+    /// sharded (tokio 1.52.0, and a 1.54 runtime built so). A
     /// queue is a `VecDeque` ring: the recorded element layout strides
     /// it, and each element's `UnownedTask` names the Header that
     /// identifies the cell.
@@ -2871,7 +2872,9 @@ impl<'b, T: Target> Context<'b, T> {
     /// a `JoinHandle` per thread, read bucket by bucket through the
     /// map's table binding. This, and not any thread's stack, is what
     /// says an lwp is the pool's — match it against
-    /// [`Context::std_thread_id`].
+    /// [`Context::std_thread_id`]. From tokio 1.54 the map's route
+    /// names the pool variant it is in, and a sharded pool, whose
+    /// locked route is inactive, keeps it in its coordinator.
     pub fn pool_thread_ids(
         &self,
         runtime: &RuntimeRef<'b>,
@@ -2880,9 +2883,15 @@ impl<'b, T: Target> Context<'b, T> {
         // Far past any pool a target configures; a count beyond it is a
         // table the words did not describe.
         const MAX_POOL_THREADS: usize = 1 << 16;
-        let map = self
+        let map = match self
             .walk(WalkRole::BlockingWorkerThreads)
-            .walk_at_with(read, runtime.handle)?;
+            .walk_with(read, runtime.handle)?
+        {
+            Walked::Inactive(_) => self
+                .walk(WalkRole::BlockingShardedWorkerThreads)
+                .walk_at_with(read, runtime.handle)?,
+            walked => walked.at(WalkRole::BlockingWorkerThreads.name())?,
+        };
         let table = self
             .type_semantics(map.ty.id())
             .and_then(|record| record.table.as_ref())

@@ -2077,7 +2077,7 @@ mod tests {
         };
         assert_eq!(
             stats.unsupported(),
-            ["rustc 1.70.0 is older than the supported version range: 1.97.0-1.99.0"]
+            ["rustc 1.70.0 is older than the supported version range: 1.97.0-1.99.1"]
         );
 
         let stats = ExtractStats {
@@ -2153,8 +2153,8 @@ mod tests {
         assert_eq!(
             stats.unsupported(),
             [
-                "rustc 2.999.0 is newer than the supported version range: 1.97.0-1.99.0",
-                "tokio 1.999.0 is newer than the supported version range: 1.47.0-1.53.2",
+                "rustc 2.999.0 is newer than the supported version range: 1.97.0-1.99.1",
+                "tokio 1.999.0 is newer than the supported version range: 1.47.0-1.54.1",
                 "rustls 0.23.22 is older than the supported version range: \
                  0.23.23-0.23.45",
                 "tokio-rustls 0.27.0 is newer than the supported version range: \

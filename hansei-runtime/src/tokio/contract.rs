@@ -195,7 +195,7 @@ pub fn classify(role: WalkRole) -> Class {
         // The pool's threads, by the std id of each: what names an lwp
         // the pool's in `threads`. Without them those rows say only
         // that the thread entered the runtime.
-        BlockingWorkerThreads | PoolThreadId => Class::Optional,
+        BlockingWorkerThreads | BlockingShardedWorkerThreads | PoolThreadId => Class::Optional,
         // The join waker a task's Trailer parks for whoever awaits its
         // `JoinHandle` — the waker-slot index's join edge. Enrichment
         // only: a bundle without it still lists and traces.

@@ -121,6 +121,7 @@ exclude_globs = [
     "exegesis/src/detect/tokio_v1_47.rs",
     "exegesis/src/detect/tokio_v1_52_0.rs",
     "exegesis/src/detect/tokio_v1_53.rs",
+    "exegesis/src/detect/tokio_v1_54.rs",
 ]
 
 exclude_re = [

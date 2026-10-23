@@ -27,7 +27,7 @@
 use super::ReachStep::{Deref, FindParam, Named, PeelTo, Variant};
 use super::{
     Family, Reach, Row, WORD, aggregate_members, raw_variants, reach, step_into, tokio_v1_47,
-    tokio_v1_49, tokio_v1_52_0, tokio_v1_53, trace, type_label,
+    tokio_v1_49, tokio_v1_52_0, tokio_v1_53, tokio_v1_54, trace, type_label,
 };
 use crate::bundle::{
     BundleTypeId, Selector, Shape, Step, StringInterner, WalkBinding, WalkOutcome, WalkRole,
@@ -318,21 +318,51 @@ static WHEEL_LEVELS_SPELLINGS: [(Family, Spellings); 2] = [
 ];
 
 /// The blocking pool's queue: one `VecDeque` in the pool's `Shared` in
-/// every release but 1.52.0, whose `ShardedQueue` moved it out — so no
-/// such member there, and the shards row below instead.
-static BLOCKING_QUEUE_SPELLINGS: [(Family, Spellings); 2] = [
+/// every release before 1.54 but 1.52.0, whose `ShardedQueue` moved it
+/// out — so no such member there, and the shards row below instead —
+/// and from 1.54 the `Locked` pool's, which a sharded pool reads as
+/// inactive.
+static BLOCKING_QUEUE_SPELLINGS: [(Family, Spellings); 3] = [
     (Family::V1_47, || pool_shared("queue")),
     (Family::V1_52_0, absent_here),
+    (Family::V1_54, tokio_v1_54::blocking_queue_walk),
 ];
 
-/// 1.52.0's sharded blocking queue, which no other release has.
-static BLOCKING_QUEUE_SHARDS_SPELLINGS: [(Family, Spellings); 2] = [
+/// The sharded blocking queue: 1.52.0's, the only one that release
+/// has, and from 1.54 the `Sharded` pool's, which a locked pool reads
+/// as inactive.
+static BLOCKING_QUEUE_SHARDS_SPELLINGS: [(Family, Spellings); 3] = [
     (Family::V1_47, absent_here),
     (Family::V1_52_0, tokio_v1_52_0::blocking_queue_shards_walk),
+    (Family::V1_54, tokio_v1_54::blocking_queue_shards_walk),
+];
+
+/// One shard's queue: a mutex-guarded `VecDeque` member of 1.52.0's
+/// `Shard`, and from 1.54 a `VecDeque` member of the `Shard` the
+/// mutex guards. No other family has shards for this row to start at.
+static BLOCKING_SHARD_QUEUE_SPELLINGS: [(Family, Spellings); 2] = [
+    (Family::V1_52_0, tokio_v1_52_0::shard_queue_walk),
+    (Family::V1_54, tokio_v1_54::shard_queue_walk),
+];
+
+/// The pool's thread map: in its `Shared` before 1.54, and from 1.54
+/// in the `Locked` pool's thread state, which a sharded pool reads as
+/// inactive.
+static BLOCKING_WORKER_THREADS_SPELLINGS: [(Family, Spellings); 2] = [
+    (Family::V1_47, || pool_shared("worker_threads")),
+    (Family::V1_54, tokio_v1_54::worker_threads_walk),
+];
+
+/// The `Sharded` pool's thread map, in its coordinator, which no
+/// release before 1.54 has.
+static BLOCKING_SHARDED_WORKER_THREADS_SPELLINGS: [(Family, Spellings); 2] = [
+    (Family::V1_47, absent_here),
+    (Family::V1_54, tokio_v1_54::sharded_worker_threads_walk),
 ];
 
 /// Where the blocking pool keeps a `VecDeque` of tasks: its one queue,
-/// or each of 1.52.0's shards — whichever the family's layout has.
+/// or each shard's — whichever the family's layout, and the runtime's
+/// choice of pool, has.
 const BLOCKING_QUEUES: &[WalkRole] = &[WalkRole::BlockingQueue, WalkRole::BlockingShardQueue];
 
 /// A family entry for a path its layout does not have at all: no
@@ -1458,8 +1488,9 @@ fn decls() -> Vec<WalkDecl> {
         ),
         // The pool's queue itself: the spawn_blocking cells no task
         // list carries. One `VecDeque` in the pool's `Shared` in every
-        // release but 1.52.0, whose sixteen shards
-        // `BlockingQueueShards` reaches instead.
+        // release before 1.54 but 1.52.0, whose sixteen shards
+        // `BlockingQueueShards` reaches instead, and the `Locked`
+        // pool's from 1.54.
         WalkDecl {
             role: WalkRole::BlockingQueue,
             root: WalkRoot::AnyHandle,
@@ -1467,8 +1498,9 @@ fn decls() -> Vec<WalkDecl> {
             spellings: Row::Versioned(&BLOCKING_QUEUE_SPELLINGS),
             needs: None,
         },
-        // tokio 1.52.0's sharded blocking queue: the shards on the
-        // pool's `Inner`, then each shard's `VecDeque`.
+        // The sharded blocking queue, 1.52.0's and the `Sharded`
+        // pool's from 1.54: the array of shards, then each shard's
+        // `VecDeque`.
         WalkDecl {
             role: WalkRole::BlockingQueueShards,
             root: WalkRoot::AnyHandle,
@@ -1476,15 +1508,16 @@ fn decls() -> Vec<WalkDecl> {
             spellings: Row::Versioned(&BLOCKING_QUEUE_SHARDS_SPELLINGS),
             needs: None,
         },
-        decl(
-            WalkRole::BlockingShardQueue,
-            Elem(WalkRole::BlockingQueueShards),
-            Aggregate,
-            tokio_v1_52_0::shard_queue_walk,
-        ),
+        WalkDecl {
+            role: WalkRole::BlockingShardQueue,
+            root: Elem(WalkRole::BlockingQueueShards),
+            terminal: Aggregate,
+            spellings: Row::Versioned(&BLOCKING_SHARD_QUEUE_SPELLINGS),
+            needs: None,
+        },
         // The VecDeque's ring: head index, length, buffer pointer and
         // capacity, wherever the pool keeps one — its one queue, or each
-        // of 1.52.0's shards. The buffer pointer is named the whole way
+        // shard's. The buffer pointer is named the whole way
         // — the capacity shares offset zero, so a shape peel cannot pick
         // the pointer out.
         decl(
@@ -1547,13 +1580,22 @@ fn decls() -> Vec<WalkDecl> {
         // counter. Which lwps are the pool's is recorded here and
         // nowhere else — the runtime's counters say how many, and a
         // thread's stack says it only while its compiler kept the
-        // pool's loop a frame of its own.
-        decl(
-            WalkRole::BlockingWorkerThreads,
-            WalkRoot::AnyHandle,
-            Aggregate,
-            || pool_shared("worker_threads"),
-        ),
+        // pool's loop a frame of its own. From 1.54 each pool variant
+        // keeps the map in its own place, so each has a role.
+        WalkDecl {
+            role: WalkRole::BlockingWorkerThreads,
+            root: WalkRoot::AnyHandle,
+            terminal: Aggregate,
+            spellings: Row::Versioned(&BLOCKING_WORKER_THREADS_SPELLINGS),
+            needs: None,
+        },
+        WalkDecl {
+            role: WalkRole::BlockingShardedWorkerThreads,
+            root: WalkRoot::AnyHandle,
+            terminal: Aggregate,
+            spellings: Row::Versioned(&BLOCKING_SHARDED_WORKER_THREADS_SPELLINGS),
+            needs: None,
+        },
         // Each handle's std `ThreadId`, from the map's bucket: the
         // handle's `JoinInner`, its `Thread`, and the id inside the
         // pinned `Arc` — what the thread's own `ID` thread-local
