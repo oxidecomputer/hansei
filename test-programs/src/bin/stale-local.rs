@@ -90,9 +90,21 @@ unsafe impl Send for StaleFuture {}
 /// Park forever holding both addresses, so they live in the suspended
 /// frame rather than being optimized out. Readiness is signalled before
 /// the await, so the caller knows the frame exists before it frees.
-async fn holder(ready: oneshot::Sender<()>, stale: Stale, future: StaleFuture) {
+///
+/// The task parks on a channel nothing sends on, which stores its
+/// waker, rather than on `std::future::pending`, which never reads its
+/// context. This is the program's only task, so with nothing reading a
+/// task waker, a compiler can drop the waker's construction and the
+/// linker then drops tokio's waker vtable, which every extraction
+/// requires. rustc 1.99 does that with tokio 1.54.
+async fn holder(
+    ready: oneshot::Sender<()>,
+    park: oneshot::Receiver<()>,
+    stale: Stale,
+    future: StaleFuture,
+) {
     ready.send(()).expect("main waits for readiness");
-    std::future::pending::<()>().await;
+    park.await.ok();
     // Unreachable, and there to keep both locals live across the await
     // above: a local the body never uses again is a local rustc is
     // free to drop from the suspend state.
@@ -106,6 +118,7 @@ fn main() {
     builder.worker_threads(1);
     test_programs::run_builder(&mut builder, async {
         let (ready_tx, ready_rx) = oneshot::channel();
+        let (park_tx, park_rx) = oneshot::channel();
 
         let boxed = Box::new(Payload { data: [0x41; 256] });
         let addr = Box::into_raw(boxed);
@@ -121,7 +134,7 @@ fn main() {
         });
         let future = Box::into_raw(held);
 
-        let _task = tokio::spawn(holder(ready_tx, Stale(addr), StaleFuture(future)));
+        let _task = tokio::spawn(holder(ready_tx, park_rx, Stale(addr), StaleFuture(future)));
         ready_rx.await.expect("the task signals readiness");
 
         // The task is parked and holding both addresses. Hand the
@@ -138,6 +151,8 @@ fn main() {
 
         test_programs::quiesce();
         println!("READY");
+        // Kept past the marker, so the task's channel never closes.
+        let _park = park_tx;
         std::future::pending::<()>().await
     })
 }
