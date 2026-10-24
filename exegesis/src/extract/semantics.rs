@@ -32,15 +32,15 @@ use crate::bundle::{
     FutureEvidence, FutureFacts, FutureTarget, HashTableBinding, HttpClientBinding,
     HttpConnBinding, HttpPoolBinding, HttpRequestBinding, HttpRequestTarget, HttpRole,
     HttpServerBinding, HttpServiceBinding, IoOperationBinding, IoOperationKind, IoRouteBinding,
-    IoRouteStep, IoSocket, LayoutSelection, LockBinding, LockWord, MemberRef, PollAction, PollCase,
-    PollProgram, RefcountBinding, ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass,
-    SelectBinding, Selector, SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId,
-    SemanticRule, SemanticRuleId, SemanticRuleKind, SemanticTable, SendableBinding,
-    SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StreamPeerBinding, StringInterner,
-    TaskEntryId, TaskFutureEntry, TlsSessionBinding, TlsStreamBinding, TypeDef, TypeSemantics,
-    TypeTable, TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles, container_routes,
-    required_resource_roles, required_resource_routes, scheduler_role, semantic_path_target,
-    socket_roles,
+    IoRouteStep, IoSocket, LayoutSelection, LockBinding, LockBox, LockWord, MemberRef, PollAction,
+    PollCase, PollProgram, RefcountBinding, ResourceBinding, ResourceKind, SchedulerBinding,
+    SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind, SemanticOrigin,
+    SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind, SemanticTable,
+    SendableBinding, SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StreamPeerBinding,
+    StringInterner, TaskEntryId, TaskFutureEntry, TlsSessionBinding, TlsStreamBinding, TypeDef,
+    TypeSemantics, TypeTable, TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles,
+    container_routes, required_resource_roles, required_resource_routes, scheduler_role,
+    semantic_path_target, socket_roles,
 };
 use crate::detect::Family;
 use crate::detect::adapters::{
@@ -62,8 +62,9 @@ use crate::detect::semantics::{
     TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
     TOWER_RETRY_V0_5_2, TRACING_INSTRUMENTED_V0_1_40, library_convention,
     rustc_core_pending_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
-    rustc_std_adapter_convention, rustc_std_futex_mutex_convention, rustc_std_refcount_convention,
-    tokio_acquire_owner, tokio_state_protocol,
+    rustc_std_adapter_convention, rustc_std_futex_mutex_convention,
+    rustc_std_pthread_mutex_convention, rustc_std_refcount_convention, tokio_acquire_owner,
+    tokio_state_protocol,
 };
 
 use std::borrow::Cow;
@@ -94,6 +95,7 @@ pub(super) enum Reviewed {
     CorePending,
     StdRefcount,
     StdFutexMutex,
+    StdPthreadMutex,
 }
 
 impl Reviewed {
@@ -106,6 +108,7 @@ impl Reviewed {
             Reviewed::CorePending => rustc_core_pending_convention(producer),
             Reviewed::StdRefcount => rustc_std_refcount_convention(producer),
             Reviewed::StdFutexMutex => rustc_std_futex_mutex_convention(producer),
+            Reviewed::StdPthreadMutex => rustc_std_pthread_mutex_convention(producer),
         }
     }
 }
@@ -1163,6 +1166,8 @@ fn io_op_seed(name: &str) -> Option<IoOpSeed> {
 pub(super) enum LockSeed {
     /// std's futex mutex: the verdict on its defining units.
     StdFutex(CompilerVerdict),
+    /// std's pthread mutex: the verdict on its defining units.
+    StdPthread(CompilerVerdict),
     /// parking_lot's raw mutex: where its methods were declared.
     ParkingLot(BTreeSet<PollSource>),
 }
@@ -1534,6 +1539,11 @@ pub(super) fn collect_semantic_seeds(
         } else if name == "std::sys::sync::mutex::futex::Mutex" {
             seeds.entry(ty).or_default().lock =
                 Some(LockSeed::StdFutex(verdict(raw, Reviewed::StdFutexMutex)));
+        } else if name == "std::sys::sync::mutex::pthread::Mutex" {
+            seeds.entry(ty).or_default().lock = Some(LockSeed::StdPthread(verdict(
+                raw,
+                Reviewed::StdPthreadMutex,
+            )));
         } else if name == "parking_lot::raw_mutex::RawMutex" {
             seeds.entry(ty).or_default().lock = Some(LockSeed::ParkingLot(type_sources(raw)));
         } else if name.starts_with("reqwest::async_impl::client::PendingRequest")
@@ -6828,7 +6838,8 @@ fn plan_refcount(
 /// path inside the reviewed range — then the one state word the
 /// reviewed implementation keeps, at the start of the lock, with the
 /// bits that say it is held: all of std's futex word, parking_lot's
-/// low bit.
+/// low bit. std's pthread mutex keeps its word elsewhere
+/// ([`plan_pthread_lock`]).
 fn plan_lock(
     ty: BundleTypeId,
     seed: &LockSeed,
@@ -6836,6 +6847,7 @@ fn plan_lock(
     strings: &StringInterner,
 ) -> Result<(RuleKey, LockWord), Decline> {
     let (rule, member, mask) = match seed {
+        LockSeed::StdPthread(verdict) => return plan_pthread_lock(ty, verdict, types, strings),
         LockSeed::StdFutex(verdict) => {
             let (producer, convention) = supported(verdict)?;
             let rule = RuleKey::Rustc {
@@ -6876,6 +6888,85 @@ fn plan_lock(
             offset,
             size: size as u8,
             locked_mask: mask.unwrap_or(whole),
+            boxed: None,
+        },
+    ))
+}
+
+/// The `pthread_mutex_t` whose lock byte the pthread review read:
+/// illumos's, as the libc crate defines it for the solarish targets.
+const SOLARISH_PTHREAD_MUTEX: &str = "libc::unix::solarish::pthread_mutex_t";
+
+/// Plan std's pthread mutex: the compiler verdict on its defining
+/// units, then the two routes its review describes, each step the one
+/// member of its struct at the struct's start. From the lock to the box
+/// pointer: `pal`, the `OnceBox`'s `ptr`, the atomic's `v`, the cell's
+/// `value` and the alignment wrapper's `__0`. From the block it points
+/// at to illumos's `pthread_mutex_t`: `pal::Mutex`'s `inner` and the
+/// cell's `value`. The word is the lock byte, the last byte of the
+/// mutex's 8-byte `__pthread_mutex_lock`, held whenever it is nonzero.
+/// Any other platform's `pthread_mutex_t` binds nothing.
+fn plan_pthread_lock(
+    ty: BundleTypeId,
+    verdict: &CompilerVerdict,
+    types: &TypeTable,
+    strings: &StringInterner,
+) -> Result<(RuleKey, LockWord), Decline> {
+    let (producer, convention) = supported(verdict)?;
+    let layout = |detail: String| (SemanticIssueKind::MissingLayout, detail);
+    let sole = |ty: BundleTypeId, name: &str| match member_named(types, strings, ty, name) {
+        Some((_, inner, 0)) if members_of(types, ty).len() == 1 => Ok(inner),
+        _ => Err(layout(format!("{name} is not the one member at its start"))),
+    };
+    let mut at = ty;
+    for name in ["pal", "ptr", "v", "value", "__0"] {
+        at = sole(at, name)?;
+    }
+    let Some(&TypeDef::Pointer { target: block, .. }) = types.get(at) else {
+        return Err(layout("the box is no pointer".to_owned()));
+    };
+    let Some(&TypeDef::Struct {
+        size: block_size, ..
+    }) = types.get(block)
+    else {
+        return Err(layout("the box points at no struct".to_owned()));
+    };
+    let mutex = sole(sole(block, "inner")?, "value")?;
+    let mutex_name = match types.get(mutex) {
+        Some(TypeDef::Struct { name, .. }) => strings.get(*name),
+        _ => None,
+    };
+    if mutex_name != Some(SOLARISH_PTHREAD_MUTEX) {
+        return Err(layout(format!(
+            "the box holds {}, not {SOLARISH_PTHREAD_MUTEX}",
+            mutex_name.unwrap_or("no struct")
+        )));
+    }
+    let lock = member_named(types, strings, mutex, "__pthread_mutex_lock");
+    let lock_size = lock.and_then(|(_, word, _)| match types.get(word) {
+        Some(TypeDef::Base { size, .. }) => Some(*size),
+        _ => None,
+    });
+    let (Some((_, _, offset)), Some(8)) = (lock, lock_size) else {
+        return Err(layout(
+            "__pthread_mutex_lock is not one 8-byte word".to_owned(),
+        ));
+    };
+    Ok((
+        RuleKey::Rustc {
+            kind: SemanticRuleKind::StdPthreadMutex,
+            producer: producer.to_owned(),
+            family: convention.family,
+        },
+        LockWord {
+            boxed: Some(LockBox {
+                pointer: 0,
+                size: block_size,
+            }),
+            // `mutex_lockw`, `lock.lock64.pad[7]`.
+            offset: offset + 7,
+            size: 1,
+            locked_mask: 0xff,
         },
     ))
 }
@@ -11830,6 +11921,7 @@ mod tests {
         assert_eq!(
             word,
             LockWord {
+                boxed: None,
                 offset: 0,
                 size: 4,
                 locked_mask: 0xffff_ffff
@@ -11847,6 +11939,135 @@ mod tests {
             assert_eq!(kind, SemanticIssueKind::MissingLayout, "{members:?}");
             assert_eq!(detail, "futex is not the lock's one word", "{members:?}");
         }
+    }
+
+    /// std's pthread mutex binds the lock byte of illumos's
+    /// `pthread_mutex_t`, in the block the `OnceBox` points at, when
+    /// every step to it is the one member of its struct; another
+    /// platform's `pthread_mutex_t`, a lock member of another width, a
+    /// step with company, or a declined verdict binds nothing.
+    #[test]
+    fn test_a_pthread_lock_word_is_illumos_lock_byte_in_its_box() {
+        use crate::detect::semantics::RUSTC_STD_PTHREAD_MUTEX_V1_97;
+        let supported = LockSeed::StdPthread(CompilerVerdict::Supported {
+            producer: "rustc 1.98.0".to_owned(),
+            convention: &RUSTC_STD_PTHREAD_MUTEX_V1_97,
+        });
+        // The lock's types, outermost last, in the shape rustc 1.98
+        // emits for illumos, the names shortened where the plan reads
+        // none; `mutex` names the `pthread_mutex_t`, `lock` is the
+        // width of its lock member, and `crowded` puts a second member
+        // in the `OnceBox`.
+        let plan = |seed: &LockSeed, mutex: &str, lock: u64, crowded: bool| {
+            let (mut types, mut strings) = (TypeTable::default(), StringInterner::new());
+            let mutex = words(
+                &mut types,
+                &mut strings,
+                mutex,
+                &[
+                    ("__pthread_mutex_flag1", 2, 0),
+                    ("__pthread_mutex_flag2", 1, 2),
+                    ("__pthread_mutex_ceiling", 1, 3),
+                    ("__pthread_mutex_type", 2, 4),
+                    ("__pthread_mutex_magic", 2, 6),
+                    ("__pthread_mutex_lock", lock, 8),
+                    ("__pthread_mutex_data", 8, 16),
+                ],
+            );
+            // A struct of `members`, each at its start.
+            fn wrap(
+                types: &mut TypeTable,
+                strings: &mut StringInterner,
+                name: &str,
+                members: &[(&str, BundleTypeId)],
+                size: u64,
+            ) -> BundleTypeId {
+                let members = members
+                    .iter()
+                    .map(|&(member, ty)| MemberDef {
+                        name: strings.intern(member),
+                        ty,
+                        offset: 0,
+                    })
+                    .collect();
+                types.types.push(TypeDef::Struct {
+                    name: strings.intern(name),
+                    size,
+                    members,
+                });
+                BundleTypeId(types.types.len() as u32 - 1)
+            }
+            let (t, s) = (&mut types, &mut strings);
+            let cell = wrap(t, s, "UnsafeCell<pthread_mutex_t>", &[("value", mutex)], 24);
+            let pal = wrap(
+                t,
+                s,
+                "pal::unix::sync::mutex::Mutex",
+                &[("inner", cell)],
+                24,
+            );
+            t.types.push(TypeDef::Pointer {
+                name: None,
+                target: pal,
+            });
+            let pointer = BundleTypeId(t.types.len() as u32 - 1);
+            let align = wrap(t, s, "Align8<*mut Mutex>", &[("__0", pointer)], 8);
+            let cell = wrap(t, s, "UnsafeCell<Align8>", &[("value", align)], 8);
+            let atomic = wrap(t, s, "Atomic<*mut Mutex>", &[("v", cell)], 8);
+            let members: &[_] = if crowded {
+                &[("ptr", atomic), ("spare", atomic)]
+            } else {
+                &[("ptr", atomic)]
+            };
+            let once_box = wrap(t, s, "OnceBox<Mutex>", members, 8);
+            let lock = wrap(t, s, "pthread::Mutex", &[("pal", once_box)], 8);
+            plan_lock(lock, seed, &types, &strings)
+        };
+
+        let (rule, word) = plan(&supported, SOLARISH_PTHREAD_MUTEX, 8, false).unwrap();
+        assert!(matches!(
+            rule,
+            RuleKey::Rustc {
+                kind: SemanticRuleKind::StdPthreadMutex,
+                family: "rustc-std-pthread-mutex-1.97",
+                ..
+            }
+        ));
+        assert_eq!(
+            word,
+            LockWord {
+                boxed: Some(LockBox {
+                    pointer: 0,
+                    size: 24
+                }),
+                offset: 15,
+                size: 1,
+                locked_mask: 0xff,
+            }
+        );
+
+        let declined = |result: Result<(RuleKey, LockWord), Decline>| result.unwrap_err();
+        let (kind, detail) = declined(plan(
+            &supported,
+            "libc::unix::bsd::apple::pthread_mutex_t",
+            8,
+            false,
+        ));
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert_eq!(
+            detail,
+            "the box holds libc::unix::bsd::apple::pthread_mutex_t, \
+             not libc::unix::solarish::pthread_mutex_t"
+        );
+        let (kind, detail) = declined(plan(&supported, SOLARISH_PTHREAD_MUTEX, 4, false));
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert_eq!(detail, "__pthread_mutex_lock is not one 8-byte word");
+        let (kind, detail) = declined(plan(&supported, SOLARISH_PTHREAD_MUTEX, 8, true));
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert_eq!(detail, "ptr is not the one member at its start");
+        let unsupported = LockSeed::StdPthread(CompilerVerdict::Declined("rustc 1.96.0".into()));
+        let (kind, _) = declined(plan(&unsupported, SOLARISH_PTHREAD_MUTEX, 8, false));
+        assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
     }
 
     /// An io operation's seed, or a handshake's, puts its record in

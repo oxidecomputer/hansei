@@ -1048,11 +1048,26 @@ impl ReferenceSink for CollectedReferences {
 
 /// Whether the guard `lock` was read locked, by the word the bundle
 /// records its reviewed implementation keeping — parking_lot's state
-/// byte, std's futex word. `Unknown` for a lock no reviewed rule covers
-/// — the pthread mutex std uses where there is no futex among them —
-/// and for one whose bytes are short.
-pub(crate) fn lock_consistency(lock: reify::Value<'_>) -> Consistency {
-    match lock.ty.lock_word().and_then(|word| word.held(lock.bytes)) {
+/// byte, std's futex word, the lock byte of the `pthread_mutex_t` std's
+/// pthread mutex boxes on illumos. A boxed lock whose pointer is null
+/// has never been taken. `Unknown` for a lock no reviewed rule covers —
+/// the pthread mutex of any other platform — for one whose bytes, or
+/// whose box's, are short or do not read, and for a box the allocator
+/// has taken back.
+pub(crate) fn lock_consistency<T: proc::Target>(
+    proc: &T,
+    read: &ReadContext<'_>,
+    lock: reify::Value<'_>,
+) -> Consistency {
+    let held = lock.ty.lock_word().and_then(|word| match word.boxed {
+        None => word.held(lock.bytes),
+        Some(boxed) => match boxed.address(lock.bytes)? {
+            0 => Some(false),
+            addr if read.taken_back(addr) => None,
+            addr => word.held(proc.read_bytes(addr, boxed.size).ok()?),
+        },
+    });
+    match held {
         Some(true) => Consistency::Mutating,
         Some(false) => Consistency::Quiescent,
         None => Consistency::Unknown,
@@ -1160,45 +1175,105 @@ mod tests {
             .next()
             .expect("std's futex Mutex");
         let other = view.find_by_name("u32").next().unwrap();
-        let at = 0x1000;
+        // Neither lock is boxed, so nothing past the lock is read.
+        let nothing = testkit::fake::FakeTarget {
+            base: 0,
+            bytes: Vec::new(),
+            has_symbol: false,
+            seam: None,
+        };
+        let guard = |ty, bytes| {
+            lock_consistency(
+                &nothing,
+                &ReadContext::none(),
+                reify::Value::new(ty, 0x1000, bytes),
+            )
+        };
 
-        assert_eq!(
-            lock_consistency(reify::Value::new(raw_mutex, at, &[0])),
-            Consistency::Quiescent
-        );
+        assert_eq!(guard(raw_mutex, &[0]), Consistency::Quiescent);
         // The parked bit alone is not the lock bit.
-        assert_eq!(
-            lock_consistency(reify::Value::new(raw_mutex, at, &[0b10])),
-            Consistency::Quiescent
-        );
-        assert_eq!(
-            lock_consistency(reify::Value::new(raw_mutex, at, &[0b11])),
-            Consistency::Mutating
-        );
-        assert_eq!(
-            lock_consistency(reify::Value::new(raw_mutex, at, &[])),
-            Consistency::Unknown
-        );
+        assert_eq!(guard(raw_mutex, &[0b10]), Consistency::Quiescent);
+        assert_eq!(guard(raw_mutex, &[0b11]), Consistency::Mutating);
+        assert_eq!(guard(raw_mutex, &[]), Consistency::Unknown);
 
-        assert_eq!(
-            lock_consistency(reify::Value::new(futex, at, &[0, 0, 0, 0])),
-            Consistency::Quiescent
-        );
-        assert_eq!(
-            lock_consistency(reify::Value::new(futex, at, &[1, 0, 0, 0])),
-            Consistency::Mutating
-        );
-        assert_eq!(
-            lock_consistency(reify::Value::new(futex, at, &[0, 0, 0, 2])),
-            Consistency::Mutating
-        );
-        assert_eq!(
-            lock_consistency(reify::Value::new(futex, at, &[0, 0])),
-            Consistency::Unknown
-        );
+        assert_eq!(guard(futex, &[0, 0, 0, 0]), Consistency::Quiescent);
+        assert_eq!(guard(futex, &[1, 0, 0, 0]), Consistency::Mutating);
+        assert_eq!(guard(futex, &[0, 0, 0, 2]), Consistency::Mutating);
+        assert_eq!(guard(futex, &[0, 0]), Consistency::Unknown);
 
+        assert_eq!(guard(other, &[0, 0, 0, 0]), Consistency::Unknown);
+    }
+
+    /// A boxed lock — std's pthread mutex on illumos — reads its word in
+    /// the block its pointer names: a null pointer is a lock never
+    /// taken, the lock byte set is held and the waiters byte beside it
+    /// is not, and a block that does not read, or that the allocator
+    /// has taken back, is `Unknown`, as is a lock too short to hold the
+    /// pointer.
+    #[test]
+    fn test_the_guard_decoder_follows_a_boxed_lock_to_its_block() {
+        use crate::testkit::{self, fake::FakeTarget, heap::FakeHeap};
+        use hansei_bundle::{
+            BundleTypeId, BundleView, LockBinding, LockBox, LockWord, SemanticRuleId,
+            SemanticRuleKind,
+        };
+
+        let name = "std::sys::sync::mutex::pthread::Mutex";
+        let mut bundle = testkit::named_types(&[name]);
+        testkit::coroutine_kinds(
+            &mut bundle,
+            &[(BundleTypeId(0), SemanticRuleKind::StdPthreadMutex)],
+        );
+        let record = &mut bundle.semantics.types[0];
+        record.coroutine_kind = None;
+        record.lock = Some(LockBinding {
+            rule: SemanticRuleId(0),
+            word: LockWord {
+                boxed: Some(LockBox {
+                    pointer: 0,
+                    size: 24,
+                }),
+                offset: 15,
+                size: 1,
+                locked_mask: 0xff,
+            },
+        });
+        let view = BundleView::new(&bundle);
+        let mutex = view.ty(BundleTypeId(0)).unwrap();
+
+        let block = 0x2000u64;
+        let target = |lock_byte, waiters| {
+            let mut bytes = vec![0u8; 24];
+            bytes[14] = waiters;
+            bytes[15] = lock_byte;
+            FakeTarget {
+                base: block,
+                bytes,
+                has_symbol: false,
+                seam: None,
+            }
+        };
+        let guard = |target: &FakeTarget, read: &ReadContext<'_>, pointer: u64| {
+            let lock = pointer.to_le_bytes();
+            lock_consistency(target, read, reify::Value::new(mutex, 0x1000, &lock))
+        };
+        let none = ReadContext::none();
+
+        assert_eq!(guard(&target(1, 0), &none, 0), Consistency::Quiescent);
+        assert_eq!(guard(&target(1, 0), &none, block), Consistency::Mutating);
+        assert_eq!(guard(&target(0, 0), &none, block), Consistency::Quiescent);
+        assert_eq!(guard(&target(0, 1), &none, block), Consistency::Quiescent);
+        // The block is 24 bytes, and 8 past it is past what reads.
+        assert_eq!(guard(&target(1, 0), &none, block + 8), Consistency::Unknown);
+        let freed = FakeHeap::new().freed(block..block + 24);
+        let freed = ReadContext::with_heap(&freed);
+        assert_eq!(guard(&target(1, 0), &freed, block), Consistency::Unknown);
         assert_eq!(
-            lock_consistency(reify::Value::new(other, at, &[0, 0, 0, 0])),
+            lock_consistency(
+                &target(1, 0),
+                &none,
+                reify::Value::new(mutex, 0x1000, &[0; 4]),
+            ),
             Consistency::Unknown
         );
     }

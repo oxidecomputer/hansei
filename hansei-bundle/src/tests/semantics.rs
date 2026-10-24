@@ -3613,6 +3613,7 @@ fn test_semantic_lock_word_lies_in_the_lock() {
     lock.lock = Some(LockBinding {
         rule,
         word: LockWord {
+            boxed: None,
             offset: 0,
             size: 4,
             locked_mask: 0xffff_ffff,
@@ -3624,6 +3625,12 @@ fn test_semantic_lock_word_lies_in_the_lock() {
     fn word(b: &mut Bundle) -> &mut LockWord {
         &mut b.semantics.types[0].lock.as_mut().unwrap().word
     }
+    let mut boxed = b.clone();
+    word(&mut boxed).boxed = Some(LockBox {
+        pointer: 0,
+        size: 24,
+    });
+    bad(&boxed, "only std's pthread mutex boxes");
     let mut odd = b.clone();
     word(&mut odd).size = 3;
     bad(&odd, "1, 2, 4 or 8 bytes");
@@ -3641,11 +3648,52 @@ fn test_semantic_lock_word_lies_in_the_lock() {
     bad(&wrong, "incompatible capability");
 }
 
+/// std's pthread mutex keeps its word in the block its pointer names:
+/// the pointer lies in the lock and the word in the block, and only
+/// that rule's word is boxed.
+#[test]
+fn test_semantic_pthread_lock_word_lies_in_its_box() {
+    let mut b = base();
+    let rule = compiler_rule(&mut b, SemanticRuleKind::StdPthreadMutex);
+    let mut lock = record(CHILD);
+    lock.future = None;
+    lock.lock = Some(LockBinding {
+        rule,
+        word: LockWord {
+            boxed: Some(LockBox {
+                pointer: 0,
+                size: 24,
+            }),
+            offset: 8,
+            size: 8,
+            locked_mask: 0xff << 56,
+        },
+    });
+    b.semantics.types = vec![lock];
+    b.validate().unwrap();
+
+    fn word(b: &mut Bundle) -> &mut LockWord {
+        &mut b.semantics.types[0].lock.as_mut().unwrap().word
+    }
+    let mut unboxed = b.clone();
+    word(&mut unboxed).boxed = None;
+    bad(&unboxed, "only std's pthread mutex boxes");
+    // CHILD is one word: a pointer at 4 runs past it.
+    let mut pointer = b.clone();
+    word(&mut pointer).boxed.as_mut().unwrap().pointer = 4;
+    bad(&pointer, "box pointer lies past the lock");
+    // The word is held to the block's size, not the lock's.
+    let mut past = b.clone();
+    word(&mut past).offset = 20;
+    bad(&past, "past the lock");
+}
+
 /// A lock word reads held exactly when a masked bit is set, and not at
 /// all from bytes too short to hold it.
 #[test]
 fn test_lock_word_reads_its_masked_bits() {
     let byte = LockWord {
+        boxed: None,
         offset: 0,
         size: 1,
         locked_mask: 0b01,
@@ -3654,6 +3702,7 @@ fn test_lock_word_reads_its_masked_bits() {
     assert_eq!(byte.held(&[0b10]), Some(false));
     assert_eq!(byte.held(&[]), None);
     let word = LockWord {
+        boxed: None,
         offset: 4,
         size: 4,
         locked_mask: 0xffff_ffff,
@@ -3661,6 +3710,20 @@ fn test_lock_word_reads_its_masked_bits() {
     assert_eq!(word.held(&[0, 0, 0, 0, 0, 0, 0, 0]), Some(false));
     assert_eq!(word.held(&[0, 0, 0, 0, 0, 0, 0, 2]), Some(true));
     assert_eq!(word.held(&[0, 0, 0, 0, 1, 0, 0]), None);
+}
+
+/// A box's address is the little-endian pointer at its offset into the
+/// lock, and nothing where the lock's bytes stop short of it.
+#[test]
+fn test_lock_box_reads_its_address() {
+    let boxed = LockBox {
+        pointer: 8,
+        size: 24,
+    };
+    let mut bytes = [0u8; 16];
+    bytes[8..].copy_from_slice(&0x1234_5678u64.to_le_bytes());
+    assert_eq!(boxed.address(&bytes), Some(0x1234_5678));
+    assert_eq!(boxed.address(&bytes[..15]), None);
 }
 
 /// An acquire's owner is a name on a future, under the tokio rule; a

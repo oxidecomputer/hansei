@@ -453,14 +453,80 @@ pub fn rustc_std_futex_mutex_convention(producer: &str) -> Option<&'static Rustc
     rustc_convention(producer, &[&RUSTC_STD_FUTEX_MUTEX_V1_97])
 }
 
+/// std's pthread mutex as rustc 1.97 through 1.99 ship it, reviewed
+/// against `library/std/src/sys/sync/mutex/pthread.rs` and
+/// `sync/once_box.rs` (identical across the range) and
+/// `library/std/src/sys/pal/unix/sync/mutex.rs` (identical but for a
+/// URL in a 1.99 comment): `Mutex { pal: OnceBox<pal::Mutex> }`, whose
+/// `OnceBox { ptr: Atomic<*mut T> }` is null until the first `lock`
+/// allocates the `pal::Mutex { inner: UnsafeCell<pthread_mutex_t> }`
+/// and installs it, and keeps it until the mutex drops. A null
+/// pointer is a mutex never locked.
+///
+/// The word the platform's `pthread_mutex_t` keeps the lock in is the
+/// C library's, so the binding holds it to illumos's alone, named by
+/// the libc crate's `unix::solarish` definition: an amd64
+/// `lwp_mutex_t`, whose `lock` union at offset 8 keeps the lock byte
+/// `mutex_lockw` in `lock.lock64.pad[7]` (`uts/intel/sys/synch32.h`).
+/// libc sets it to `LOCKSET` (1) when it takes a process-private
+/// mutex, as std's `PTHREAD_MUTEX_NORMAL` one is, and clears it to 0
+/// when it lets go (`lib/libc/inc/thr_uberdata.h`,
+/// `lib/libc/port/threads/synch.c`); the bytes beside it count
+/// spinners and waiters, and are not the lock.
+pub const RUSTC_STD_PTHREAD_MUTEX_V1_97: RustcConvention = RustcConvention {
+    family: "rustc-std-pthread-mutex-1.97",
+    releases: RUSTC_RELEASES,
+    checksums: &[
+        // library/std/src/sys/sync/mutex/pthread.rs, 1.97.0 through 1.99.1
+        (
+            "library/std/src/sys/sync/mutex/pthread.rs",
+            [
+                0x86, 0x8c, 0x5c, 0xa8, 0x0a, 0x36, 0xed, 0x03, 0xdf, 0x9b, 0x88, 0x94, 0x76, 0x10,
+                0x7b, 0x5b,
+            ],
+        ),
+        // library/std/src/sys/sync/once_box.rs, 1.97.0 through 1.99.1
+        (
+            "library/std/src/sys/sync/once_box.rs",
+            [
+                0xf1, 0x00, 0x0a, 0x4c, 0x21, 0xcf, 0x79, 0xdd, 0xe9, 0x24, 0x28, 0xb8, 0x1b, 0xc2,
+                0x14, 0xbf,
+            ],
+        ),
+        // library/std/src/sys/pal/unix/sync/mutex.rs, 1.97.0 through 1.98.1
+        (
+            "library/std/src/sys/pal/unix/sync/mutex.rs",
+            [
+                0x2e, 0x97, 0x55, 0xc7, 0x38, 0x60, 0x79, 0xf7, 0x06, 0x10, 0xc8, 0xf5, 0xfc, 0x84,
+                0x0f, 0xe9,
+            ],
+        ),
+        // library/std/src/sys/pal/unix/sync/mutex.rs, 1.99.0 and 1.99.1
+        (
+            "library/std/src/sys/pal/unix/sync/mutex.rs",
+            [
+                0xb8, 0x3d, 0x52, 0xc9, 0xb4, 0x4a, 0x6e, 0xba, 0xdd, 0xfc, 0x55, 0x08, 0x75, 0xbb,
+                0x26, 0x35,
+            ],
+        ),
+    ],
+};
+
+/// The pthread mutex convention covering a producer, selected like
+/// [`rustc_coroutine_convention`].
+pub fn rustc_std_pthread_mutex_convention(producer: &str) -> Option<&'static RustcConvention> {
+    rustc_convention(producer, &[&RUSTC_STD_PTHREAD_MUTEX_V1_97])
+}
+
 /// Every reviewed rustc convention.
-pub const RUSTC_CONVENTIONS: [&RustcConvention; 6] = [
+pub const RUSTC_CONVENTIONS: [&RustcConvention; 7] = [
     &RUSTC_COROUTINE_V1_97,
     &RUSTC_STD_ADAPTERS_V1_97,
     &RUSTC_DYN_FUTURE_ABI_V1_97,
     &RUSTC_CORE_PENDING_V1_97,
     &RUSTC_STD_REFCOUNT_V1_97,
     &RUSTC_STD_FUTEX_MUTEX_V1_97,
+    &RUSTC_STD_PTHREAD_MUTEX_V1_97,
 ];
 
 /// The producer's rustc version and the conventions it is newer than
