@@ -1377,8 +1377,9 @@ fn incomplete_word(reason: IncompleteReason) -> &'static str {
 
 /// The lines under a row's wait. What the assessment has to say
 /// beyond the cell where it is a word rather than a place (`ready:`,
-/// `unknown:` with a reason other than the continuation — an unknown
-/// stop is named by the cell); then, at a stop that polls several
+/// `unknown:` with a reason other than the continuation and a `note:`
+/// per thing the assessor found — an unknown stop is named by the
+/// cell); then, at a stop that polls several
 /// things, one line per branch the census could read, each armed by
 /// the slots that sit in it or were reached through it, or `held, not
 /// armed` — the branches of a `select!` nested under a `select!:`
@@ -1406,8 +1407,12 @@ pub(crate) fn wait_detail(
             lines.push(format!("ready: {}", ready_reason(*reason)));
         }
         WaitAssessment::Unknown(WaitUnknownReason::Continuation) => {}
+        // The reason's class, then what the assessor found that left
+        // the wait unproven: which word did not read, which state the
+        // protocol does not vouch for.
         WaitAssessment::Unknown(reason) => {
             lines.push(format!("unknown: {}", unknown_reason(*reason)));
+            lines.extend(wait.notes.iter().map(|note| format!("note: {note}")));
         }
         // What the analysis saw beside the wait it verified, as a
         // field like every other line under the label.
@@ -4105,6 +4110,34 @@ mod table_tests {
                 "    waker: mpsc rx 0x9000",
             ]
         );
+    }
+
+    /// An unknown's block names its reason's class, then a `note:` for
+    /// each thing the assessor found; a continuation's unknown, which
+    /// the cell names, adds neither.
+    #[test]
+    fn test_an_unknown_wait_prints_its_notes() {
+        let stops = crate::typenames::testing::type_names();
+        let lines = |reason, notes: &[&str]| {
+            let mut wait = assessed(1, WaitAssessment::Unknown(reason));
+            wait.notes = notes.iter().map(|note| note.to_string()).collect();
+            wait_detail(&wait, stops, &[], None, &|_| None, ARMED).awaiting
+        };
+        assert_eq!(
+            lines(
+                WaitUnknownReason::ResourceStateUnproven,
+                &["the wait queue is not a quiescent snapshot: its guard could not be decoded"],
+            ),
+            [
+                "unknown: the resource's state is not one its protocol vouches for",
+                "note: the wait queue is not a quiescent snapshot: its guard could not be decoded",
+            ]
+        );
+        assert_eq!(
+            lines(WaitUnknownReason::ResourceUnreadable, &[]),
+            ["unknown: the resource could not be read"]
+        );
+        assert!(lines(WaitUnknownReason::Continuation, &["no primitive frame"]).is_empty());
     }
 
     /// An unknown says what made it one, in the cell and in its bucket
