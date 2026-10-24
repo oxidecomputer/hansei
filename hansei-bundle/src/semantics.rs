@@ -123,18 +123,43 @@ pub struct LockBinding {
 }
 
 /// Where a lock keeps its state and what says it is held: the
-/// little-endian word of `size` bytes at `offset` into the lock, held
-/// whenever any bit of `locked_mask` is set in it.
+/// little-endian word of `size` bytes at `offset` into the lock, or
+/// into the block `boxed` names, held whenever any bit of
+/// `locked_mask` is set in it.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct LockWord {
+    /// Where the lock keeps the word in a block of its own rather than
+    /// in itself.
+    pub boxed: Option<LockBox>,
     pub offset: u64,
     pub size: u8,
     pub locked_mask: u64,
 }
 
+/// A block a lock allocates the first time it is taken and holds a
+/// pointer to: the pointer at `pointer` into the lock, null until
+/// then, and the block's `size` in bytes. A lock whose pointer is null
+/// has never been taken, so it is not held.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct LockBox {
+    pub pointer: u64,
+    pub size: u64,
+}
+
+impl LockBox {
+    /// The block's address, as the lock's own `bytes` hold it: `None`
+    /// where they are too short to hold the pointer.
+    pub fn address(&self, bytes: &[u8]) -> Option<u64> {
+        let start = usize::try_from(self.pointer).ok()?;
+        let word = bytes.get(start..start.checked_add(8)?)?;
+        Some(u64::from_le_bytes(word.try_into().ok()?))
+    }
+}
+
 impl LockWord {
-    /// Whether `bytes`, the lock's own, say it is held: `None` where
-    /// they are too short to hold the word.
+    /// Whether `bytes` say the lock is held: `None` where they are too
+    /// short to hold the word. They are the lock's own, or a boxed
+    /// lock's block.
     pub fn held(&self, bytes: &[u8]) -> Option<bool> {
         let start = usize::try_from(self.offset).ok()?;
         let word = bytes.get(start..start.checked_add(usize::from(self.size))?)?;
@@ -1093,6 +1118,11 @@ pub enum SemanticRuleKind {
     /// std's futex mutex, `std::sys::sync::mutex::futex::Mutex`: one
     /// `u32` word, zero while unlocked.
     StdFutexMutex,
+    /// std's pthread mutex, `std::sys::sync::mutex::pthread::Mutex`,
+    /// over illumos's `pthread_mutex_t`: a pointer to a block allocated
+    /// the first time the lock is taken, whose `pthread_mutex_t` keeps
+    /// a lock byte, nonzero while held.
+    StdPthreadMutex,
     /// parking_lot's `raw_mutex::RawMutex` under a reviewed range: one
     /// state byte whose low bit is the lock.
     ParkingLotRawMutex,

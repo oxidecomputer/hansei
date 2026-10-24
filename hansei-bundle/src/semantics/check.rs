@@ -179,7 +179,7 @@ impl<'a> Check<'a> {
             RustcAsyncFn | RustcAsyncBlock | DynFutureAbi | StdBoxAccess | StdMutRefAccess
             | StdPinBoxAccess | StdPinMutRefAccess | StdBoxPoll | StdMutRefPoll | StdPinBoxPoll
             | StdPinMutRefPoll | CorePending | RustcAsyncClosure | StdRefcountHeader
-            | StdFutexMutex => {
+            | StdFutexMutex | StdPthreadMutex => {
                 return require(
                     matches!(origin, SemanticOrigin::Rustc { .. }),
                     "compiler rule needs a compiler origin",
@@ -1372,12 +1372,17 @@ impl<'a> Check<'a> {
         )
     }
 
-    /// A lock word is a whole unsigned integer inside the lock, and its
-    /// mask names bits of it.
-    fn lock(&self, record: &TypeSemantics, word: &LockWord) -> Result<()> {
+    /// A lock word is a whole unsigned integer inside the lock, or for
+    /// the one rule that boxes it inside the block whose pointer lies
+    /// in the lock, and its mask names bits of it.
+    fn lock(&self, record: &TypeSemantics, kind: SemanticRuleKind, word: &LockWord) -> Result<()> {
         require(
             matches!(record.storage, StoragePolicy::DeclaredMembers),
             "lock binding needs declared-member storage",
+        )?;
+        require(
+            word.boxed.is_some() == (kind == SemanticRuleKind::StdPthreadMutex),
+            "only std's pthread mutex boxes its lock word",
         )?;
         require(
             matches!(word.size, 1 | 2 | 4 | 8),
@@ -1391,6 +1396,16 @@ impl<'a> Check<'a> {
         let size = match self.ty(record.ty)? {
             TypeDef::Struct { size, .. } | TypeDef::Union { size, .. } => *size,
             _ => return Err(Error::Corrupt("semantics: a lock is not a struct".into())),
+        };
+        let size = match word.boxed {
+            None => size,
+            Some(boxed) => {
+                require(
+                    boxed.pointer.checked_add(8).is_some_and(|end| end <= size),
+                    "a lock's box pointer lies past the lock",
+                )?;
+                boxed.size
+            }
         };
         require(
             word.offset
@@ -2410,14 +2425,15 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
             check.refcount(record, refcount)?;
         }
         if let Some(lock) = &record.lock {
-            check.rule(
+            let rule = check.rule(
                 lock.rule,
                 &[
                     SemanticRuleKind::StdFutexMutex,
+                    SemanticRuleKind::StdPthreadMutex,
                     SemanticRuleKind::ParkingLotRawMutex,
                 ],
             )?;
-            check.lock(record, &lock.word)?;
+            check.lock(record, rule.kind, &lock.word)?;
         }
         if let Some(acquires) = &record.acquires_for {
             check.rule(acquires.rule, &[SemanticRuleKind::TokioAcquireOwner])?;

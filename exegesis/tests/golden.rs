@@ -2388,24 +2388,32 @@ fn assert_type_facts(program: &str, bundle: &Bundle) {
         if let Some(lock) = &record.lock {
             // Where std's own mutex is a futex's — Linux — and the
             // target emits one, it binds too: the whole word is the
-            // lock.
+            // lock. Where it is illumos's pthread mutex, it binds the
+            // lock byte in the block its pointer names.
+            let unboxed = |size, locked_mask| hansei_bundle::LockWord {
+                boxed: None,
+                offset: 0,
+                size,
+                locked_mask,
+            };
             let expected = match name.as_str() {
                 "parking_lot::raw_mutex::RawMutex" => {
                     locks += 1;
-                    (1, 0b01)
+                    unboxed(1, 0b01)
                 }
-                "std::sys::sync::mutex::futex::Mutex" => (4, 0xffff_ffff),
+                "std::sys::sync::mutex::futex::Mutex" => unboxed(4, 0xffff_ffff),
+                "std::sys::sync::mutex::pthread::Mutex" => hansei_bundle::LockWord {
+                    boxed: Some(hansei_bundle::LockBox {
+                        pointer: 0,
+                        size: 24,
+                    }),
+                    offset: 15,
+                    size: 1,
+                    locked_mask: 0xff,
+                },
                 other => panic!("{program}: {other} binds a lock"),
             };
-            assert_eq!(
-                lock.word,
-                hansei_bundle::LockWord {
-                    offset: 0,
-                    size: expected.0,
-                    locked_mask: expected.1,
-                },
-                "{program}: {name}"
-            );
+            assert_eq!(lock.word, expected, "{program}: {name}");
         }
         if let Some(layout) = &record.coroutine {
             assert_eq!(
@@ -2452,7 +2460,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 use exegesis::detect::semantics::{
                     RUSTC_CORE_PENDING_V1_97, RUSTC_COROUTINE_V1_97, RUSTC_DYN_FUTURE_ABI_V1_97,
                     RUSTC_STD_ADAPTERS_V1_97, RUSTC_STD_FUTEX_MUTEX_V1_97,
-                    RUSTC_STD_REFCOUNT_V1_97,
+                    RUSTC_STD_PTHREAD_MUTEX_V1_97, RUSTC_STD_REFCOUNT_V1_97,
                 };
                 assert!(
                     [
@@ -2462,6 +2470,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         RUSTC_CORE_PENDING_V1_97.family,
                         RUSTC_STD_REFCOUNT_V1_97.family,
                         RUSTC_STD_FUTEX_MUTEX_V1_97.family,
+                        RUSTC_STD_PTHREAD_MUTEX_V1_97.family,
                     ]
                     .contains(&s(*family)),
                     "{program}: unexpected compiler family {:?}",

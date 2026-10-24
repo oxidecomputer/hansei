@@ -4670,7 +4670,9 @@ impl<'b, T: Target> Context<'b, T> {
         // The guard around the wait list: a queue read while its lock
         // is held is a queue mid-edit, whatever its links say.
         match self.walk(WalkRole::SemaphoreLock).try_walk_with(read, sem) {
-            Ok(Some(Walked::At(lock))) => queue.consistency = lock_consistency(lock),
+            Ok(Some(Walked::At(lock))) => {
+                queue.consistency = lock_consistency(self.proc, read, lock)
+            }
             Ok(Some(_)) | Ok(None) => {}
             Err(e) => queue.issues.push(issue_of(semaphore, &e)),
         }
@@ -4904,7 +4906,9 @@ impl<'b, T: Target> Context<'b, T> {
             Err(e) => observation.issues.push(issue_of(notify, &e)),
         }
         match self.walk(WalkRole::NotifyLock).try_walk_with(read, value) {
-            Ok(Some(Walked::At(lock))) => observation.consistency = lock_consistency(lock),
+            Ok(Some(Walked::At(lock))) => {
+                observation.consistency = lock_consistency(self.proc, read, lock)
+            }
             Ok(Some(_)) | Ok(None) => {}
             Err(e) => observation.issues.push(issue_of(notify, &e)),
         }
@@ -5175,7 +5179,7 @@ impl<'b, T: Target> Context<'b, T> {
             .walk(WalkRole::ScheduledIoLock)
             .try_walk_with(read, registration)
         {
-            Ok(Some(Walked::At(lock))) => lock_consistency(lock),
+            Ok(Some(Walked::At(lock))) => lock_consistency(self.proc, read, lock),
             _ => Consistency::Unknown,
         }
     }

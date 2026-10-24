@@ -1143,10 +1143,14 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
             let _ = write!(line, " refcount rule {} value {value}", refcount.rule.0);
         }
         if let Some(lock) = &record.lock {
+            let _ = write!(line, " lock rule {}", lock.rule.0);
+            if let Some(boxed) = lock.word.boxed {
+                let _ = write!(line, " box *@+{} size {}", boxed.pointer, boxed.size);
+            }
             let _ = write!(
                 line,
-                " lock rule {} word {}+{} mask {:#x}",
-                lock.rule.0, lock.word.offset, lock.word.size, lock.word.locked_mask
+                " word {}+{} mask {:#x}",
+                lock.word.offset, lock.word.size, lock.word.locked_mask
             );
         }
         if let Some(acquires) = &record.acquires_for {
