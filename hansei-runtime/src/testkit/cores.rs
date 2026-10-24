@@ -71,8 +71,8 @@ pub const CAPTURED: &[&str] = if cfg!(target_os = "linux") {
 
 /// Names the sets a run reads, comma-separated, in place of the ones
 /// [`sets`] would choose. For a run that holds only some sets' cores on
-/// purpose: CI's macOS job names the sets whose cores arrived, so a
-/// capturing system that delivered none leaves the others read.
+/// purpose: a Mac that has copied one host's sets and not the other's
+/// names those it has, and reads them without failing on the rest.
 pub const SETS: &str = "HANSEI_SETS";
 
 /// The sets a run reads cores of: those [`SETS`] names, if it names

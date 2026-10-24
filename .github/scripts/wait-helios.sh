@@ -12,7 +12,7 @@
 # The job is not an Actions job, so nothing here can `needs:` it: this
 # polls its check run instead, for as long as buildomat takes to queue
 # and run it, up to a ceiling that only a hang should reach. A failed
-# helios job fails this at once, naming it, so a red macOS check says
+# helios job fails this at once, naming it, so a red linux check says
 # which side broke. A queue that is merely slow delays the check
 # without failing it.
 #
