@@ -20,12 +20,12 @@
 #: from_output = "/work/cores-illumos.tar.zst"
 #
 # The whole suite on illumos, acceptance included, capturing the
-# illumos fixture set. The set is published for the macOS job that
-# reads it (`macos` in .github/workflows/ci.yml), which fetches it by
+# illumos fixture set. The set is published for the linux job that
+# reads it (`linux` in .github/workflows/ci.yml), which fetches it by
 # commit once this job's check run has passed.
 #
-# The default target size: the job is done minutes before that macOS
-# check finishes building, so a larger machine only reserves more.
+# The default target size. The linux job waits for this one once its
+# own captures are done; a larger machine would shorten that wait.
 #
 # Buildomat publishes the first file it is given for a commit and
 # refuses every later one, even from a rerun, so the archive is built
@@ -109,7 +109,7 @@ ls -l /work/cores-illumos.tar.zst
 # Buildomat does not upload an output over its per-file cap (1 GiB by
 # default), and the publish naming it then publishes nothing, silently.
 # A red check here says so, where a missing file would only time out
-# the macOS check waiting for it.
+# the linux check waiting for it.
 max=$((1024 * 1024 * 1024))
 size=$(wc -c </work/cores-illumos.tar.zst)
 if (( size > max )); then

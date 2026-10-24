@@ -193,7 +193,8 @@ Green means green on **all three platforms**: macOS, illumos and Linux.
 Each has caught a failure the other two could not, so a suite run on one
 proves little about the others. Detection is covered portably by the golden
 tests below; a real cored target on an illumos or Linux host is where the
-render side and the acceptance suite are exercised.
+render side and the acceptance suite are exercised. CI runs on Linux and
+illumos only, so macOS is green only when someone has run it there.
 
 **A flaky test is a bug with a cause, and the cause must be identified
 every time one occurs.** Re-running a failed test and moving on because
@@ -292,7 +293,9 @@ check:
   reader, canonicalized and masked so two captures print the same.
   - Linux and illumos take their own sets every run (`linux` and
     `linux-floor`; `illumos`) into `HANSEI_CORES` (default
-    `test-programs/fixtures/cores`). macOS takes none and reads copies:
+    `test-programs/fixtures/cores`), and read any other set already
+    there: CI's linux job reads the illumos set that way, a core read
+    away from the system that took it. macOS takes none and reads copies:
     `check-all.sh`'s local leg copies the hosts', and
     `gh run download <run>` fetches CI's. A set whose cores are missing
     fails every test reading it, with one message saying how to get them.

@@ -4,23 +4,22 @@
 #
 # The merge gate. Every Linux and illumos run builds the fixture
 # programs, cores them, and checks the cores against the committed
-# goldens; macOS cannot core an ELF process, so it reads the cores
-# those runs took, through the same production readers, against the
-# same goldens. Four checks:
+# goldens. The linux job also reads the illumos set, through the same
+# production readers, against the same goldens: a core read away from
+# the system that took it, as one is whenever an illumos core is
+# copied to a laptop. Three checks:
 #
 #   lint     rustfmt over both manifests, clippy
 #   linux    the whole suite in the pinned image (.github/image/),
-#            capturing the linux and linux-floor sets
+#            capturing the linux and linux-floor sets and reading the
+#            illumos set beside them
 #   helios   the whole suite on illumos, capturing the illumos set
 #            (buildomat: .github/buildomat/jobs/helios.sh)
-#   macos    the whole suite over the cores both of them took, built
-#            once while they run
 #
-# The jobs that read cores test a pull request's head commit, not the
-# merge commit Actions checks out by default: buildomat builds the head
-# and publishes the illumos cores under it, and one macOS build reads
-# every set, each of which must have been captured from the tree it
-# runs in.
+# The linux job tests a pull request's head commit, not the merge
+# commit Actions checks out by default: buildomat builds the head and
+# publishes the illumos cores under it, and a set is read only by the
+# tree it was captured from.
 #
 # The version matrix is not among them: it is dispatched by hand
 # (matrix.yml).
@@ -30,8 +29,9 @@
 # test binary, and a runner has disk for little else.
 #
 # A golden read from cores is blessed only by the host that captures
-# its set; a diff only macOS shows is a reader bug, and one a host
-# and this workflow disagree on is a canonicalization gap.
+# its set; a diff only the linux job's read of the illumos set shows
+# is a reader bug, and one a host and this workflow disagree on is a
+# canonicalization gap.
 
 name: ci
 
@@ -60,8 +60,7 @@ env:
   HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
-  # Its own job, so a lint failure neither stops the suite from running
-  # nor leaves the macOS check without cores to read.
+  # Its own job, so a lint failure does not stop the suite from running.
   lint:
     name: lint
     runs-on: ubuntu-26.04
@@ -88,7 +87,14 @@ jobs:
   linux:
     name: linux
     runs-on: ubuntu-26.04
-    timeout-minutes: 120
+    # The wait for helios below lasts as long as buildomat does.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: read
+      checks: read
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -118,19 +124,39 @@ jobs:
       - name: Fixtures
         run: .github/scripts/in-image.sh target/ci/examples/build_fixtures
 
+      # The illumos set, unpacked beside this job's own: a capturing
+      # system reads every set it finds there (testkit::cores::sets).
+      # Waited for only now, so that buildomat's run overlaps this
+      # job's build and captures. A helios job that delivers nothing
+      # leaves this job's own sets read, and fails it by name after.
+      - id: helios
+        name: Wait for helios
+        continue-on-error: true
+        run: .github/scripts/wait-helios.sh "$HEAD_SHA" "$HANSEI_CORES"
+
+      # Again, now that it is there: the illumos set's bundles.
+      - name: Fixtures (illumos)
+        if: steps.helios.outcome == 'success'
+        run: .github/scripts/in-image.sh target/ci/examples/build_fixtures
+
       - name: Test
         run: .github/scripts/in-image.sh cargo nextest run --workspace --locked --no-fail-fast --profile ci --cargo-profile ci
+
+      - name: Illumos set read?
+        if: ${{ !cancelled() && steps.helios.outcome == 'failure' }}
+        run: |
+          echo "::error::helios delivered no cores, so the illumos set went unread; see its check"
+          exit 1
 
       - name: Disk
         if: always()
         run: df -h / "${{ steps.image.outputs.scratch }}"
 
-      # Whatever was captured, pass or fail: the macOS job reads it
-      # (.github/scripts/wait-linux.sh), and a failure here is
-      # root-caused from it. A Linux core is
-      # mostly holes, which --sparse keeps out of the archive and the
-      # reader's disk alike. The dot-named bookkeeping is this host's
-      # own.
+      # Whatever was captured, pass or fail: a failure here is
+      # root-caused from it, and a Mac reads it with `gh run download`.
+      # A Linux core is mostly holes, which --sparse keeps out of the
+      # archive and the reader's disk alike. The dot-named bookkeeping
+      # is this host's own.
       - id: cores
         name: Archive cores
         if: always()
@@ -155,85 +181,3 @@ jobs:
           path: ${{ runner.temp }}/cores-linux.tar.zst
           compression-level: 0
           retention-days: ${{ github.event_name == 'pull_request' && 7 || 30 }}
-
-  # One build reads every set: it compiles while the linux job and
-  # buildomat's helios job take their cores, waits for both, and runs
-  # the suite once over whatever they delivered. A side that delivered
-  # nothing leaves the others read, and fails the job by name after.
-  macos:
-    name: macos
-    runs-on: macos-26
-    # The waits below last as long as the linux job and buildomat do.
-    timeout-minutes: 180
-    permissions:
-      contents: read
-      actions: read
-      checks: read
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ env.HEAD_SHA }}
-
-      - uses: ./.github/actions/macos-setup
-        with:
-          save: "true"
-
-      - name: Fixture toolchain
-        run: .github/scripts/fixture-toolchain.sh
-
-      # Before any cores arrive: the Mach-O fixture builds and the
-      # bundles extracted from them.
-      - name: Build
-        run: |
-          cargo nextest run --workspace --locked --no-run --cargo-profile ci
-          target/ci/examples/build_fixtures
-
-      - id: linux
-        name: Wait for linux
-        continue-on-error: true
-        run: .github/scripts/wait-linux.sh "$RUNNER_TEMP/cores"
-
-      - id: helios
-        name: Wait for helios
-        continue-on-error: true
-        run: .github/scripts/wait-helios.sh "$HEAD_SHA" "$RUNNER_TEMP/cores"
-
-      - name: Sets
-        env:
-          LINUX: ${{ steps.linux.outcome }}
-          HELIOS: ${{ steps.helios.outcome }}
-        run: |
-          sets=()
-          [ "$LINUX" = success ] && sets+=(linux linux-floor)
-          [ "$HELIOS" = success ] && sets+=(illumos)
-          if [ ${#sets[@]} -eq 0 ]; then
-            echo "::error::neither the linux job nor helios delivered cores; see their logs"
-            exit 1
-          fi
-          {
-            echo "HANSEI_CORES=$RUNNER_TEMP/cores"
-            echo "HANSEI_SETS=$(IFS=,; echo "${sets[*]}")"
-          } >>"$GITHUB_ENV"
-
-      # Again, now that there are cores: each set's bundles.
-      - name: Fixtures
-        run: target/ci/examples/build_fixtures
-
-      - name: Test
-        run: cargo nextest run --workspace --locked --no-fail-fast --profile ci --cargo-profile ci
-
-      - name: Every set read?
-        if: ${{ !cancelled() }}
-        env:
-          LINUX: ${{ steps.linux.outcome }}
-          HELIOS: ${{ steps.helios.outcome }}
-        run: |
-          missing=0
-          [ "$LINUX" = success ] \
-            || { echo "::error::the linux job delivered no cores, so its sets went unread; see its log"; missing=1; }
-          [ "$HELIOS" = success ] \
-            || { echo "::error::helios delivered no cores, so the illumos set went unread; see its check"; missing=1; }
-          exit "$missing"
